@@ -1,9 +1,9 @@
--- koffee v0.0.2
+-- koffee v0.0.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.2"
+Koffee.Version = "0.0.3"
 
 --============================================================
 -- THEME
@@ -159,7 +159,15 @@ local blur = new("BlurEffect", {
     Parent = Lighting,
 })
 
--- snow (Drawing.new -- Potassium supports it)
+-- snow (Frame-based so it respects gui ZIndex and stays *under* the window)
+local snowLayer = new("Frame", {
+    Name = "Snow",
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    ZIndex = 5,
+    Parent = screen,
+})
+
 local snowflakes = {}
 local snowActive = false
 
@@ -169,41 +177,27 @@ end
 
 local function newSnowflake()
     local vp = viewport()
+    local size = math.random(20, 50) / 10   -- 2.0 - 5.0 px diameter
     local sf = {
-        radius   = math.random(15, 40) / 10,       -- 1.5 - 4.0 px
-        speedY   = math.random(18, 45),            -- px/sec
-        swayAmp  = math.random(6, 18),
-        swayFreq = math.random(30, 100) / 100,
+        size     = size,
+        speedY   = math.random(15, 38),
+        swayAmp  = math.random(4, 14),
+        swayFreq = math.random(30, 90) / 100,
         swayPhase = math.random() * math.pi * 2,
         baseX    = math.random() * vp.X,
         y        = math.random() * vp.Y,
-        alpha    = math.random(35, 85) / 100,      -- transparency
+        alpha    = math.random(45, 85) / 100,
     }
-    local ok, dr = pcall(function() return Drawing.new("Circle") end)
-    if ok and dr then
-        dr.Filled = true
-        dr.Color = Theme.Palette.Snow
-        dr.Radius = sf.radius
-        dr.Thickness = 0
-        dr.Transparency = 0        -- start invisible, fade in
-        dr.NumSides = 24
-        dr.ZIndex = 2
-        dr.Visible = false
-        sf.dr = dr
-        -- soft "glow" outer flake for the blurred look
-        local ok2, glow = pcall(function() return Drawing.new("Circle") end)
-        if ok2 and glow then
-            glow.Filled = true
-            glow.Color = Theme.Palette.Snow
-            glow.Radius = sf.radius * 2.2
-            glow.Thickness = 0
-            glow.Transparency = 0
-            glow.NumSides = 24
-            glow.ZIndex = 1
-            glow.Visible = false
-            sf.glow = glow
-        end
-    end
+    local f = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, size, 0, size),
+        BackgroundColor3 = Theme.Palette.Snow,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+        Parent = snowLayer,
+    }, { pillCorner() })
+    sf.frame = f
     return sf
 end
 
@@ -213,18 +207,17 @@ end
 
 local snowFade = 0  -- 0 = hidden, 1 = fully visible
 RunService.RenderStepped:Connect(function(dt)
-    -- ease snowFade toward target
     local target = snowActive and 1 or 0
     snowFade = snowFade + (target - snowFade) * math.min(dt * 4, 1)
     local vp = viewport()
 
+    if snowFade < 0.01 then
+        snowLayer.Visible = false
+        return
+    end
+    snowLayer.Visible = true
+
     for _, sf in ipairs(snowflakes) do
-        if not sf.dr then continue end
-        if snowFade < 0.01 then
-            sf.dr.Visible = false
-            if sf.glow then sf.glow.Visible = false end
-            continue
-        end
         sf.swayPhase = sf.swayPhase + dt * sf.swayFreq
         sf.y = sf.y + sf.speedY * dt
         if sf.y > vp.Y + 8 then
@@ -232,15 +225,8 @@ RunService.RenderStepped:Connect(function(dt)
             sf.baseX = math.random() * vp.X
         end
         local x = sf.baseX + math.sin(sf.swayPhase) * sf.swayAmp
-        local pos = Vector2.new(x, sf.y)
-        sf.dr.Position = pos
-        sf.dr.Transparency = sf.alpha * snowFade
-        sf.dr.Visible = true
-        if sf.glow then
-            sf.glow.Position = pos
-            sf.glow.Transparency = sf.alpha * 0.35 * snowFade
-            sf.glow.Visible = true
-        end
+        sf.frame.Position = UDim2.new(0, x, 0, sf.y)
+        sf.frame.BackgroundTransparency = 1 - (sf.alpha * snowFade)
     end
 end)
 
@@ -936,8 +922,14 @@ addTab("Teams")
 addTab("Options")
 addTab("Configs")
 
--- select first tab after one frame so ListLayout has assigned sizes
-task.defer(function()
+-- select first tab AFTER UIListLayout has assigned button sizes,
+-- otherwise the pill lands at (0,0) with size 0 on first show.
+task.spawn(function()
+    local btn = tabs.Visuals.Button
+    for _ = 1, 60 do
+        if btn.AbsoluteSize.X > 0 and tabBar.AbsoluteSize.X > 0 then break end
+        RunService.RenderStepped:Wait()
+    end
     selectTab("Visuals")
 end)
 
