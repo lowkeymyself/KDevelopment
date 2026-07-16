@@ -1,0 +1,14 @@
+# editor
+.vscode/
+.idea/
+*.swp
+*.bak
+
+# os
+.DS_Store
+Thumbs.db
+
+# secrets / local
+.env
+*.local.lua
+scratch/
