@@ -6,9 +6,7 @@ funded by [Konstant](https://github.com/lowkeymyself/HowToAccountJadeShipClaudeT
 
 ## load
 
-```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/lowkeymyself/KDevelopment/main/dist/koffee.lua"))()
-```
+private repo -- see [docs/loading.md](docs/loading.md) for the PAT-based loader.
 
 ## structure
 
