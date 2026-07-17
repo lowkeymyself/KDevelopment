@@ -1072,23 +1072,29 @@ local function checkboxVisual(parent, label, initialOn)
         Parent = row,
     })
     attachHover(row, btn)
+    -- Per he's latest: fade was too slow + previous animation flashed opaque at
+    -- outer size before shrinking (reads as "grow outward then shrink" = wrong).
+    --   ON (inward): fill materializes at outer size TRANSLUCENT, tweens both
+    --                size (outer -> inner) AND opacity (translucent -> opaque)
+    --                simultaneously. Reads as one clean inward motion, no pop.
+    --   OFF (outward + fade): grow size to outer (opaque), then super fast fade.
+    local CB_INWARD  = TweenInfo.new(0.14, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
+    local CB_OUTWARD = TweenInfo.new(0.09, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
+    local CB_FADE    = TweenInfo.new(0.05, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
     local function applyState()
         if state then
-            -- INWARD: start at outer size fully opaque, shrink to inner size
             innerFill.Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER)
-            innerFill.BackgroundTransparency = 0
-            tween(innerFill, Theme.Animation.Normal, {
+            innerFill.BackgroundTransparency = 0.6
+            tween(innerFill, CB_INWARD, {
                 Size = UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER),
+                BackgroundTransparency = 0,
             })
         else
-            -- OUTWARD then a very short fade -- two phases per he.
-            tween(innerFill, Theme.Animation.Normal, {
+            tween(innerFill, CB_OUTWARD, {
                 Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER),
             })
-            task.delay(0.14, function()
-                tween(innerFill,
-                    TweenInfo.new(0.08, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
-                    { BackgroundTransparency = 1 })
+            task.delay(0.07, function()
+                tween(innerFill, CB_FADE, { BackgroundTransparency = 1 })
             end)
         end
         tween(lbl, Theme.Animation.Fast, {
