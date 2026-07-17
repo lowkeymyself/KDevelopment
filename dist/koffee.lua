@@ -1,9 +1,9 @@
--- koffee v0.0.10
+-- koffee v0.0.11
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.10"
+Koffee.Version = "0.0.11"
 
 --============================================================
 -- THEME
@@ -24,28 +24,28 @@ local Theme = {
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
     },
-    -- interface font -- Nunito for softer, puffier feel per matcha reference.
-    -- content-facing text (module names, prose) will later be user-selectable.
+    -- interface font: Nunito Medium as baseline -- Regular was too thin
+    -- per he, but SemiBold reads too heavy. Medium is the goldilocks weight.
     Fonts = (function()
         local UI = "rbxasset://fonts/families/Nunito.json"
         local MONO = "rbxasset://fonts/families/RobotoMono.json"
         return {
-            Regular = Font.new(UI,   Enum.FontWeight.Regular),
-            Medium  = Font.new(UI,   Enum.FontWeight.Medium),
+            Regular = Font.new(UI,   Enum.FontWeight.Medium),
+            Medium  = Font.new(UI,   Enum.FontWeight.SemiBold),
             Bold    = Font.new(UI,   Enum.FontWeight.Bold),
-            Mono    = Font.new(MONO, Enum.FontWeight.Regular),
+            Mono    = Font.new(MONO, Enum.FontWeight.Medium),
         }
     end)(),
     Sizes = {
-        HudHeight    = 32,
-        -- portrait like matcha ref -- taller than wide, denser column of panels
-        WindowWidth  = 520,
-        WindowHeight = 680,
-        TabBarHeight = 36,
+        HudHeight    = 34,
+        -- bigger overall so density stays right at larger text sizes
+        WindowWidth  = 640,
+        WindowHeight = 820,
+        TabBarHeight = 40,
     },
     Radius = { Small = 4, Medium = 6, Large = 8 },
-    -- text sizes back to normal + 1pt to give breathing room
-    Text   = { Tiny = 10, Small = 11, Body = 12, Header = 13, Title = 14 },
+    -- bumped +2 across the board: v0.0.10 sizes shrank visibly with Nunito
+    Text   = { Tiny = 12, Small = 13, Body = 14, Header = 15, Title = 17 },
     Animation = {
         Fast       = TweenInfo.new(0.10, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
         Normal     = TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
@@ -57,7 +57,8 @@ local Theme = {
     },
     Background = {
         DimTransparency  = 0.55,
-        BlurSize         = 6,
+        -- stronger blur per he ("actual gaussian, not artificial")
+        BlurSize         = 14,
         SnowflakeCount   = 70,
     },
 }
@@ -162,6 +163,21 @@ local screen = new("ScreenGui", {
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
     IgnoreGuiInset = true,
     DisplayOrder = 2000000000,
+    Parent = guiParent(),
+})
+
+-- separate top-level ScreenGui for popups (dropdowns, color picker) so they
+-- render ABOVE the main window's CanvasGroup regardless of ZIndex quirks.
+-- also isolates positioning math from any CG rendering side-effects.
+for _, g in ipairs(guiParent():GetChildren()) do
+    if g.Name == "KoffeePopups" then pcall(function() g:Destroy() end) end
+end
+local popupScreen = new("ScreenGui", {
+    Name = "KoffeePopups",
+    ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    IgnoreGuiInset = true,
+    DisplayOrder = 2000000001,
     Parent = guiParent(),
 })
 
@@ -770,6 +786,12 @@ local tabOrder = 0        -- explicit LayoutOrder per tab
 local activeTab = nil
 local pillFirstShow = true
 
+-- Apple-style: on tab switch the pill first stretches to span both the current
+-- and the destination tab, then contracts down to the destination. Two-phase
+-- tween, both ease-out. Feels alive.
+local PILL_STRETCH  = TweenInfo.new(0.20, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+local PILL_CONTRACT = TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
 local function movePillTo(button, snap)
     local relX = button.AbsolutePosition.X - tabBar.AbsolutePosition.X
     local relY = button.AbsolutePosition.Y - tabBar.AbsolutePosition.Y
@@ -782,9 +804,30 @@ local function movePillTo(button, snap)
             tween(pill, Theme.Animation.Normal, { BackgroundTransparency = 0 })
             pillFirstShow = false
         end
-    else
-        tween(pill, Theme.Animation.Pill, { Position = targetPos, Size = targetSize })
+        return
     end
+
+    -- stretch phase: cover both current + target
+    local curX = pill.Position.X.Offset
+    local curW = pill.Size.X.Offset
+    local endX = relX
+    local endW = button.AbsoluteSize.X
+    local stretchX = math.min(curX, endX)
+    local stretchW = math.max(curX + curW, endX + endW) - stretchX
+
+    local t1 = TweenService:Create(pill, PILL_STRETCH, {
+        Position = UDim2.new(0, stretchX, 0, relY),
+        Size     = UDim2.new(0, stretchW, 0, button.AbsoluteSize.Y),
+    })
+    t1:Play()
+    t1.Completed:Connect(function(state)
+        if state == Enum.PlaybackState.Completed then
+            TweenService:Create(pill, PILL_CONTRACT, {
+                Position = targetPos,
+                Size     = targetSize,
+            }):Play()
+        end
+    end)
 end
 
 -- reposition pill instantly whenever the tabBar moves (window drag, resize).
@@ -831,20 +874,34 @@ local function addTab(name, buildFn)
         }),
     })
 
-    local panel = new("Frame", {
+    -- ScrollingFrame per tab so long panel stacks don't clip. AutomaticCanvasSize
+    -- reads its own children's total height so we don't have to size manually.
+    local panel = new("ScrollingFrame", {
         Name = name,
         Size = UDim2.new(1, 0, 1, 0),
         BackgroundTransparency = 1,
+        BorderSizePixel = 0,
         Visible = false,
         ZIndex = 32,
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = Theme.Palette.TextFaint,
+        ScrollBarImageTransparency = 0.4,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        VerticalScrollBarPosition = Enum.VerticalScrollBarPosition.Right,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
         Parent = content,
     })
 
     if buildFn then
         new("UIListLayout", {
             FillDirection = Enum.FillDirection.Vertical,
-            Padding = UDim.new(0, 12),   -- roomier gaps between panels
+            Padding = UDim.new(0, 12),
             SortOrder = Enum.SortOrder.LayoutOrder,
+            Parent = panel,
+        })
+        new("UIPadding", {
+            PaddingBottom = UDim.new(0, 12),   -- room past last panel so scroll feels right
             Parent = panel,
         })
         buildFn(panel)
@@ -903,7 +960,7 @@ local function panel(parent, title)
         }),
         new("UIListLayout", {
             FillDirection = Enum.FillDirection.Vertical,
-            Padding = UDim.new(0, 12),   -- roomier per he ("too compact")
+            Padding = UDim.new(0, 6),   -- compact between toggles (per he)
             SortOrder = Enum.SortOrder.LayoutOrder,
         }),
     })
@@ -1024,11 +1081,15 @@ local function checkboxVisual(parent, label, initialOn)
                 Size = UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER),
             })
         else
-            -- OUTWARD: expand to outer size while fading out
+            -- OUTWARD then a very short fade -- two phases per he.
             tween(innerFill, Theme.Animation.Normal, {
                 Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER),
-                BackgroundTransparency = 1,
             })
+            task.delay(0.14, function()
+                tween(innerFill,
+                    TweenInfo.new(0.08, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+                    { BackgroundTransparency = 1 })
+            end)
         end
         tween(lbl, Theme.Animation.Fast, {
             TextColor3 = state and Theme.Palette.Accent or Theme.Palette.Text,
@@ -1156,19 +1217,19 @@ end
 local function buildColorPicker()
     local root = new("Frame", {
         Name = "ColorPicker",
-        Size = UDim2.new(0, 240, 0, 236),
+        Size = UDim2.new(0, 260, 0, 260),
         BackgroundColor3 = Theme.Palette.Panel,
         BackgroundTransparency = 0.02,
         BorderSizePixel = 0,
         Visible = false,
         ZIndex = 250,
-        Parent = screen,
+        Parent = popupScreen,
     }, {
         corner(6),
         stroke(Theme.Palette.Border, 1),
         new("UIPadding", {
-            PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
-            PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
+            PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12),
+            PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12),
         }),
     })
     new("TextLabel", {
@@ -1225,12 +1286,13 @@ local function buildColorPicker()
             Rotation = 90,
         }),
     })
-    -- SV cursor
+    -- SV cursor: bigger + always shows current color inside (per he)
     local svCursor = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(0, 0, 1, 0),
-        Size = UDim2.new(0, 10, 0, 10),
-        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 14, 0, 14),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0,
         ZIndex = 254,
         Parent = svArea,
     }, {
@@ -1258,10 +1320,10 @@ local function buildColorPicker()
         ZIndex = 252,
         Parent = hueSlider,
     }, { corner(2), stroke(Color3.new(0, 0, 0), 1) })
-    -- hex input
+    -- hex input (leaves room on the right for the preview swatch)
     local hexBox = new("TextBox", {
-        Position = UDim2.new(0, 0, 0, 172),
-        Size = UDim2.new(1, 0, 0, 22),
+        Position = UDim2.new(0, 0, 0, 178),
+        Size = UDim2.new(1, -52, 0, 24),
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BackgroundTransparency = 0.2,
         BorderSizePixel = 0,
@@ -1279,8 +1341,8 @@ local function buildColorPicker()
     })
     -- rgb readout below hex
     local rgbRead = new("TextLabel", {
-        Position = UDim2.new(0, 0, 0, 200),
-        Size = UDim2.new(1, 0, 0, 14),
+        Position = UDim2.new(0, 0, 0, 208),
+        Size = UDim2.new(1, -52, 0, 14),
         BackgroundTransparency = 1,
         FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Small,
@@ -1290,6 +1352,16 @@ local function buildColorPicker()
         ZIndex = 251,
         Parent = root,
     })
+    -- BOTTOM-RIGHT PREVIEW SWATCH -- shows current color as a big block (per he)
+    local preview = new("Frame", {
+        AnchorPoint = Vector2.new(1, 1),
+        Position = UDim2.new(1, 0, 1, 0),
+        Size = UDim2.new(0, 44, 0, 44),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 252,
+        Parent = root,
+    }, { corner(6), stroke(Theme.Palette.Border, 1) })
 
     local suppressRefresh = false
 
@@ -1301,8 +1373,8 @@ local function buildColorPicker()
         local c = Color3.fromHSV(ColorPicker.h, ColorPicker.s, ColorPicker.v)
         hexBox.Text = colorToHex(c)
         rgbRead.Text = colorToRGB(c)
-        svCursor.BackgroundTransparency = 0
         svCursor.BackgroundColor3 = c
+        preview.BackgroundColor3 = c
         if ColorPicker.callback then
             ColorPicker.callback(c)
         end
@@ -1380,7 +1452,7 @@ local function openColorPicker(swatchInstance, initialColor, onChange)
     local abs = swatchInstance.AbsolutePosition
     local siz = swatchInstance.AbsoluteSize
     local vp = Camera.ViewportSize
-    local pickerW, pickerH = 240, 236
+    local pickerW, pickerH = 260, 260
     local x = math.min(abs.X, vp.X - pickerW - 8)
     local y = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
     ColorPicker.root.Position = UDim2.new(0, x, 0, y - 4)
@@ -1588,15 +1660,15 @@ local function dropdown(parent, label, options, initial, onChange)
     })
     local caretRoot = chevron(btn, 10)
 
-    -- popup lives at the top of screen so it renders above the window's CanvasGroup
+    -- popup lives in the dedicated popup ScreenGui, above everything
     local list = new("Frame", {
-        Size = UDim2.new(0, 100, 0, #options * 24),
+        Size = UDim2.new(0, 100, 0, #options * 26),
         BackgroundColor3 = Theme.Palette.Panel,
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         Visible = false,
         ZIndex = 200,
-        Parent = screen,
+        Parent = popupScreen,
     }, {
         corner(4),
         stroke(Theme.Palette.Border, 1),
@@ -1633,7 +1705,6 @@ local function dropdown(parent, label, options, initial, onChange)
     end
     local function openList()
         if isOpen then return end
-        -- close any other open dropdown
         for _, closer in pairs(openDropdowns) do
             if closer ~= closeList then closer(true) end
         end
@@ -1641,14 +1712,15 @@ local function dropdown(parent, label, options, initial, onChange)
         openDropdowns[list] = closeList
         local abs = btn.AbsolutePosition
         local siz = btn.AbsoluteSize
-        local finalPos = UDim2.new(0, abs.X, 0, abs.Y + siz.Y + 6)
-        list.Size = UDim2.new(0, siz.X, 0, #options * 24)
-        list.Position = UDim2.new(0, abs.X, 0, abs.Y + siz.Y)   -- start higher
+        local finalX, finalY = abs.X, abs.Y + siz.Y + 6
+        list.Size = UDim2.new(0, siz.X, 0, #options * 26)
+        -- start SLIGHTLY UP from final so slide-down reads clearly
+        list.Position = UDim2.new(0, finalX, 0, finalY - 8)
         list.BackgroundTransparency = 1
         list.Visible = true
         tween(list, Theme.Animation.Menu, {
             BackgroundTransparency = 0.05,
-            Position = finalPos,
+            Position = UDim2.new(0, finalX, 0, finalY),
         })
         tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
         for _, child in ipairs(list:GetChildren()) do
@@ -1667,8 +1739,8 @@ local function dropdown(parent, label, options, initial, onChange)
         local optBtn = new("TextButton", {
             Text = "",
             AutoButtonColor = false,
-            Size = UDim2.new(1, 0, 0, 24),
-            Position = UDim2.new(0, 0, 0, (i - 1) * 24),
+            Size = UDim2.new(1, 0, 0, 26),
+            Position = UDim2.new(0, 0, 0, (i - 1) * 26),
             BackgroundColor3 = Theme.Palette.PanelElevated,
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
@@ -1920,7 +1992,7 @@ local ESP = {
         Outline        = true,
         Glow           = false,
         SelfESP        = false,
-        SizingType     = "Bounding",
+        SizingType     = "Static",     -- per he: Static first + default
         RenderDistance = 1000,
     },
     Boxes = {
@@ -1994,27 +2066,27 @@ local function makeRig(plr, character)
     local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 3)
     if not head then return nil end
 
+    -- static-size snapshot for SizingType == "Static" -- captured once,
+    -- character can animate but the box won't breathe with it.
+    local staticSize = Vector3.new(4, 6, 2)
+    local ok, _, size = pcall(character.GetBoundingBox, character)
+    if ok and size then staticSize = size end
+
     -- box widget (screen-space, lives in ESP.BoxLayer)
+    -- boxRoot's own bg is the FILL now (was a separate boxFill child --
+    -- consolidating fixes a rendering quirk where the fill wouldn't show).
+    -- The UIStroke is the OUTLINE.
     ensureBoxLayer()
     local boxRoot = new("Frame", {
         Name = "Box_" .. plr.Name,
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BackgroundColor3 = Color3.fromRGB(212, 145, 90),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         Visible = false,
         ZIndex = 13,
         Parent = ESP.BoxLayer,
-    }, { stroke(Color3.new(1, 1, 1), 1) })
+    }, { stroke(Color3.new(1, 1, 1), 2) })
     local boxOutline = boxRoot:FindFirstChildOfClass("UIStroke")
-    local boxFill = new("Frame", {
-        Name = "Fill",
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundColor3 = Color3.fromRGB(212, 145, 90),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        ZIndex = 13,
-        Parent = boxRoot,
-    })
     local boxCorners = makeBoxCorners(boxRoot)
     local cubeEdges = makeCubeEdges(ESP.BoxLayer)
 
@@ -2105,9 +2177,9 @@ local function makeRig(plr, character)
         textBg     = textBg,
         boxRoot    = boxRoot,
         boxOutline = boxOutline,
-        boxFill    = boxFill,
         boxCorners = boxCorners,
         cubeEdges  = cubeEdges,
+        staticSize = staticSize,
     }
 end
 
@@ -2148,16 +2220,41 @@ local function stripESP(plr)
     ESP.Rigs[plr] = nil
 end
 
--- project 8 bounding-box corners to viewport, return the screen coords + anyInFront
+-- project 8 bounding-box corners to viewport. returns:
+--   screenCorners  -- list of {x, y, z} in viewport space
+--   anyInFront     -- at least one corner visible
+--   allInFront     -- every corner visible (safe for cube edge drawing)
+-- Sizing modes:
+--   "Static"     -- fixed size snapshot from rig creation, current pivot
+--   "Bounding"   -- fresh GetBoundingBox per frame (breathes with animation)
+--   "Prediction" -- Bounding + velocity lookahead to reduce jitter at high ping
 local CUBE_EDGE_INDICES = {
     {1,2},{3,4},{1,3},{2,4},   -- front face
     {5,6},{7,8},{5,7},{6,8},   -- back face
     {1,5},{2,6},{3,7},{4,8},   -- connectors
 }
 
-local function project8(character)
-    local ok, cf, size = pcall(character.GetBoundingBox, character)
-    if not ok or not cf then return nil, false end
+local function project8(character, staticSize, sizingType)
+    local cf, size
+    if sizingType == "Static" then
+        local ok, pivot = pcall(character.GetPivot, character)
+        if not ok or not pivot then return nil, false, false end
+        cf = pivot
+        size = staticSize
+    else
+        local ok, cframe, sz = pcall(character.GetBoundingBox, character)
+        if not ok or not cframe then return nil, false, false end
+        cf = cframe
+        size = sz
+        if sizingType == "Prediction" then
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local vel = hrp.AssemblyLinearVelocity
+                cf = cf + vel * 0.083   -- 5 frames @ 60fps lead
+            end
+        end
+    end
+
     local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
     local worldCorners = {
         (cf * CFrame.new( hx,  hy,  hz)).Position,
@@ -2170,13 +2267,13 @@ local function project8(character)
         (cf * CFrame.new(-hx, -hy, -hz)).Position,
     }
     local screenCorners = table.create(8)
-    local anyInFront = false
+    local anyInFront, allInFront = false, true
     for i, wp in ipairs(worldCorners) do
         local sp = Camera:WorldToViewportPoint(wp)
         screenCorners[i] = { x = sp.X, y = sp.Y, z = sp.Z }
-        if sp.Z > 0 then anyInFront = true end
+        if sp.Z > 0 then anyInFront = true else allInFront = false end
     end
-    return screenCorners, anyInFront
+    return screenCorners, anyInFront, allInFront
 end
 
 local function hideRigVisuals(rig)
@@ -2243,19 +2340,37 @@ local function updateESPRigs()
             rig.healthWrap.Visible = false
         end
 
-        -- BOX ESP (always drawn when master ESP is on; Boxes widget customizes)
-        local corners, anyInFront = project8(rig.character)
-        if not corners or not anyInFront then
+        -- BOX ESP
+        local corners, anyInFront, allInFront =
+            project8(rig.character, rig.staticSize, ESP.Config.SizingType)
+
+        -- hide if nothing visible OR any corner is behind camera (fixes the
+        -- "cube goes crazy at screen edges" bug -- projection flips for
+        -- points behind cam, so we bail rather than draw garbage)
+        if not corners or not anyInFront or not allInFront then
             rig.boxRoot.Visible = false
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
         else
-            local useCustom     = ESP.Boxes.Enabled
-            local outlineColor  = useCustom and ESP.Boxes.OutlineColor or Color3.new(1, 1, 1)
-            local fillColor     = useCustom and ESP.Boxes.FillColor    or ESP.Colors.Visible
-            local fillOn        = useCustom and ESP.Boxes.FillBox
-            local cornersMode   = useCustom and ESP.Boxes.Corners
-            local cornerLen     = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
-            local isCube        = ESP.Boxes.BoxType == "Cube"
+            local useCustom    = ESP.Boxes.Enabled
+            local outlineColor = useCustom and ESP.Boxes.OutlineColor or Color3.new(1, 1, 1)
+            local fillColor    = useCustom and ESP.Boxes.FillColor    or ESP.Colors.Visible
+            local fillOn       = useCustom and ESP.Boxes.FillBox
+            local cornersMode  = useCustom and ESP.Boxes.Corners
+            local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
+            local isCube       = ESP.Boxes.BoxType == "Cube"
+
+            -- Outline / Glow affect box stroke:
+            --   Glow  -> thick soft halo (thickness 5, transparency 0.55)
+            --   Outline (no glow) -> hard border (thickness 2, transparency 0)
+            --   Neither -> stroke disabled entirely
+            local strokeThick, strokeTrans, strokeEnabled
+            if ESP.Config.Glow then
+                strokeThick, strokeTrans, strokeEnabled = 5, 0.55, true
+            elseif ESP.Config.Outline then
+                strokeThick, strokeTrans, strokeEnabled = 2, 0, true
+            else
+                strokeThick, strokeTrans, strokeEnabled = 2, 0, false
+            end
 
             if isCube then
                 rig.boxRoot.Visible = false
@@ -2265,22 +2380,15 @@ local function updateESPRigs()
                     local edge = rig.cubeEdges[i]
                     local dx, dy = b.x - a.x, b.y - a.y
                     local length = math.sqrt(dx * dx + dy * dy)
-                    if length < 1 then
+                    if length < 1 or not strokeEnabled then
                         edge.Visible = false
-                    elseif cornersMode then
-                        -- draw only a small centered segment near midpoint on each edge:
-                        -- effectively shrinks the visible edge, gives corner-hint look.
-                        local visLen = length * cornerLen * 2
-                        edge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
-                        edge.Size = UDim2.new(0, math.max(2, visLen), 0, 1)
-                        edge.Rotation = math.deg(math.atan2(dy, dx))
-                        edge.BackgroundColor3 = outlineColor
-                        edge.Visible = true
                     else
+                        local visLen = cornersMode and math.max(2, length * cornerLen * 2) or length
                         edge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
-                        edge.Size = UDim2.new(0, length, 0, 1)
+                        edge.Size = UDim2.new(0, visLen, 0, ESP.Config.Glow and 2 or 1)
                         edge.Rotation = math.deg(math.atan2(dy, dx))
                         edge.BackgroundColor3 = outlineColor
+                        edge.BackgroundTransparency = ESP.Config.Glow and 0.4 or 0
                         edge.Visible = true
                     end
                 end
@@ -2295,37 +2403,41 @@ local function updateESPRigs()
                     if c.y < minY then minY = c.y end
                     if c.y > maxY then maxY = c.y end
                 end
-                local w = maxX - minX
-                local h = maxY - minY
+                local w, h = maxX - minX, maxY - minY
                 rig.boxRoot.Visible = true
                 rig.boxRoot.Position = UDim2.new(0, minX, 0, minY)
                 rig.boxRoot.Size = UDim2.new(0, w, 0, h)
+                -- FILL: applied directly to boxRoot bg (was a separate child;
+                -- consolidated to fix the "fill doesn't show" bug)
+                rig.boxRoot.BackgroundColor3 = fillColor
+                rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
+                -- OUTLINE
                 if rig.boxOutline then
                     rig.boxOutline.Color = outlineColor
-                    rig.boxOutline.Enabled = not cornersMode
-                    rig.boxOutline.Transparency = ESP.Config.Outline and 0 or 0.5
+                    rig.boxOutline.Thickness = strokeThick
+                    rig.boxOutline.Transparency = strokeTrans
+                    rig.boxOutline.Enabled = strokeEnabled and not cornersMode
                 end
-                rig.boxFill.BackgroundColor3 = fillColor
-                rig.boxFill.BackgroundTransparency = fillOn and 0.72 or 1
-
-                if cornersMode then
+                -- CORNERS (bracket mode)
+                if cornersMode and strokeEnabled then
                     local segLen = math.min(w, h) * cornerLen
-                    local thick = 2
+                    local thick = ESP.Config.Glow and 3 or 2
                     local specs = {
-                        { UDim2.new(0, 0, 0, 0),                 UDim2.new(0, segLen, 0, thick) },   -- TL horiz
-                        { UDim2.new(0, 0, 0, 0),                 UDim2.new(0, thick,  0, segLen) },  -- TL vert
-                        { UDim2.new(1, -segLen, 0, 0),           UDim2.new(0, segLen, 0, thick) },   -- TR horiz
-                        { UDim2.new(1, -thick, 0, 0),            UDim2.new(0, thick,  0, segLen) },  -- TR vert
-                        { UDim2.new(0, 0, 1, -thick),            UDim2.new(0, segLen, 0, thick) },   -- BL horiz
-                        { UDim2.new(0, 0, 1, -segLen),           UDim2.new(0, thick,  0, segLen) },  -- BL vert
-                        { UDim2.new(1, -segLen, 1, -thick),      UDim2.new(0, segLen, 0, thick) },   -- BR horiz
-                        { UDim2.new(1, -thick, 1, -segLen),      UDim2.new(0, thick,  0, segLen) },  -- BR vert
+                        { UDim2.new(0, 0, 0, 0),            UDim2.new(0, segLen, 0, thick) },
+                        { UDim2.new(0, 0, 0, 0),            UDim2.new(0, thick,  0, segLen) },
+                        { UDim2.new(1, -segLen, 0, 0),      UDim2.new(0, segLen, 0, thick) },
+                        { UDim2.new(1, -thick, 0, 0),       UDim2.new(0, thick,  0, segLen) },
+                        { UDim2.new(0, 0, 1, -thick),       UDim2.new(0, segLen, 0, thick) },
+                        { UDim2.new(0, 0, 1, -segLen),      UDim2.new(0, thick,  0, segLen) },
+                        { UDim2.new(1, -segLen, 1, -thick), UDim2.new(0, segLen, 0, thick) },
+                        { UDim2.new(1, -thick, 1, -segLen), UDim2.new(0, thick,  0, segLen) },
                     }
                     for i, spec in ipairs(specs) do
                         local f = rig.boxCorners[i]
                         f.Position = spec[1]
                         f.Size = spec[2]
                         f.BackgroundColor3 = outlineColor
+                        f.BackgroundTransparency = ESP.Config.Glow and 0.4 or 0
                         f.Visible = true
                     end
                 else
@@ -2480,7 +2592,7 @@ addTab("Visuals", function(root)
     configCheckbox(espPanel, "Glow",             ESP.Config.Glow,           function(v) ESP.Config.Glow           = v end)
     configCheckbox(espPanel, "Self ESP",         ESP.Config.SelfESP,        function(v) ESP.Config.SelfESP        = v end)
 
-    dropdown(espPanel, "Sizing Type", { "Bounding", "Static", "Prediction" }, ESP.Config.SizingType,
+    dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
 
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
