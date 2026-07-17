@@ -1,9 +1,9 @@
--- koffee v0.0.11
+-- koffee v0.0.12
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.11"
+Koffee.Version = "0.0.12"
 
 --============================================================
 -- THEME
@@ -1007,10 +1007,12 @@ end
 
 --============================================================
 -- CHECKBOX (visual primitive shared by module + config variants)
--- Per he v0.0.10: no outer stroke, subtle bg fill on the outer box,
--- inner fill 2px smaller (12 inside 16). Inward animation on check:
---   check   -> fill starts at outer size + opaque, tweens INWARD to inner size
---   uncheck -> fill starts at inner size, expands OUTWARD to outer + fades out
+-- v0.0.12 semantics per he:
+--   OFF -> ON  = fill GROWS OUTWARD from middle (size 0 -> INNER, opaque throughout)
+--   ON  -> OFF = fill SHRINKS INWARD to middle (size INNER -> 0) with a super-fast
+--                fade tail so it doesn't pop out of existence
+-- Also cancels any in-flight tweens on each state change so rapid clicking can't
+-- stack animations and desync the visual from the actual state.
 --============================================================
 local CHECKBOX_ROW_HEIGHT = 22
 local CHECKBOX_OUTER = 16
@@ -1037,13 +1039,13 @@ local function checkboxVisual(parent, label, initialOn)
         ZIndex = 35,
         Parent = row,
     }, { corner(4) })
-    -- inner fill: sized based on state (inner when checked, outer when off).
-    -- Setting invisible initial state by transparency 1 when off.
+    -- inner fill: anchored at box center so size 0 -> INNER grows outward evenly.
+    -- Off state = size 0 + transparency 1. On state = size INNER + transparency 0.
     local innerFill = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(0.5, 0, 0.5, 0),
         Size = state and UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER)
-                     or UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER),
+                     or UDim2.new(0, 0, 0, 0),
         BackgroundColor3 = Theme.Palette.Accent,
         BackgroundTransparency = state and 0 or 1,
         BorderSizePixel = 0,
@@ -1072,29 +1074,38 @@ local function checkboxVisual(parent, label, initialOn)
         Parent = row,
     })
     attachHover(row, btn)
-    -- Per he's latest: fade was too slow + previous animation flashed opaque at
-    -- outer size before shrinking (reads as "grow outward then shrink" = wrong).
-    --   ON (inward): fill materializes at outer size TRANSLUCENT, tweens both
-    --                size (outer -> inner) AND opacity (translucent -> opaque)
-    --                simultaneously. Reads as one clean inward motion, no pop.
-    --   OFF (outward + fade): grow size to outer (opaque), then super fast fade.
-    local CB_INWARD  = TweenInfo.new(0.14, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
-    local CB_OUTWARD = TweenInfo.new(0.09, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
-    local CB_FADE    = TweenInfo.new(0.05, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+
+    local CB_GROW   = TweenInfo.new(0.16, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
+    local CB_SHRINK = TweenInfo.new(0.12, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
+    local CB_FADE   = TweenInfo.new(0.05, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+
+    local activeSize, activeFade
+    local seq = 0
     local function applyState()
+        seq = seq + 1
+        local mySeq = seq
+        -- kill anything in flight so rapid clicks don't fight each other
+        if activeSize then activeSize:Cancel(); activeSize = nil end
+        if activeFade then activeFade:Cancel(); activeFade = nil end
         if state then
-            innerFill.Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER)
-            innerFill.BackgroundTransparency = 0.6
-            tween(innerFill, CB_INWARD, {
+            -- OFF -> ON: grow OUTWARD from center. Snap to 0 first (in case a
+            -- prior tween was mid-shrink) and pop opacity to opaque immediately
+            -- so the growth reads as substance appearing, not a fade-in.
+            innerFill.Size = UDim2.new(0, 0, 0, 0)
+            innerFill.BackgroundTransparency = 0
+            activeSize = tween(innerFill, CB_GROW, {
                 Size = UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER),
-                BackgroundTransparency = 0,
             })
         else
-            tween(innerFill, CB_OUTWARD, {
-                Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER),
+            -- ON -> OFF: shrink INWARD to center, then super-fast fade to hide.
+            -- Ensure opacity is opaque going in (guards against superseded fade).
+            innerFill.BackgroundTransparency = 0
+            activeSize = tween(innerFill, CB_SHRINK, {
+                Size = UDim2.new(0, 0, 0, 0),
             })
-            task.delay(0.07, function()
-                tween(innerFill, CB_FADE, { BackgroundTransparency = 1 })
+            task.delay(0.10, function()
+                if mySeq ~= seq then return end   -- superseded by newer click
+                activeFade = tween(innerFill, CB_FADE, { BackgroundTransparency = 1 })
             end)
         end
         tween(lbl, Theme.Animation.Fast, {
@@ -1105,7 +1116,9 @@ local function checkboxVisual(parent, label, initialOn)
         row = row,
         button = btn,
         setState = function(newState)
-            state = newState and true or false
+            local nb = newState and true or false
+            if nb == state then return end   -- no-op guard against redundant sets
+            state = nb
             applyState()
         end,
         getState = function() return state end,
@@ -1681,18 +1694,31 @@ local function dropdown(parent, label, options, initial, onChange)
     })
 
     local isOpen = false
+    local positionConn = nil     -- v0.0.12: RenderStepped lock so popup stays
+                                 -- glued below the button even if the button's
+                                 -- absolute position shifts (scroll, tab-switch,
+                                 -- window drag). This fixes "popup spawns in the
+                                 -- wrong place" bugs at their root -- we don't
+                                 -- calculate once at open, we calculate every frame.
+    local function placeBelow()
+        local abs = btn.AbsolutePosition
+        local siz = btn.AbsoluteSize
+        if siz.X <= 0 or siz.Y <= 0 then return end
+        list.Size = UDim2.new(0, siz.X, 0, #options * 26)
+        list.Position = UDim2.new(0, abs.X, 0, abs.Y + siz.Y + 6)
+    end
+
     local function closeList(instant)
         if not isOpen then return end
         isOpen = false
         openDropdowns[list] = nil
+        if positionConn then positionConn:Disconnect(); positionConn = nil end
         tween(caretRoot, Theme.Animation.Menu, { Rotation = 0 })
         if instant then
             list.Visible = false
         else
             tween(list, Theme.Animation.Menu, {
                 BackgroundTransparency = 1,
-                Position = UDim2.new(list.Position.X.Scale, list.Position.X.Offset,
-                                     list.Position.Y.Scale, list.Position.Y.Offset - 6),
             })
             task.delay(0.22, function()
                 if not isOpen then list.Visible = false end
@@ -1716,17 +1742,17 @@ local function dropdown(parent, label, options, initial, onChange)
         end
         isOpen = true
         openDropdowns[list] = closeList
-        local abs = btn.AbsolutePosition
-        local siz = btn.AbsoluteSize
-        local finalX, finalY = abs.X, abs.Y + siz.Y + 6
-        list.Size = UDim2.new(0, siz.X, 0, #options * 26)
-        -- start SLIGHTLY UP from final so slide-down reads clearly
-        list.Position = UDim2.new(0, finalX, 0, finalY - 8)
+        placeBelow()
         list.BackgroundTransparency = 1
         list.Visible = true
+        -- lock position while open: RenderStepped keeps `list` glued to btn
+        if positionConn then positionConn:Disconnect() end
+        positionConn = RunService.RenderStepped:Connect(function()
+            if not isOpen or not btn.Parent then return end
+            placeBelow()
+        end)
         tween(list, Theme.Animation.Menu, {
             BackgroundTransparency = 0.05,
-            Position = UDim2.new(0, finalX, 0, finalY),
         })
         tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
         for _, child in ipairs(list:GetChildren()) do
@@ -2021,6 +2047,19 @@ local ESP = {
     BoxLayer = nil,
 }
 
+-- v0.0.12: Outline is a global thin-line accent switch. When OFF, the
+-- arraylist's white vertical line hides too. Extend this function whenever
+-- a new overlay module (Health, future) gains a subtle accent line.
+-- (Main-interface strokes -- window/tabs/pills/widgets -- are NOT affected;
+-- those are chrome, not accent.)
+local function applyGlobalOutline()
+    local on = ESP.Config.Outline
+    -- fade the arraylist accent line in/out
+    tween(activeLine, Theme.Animation.Fast, {
+        BackgroundTransparency = on and 0.15 or 1,
+    })
+end
+
 -- lazy: box layer created on first ESP enable
 local function ensureBoxLayer()
     if ESP.BoxLayer and ESP.BoxLayer.Parent then return ESP.BoxLayer end
@@ -2052,10 +2091,12 @@ local function makeBoxCorners(parent)
     return corners
 end
 
--- 12 cube edges reusable as generic thin-line frames
+-- 24 thin-line frames: slots 1..12 = full edge (anchor 0.5,0.5) OR A-side
+-- partial in corners mode. Slots 13..24 = B-side partial in corners mode
+-- (unused when not in corners mode). Anchor is set per-frame in updateESPRigs.
 local function makeCubeEdges(parent)
     local edges = {}
-    for _ = 1, 12 do
+    for _ = 1, 24 do
         table.insert(edges, new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5),
             BackgroundColor3 = Color3.new(1, 1, 1),
@@ -2066,6 +2107,30 @@ local function makeCubeEdges(parent)
         }))
     end
     return edges
+end
+
+-- v0.0.12: real glow via layered halos. UIStroke can only be single-layer, so
+-- we stack two frames behind the box, each larger + softer, colored by outline.
+-- Enabled only when ESP.Config.Glow is on. Halo lives in ESP.BoxLayer next to
+-- boxRoot so its ZIndex sits below (13 -> 12,11).
+local function makeBoxHalo(parent)
+    local outer = new("Frame", {
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        BackgroundTransparency = 1,
+        Visible = false,
+        ZIndex = 11,
+        Parent = parent,
+    }, { corner(6) })
+    local inner = new("Frame", {
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        BackgroundTransparency = 1,
+        Visible = false,
+        ZIndex = 12,
+        Parent = parent,
+    }, { corner(5) })
+    return { outer = outer, inner = inner }
 end
 
 local function makeRig(plr, character)
@@ -2095,6 +2160,7 @@ local function makeRig(plr, character)
     local boxOutline = boxRoot:FindFirstChildOfClass("UIStroke")
     local boxCorners = makeBoxCorners(boxRoot)
     local cubeEdges = makeCubeEdges(ESP.BoxLayer)
+    local boxHalo   = makeBoxHalo(ESP.BoxLayer)
 
     local bb = Instance.new("BillboardGui")
     bb.Name = "KoffeeName"
@@ -2185,6 +2251,7 @@ local function makeRig(plr, character)
         boxOutline = boxOutline,
         boxCorners = boxCorners,
         cubeEdges  = cubeEdges,
+        boxHalo    = boxHalo,
         staticSize = staticSize,
     }
 end
@@ -2197,6 +2264,10 @@ local function cleanRig(rig)
         for _, e in ipairs(rig.cubeEdges) do
             pcall(function() e:Destroy() end)
         end
+    end
+    if rig.boxHalo then
+        pcall(function() rig.boxHalo.outer:Destroy() end)
+        pcall(function() rig.boxHalo.inner:Destroy() end)
     end
 end
 
@@ -2286,6 +2357,10 @@ local function hideRigVisuals(rig)
     rig.bb.Enabled = false
     rig.boxRoot.Visible = false
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+    if rig.boxHalo then
+        rig.boxHalo.outer.Visible = false
+        rig.boxHalo.inner.Visible = false
+    end
 end
 
 local function updateESPRigs()
@@ -2319,16 +2394,25 @@ local function updateESPRigs()
         end
         rig.nameLbl.TextColor3 = textColor
 
-        -- Glow / Outline apply to text stroke
-        if ESP.Config.Glow then
-            rig.nameLbl.TextStrokeTransparency = 0.15
-            rig.distLbl.TextStrokeTransparency = 0.25
-        elseif ESP.Config.Outline then
-            rig.nameLbl.TextStrokeTransparency = 0.4
-            rig.distLbl.TextStrokeTransparency = 0.6
-        else
+        -- v0.0.12 text stroke logic:
+        --   Outline OFF: no text stroke (invisible)
+        --   Outline ON + Glow OFF: subtle black stroke for readability
+        --   Outline ON + Glow ON: colored glow using outline color, more punchy
+        if not ESP.Config.Outline then
             rig.nameLbl.TextStrokeTransparency = 1
             rig.distLbl.TextStrokeTransparency = 1
+        elseif ESP.Config.Glow then
+            local glowColor = (ESP.Boxes.Enabled and ESP.Boxes.OutlineColor)
+                              or Color3.fromRGB(255, 255, 255)
+            rig.nameLbl.TextStrokeColor3 = glowColor
+            rig.distLbl.TextStrokeColor3 = glowColor
+            rig.nameLbl.TextStrokeTransparency = 0.1
+            rig.distLbl.TextStrokeTransparency = 0.2
+        else
+            rig.nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+            rig.distLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+            rig.nameLbl.TextStrokeTransparency = 0.4
+            rig.distLbl.TextStrokeTransparency = 0.6
         end
         rig.textBg.Visible = ESP.Config.TextBackground
 
@@ -2356,6 +2440,11 @@ local function updateESPRigs()
         if not corners or not anyInFront or not allInFront then
             rig.boxRoot.Visible = false
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+            for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+            if rig.boxHalo then
+                rig.boxHalo.outer.Visible = false
+                rig.boxHalo.inner.Visible = false
+            end
         else
             local useCustom    = ESP.Boxes.Enabled
             local outlineColor = useCustom and ESP.Boxes.OutlineColor or Color3.new(1, 1, 1)
@@ -2365,69 +2454,128 @@ local function updateESPRigs()
             local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
             local isCube       = ESP.Boxes.BoxType == "Cube"
 
-            -- Outline / Glow affect box stroke:
-            --   Glow  -> thick soft halo (thickness 5, transparency 0.55)
-            --   Outline (no glow) -> hard border (thickness 2, transparency 0)
-            --   Neither -> stroke disabled entirely
-            local strokeThick, strokeTrans, strokeEnabled
-            if ESP.Config.Glow then
-                strokeThick, strokeTrans, strokeEnabled = 5, 0.55, true
-            elseif ESP.Config.Outline then
-                strokeThick, strokeTrans, strokeEnabled = 2, 0, true
-            else
-                strokeThick, strokeTrans, strokeEnabled = 2, 0, false
+            -- v0.0.12 Outline semantics: Outline is a MASTER thin-line accent.
+            -- OFF = no box lines drawn at all (activelist accent line also
+            -- follows this via applyGlobalOutline hooked at checkbox change).
+            -- Glow is a separate visual: adds soft halo layers behind the box.
+            local strokeEnabled = ESP.Config.Outline
+            local strokeThick   = 1                                    -- thin, per he
+            local strokeTrans   = 0
+
+            -- always compute projected AABB (used by both 2D box AND cube fill)
+            local minX, minY = math.huge, math.huge
+            local maxX, maxY = -math.huge, -math.huge
+            for _, c in ipairs(corners) do
+                if c.x < minX then minX = c.x end
+                if c.x > maxX then maxX = c.x end
+                if c.y < minY then minY = c.y end
+                if c.y > maxY then maxY = c.y end
+            end
+            local w, h = maxX - minX, maxY - minY
+
+            -- BOX ROOT: used for 2D bounding box (fill + stroke + optional
+            -- corner brackets) AND for cube fill (fill only, stroke disabled).
+            rig.boxRoot.Position = UDim2.new(0, minX, 0, minY)
+            rig.boxRoot.Size = UDim2.new(0, w, 0, h)
+            rig.boxRoot.BackgroundColor3 = fillColor
+
+            -- HALO (glow): scaled outward from AABB, tinted with outlineColor.
+            -- 2 layers for a soft falloff. Only visible when Glow is on and
+            -- outline is enabled (glow without a box makes no visual sense).
+            if rig.boxHalo then
+                if ESP.Config.Glow and strokeEnabled then
+                    local o = rig.boxHalo.outer
+                    local n = rig.boxHalo.inner
+                    o.Position = UDim2.new(0, minX - 6, 0, minY - 6)
+                    o.Size = UDim2.new(0, w + 12, 0, h + 12)
+                    o.BackgroundColor3 = outlineColor
+                    o.BackgroundTransparency = 0.85
+                    o.Visible = true
+                    n.Position = UDim2.new(0, minX - 3, 0, minY - 3)
+                    n.Size = UDim2.new(0, w + 6, 0, h + 6)
+                    n.BackgroundColor3 = outlineColor
+                    n.BackgroundTransparency = 0.65
+                    n.Visible = true
+                else
+                    rig.boxHalo.outer.Visible = false
+                    rig.boxHalo.inner.Visible = false
+                end
             end
 
             if isCube then
-                rig.boxRoot.Visible = false
+                -- Cube: boxRoot serves as the FILL layer only (stroke off, no
+                -- 2D-corner brackets). Cube edges/corners drawn on top via
+                -- rig.cubeEdges. Fill Box in cube mode = AABB fill under edges,
+                -- per he: "corners are outside" (cube edges can extend past AABB).
+                rig.boxRoot.Visible = fillOn
+                rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
+                if rig.boxOutline then rig.boxOutline.Enabled = false end
+                for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+
+                local thick = ESP.Config.Glow and 2 or 1
                 for i, pair in ipairs(CUBE_EDGE_INDICES) do
                     local a = corners[pair[1]]
                     local b = corners[pair[2]]
-                    local edge = rig.cubeEdges[i]
+                    local aEdge = rig.cubeEdges[i]           -- slots 1..12
+                    local bEdge = rig.cubeEdges[i + 12]      -- slots 13..24
                     local dx, dy = b.x - a.x, b.y - a.y
                     local length = math.sqrt(dx * dx + dy * dy)
                     if length < 1 or not strokeEnabled then
-                        edge.Visible = false
+                        aEdge.Visible = false
+                        bEdge.Visible = false
                     else
-                        local visLen = cornersMode and math.max(2, length * cornerLen * 2) or length
-                        edge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
-                        edge.Size = UDim2.new(0, visLen, 0, ESP.Config.Glow and 2 or 1)
-                        edge.Rotation = math.deg(math.atan2(dy, dx))
-                        edge.BackgroundColor3 = outlineColor
-                        edge.BackgroundTransparency = ESP.Config.Glow and 0.4 or 0
-                        edge.Visible = true
+                        local rot = math.deg(math.atan2(dy, dx))
+                        if cornersMode then
+                            -- L-brackets: draw short segment anchored at each
+                            -- vertex, extending toward the other vertex. The
+                            -- 8 cube vertices each become a proper corner
+                            -- mark because 3 edges meet at each vertex.
+                            local segLen = math.max(3, length * cornerLen)
+                            -- A-side: anchor left-mid at A, extends toward B
+                            aEdge.AnchorPoint = Vector2.new(0, 0.5)
+                            aEdge.Position = UDim2.new(0, a.x, 0, a.y)
+                            aEdge.Size = UDim2.new(0, segLen, 0, thick)
+                            aEdge.Rotation = rot
+                            aEdge.BackgroundColor3 = outlineColor
+                            aEdge.BackgroundTransparency = 0
+                            aEdge.Visible = true
+                            -- B-side: anchor right-mid at B, extends toward A
+                            bEdge.AnchorPoint = Vector2.new(1, 0.5)
+                            bEdge.Position = UDim2.new(0, b.x, 0, b.y)
+                            bEdge.Size = UDim2.new(0, segLen, 0, thick)
+                            bEdge.Rotation = rot
+                            bEdge.BackgroundColor3 = outlineColor
+                            bEdge.BackgroundTransparency = 0
+                            bEdge.Visible = true
+                        else
+                            -- Full edge: single frame centered between A and B
+                            aEdge.AnchorPoint = Vector2.new(0.5, 0.5)
+                            aEdge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
+                            aEdge.Size = UDim2.new(0, length, 0, thick)
+                            aEdge.Rotation = rot
+                            aEdge.BackgroundColor3 = outlineColor
+                            aEdge.BackgroundTransparency = 0
+                            aEdge.Visible = true
+                            bEdge.Visible = false
+                        end
                     end
                 end
             else
-                -- 2D bounding box
+                -- 2D bounding box: boxRoot IS the box. Hide cube frames.
                 for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
-                local minX, minY = math.huge, math.huge
-                local maxX, maxY = -math.huge, -math.huge
-                for _, c in ipairs(corners) do
-                    if c.x < minX then minX = c.x end
-                    if c.x > maxX then maxX = c.x end
-                    if c.y < minY then minY = c.y end
-                    if c.y > maxY then maxY = c.y end
-                end
-                local w, h = maxX - minX, maxY - minY
                 rig.boxRoot.Visible = true
-                rig.boxRoot.Position = UDim2.new(0, minX, 0, minY)
-                rig.boxRoot.Size = UDim2.new(0, w, 0, h)
-                -- FILL: applied directly to boxRoot bg (was a separate child;
-                -- consolidated to fix the "fill doesn't show" bug)
-                rig.boxRoot.BackgroundColor3 = fillColor
                 rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
-                -- OUTLINE
+
                 if rig.boxOutline then
                     rig.boxOutline.Color = outlineColor
                     rig.boxOutline.Thickness = strokeThick
                     rig.boxOutline.Transparency = strokeTrans
                     rig.boxOutline.Enabled = strokeEnabled and not cornersMode
                 end
-                -- CORNERS (bracket mode)
+
                 if cornersMode and strokeEnabled then
                     local segLen = math.min(w, h) * cornerLen
-                    local thick = ESP.Config.Glow and 3 or 2
+                    local thick = 1
                     local specs = {
                         { UDim2.new(0, 0, 0, 0),            UDim2.new(0, segLen, 0, thick) },
                         { UDim2.new(0, 0, 0, 0),            UDim2.new(0, thick,  0, segLen) },
@@ -2443,7 +2591,7 @@ local function updateESPRigs()
                         f.Position = spec[1]
                         f.Size = spec[2]
                         f.BackgroundColor3 = outlineColor
-                        f.BackgroundTransparency = ESP.Config.Glow and 0.4 or 0
+                        f.BackgroundTransparency = 0
                         f.Visible = true
                     end
                 else
@@ -2594,7 +2742,10 @@ addTab("Visuals", function(root)
 
     configCheckbox(espPanel, "Team Based Color", ESP.Config.TeamBasedColor, function(v) ESP.Config.TeamBasedColor = v end)
     configCheckbox(espPanel, "Text Background",  ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
-    configCheckbox(espPanel, "Outline",          ESP.Config.Outline,        function(v) ESP.Config.Outline        = v end)
+    configCheckbox(espPanel, "Outline",          ESP.Config.Outline,        function(v)
+        ESP.Config.Outline = v
+        applyGlobalOutline()   -- flips arraylist accent line + future overlays
+    end)
     configCheckbox(espPanel, "Glow",             ESP.Config.Glow,           function(v) ESP.Config.Glow           = v end)
     configCheckbox(espPanel, "Self ESP",         ESP.Config.SelfESP,        function(v) ESP.Config.SelfESP        = v end)
 
