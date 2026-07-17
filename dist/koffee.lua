@@ -1,9 +1,9 @@
--- koffee v0.0.5
+-- koffee v0.0.6
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.5"
+Koffee.Version = "0.0.6"
 
 --============================================================
 -- THEME
@@ -46,10 +46,14 @@ local Theme = {
     Radius = { Small = 4, Medium = 6, Large = 8 },
     Text   = { Tiny = 10, Small = 11, Body = 12, Header = 13, Title = 14 },
     Animation = {
-        Fast   = TweenInfo.new(0.12, Enum.EasingStyle.Quad,  Enum.EasingDirection.Out),
-        Normal = TweenInfo.new(0.22, Enum.EasingStyle.Quad,  Enum.EasingDirection.Out),
-        Pill   = TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-        Slow   = TweenInfo.new(0.40, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+        -- snappier timings; anything longer than ~0.25s reads as laggy in an
+        -- interface where the user expects instant response.
+        Fast       = TweenInfo.new(0.10, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        Normal     = TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        Pill       = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        Slow       = TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        -- linear + fast for the open/close fade of window + snow + dim + blur.
+        WindowFade = TweenInfo.new(0.18, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
     },
     Background = {
         DimTransparency  = 0.55,
@@ -230,9 +234,14 @@ for i = 1, Theme.Background.SnowflakeCount do
 end
 
 local snowFade = 0  -- 0 = hidden, 1 = fully visible
+local SNOW_FADE_SPEED = 1 / 0.18  -- match WindowFade duration -- linear ~5.5/s
 RunService.RenderStepped:Connect(function(dt)
     local target = snowActive and 1 or 0
-    snowFade = snowFade + (target - snowFade) * math.min(dt * 4, 1)
+    if target > snowFade then
+        snowFade = math.min(snowFade + dt * SNOW_FADE_SPEED, 1)
+    elseif target < snowFade then
+        snowFade = math.max(snowFade - dt * SNOW_FADE_SPEED, 0)
+    end
     local vp = viewport()
 
     if snowFade < 0.01 then
@@ -259,10 +268,10 @@ end)
 
 local function setBackgroundActive(active)
     snowActive = active
-    tween(dim, Theme.Animation.Slow, {
+    tween(dim, Theme.Animation.WindowFade, {
         BackgroundTransparency = active and (1 - Theme.Background.DimTransparency) or 1,
     })
-    tween(blur, Theme.Animation.Slow, {
+    tween(blur, Theme.Animation.WindowFade, {
         Size = active and Theme.Background.BlurSize or 0,
     })
 end
@@ -437,7 +446,7 @@ local function hotkey(keyText, actionText)
     })
 end
 
-hotkey("rshift", "menu")
+hotkey("del", "menu")
 hotkey("e", "esp")
 
 --============================================================
@@ -492,8 +501,8 @@ local activeLine = new("Frame", {
     AnchorPoint = Vector2.new(0, 0),
     Position = UDim2.new(0, 0, 0, 2),
     Size = UDim2.new(0, 2, 0, 0),
-    BackgroundColor3 = Theme.Palette.TextFaint,
-    BackgroundTransparency = 0.35,
+    BackgroundColor3 = Theme.Palette.Snow,
+    BackgroundTransparency = 0.15,
     BorderSizePixel = 0,
     ZIndex = 16,
     Parent = activeArray,
@@ -548,7 +557,7 @@ local function addToActiveArray(mod)
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 1, 0),
-        Position = UDim2.new(0, 0, 0, 6),  -- start slightly below final resting position
+        Position = UDim2.new(0, -10, 0, 0),  -- start slightly to the left, slide in right
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTransparency = 1,
         ZIndex = 18,
@@ -569,11 +578,11 @@ local function removeFromActiveArray(mod)
         if child:IsA("TextLabel") then
             tween(child, Theme.Animation.Fast, {
                 TextTransparency = 1,
-                Position = UDim2.new(0, 0, 0, 6),
+                Position = UDim2.new(0, -10, 0, 0),  -- slide back left on remove
             })
         end
     end
-    task.delay(0.18, function()
+    task.delay(0.14, function()
         if w and w.Parent then w:Destroy() end
     end)
 end
@@ -607,13 +616,17 @@ end
 --============================================================
 -- MAIN WINDOW
 --============================================================
-local window = new("Frame", {
+-- CanvasGroup so GroupTransparency can fade every child in one shot
+-- (frame trees have no group opacity; per-child tweening every label +
+--  stroke + corner is a nightmare).
+local window = new("CanvasGroup", {
     Name = "Window",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Size = UDim2.new(0, Theme.Sizes.WindowWidth, 0, Theme.Sizes.WindowHeight),
     Position = UDim2.new(0.5, 0, 0.5, 0),
     BackgroundColor3 = Theme.Palette.Background,
     BorderSizePixel = 0,
+    GroupTransparency = 0,
     ZIndex = 30,
     Parent = screen,
 }, {
@@ -707,6 +720,7 @@ local buttonLayer = new("Frame", {
         FillDirection = Enum.FillDirection.Horizontal,
         Padding = UDim.new(0, 4),
         VerticalAlignment = Enum.VerticalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder,  -- some runtimes default to Name; be explicit
     }),
     new("UIPadding", {
         PaddingLeft = UDim.new(0, 12),
@@ -733,23 +747,35 @@ local content = new("Frame", {
 })
 
 local tabs = {}
+local tabOrder = 0        -- explicit LayoutOrder per tab
 local activeTab = nil
 local pillFirstShow = true
 
-local function movePillTo(button)
+local function movePillTo(button, snap)
     local relX = button.AbsolutePosition.X - tabBar.AbsolutePosition.X
     local relY = button.AbsolutePosition.Y - tabBar.AbsolutePosition.Y
     local targetPos  = UDim2.new(0, relX, 0, relY)
     local targetSize = UDim2.new(0, button.AbsoluteSize.X, 0, button.AbsoluteSize.Y)
-    if pillFirstShow then
+    if pillFirstShow or snap then
         pill.Position = targetPos
         pill.Size = targetSize
-        tween(pill, Theme.Animation.Normal, { BackgroundTransparency = 0 })
-        pillFirstShow = false
+        if pillFirstShow then
+            tween(pill, Theme.Animation.Normal, { BackgroundTransparency = 0 })
+            pillFirstShow = false
+        end
     else
         tween(pill, Theme.Animation.Pill, { Position = targetPos, Size = targetSize })
     end
 end
+
+-- reposition pill instantly whenever the tabBar moves (window drag, resize).
+-- also acts as belt-and-suspenders on first-load: as soon as tabBar has a real
+-- AbsolutePosition, this fires and snaps the pill onto the active tab.
+tabBar:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+    if not activeTab then return end
+    local tab = tabs[activeTab]
+    if tab then movePillTo(tab.Button, true) end
+end)
 
 local function selectTab(name)
     if activeTab == name then return end
@@ -765,6 +791,7 @@ local function selectTab(name)
 end
 
 local function addTab(name, buildFn)
+    tabOrder = tabOrder + 1
     local button = new("TextButton", {
         Name = name,
         Text = name:lower(),
@@ -775,6 +802,7 @@ local function addTab(name, buildFn)
         AutomaticSize = Enum.AutomaticSize.X,
         Size = UDim2.new(0, 0, 1, 0),
         AutoButtonColor = false,
+        LayoutOrder = tabOrder,
         ZIndex = 34,
         Parent = buttonLayer,
     }, {
@@ -982,12 +1010,19 @@ addTab("Configs")
 addTab("NPC")
 addTab("Teams")
 
--- select first tab AFTER UIListLayout has assigned button sizes,
--- otherwise the pill lands at (0,0) with size 0 on first show.
+-- select first tab AFTER layout AND positioning have settled.
+-- v0.0.5 only checked AbsoluteSize -- but AbsolutePosition can still be zero
+-- for a frame or two after that, which put the pill at (0,0) on first launch.
+-- also, the tabBar AbsolutePosition signal above will re-snap once it moves.
 task.spawn(function()
     local btn = tabs.Visuals.Button
-    for _ = 1, 60 do
-        if btn.AbsoluteSize.X > 0 and tabBar.AbsoluteSize.X > 0 then break end
+    for _ = 1, 240 do
+        local bp = btn.AbsolutePosition
+        local bs = btn.AbsoluteSize
+        local tp = tabBar.AbsolutePosition
+        if bs.X > 0 and (bp.X ~= 0 or bp.Y ~= 0) and (tp.X ~= 0 or tp.Y ~= 0) then
+            break
+        end
         RunService.RenderStepped:Wait()
     end
     selectTab("Visuals")
@@ -1043,18 +1078,37 @@ new("TextLabel", {
 
 --============================================================
 -- WINDOW TOGGLE + BACKGROUND SYNC
+-- Delete key toggles. Everything (window + snow + dim + blur) fades
+-- with the same linear timing so they leave together, cleanly.
 --============================================================
+local windowOpen = true
+
 local function setWindowOpen(open)
-    window.Visible = open
+    if windowOpen == open then return end
+    windowOpen = open
+    if open then
+        window.Visible = true
+        window.GroupTransparency = 1
+        tween(window, Theme.Animation.WindowFade, { GroupTransparency = 0 })
+    else
+        tween(window, Theme.Animation.WindowFade, { GroupTransparency = 1 })
+        task.delay(0.2, function()
+            if not windowOpen then window.Visible = false end
+        end)
+    end
     setBackgroundActive(open)
 end
 
-setWindowOpen(true)
+-- initial state
+window.GroupTransparency = 0
+window.Visible = true
+setBackgroundActive(true)
 
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
-    if input.KeyCode == Enum.KeyCode.RightShift then
-        setWindowOpen(not window.Visible)
+    if input.KeyCode == Enum.KeyCode.Delete
+    or input.KeyCode == Enum.KeyCode.RightShift then
+        setWindowOpen(not windowOpen)
     elseif input.KeyCode == Enum.KeyCode.E then
         toggleModule("esp")
     end
