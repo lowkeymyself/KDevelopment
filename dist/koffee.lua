@@ -1,9 +1,9 @@
--- koffee v0.0.7
+-- koffee v0.0.8
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.7"
+Koffee.Version = "0.0.8"
 
 --============================================================
 -- THEME
@@ -860,108 +860,95 @@ local function addTab(name, buildFn)
 end
 
 --============================================================
--- SIMPLE TOGGLE ROW (used inside tab panels)
+-- PANEL / CARD (grouped rounded container with optional title)
+-- Matcha groups related controls in cards inside tab content.
+-- Card auto-sizes vertically to fit its rows.
 --============================================================
-local function toggleRow(parent, label, moduleId)
-    local row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 28),
-        BackgroundTransparency = 1,
+local function panel(parent, title)
+    local card = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = Theme.Palette.Panel,
+        BackgroundTransparency = 0.15,
+        BorderSizePixel = 0,
         ZIndex = 33,
         Parent = parent,
+    }, {
+        corner(Theme.Radius.Medium),
+        stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", {
+            PaddingTop    = UDim.new(0, 12),
+            PaddingBottom = UDim.new(0, 12),
+            PaddingLeft   = UDim.new(0, 14),
+            PaddingRight  = UDim.new(0, 14),
+        }),
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Vertical,
+            Padding = UDim.new(0, 8),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
     })
-    new("TextLabel", {
-        Text = label,
-        FontFace = Theme.Fonts.Regular,
-        TextSize = Theme.Text.Body,
-        TextColor3 = Theme.Palette.Text,
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1, -50, 1, 0),
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 34,
-        Parent = row,
-    })
-    local switch = new("Frame", {
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, 0, 0.5, 0),
-        Size = UDim2.new(0, 34, 0, 16),
-        BackgroundColor3 = Theme.Palette.PanelElevated,
-        BorderSizePixel = 0,
-        ZIndex = 34,
-        Parent = row,
-    }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
-    local knob = new("Frame", {
-        AnchorPoint = Vector2.new(0, 0.5),
-        Position = UDim2.new(0, 2, 0.5, 0),
-        Size = UDim2.new(0, 12, 0, 12),
-        BackgroundColor3 = Theme.Palette.TextMuted,
-        BorderSizePixel = 0,
-        ZIndex = 35,
-        Parent = switch,
-    }, { pillCorner() })
-    local btn = new("TextButton", {
-        Text = "",
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 1, 0),
-        ZIndex = 36,
-        Parent = row,
-    })
-    btn.MouseButton1Click:Connect(function()
-        toggleModule(moduleId)
-        local on = Modules[moduleId] and Modules[moduleId].Enabled
-        tween(switch, Theme.Animation.Fast, {
-            BackgroundColor3 = on and Theme.Palette.Accent or Theme.Palette.PanelElevated,
+    if title then
+        new("TextLabel", {
+            Text = title,
+            FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text,
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 16),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = -1,   -- always first
+            ZIndex = 34,
+            Parent = card,
         })
-        tween(knob, Theme.Animation.Fast, {
-            Position = on and UDim2.new(1, -14, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
-            AnchorPoint = on and Vector2.new(0, 0.5) or Vector2.new(0, 0.5),
-            BackgroundColor3 = on and Theme.Palette.Background or Theme.Palette.TextMuted,
+        new("Frame", {  -- small spacer below the title
+            Size = UDim2.new(1, 0, 0, 2),
+            BackgroundTransparency = 1,
+            LayoutOrder = 0,
+            Parent = card,
         })
-    end)
+    end
+    return card
 end
 
 --============================================================
--- CONFIG TOGGLE (like toggleRow but backed by a callback, not a module).
--- Used for sub-options of a module (e.g. ESP show/hide name/distance/health).
--- Doesn't appear in the active-modules array -- it's config, not a feature.
+-- CHECKBOX (visual primitive shared by module + config variants)
+-- Matcha-style small filled square. Label goes accent-colored when checked.
+-- Callers get { setState, getState, button, box, labelObj } handles.
 --============================================================
-local function configToggle(parent, label, initial, onChange)
-    local state = initial and true or false
+local function checkboxVisual(parent, label, initialOn)
+    local state = initialOn and true or false
     local row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 24),
+        Size = UDim2.new(1, 0, 0, 20),
         BackgroundTransparency = 1,
-        ZIndex = 33,
+        ZIndex = 34,
         Parent = parent,
     })
-    new("TextLabel", {
-        Text = label,
-        FontFace = Theme.Fonts.Regular,
-        TextSize = Theme.Text.Small,
-        TextColor3 = Theme.Palette.TextMuted,
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, 14, 0, 0),  -- indent to visually group under parent
-        Size = UDim2.new(1, -60, 1, 0),
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 34,
-        Parent = row,
-    })
-    local switch = new("Frame", {
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, 0, 0.5, 0),
-        Size = UDim2.new(0, 28, 0, 14),
+    local box = new("Frame", {
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 0, 0.5, 0),
+        Size = UDim2.new(0, 14, 0, 14),
         BackgroundColor3 = state and Theme.Palette.Accent or Theme.Palette.PanelElevated,
         BorderSizePixel = 0,
-        ZIndex = 34,
-        Parent = row,
-    }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
-    local knob = new("Frame", {
-        AnchorPoint = Vector2.new(0, 0.5),
-        Position = state and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
-        Size = UDim2.new(0, 10, 0, 10),
-        BackgroundColor3 = state and Theme.Palette.Background or Theme.Palette.TextMuted,
-        BorderSizePixel = 0,
         ZIndex = 35,
-        Parent = switch,
-    }, { pillCorner() })
+        Parent = row,
+    }, {
+        corner(3),
+        stroke(state and Theme.Palette.Accent or Theme.Palette.Border, 1),
+    })
+    local lbl = new("TextLabel", {
+        Text = label,
+        FontFace = Theme.Fonts.Medium,
+        TextSize = Theme.Text.Body,
+        TextColor3 = state and Theme.Palette.Accent or Theme.Palette.Text,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 22, 0, 0),
+        Size = UDim2.new(1, -22, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        ZIndex = 35,
+        Parent = row,
+    })
     local btn = new("TextButton", {
         Text = "",
         BackgroundTransparency = 1,
@@ -969,21 +956,55 @@ local function configToggle(parent, label, initial, onChange)
         ZIndex = 36,
         Parent = row,
     })
-    btn.MouseButton1Click:Connect(function()
-        state = not state
-        tween(switch, Theme.Animation.Fast, {
+    local function applyState()
+        tween(box, Theme.Animation.Fast, {
             BackgroundColor3 = state and Theme.Palette.Accent or Theme.Palette.PanelElevated,
         })
-        tween(knob, Theme.Animation.Fast, {
-            Position = state and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
-            BackgroundColor3 = state and Theme.Palette.Background or Theme.Palette.TextMuted,
+        local s = box:FindFirstChildOfClass("UIStroke")
+        if s then
+            tween(s, Theme.Animation.Fast, {
+                Color = state and Theme.Palette.Accent or Theme.Palette.Border,
+            })
+        end
+        tween(lbl, Theme.Animation.Fast, {
+            TextColor3 = state and Theme.Palette.Accent or Theme.Palette.Text,
         })
-        if onChange then onChange(state) end
+    end
+    return {
+        row = row,
+        button = btn,
+        setState = function(newState)
+            state = newState and true or false
+            applyState()
+        end,
+        getState = function() return state end,
+    }
+end
+
+-- module-backed checkbox: toggles a registered module + syncs active-modules array
+local function moduleCheckbox(parent, label, moduleId)
+    local mod = Modules[moduleId]
+    local ctrl = checkboxVisual(parent, label, mod and mod.Enabled or false)
+    ctrl.button.MouseButton1Click:Connect(function()
+        toggleModule(moduleId)
+        ctrl.setState(Modules[moduleId] and Modules[moduleId].Enabled)
     end)
+    return ctrl
+end
+
+-- callback-backed checkbox: for sub-configs that aren't top-level modules
+local function configCheckbox(parent, label, initialOn, onChange)
+    local ctrl = checkboxVisual(parent, label, initialOn)
+    ctrl.button.MouseButton1Click:Connect(function()
+        local newState = not ctrl.getState()
+        ctrl.setState(newState)
+        if onChange then onChange(newState) end
+    end)
+    return ctrl
 end
 
 --============================================================
--- SLIDER (label + numeric value + track + draggable knob).
+-- SLIDER (matcha-style: value in the header, thin track, small knob)
 -- onChange fires live while dragging.
 --============================================================
 local function slider(parent, label, min, max, initial, precision, onChange)
@@ -994,44 +1015,41 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     end
     local current = round(math.clamp(initial, min, max))
     local row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 42),
-        BackgroundTransparency = 1,
-        ZIndex = 33,
-        Parent = parent,
-    })
-    local head = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 18),
+        Size = UDim2.new(1, 0, 0, 32),
         BackgroundTransparency = 1,
         ZIndex = 34,
-        Parent = row,
+        Parent = parent,
     })
+    -- header row: label left, value right (at same baseline)
     new("TextLabel", {
         Text = label,
-        FontFace = Theme.Fonts.Regular,
+        FontFace = Theme.Fonts.Medium,
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
-        Size = UDim2.new(1, -60, 1, 0),
+        Position = UDim2.new(0, 0, 0, 0),
+        Size = UDim2.new(1, -60, 0, 16),
         TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 35,
-        Parent = head,
+        Parent = row,
     })
     local valueLbl = new("TextLabel", {
         Text = tostring(current),
-        FontFace = Theme.Fonts.Mono,
-        TextSize = Theme.Text.Small,
-        TextColor3 = Theme.Palette.TextMuted,
+        FontFace = Theme.Fonts.Medium,
+        TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
         AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, 0, 0, 0),
-        Size = UDim2.new(0, 60, 1, 0),
+        Size = UDim2.new(0, 60, 0, 16),
         TextXAlignment = Enum.TextXAlignment.Right,
         ZIndex = 35,
-        Parent = head,
+        Parent = row,
     })
+    -- thin track below the header
     local track = new("Frame", {
-        Position = UDim2.new(0, 0, 0, 26),
-        Size = UDim2.new(1, 0, 0, 4),
+        Position = UDim2.new(0, 0, 0, 24),
+        Size = UDim2.new(1, 0, 0, 2),
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BorderSizePixel = 0,
         ZIndex = 34,
@@ -1048,12 +1066,22 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     local knob = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(startPct, 0, 0.5, 0),
-        Size = UDim2.new(0, 12, 0, 12),
-        BackgroundColor3 = Theme.Palette.Text,
+        Size = UDim2.new(0, 10, 0, 10),
+        BackgroundColor3 = Theme.Palette.Accent,
         BorderSizePixel = 0,
         ZIndex = 36,
         Parent = track,
     }, { pillCorner() })
+    -- expand the hit area up over the header row too, so click-anywhere-then-drag works
+    local hitArea = new("TextButton", {
+        Text = "",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 0, 0, 18),
+        Size = UDim2.new(1, 0, 0, 14),
+        ZIndex = 37,
+        Parent = row,
+        AutoButtonColor = false,
+    })
     local dragging = false
     local function setFromInputX(inputX)
         local trackAbs = track.AbsolutePosition.X
@@ -1061,12 +1089,13 @@ local function slider(parent, label, min, max, initial, precision, onChange)
         if trackW <= 0 then return end
         local pct = math.clamp((inputX - trackAbs) / trackW, 0, 1)
         current = round(min + (max - min) * pct)
+        pct = (current - min) / (max - min)
         fill.Size = UDim2.new(pct, 0, 1, 0)
         knob.Position = UDim2.new(pct, 0, 0.5, 0)
         valueLbl.Text = tostring(current)
         if onChange then onChange(current) end
     end
-    track.InputBegan:Connect(function(input)
+    hitArea.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
@@ -1344,20 +1373,21 @@ registerModule("customtime", "Custom Time",
 -- tab order (per he): combat visuals world character options configs npc teams
 addTab("Combat")
 
-addTab("Visuals", function(panel)
-    toggleRow(panel, "Player ESP", "esp")
-    configToggle(panel, "Show Name",     ESP.Config.Name,     function(v) ESP.Config.Name = v end)
-    configToggle(panel, "Show Distance", ESP.Config.Distance, function(v) ESP.Config.Distance = v end)
-    configToggle(panel, "Show Health",   ESP.Config.Health,   function(v) ESP.Config.Health = v end)
+addTab("Visuals", function(root)
+    local espPanel = panel(root, "player esp")
+    moduleCheckbox(espPanel, "Player ESP", "esp")
+    configCheckbox(espPanel, "Show Name",     ESP.Config.Name,     function(v) ESP.Config.Name = v end)
+    configCheckbox(espPanel, "Show Distance", ESP.Config.Distance, function(v) ESP.Config.Distance = v end)
+    configCheckbox(espPanel, "Show Health",   ESP.Config.Health,   function(v) ESP.Config.Health = v end)
 end)
 
-addTab("World", function(panel)
-    toggleRow(panel, "Fullbright",  "fullbright")
-    toggleRow(panel, "No Fog",      "nofog")
-    toggleRow(panel, "Custom Time", "customtime")
-    slider(panel, "Time", 0, 24, World.Time.Target, 1, function(v)
+addTab("World", function(root)
+    local lighting = panel(root, "world lighting")
+    moduleCheckbox(lighting, "Fullbright",  "fullbright")
+    moduleCheckbox(lighting, "No Fog",      "nofog")
+    moduleCheckbox(lighting, "Custom Time", "customtime")
+    slider(lighting, "Clock Time", 0, 24, World.Time.Target, 1, function(v)
         World.Time.Target = v
-        -- if custom time is currently on, push the change immediately
         if Modules.customtime and Modules.customtime.Enabled then
             Lighting.ClockTime = v
         end
