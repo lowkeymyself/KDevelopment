@@ -1,9 +1,9 @@
--- koffee v0.0.6
+-- koffee v0.0.7
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.6"
+Koffee.Version = "0.0.7"
 
 --============================================================
 -- THEME
@@ -822,6 +822,12 @@ local function addTab(name, buildFn)
     })
 
     if buildFn then
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Vertical,
+            Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Parent = panel,
+        })
         buildFn(panel)
     else
         new("TextLabel", {
@@ -914,71 +920,326 @@ local function toggleRow(parent, label, moduleId)
 end
 
 --============================================================
--- ESP MODULE (round-1 simple)
--- highlight through walls + billboard name label per player
+-- CONFIG TOGGLE (like toggleRow but backed by a callback, not a module).
+-- Used for sub-options of a module (e.g. ESP show/hide name/distance/health).
+-- Doesn't appear in the active-modules array -- it's config, not a feature.
 --============================================================
-local ESP = { Enabled = false, Connections = {}, Rigs = {} }
+local function configToggle(parent, label, initial, onChange)
+    local state = initial and true or false
+    local row = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 24),
+        BackgroundTransparency = 1,
+        ZIndex = 33,
+        Parent = parent,
+    })
+    new("TextLabel", {
+        Text = label,
+        FontFace = Theme.Fonts.Regular,
+        TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 14, 0, 0),  -- indent to visually group under parent
+        Size = UDim2.new(1, -60, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 34,
+        Parent = row,
+    })
+    local switch = new("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 28, 0, 14),
+        BackgroundColor3 = state and Theme.Palette.Accent or Theme.Palette.PanelElevated,
+        BorderSizePixel = 0,
+        ZIndex = 34,
+        Parent = row,
+    }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+    local knob = new("Frame", {
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = state and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
+        Size = UDim2.new(0, 10, 0, 10),
+        BackgroundColor3 = state and Theme.Palette.Background or Theme.Palette.TextMuted,
+        BorderSizePixel = 0,
+        ZIndex = 35,
+        Parent = switch,
+    }, { pillCorner() })
+    local btn = new("TextButton", {
+        Text = "",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        ZIndex = 36,
+        Parent = row,
+    })
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        tween(switch, Theme.Animation.Fast, {
+            BackgroundColor3 = state and Theme.Palette.Accent or Theme.Palette.PanelElevated,
+        })
+        tween(knob, Theme.Animation.Fast, {
+            Position = state and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
+            BackgroundColor3 = state and Theme.Palette.Background or Theme.Palette.TextMuted,
+        })
+        if onChange then onChange(state) end
+    end)
+end
+
+--============================================================
+-- SLIDER (label + numeric value + track + draggable knob).
+-- onChange fires live while dragging.
+--============================================================
+local function slider(parent, label, min, max, initial, precision, onChange)
+    precision = precision or 0
+    local function round(v)
+        local m = 10 ^ precision
+        return math.floor(v * m + 0.5) / m
+    end
+    local current = round(math.clamp(initial, min, max))
+    local row = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 42),
+        BackgroundTransparency = 1,
+        ZIndex = 33,
+        Parent = parent,
+    })
+    local head = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 18),
+        BackgroundTransparency = 1,
+        ZIndex = 34,
+        Parent = row,
+    })
+    new("TextLabel", {
+        Text = label,
+        FontFace = Theme.Fonts.Regular,
+        TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -60, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 35,
+        Parent = head,
+    })
+    local valueLbl = new("TextLabel", {
+        Text = tostring(current),
+        FontFace = Theme.Fonts.Mono,
+        TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, 0, 0, 0),
+        Size = UDim2.new(0, 60, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 35,
+        Parent = head,
+    })
+    local track = new("Frame", {
+        Position = UDim2.new(0, 0, 0, 26),
+        Size = UDim2.new(1, 0, 0, 4),
+        BackgroundColor3 = Theme.Palette.PanelElevated,
+        BorderSizePixel = 0,
+        ZIndex = 34,
+        Parent = row,
+    }, { pillCorner() })
+    local startPct = (current - min) / (max - min)
+    local fill = new("Frame", {
+        Size = UDim2.new(startPct, 0, 1, 0),
+        BackgroundColor3 = Theme.Palette.Accent,
+        BorderSizePixel = 0,
+        ZIndex = 35,
+        Parent = track,
+    }, { pillCorner() })
+    local knob = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(startPct, 0, 0.5, 0),
+        Size = UDim2.new(0, 12, 0, 12),
+        BackgroundColor3 = Theme.Palette.Text,
+        BorderSizePixel = 0,
+        ZIndex = 36,
+        Parent = track,
+    }, { pillCorner() })
+    local dragging = false
+    local function setFromInputX(inputX)
+        local trackAbs = track.AbsolutePosition.X
+        local trackW = track.AbsoluteSize.X
+        if trackW <= 0 then return end
+        local pct = math.clamp((inputX - trackAbs) / trackW, 0, 1)
+        current = round(min + (max - min) * pct)
+        fill.Size = UDim2.new(pct, 0, 1, 0)
+        knob.Position = UDim2.new(pct, 0, 0.5, 0)
+        valueLbl.Text = tostring(current)
+        if onChange then onChange(current) end
+    end
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            setFromInputX(input.Position.X)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging
+        and (input.UserInputType == Enum.UserInputType.MouseMovement
+          or input.UserInputType == Enum.UserInputType.Touch) then
+            setFromInputX(input.Position.X)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+--============================================================
+-- ESP MODULE
+-- Highlight (through-walls chams) + billboard stack: name / distance / health.
+-- Sub-config toggles (Show Name / Show Distance / Show Health) live-update
+-- rigs via a RenderStepped watcher that also refreshes distance + health bar.
+--============================================================
+local ESP = {
+    Config = { Name = true, Distance = true, Health = true },
+    Connections = {},
+    Rigs = {},         -- [plr] = { conn=..., rig=<see makeRig> }
+    UpdateConn = nil,
+}
+
+local function makeRig(plr, character)
+    local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 3)
+    if not head then return nil end
+
+    local hl = Instance.new("Highlight")
+    hl.Name = "KoffeeESP"
+    hl.FillColor = Theme.Palette.Accent
+    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.FillTransparency = 0.65
+    hl.OutlineTransparency = 0
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Adornee = character
+    hl.Parent = character
+
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "KoffeeName"
+    bb.Adornee = head
+    bb.Size = UDim2.new(0, 180, 0, 50)
+    bb.StudsOffset = Vector3.new(0, 2.8, 0)
+    bb.AlwaysOnTop = true
+    bb.MaxDistance = 5000
+    bb.Parent = head
+
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Name = "Name"
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Size = UDim2.new(1, 0, 0, 16)
+    nameLbl.Position = UDim2.new(0, 0, 0, 0)
+    nameLbl.FontFace = Theme.Fonts.Medium
+    nameLbl.TextSize = 13
+    nameLbl.TextColor3 = Theme.Palette.Text
+    nameLbl.TextStrokeTransparency = 0.4
+    nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    nameLbl.Text = plr.Name
+    nameLbl.Parent = bb
+
+    local distLbl = Instance.new("TextLabel")
+    distLbl.Name = "Distance"
+    distLbl.BackgroundTransparency = 1
+    distLbl.Size = UDim2.new(1, 0, 0, 12)
+    distLbl.Position = UDim2.new(0, 0, 0, 17)
+    distLbl.FontFace = Theme.Fonts.Mono
+    distLbl.TextSize = 10
+    distLbl.TextColor3 = Theme.Palette.TextMuted
+    distLbl.TextStrokeTransparency = 0.6
+    distLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    distLbl.Text = "-- studs"
+    distLbl.Parent = bb
+
+    local healthWrap = Instance.new("Frame")
+    healthWrap.Name = "HealthWrap"
+    healthWrap.BackgroundColor3 = Color3.fromRGB(15, 12, 10)
+    healthWrap.BackgroundTransparency = 0.35
+    healthWrap.BorderSizePixel = 0
+    healthWrap.AnchorPoint = Vector2.new(0.5, 0)
+    healthWrap.Position = UDim2.new(0.5, 0, 0, 33)
+    healthWrap.Size = UDim2.new(0.75, 0, 0, 3)
+    healthWrap.Parent = bb
+    local wCorner = Instance.new("UICorner", healthWrap)
+    wCorner.CornerRadius = UDim.new(1, 0)
+
+    local healthFill = Instance.new("Frame")
+    healthFill.Name = "HealthFill"
+    healthFill.BackgroundColor3 = Theme.Palette.Success
+    healthFill.BorderSizePixel = 0
+    healthFill.Size = UDim2.new(1, 0, 1, 0)
+    healthFill.Parent = healthWrap
+    local fCorner = Instance.new("UICorner", healthFill)
+    fCorner.CornerRadius = UDim.new(1, 0)
+
+    return {
+        character = character,
+        head      = head,
+        plr       = plr,
+        hl        = hl,
+        bb        = bb,
+        nameLbl   = nameLbl,
+        distLbl   = distLbl,
+        healthWrap = healthWrap,
+        healthFill = healthFill,
+    }
+end
+
+local function cleanRig(rig)
+    if not rig then return end
+    pcall(function() rig.hl:Destroy() end)
+    pcall(function() rig.bb:Destroy() end)
+end
 
 local function applyESP(plr)
     if plr == LocalPlayer then return end
     if ESP.Rigs[plr] then return end
     local function attach(character)
         if not character then return end
-        -- clean any prior
-        local old = character:FindFirstChild("KoffeeESP")
-        if old then old:Destroy() end
-        local hl = Instance.new("Highlight")
-        hl.Name = "KoffeeESP"
-        hl.FillColor = Theme.Palette.Accent
-        hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-        hl.FillTransparency = 0.65
-        hl.OutlineTransparency = 0
-        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.Adornee = character
-        hl.Parent = character
-
-        local head = character:FindFirstChild("Head")
-        if head then
-            local bb = Instance.new("BillboardGui")
-            bb.Name = "KoffeeName"
-            bb.Adornee = head
-            bb.Size = UDim2.new(0, 120, 0, 18)
-            bb.StudsOffset = Vector3.new(0, 2.4, 0)
-            bb.AlwaysOnTop = true
-            bb.MaxDistance = 5000
-            bb.Parent = head
-            local nameLabel = Instance.new("TextLabel")
-            nameLabel.BackgroundTransparency = 1
-            nameLabel.Size = UDim2.new(1, 0, 1, 0)
-            nameLabel.Text = plr.Name
-            nameLabel.FontFace = Theme.Fonts.Medium
-            nameLabel.TextSize = 13
-            nameLabel.TextColor3 = Theme.Palette.Text
-            nameLabel.TextStrokeTransparency = 0.4
-            nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-            nameLabel.Parent = bb
+        pcall(function()
+            local old = character:FindFirstChild("KoffeeESP")
+            if old then old:Destroy() end
+        end)
+        local rig = makeRig(plr, character)
+        if rig then
+            ESP.Rigs[plr].rig = rig
         end
     end
+    ESP.Rigs[plr] = { conn = plr.CharacterAdded:Connect(attach) }
     if plr.Character then attach(plr.Character) end
-    local conn = plr.CharacterAdded:Connect(attach)
-    ESP.Rigs[plr] = { conn = conn }
 end
 
 local function stripESP(plr)
-    local ch = plr.Character
-    if ch then
-        local hl = ch:FindFirstChild("KoffeeESP")
-        if hl then hl:Destroy() end
-        local head = ch:FindFirstChild("Head")
-        if head then
-            local bb = head:FindFirstChild("KoffeeName")
-            if bb then bb:Destroy() end
+    local entry = ESP.Rigs[plr]
+    if not entry then return end
+    if entry.conn then entry.conn:Disconnect() end
+    cleanRig(entry.rig)
+    ESP.Rigs[plr] = nil
+end
+
+local function updateESPRigs()
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    local camPos = cam.CFrame.Position
+    for plr, entry in pairs(ESP.Rigs) do
+        local rig = entry.rig
+        if rig and rig.head and rig.head.Parent then
+            local dist = math.floor((rig.head.Position - camPos).Magnitude + 0.5)
+            rig.distLbl.Text = dist .. " studs"
+            rig.nameLbl.Visible = ESP.Config.Name
+            rig.distLbl.Visible = ESP.Config.Distance
+
+            local hum = rig.character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.MaxHealth > 0 then
+                local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                rig.healthFill.Size = UDim2.new(pct, 0, 1, 0)
+                rig.healthFill.BackgroundColor3 =
+                    pct > 0.55 and Theme.Palette.Success
+                    or (pct > 0.25 and Color3.fromRGB(220, 180, 100) or Theme.Palette.Danger)
+                rig.healthWrap.Visible = ESP.Config.Health
+            else
+                rig.healthWrap.Visible = false
+            end
         end
-    end
-    local rig = ESP.Rigs[plr]
-    if rig then
-        if rig.conn then rig.conn:Disconnect() end
-        ESP.Rigs[plr] = nil
     end
 end
 
@@ -987,11 +1248,93 @@ registerModule("esp", "Player ESP",
         for _, plr in ipairs(Players:GetPlayers()) do applyESP(plr) end
         table.insert(ESP.Connections, Players.PlayerAdded:Connect(applyESP))
         table.insert(ESP.Connections, Players.PlayerRemoving:Connect(stripESP))
+        ESP.UpdateConn = RunService.RenderStepped:Connect(updateESPRigs)
     end,
     function()
         for _, c in ipairs(ESP.Connections) do c:Disconnect() end
         table.clear(ESP.Connections)
+        if ESP.UpdateConn then ESP.UpdateConn:Disconnect() ESP.UpdateConn = nil end
         for _, plr in ipairs(Players:GetPlayers()) do stripESP(plr) end
+    end
+)
+
+--============================================================
+-- WORLD MODULES: fullbright, no fog, custom time
+-- Each module saves the original Lighting values on enable and restores on disable.
+-- Custom Time additionally installs a Heartbeat that re-asserts ClockTime so
+-- server-side day/night cycles can't fight us.
+--============================================================
+local World = {
+    Fullbright = { Saved = nil },
+    NoFog      = { Saved = nil },
+    Time       = { Saved = nil, Target = 14, Conn = nil },
+}
+
+registerModule("fullbright", "Fullbright",
+    function()
+        World.Fullbright.Saved = {
+            Ambient           = Lighting.Ambient,
+            OutdoorAmbient    = Lighting.OutdoorAmbient,
+            ColorShift_Top    = Lighting.ColorShift_Top,
+            ColorShift_Bottom = Lighting.ColorShift_Bottom,
+            Brightness        = Lighting.Brightness,
+            GlobalShadows     = Lighting.GlobalShadows,
+        }
+        Lighting.Ambient           = Color3.fromRGB(178, 178, 178)
+        Lighting.OutdoorAmbient    = Color3.fromRGB(178, 178, 178)
+        Lighting.ColorShift_Top    = Color3.fromRGB(0, 0, 0)
+        Lighting.ColorShift_Bottom = Color3.fromRGB(0, 0, 0)
+        Lighting.Brightness        = 1
+        Lighting.GlobalShadows     = false
+    end,
+    function()
+        local s = World.Fullbright.Saved
+        if not s then return end
+        Lighting.Ambient           = s.Ambient
+        Lighting.OutdoorAmbient    = s.OutdoorAmbient
+        Lighting.ColorShift_Top    = s.ColorShift_Top
+        Lighting.ColorShift_Bottom = s.ColorShift_Bottom
+        Lighting.Brightness        = s.Brightness
+        Lighting.GlobalShadows     = s.GlobalShadows
+        World.Fullbright.Saved     = nil
+    end
+)
+
+registerModule("nofog", "No Fog",
+    function()
+        World.NoFog.Saved = {
+            FogEnd   = Lighting.FogEnd,
+            FogStart = Lighting.FogStart,
+        }
+        Lighting.FogEnd   = 100000
+        Lighting.FogStart = 100000
+    end,
+    function()
+        local s = World.NoFog.Saved
+        if not s then return end
+        Lighting.FogEnd   = s.FogEnd
+        Lighting.FogStart = s.FogStart
+        World.NoFog.Saved = nil
+    end
+)
+
+registerModule("customtime", "Custom Time",
+    function()
+        World.Time.Saved = { ClockTime = Lighting.ClockTime }
+        Lighting.ClockTime = World.Time.Target
+        World.Time.Conn = RunService.Heartbeat:Connect(function()
+            if math.abs(Lighting.ClockTime - World.Time.Target) > 0.01 then
+                Lighting.ClockTime = World.Time.Target
+            end
+        end)
+    end,
+    function()
+        if World.Time.Conn then World.Time.Conn:Disconnect() World.Time.Conn = nil end
+        local s = World.Time.Saved
+        if s then
+            Lighting.ClockTime = s.ClockTime
+            World.Time.Saved = nil
+        end
     end
 )
 
@@ -1000,10 +1343,27 @@ registerModule("esp", "Player ESP",
 --============================================================
 -- tab order (per he): combat visuals world character options configs npc teams
 addTab("Combat")
+
 addTab("Visuals", function(panel)
     toggleRow(panel, "Player ESP", "esp")
+    configToggle(panel, "Show Name",     ESP.Config.Name,     function(v) ESP.Config.Name = v end)
+    configToggle(panel, "Show Distance", ESP.Config.Distance, function(v) ESP.Config.Distance = v end)
+    configToggle(panel, "Show Health",   ESP.Config.Health,   function(v) ESP.Config.Health = v end)
 end)
-addTab("World")
+
+addTab("World", function(panel)
+    toggleRow(panel, "Fullbright",  "fullbright")
+    toggleRow(panel, "No Fog",      "nofog")
+    toggleRow(panel, "Custom Time", "customtime")
+    slider(panel, "Time", 0, 24, World.Time.Target, 1, function(v)
+        World.Time.Target = v
+        -- if custom time is currently on, push the change immediately
+        if Modules.customtime and Modules.customtime.Enabled then
+            Lighting.ClockTime = v
+        end
+    end)
+end)
+
 addTab("Character")
 addTab("Options")
 addTab("Configs")
