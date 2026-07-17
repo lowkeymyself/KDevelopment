@@ -1,9 +1,9 @@
--- koffee v0.0.9
+-- koffee v0.0.10
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.9"
+Koffee.Version = "0.0.10"
 
 --============================================================
 -- THEME
@@ -24,11 +24,10 @@ local Theme = {
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
     },
-    -- interface font. everything content-facing (module names, config text,
-    -- etc.) will later get a user-selectable font from a small allowlist;
-    -- this Ubuntu family is only for chrome (hud, tabs, toggles, toasts).
+    -- interface font -- Nunito for softer, puffier feel per matcha reference.
+    -- content-facing text (module names, prose) will later be user-selectable.
     Fonts = (function()
-        local UI = "rbxasset://fonts/families/Ubuntu.json"
+        local UI = "rbxasset://fonts/families/Nunito.json"
         local MONO = "rbxasset://fonts/families/RobotoMono.json"
         return {
             Regular = Font.new(UI,   Enum.FontWeight.Regular),
@@ -39,18 +38,20 @@ local Theme = {
     end)(),
     Sizes = {
         HudHeight    = 32,
-        WindowWidth  = 620,
-        WindowHeight = 460,
+        -- portrait like matcha ref -- taller than wide, denser column of panels
+        WindowWidth  = 520,
+        WindowHeight = 680,
         TabBarHeight = 36,
     },
     Radius = { Small = 4, Medium = 6, Large = 8 },
-    -- text sizes dropped 1pt across the board -- matcha-tight density
-    Text   = { Tiny = 9, Small = 10, Body = 11, Header = 12, Title = 13 },
+    -- text sizes back to normal + 1pt to give breathing room
+    Text   = { Tiny = 10, Small = 11, Body = 12, Header = 13, Title = 14 },
     Animation = {
         Fast       = TweenInfo.new(0.10, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
         Normal     = TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-        -- pill: long pure ease-out per he. no ease-in curve, just decelerate.
-        Pill       = TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+        -- pill: 0.35s pure ease-out per he
+        Pill       = TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+        Menu       = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
         Slow       = TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
         WindowFade = TweenInfo.new(0.18, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
     },
@@ -725,7 +726,7 @@ local pill = new("Frame", {
     BorderSizePixel = 0,
     ZIndex = 32,
     Parent = pillLayer,
-}, { pillCorner() })
+}, { pillCorner(), stroke(Theme.Palette.BorderSubtle, 1) })
 
 -- button layer (in front of pill)
 local buttonLayer = new("Frame", {
@@ -842,7 +843,7 @@ local function addTab(name, buildFn)
     if buildFn then
         new("UIListLayout", {
             FillDirection = Enum.FillDirection.Vertical,
-            Padding = UDim.new(0, 6),
+            Padding = UDim.new(0, 12),   -- roomier gaps between panels
             SortOrder = Enum.SortOrder.LayoutOrder,
             Parent = panel,
         })
@@ -895,14 +896,14 @@ local function panel(parent, title)
         corner(Theme.Radius.Medium),
         stroke(Theme.Palette.BorderSubtle),
         new("UIPadding", {
-            PaddingTop    = UDim.new(0, 12),
-            PaddingBottom = UDim.new(0, 12),
-            PaddingLeft   = UDim.new(0, 14),
-            PaddingRight  = UDim.new(0, 14),
+            PaddingTop    = UDim.new(0, 14),
+            PaddingBottom = UDim.new(0, 14),
+            PaddingLeft   = UDim.new(0, 16),
+            PaddingRight  = UDim.new(0, 16),
         }),
         new("UIListLayout", {
             FillDirection = Enum.FillDirection.Vertical,
-            Padding = UDim.new(0, 8),
+            Padding = UDim.new(0, 12),   -- roomier per he ("too compact")
             SortOrder = Enum.SortOrder.LayoutOrder,
         }),
     })
@@ -910,19 +911,13 @@ local function panel(parent, title)
         new("TextLabel", {
             Text = title,
             FontFace = Theme.Fonts.Medium,
-            TextSize = Theme.Text.Body,
+            TextSize = Theme.Text.Header,
             TextColor3 = Theme.Palette.Text,
             BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, 16),
+            Size = UDim2.new(1, 0, 0, 18),
             TextXAlignment = Enum.TextXAlignment.Left,
-            LayoutOrder = -1,   -- always first
+            LayoutOrder = -1,
             ZIndex = 34,
-            Parent = card,
-        })
-        new("Frame", {  -- small spacer below the title
-            Size = UDim2.new(1, 0, 0, 2),
-            BackgroundTransparency = 1,
-            LayoutOrder = 0,
             Parent = card,
         })
     end
@@ -955,15 +950,16 @@ end
 
 --============================================================
 -- CHECKBOX (visual primitive shared by module + config variants)
--- Matcha-style: outer square with a thin border always visible + inset
--- accent fill that fades in when checked. Label goes accent-colored when on.
--- Row includes a hover overlay so users see it's interactable.
+-- Per he v0.0.10: no outer stroke, subtle bg fill on the outer box,
+-- inner fill 2px smaller (12 inside 16). Inward animation on check:
+--   check   -> fill starts at outer size + opaque, tweens INWARD to inner size
+--   uncheck -> fill starts at inner size, expands OUTWARD to outer + fades out
 --============================================================
-local CHECKBOX_ROW_HEIGHT = 18
-local CHECKBOX_OUTER = 15
-local CHECKBOX_INNER = 9
-local CHECKBOX_LABEL_OFFSET = 24
-local CHECKBOX_RIGHT_RESERVE = 70   -- space reserved on right for pill/swatches
+local CHECKBOX_ROW_HEIGHT = 22
+local CHECKBOX_OUTER = 16
+local CHECKBOX_INNER = 12
+local CHECKBOX_LABEL_OFFSET = 26
+local CHECKBOX_RIGHT_RESERVE = 74
 
 local function checkboxVisual(parent, label, initialOn)
     local state = initialOn and true or false
@@ -973,30 +969,30 @@ local function checkboxVisual(parent, label, initialOn)
         ZIndex = 34,
         Parent = parent,
     })
-    -- outer box: transparent, thin border always visible
+    -- outer box: subtle panel-elevated bg, no stroke
     local box = new("Frame", {
         AnchorPoint = Vector2.new(0, 0.5),
         Position = UDim2.new(0, 0, 0.5, 0),
         Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER),
-        BackgroundTransparency = 1,
+        BackgroundColor3 = Theme.Palette.PanelElevated,
+        BackgroundTransparency = 0.15,
         BorderSizePixel = 0,
         ZIndex = 35,
         Parent = row,
-    }, {
-        corner(3),
-        stroke(state and Theme.Palette.Accent or Theme.Palette.Border, 1),
-    })
-    -- inner fill: centered inside the outer box with a gap
+    }, { corner(4) })
+    -- inner fill: sized based on state (inner when checked, outer when off).
+    -- Setting invisible initial state by transparency 1 when off.
     local innerFill = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER),
+        Size = state and UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER)
+                     or UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER),
         BackgroundColor3 = Theme.Palette.Accent,
         BackgroundTransparency = state and 0 or 1,
         BorderSizePixel = 0,
         ZIndex = 36,
         Parent = box,
-    }, { corner(2) })
+    }, { corner(3) })
     local lbl = new("TextLabel", {
         Text = label,
         FontFace = Theme.Fonts.Medium,
@@ -1010,8 +1006,6 @@ local function checkboxVisual(parent, label, initialOn)
         ZIndex = 35,
         Parent = row,
     })
-    -- click-catcher covers box + label area, LEAVES the right-reserve free
-    -- so keybind pill / color swatches inside it stay interactable.
     local btn = new("TextButton", {
         Text = "",
         BackgroundTransparency = 1,
@@ -1022,13 +1016,18 @@ local function checkboxVisual(parent, label, initialOn)
     })
     attachHover(row, btn)
     local function applyState()
-        local strokeInst = box:FindFirstChildOfClass("UIStroke")
-        tween(innerFill, Theme.Animation.Fast, {
-            BackgroundTransparency = state and 0 or 1,
-        })
-        if strokeInst then
-            tween(strokeInst, Theme.Animation.Fast, {
-                Color = state and Theme.Palette.Accent or Theme.Palette.Border,
+        if state then
+            -- INWARD: start at outer size fully opaque, shrink to inner size
+            innerFill.Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER)
+            innerFill.BackgroundTransparency = 0
+            tween(innerFill, Theme.Animation.Normal, {
+                Size = UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER),
+            })
+        else
+            -- OUTWARD: expand to outer size while fading out
+            tween(innerFill, Theme.Animation.Normal, {
+                Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER),
+                BackgroundTransparency = 1,
             })
         end
         tween(lbl, Theme.Animation.Fast, {
@@ -1124,22 +1123,306 @@ local function completeRebind(keyCode)
 end
 
 --============================================================
--- COLOR SWATCH with hover-preview tooltip (hex + rgb)
--- No color picker yet -- clicking is a no-op for now, hover only.
+-- COLOR PICKER (popup: SV area + hue slider + hex input)
+-- Parented to `screen` so it renders above the window CanvasGroup.
+-- Reused across all color swatches -- one picker instance, retargeted.
 --============================================================
-local function colorSwatch(parent, initialColor, size)
+local function parseHex(str)
+    if not str then return nil end
+    str = str:gsub("#", ""):gsub("%s", "")
+    if #str ~= 6 then return nil end
+    local r = tonumber(str:sub(1, 2), 16)
+    local g = tonumber(str:sub(3, 4), 16)
+    local b = tonumber(str:sub(5, 6), 16)
+    if not (r and g and b) then return nil end
+    return Color3.fromRGB(r, g, b)
+end
+
+local ColorPicker = { root = nil, activeSwatch = nil, callback = nil, h = 0, s = 0, v = 0 }
+
+local function makeRainbowSequence()
+    -- 7 stops around the hue wheel
+    return ColorSequence.new({
+        ColorSequenceKeypoint.new(0.000, Color3.fromHSV(0.000, 1, 1)),
+        ColorSequenceKeypoint.new(0.166, Color3.fromHSV(0.166, 1, 1)),
+        ColorSequenceKeypoint.new(0.333, Color3.fromHSV(0.333, 1, 1)),
+        ColorSequenceKeypoint.new(0.500, Color3.fromHSV(0.500, 1, 1)),
+        ColorSequenceKeypoint.new(0.666, Color3.fromHSV(0.666, 1, 1)),
+        ColorSequenceKeypoint.new(0.833, Color3.fromHSV(0.833, 1, 1)),
+        ColorSequenceKeypoint.new(1.000, Color3.fromHSV(1.000, 1, 1)),
+    })
+end
+
+local function buildColorPicker()
+    local root = new("Frame", {
+        Name = "ColorPicker",
+        Size = UDim2.new(0, 240, 0, 236),
+        BackgroundColor3 = Theme.Palette.Panel,
+        BackgroundTransparency = 0.02,
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 250,
+        Parent = screen,
+    }, {
+        corner(6),
+        stroke(Theme.Palette.Border, 1),
+        new("UIPadding", {
+            PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
+            PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
+        }),
+    })
+    new("TextLabel", {
+        Text = "color",
+        FontFace = Theme.Fonts.Medium,
+        TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 0, 0, 0),
+        Size = UDim2.new(1, 0, 0, 14),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 251,
+        Parent = root,
+    })
+    -- SV picker area
+    local svArea = new("Frame", {
+        Position = UDim2.new(0, 0, 0, 22),
+        Size = UDim2.new(1, -32, 0, 140),
+        BackgroundColor3 = Color3.fromHSV(0, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 251,
+        Parent = root,
+    }, { corner(4) })
+    -- white overlay (left = white, right = pure hue)
+    local whiteOverlay = new("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 252,
+        Parent = svArea,
+    }, {
+        corner(4),
+        new("UIGradient", {
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+        }),
+    })
+    -- black overlay (top = clear, bottom = black)
+    local blackOverlay = new("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BorderSizePixel = 0,
+        ZIndex = 253,
+        Parent = svArea,
+    }, {
+        corner(4),
+        new("UIGradient", {
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(1, 0),
+            }),
+            Rotation = 90,
+        }),
+    })
+    -- SV cursor
+    local svCursor = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0, 0, 1, 0),
+        Size = UDim2.new(0, 10, 0, 10),
+        BackgroundTransparency = 1,
+        ZIndex = 254,
+        Parent = svArea,
+    }, {
+        pillCorner(),
+        stroke(Color3.new(1, 1, 1), 2),
+    })
+    -- hue slider
+    local hueSlider = new("Frame", {
+        Position = UDim2.new(1, -24, 0, 22),
+        Size = UDim2.new(0, 20, 0, 140),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 251,
+        Parent = root,
+    }, {
+        corner(4),
+        new("UIGradient", { Color = makeRainbowSequence(), Rotation = 90 }),
+    })
+    local hueCursor = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 0),
+        Size = UDim2.new(1, 4, 0, 3),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 252,
+        Parent = hueSlider,
+    }, { corner(2), stroke(Color3.new(0, 0, 0), 1) })
+    -- hex input
+    local hexBox = new("TextBox", {
+        Position = UDim2.new(0, 0, 0, 172),
+        Size = UDim2.new(1, 0, 0, 22),
+        BackgroundColor3 = Theme.Palette.PanelElevated,
+        BackgroundTransparency = 0.2,
+        BorderSizePixel = 0,
+        FontFace = Theme.Fonts.Mono,
+        TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.Text,
+        Text = "#FFFFFF",
+        ClearTextOnFocus = false,
+        ZIndex = 251,
+        Parent = root,
+    }, {
+        corner(4),
+        stroke(Theme.Palette.BorderSubtle, 1),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }),
+    })
+    -- rgb readout below hex
+    local rgbRead = new("TextLabel", {
+        Position = UDim2.new(0, 0, 0, 200),
+        Size = UDim2.new(1, 0, 0, 14),
+        BackgroundTransparency = 1,
+        FontFace = Theme.Fonts.Mono,
+        TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "R 255  G 255  B 255",
+        ZIndex = 251,
+        Parent = root,
+    })
+
+    local suppressRefresh = false
+
+    local function applyToUI()
+        suppressRefresh = true
+        svArea.BackgroundColor3 = Color3.fromHSV(ColorPicker.h, 1, 1)
+        svCursor.Position = UDim2.new(ColorPicker.s, 0, 1 - ColorPicker.v, 0)
+        hueCursor.Position = UDim2.new(0.5, 0, ColorPicker.h, 0)
+        local c = Color3.fromHSV(ColorPicker.h, ColorPicker.s, ColorPicker.v)
+        hexBox.Text = colorToHex(c)
+        rgbRead.Text = colorToRGB(c)
+        svCursor.BackgroundTransparency = 0
+        svCursor.BackgroundColor3 = c
+        if ColorPicker.callback then
+            ColorPicker.callback(c)
+        end
+        suppressRefresh = false
+    end
+
+    local svDragging = false
+    svArea.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        svDragging = true
+        local abs = svArea.AbsolutePosition
+        local siz = svArea.AbsoluteSize
+        ColorPicker.s = math.clamp((input.Position.X - abs.X) / siz.X, 0, 1)
+        ColorPicker.v = 1 - math.clamp((input.Position.Y - abs.Y) / siz.Y, 0, 1)
+        applyToUI()
+    end)
+    local hueDragging = false
+    hueSlider.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        hueDragging = true
+        local abs = hueSlider.AbsolutePosition
+        local siz = hueSlider.AbsoluteSize
+        ColorPicker.h = math.clamp((input.Position.Y - abs.Y) / siz.Y, 0, 1)
+        applyToUI()
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        if svDragging then
+            local abs = svArea.AbsolutePosition
+            local siz = svArea.AbsoluteSize
+            ColorPicker.s = math.clamp((input.Position.X - abs.X) / siz.X, 0, 1)
+            ColorPicker.v = 1 - math.clamp((input.Position.Y - abs.Y) / siz.Y, 0, 1)
+            applyToUI()
+        end
+        if hueDragging then
+            local abs = hueSlider.AbsolutePosition
+            local siz = hueSlider.AbsoluteSize
+            ColorPicker.h = math.clamp((input.Position.Y - abs.Y) / siz.Y, 0, 1)
+            applyToUI()
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            svDragging = false
+            hueDragging = false
+        end
+    end)
+    hexBox.FocusLost:Connect(function()
+        local c = parseHex(hexBox.Text)
+        if c then
+            ColorPicker.h, ColorPicker.s, ColorPicker.v = c:ToHSV()
+            applyToUI()
+        else
+            local cur = Color3.fromHSV(ColorPicker.h, ColorPicker.s, ColorPicker.v)
+            hexBox.Text = colorToHex(cur)
+        end
+    end)
+
+    ColorPicker.root = root
+    ColorPicker.apply = applyToUI
+    return root
+end
+
+local function openColorPicker(swatchInstance, initialColor, onChange)
+    if not ColorPicker.root then buildColorPicker() end
+    ColorPicker.activeSwatch = swatchInstance
+    ColorPicker.callback = onChange
+    local h, s, v = initialColor:ToHSV()
+    ColorPicker.h, ColorPicker.s, ColorPicker.v = h, s, v
+    -- position near swatch (below + right, but clamp to viewport)
+    local abs = swatchInstance.AbsolutePosition
+    local siz = swatchInstance.AbsoluteSize
+    local vp = Camera.ViewportSize
+    local pickerW, pickerH = 240, 236
+    local x = math.min(abs.X, vp.X - pickerW - 8)
+    local y = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
+    ColorPicker.root.Position = UDim2.new(0, x, 0, y - 4)
+    ColorPicker.root.Visible = true
+    ColorPicker.root.BackgroundTransparency = 1
+    tween(ColorPicker.root, Theme.Animation.Menu, {
+        BackgroundTransparency = 0.02,
+        Position = UDim2.new(0, x, 0, y),
+    })
+    ColorPicker.apply()
+end
+
+local function closeColorPicker()
+    if not ColorPicker.root or not ColorPicker.root.Visible then return end
+    tween(ColorPicker.root, Theme.Animation.Menu, {
+        BackgroundTransparency = 1,
+    })
+    task.delay(0.22, function()
+        if ColorPicker.root then ColorPicker.root.Visible = false end
+    end)
+    ColorPicker.activeSwatch = nil
+    ColorPicker.callback = nil
+end
+
+--============================================================
+-- COLOR SWATCH: clickable, opens picker; also hover-shows a tooltip preview
+-- Optional { onChange = fn(newColor), getColor = fn() -> Color3 } table.
+--============================================================
+local function colorSwatch(parent, initialColor, size, opts)
+    opts = opts or {}
     size = size or 14
+    local currentColor = initialColor
     local sw = new("TextButton", {
         Text = "",
         AutoButtonColor = false,
         Size = UDim2.new(0, size, 0, size),
-        BackgroundColor3 = initialColor,
+        BackgroundColor3 = currentColor,
         BorderSizePixel = 0,
         ZIndex = 38,
         Parent = parent,
     }, { corner(3), stroke(Theme.Palette.Border, 1) })
 
-    -- tooltip appears above the swatch on hover
     local tip = new("Frame", {
         Name = "Tooltip",
         AnchorPoint = Vector2.new(0.5, 1),
@@ -1155,13 +1438,13 @@ local function colorSwatch(parent, initialColor, size)
     local chip = new("Frame", {
         Position = UDim2.new(0, 4, 0, 4),
         Size = UDim2.new(0, 26, 1, -8),
-        BackgroundColor3 = initialColor,
+        BackgroundColor3 = currentColor,
         BorderSizePixel = 0,
         ZIndex = 101,
         Parent = tip,
     }, { corner(3) })
     local hexLbl = new("TextLabel", {
-        Text = colorToHex(initialColor),
+        Text = colorToHex(currentColor),
         FontFace = Theme.Fonts.Bold,
         TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.Text,
@@ -1173,7 +1456,7 @@ local function colorSwatch(parent, initialColor, size)
         Parent = tip,
     })
     local rgbLbl = new("TextLabel", {
-        Text = colorToRGB(initialColor),
+        Text = colorToRGB(currentColor),
         FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Tiny,
         TextColor3 = Theme.Palette.TextMuted,
@@ -1184,32 +1467,86 @@ local function colorSwatch(parent, initialColor, size)
         ZIndex = 101,
         Parent = tip,
     })
+
+    local function refreshUI()
+        sw.BackgroundColor3 = currentColor
+        chip.BackgroundColor3 = currentColor
+        hexLbl.Text = colorToHex(currentColor)
+        rgbLbl.Text = colorToRGB(currentColor)
+    end
+
     sw.MouseEnter:Connect(function() tip.Visible = true end)
     sw.MouseLeave:Connect(function() tip.Visible = false end)
 
-    local api
-    api = {
+    sw.MouseButton1Click:Connect(function()
+        -- if picker already open on this swatch, close it
+        if ColorPicker.activeSwatch == sw then
+            closeColorPicker()
+            return
+        end
+        openColorPicker(sw, currentColor, function(newColor)
+            currentColor = newColor
+            refreshUI()
+            if opts.onChange then opts.onChange(newColor) end
+        end)
+    end)
+
+    return {
         instance = sw,
         setColor = function(c)
-            sw.BackgroundColor3 = c
-            chip.BackgroundColor3 = c
-            hexLbl.Text = colorToHex(c)
-            rgbLbl.Text = colorToRGB(c)
+            currentColor = c
+            refreshUI()
         end,
+        getColor = function() return currentColor end,
     }
-    return api
 end
 
 --============================================================
--- DROPDOWN (label above + button that opens option list below)
--- Simple round-1 impl: no scroll, no search, click-outside-to-close is
--- handled by re-clicking the button. Options are a flat string list.
+-- DROPDOWN (label above + button that opens popup list below)
+-- Popup is parented to `screen` (NOT the panel/window) so it renders
+-- above the CanvasGroup and isn't clipped by it. Positioned each open
+-- from the button's AbsolutePosition. Slide+fade animation. Chevron
+-- arrow built from two rotated 1px lines. Closes on outside click.
 --============================================================
-local openDropdowns = {}  -- track any open lists so we can close others on new open
+local openDropdowns = {}  -- popup frames -> close-fn
+
+local function chevron(parent, sizePx)
+    sizePx = sizePx or 8
+    local root = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(1, -10, 0.5, 0),
+        Size = UDim2.new(0, sizePx, 0, sizePx * 0.6),
+        BackgroundTransparency = 1,
+        ZIndex = 37,
+        Parent = parent,
+    })
+    local armLen = sizePx * 0.62
+    local left = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.28, 0, 0.5, 0),
+        Size = UDim2.new(0, armLen, 0, 1.4),
+        Rotation = 40,
+        BackgroundColor3 = Theme.Palette.TextMuted,
+        BorderSizePixel = 0,
+        ZIndex = 38,
+        Parent = root,
+    })
+    local right = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.72, 0, 0.5, 0),
+        Size = UDim2.new(0, armLen, 0, 1.4),
+        Rotation = -40,
+        BackgroundColor3 = Theme.Palette.TextMuted,
+        BorderSizePixel = 0,
+        ZIndex = 38,
+        Parent = root,
+    })
+    return root, left, right
+end
 
 local function dropdown(parent, label, options, initial, onChange)
     local wrap = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 40),
+        Size = UDim2.new(1, 0, 0, 48),
         BackgroundTransparency = 1,
         ZIndex = 34,
         Parent = parent,
@@ -1221,7 +1558,7 @@ local function dropdown(parent, label, options, initial, onChange)
         TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1,
         Position = UDim2.new(0, 0, 0, 0),
-        Size = UDim2.new(1, 0, 0, 12),
+        Size = UDim2.new(1, 0, 0, 14),
         TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 35,
         Parent = wrap,
@@ -1229,8 +1566,8 @@ local function dropdown(parent, label, options, initial, onChange)
     local btn = new("TextButton", {
         Text = "",
         AutoButtonColor = false,
-        Position = UDim2.new(0, 0, 0, 14),
-        Size = UDim2.new(1, 0, 0, 22),
+        Position = UDim2.new(0, 0, 0, 22),   -- extra gap between label and button (was 14)
+        Size = UDim2.new(1, 0, 0, 26),
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BackgroundTransparency = 0.15,
         BorderSizePixel = 0,
@@ -1243,44 +1580,99 @@ local function dropdown(parent, label, options, initial, onChange)
         TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
-        Position = UDim2.new(0, 10, 0, 0),
-        Size = UDim2.new(1, -28, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        Size = UDim2.new(1, -30, 1, 0),
         TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 36,
         Parent = btn,
     })
-    local caret = new("TextLabel", {
-        Text = "v",
-        FontFace = Theme.Fonts.Bold,
-        TextSize = Theme.Text.Tiny,
-        TextColor3 = Theme.Palette.TextMuted,
-        BackgroundTransparency = 1,
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, -8, 0.5, 0),
-        Size = UDim2.new(0, 12, 1, 0),
-        ZIndex = 36,
-        Parent = btn,
-    })
+    local caretRoot = chevron(btn, 10)
+
+    -- popup lives at the top of screen so it renders above the window's CanvasGroup
     local list = new("Frame", {
-        Position = UDim2.new(0, 0, 1, 4),
-        Size = UDim2.new(1, 0, 0, #options * 20),
+        Size = UDim2.new(0, 100, 0, #options * 24),
         BackgroundColor3 = Theme.Palette.Panel,
-        BackgroundTransparency = 0.05,
+        BackgroundTransparency = 1,
         BorderSizePixel = 0,
         Visible = false,
-        ZIndex = 80,
-        Parent = btn,
-    }, { corner(4), stroke(Theme.Palette.Border) })
+        ZIndex = 200,
+        Parent = screen,
+    }, {
+        corner(4),
+        stroke(Theme.Palette.Border, 1),
+    })
+
+    local isOpen = false
+    local function closeList(instant)
+        if not isOpen then return end
+        isOpen = false
+        openDropdowns[list] = nil
+        tween(caretRoot, Theme.Animation.Menu, { Rotation = 0 })
+        if instant then
+            list.Visible = false
+        else
+            tween(list, Theme.Animation.Menu, {
+                BackgroundTransparency = 1,
+                Position = UDim2.new(list.Position.X.Scale, list.Position.X.Offset,
+                                     list.Position.Y.Scale, list.Position.Y.Offset - 6),
+            })
+            task.delay(0.22, function()
+                if not isOpen then list.Visible = false end
+            end)
+        end
+        for _, child in ipairs(list:GetChildren()) do
+            if child:IsA("TextButton") then
+                tween(child, Theme.Animation.Menu, { BackgroundTransparency = 1 })
+                for _, sub in ipairs(child:GetChildren()) do
+                    if sub:IsA("TextLabel") then
+                        tween(sub, Theme.Animation.Menu, { TextTransparency = 1 })
+                    end
+                end
+            end
+        end
+    end
+    local function openList()
+        if isOpen then return end
+        -- close any other open dropdown
+        for _, closer in pairs(openDropdowns) do
+            if closer ~= closeList then closer(true) end
+        end
+        isOpen = true
+        openDropdowns[list] = closeList
+        local abs = btn.AbsolutePosition
+        local siz = btn.AbsoluteSize
+        local finalPos = UDim2.new(0, abs.X, 0, abs.Y + siz.Y + 6)
+        list.Size = UDim2.new(0, siz.X, 0, #options * 24)
+        list.Position = UDim2.new(0, abs.X, 0, abs.Y + siz.Y)   -- start higher
+        list.BackgroundTransparency = 1
+        list.Visible = true
+        tween(list, Theme.Animation.Menu, {
+            BackgroundTransparency = 0.05,
+            Position = finalPos,
+        })
+        tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
+        for _, child in ipairs(list:GetChildren()) do
+            if child:IsA("TextButton") then
+                tween(child, Theme.Animation.Menu, { BackgroundTransparency = 1 })
+                for _, sub in ipairs(child:GetChildren()) do
+                    if sub:IsA("TextLabel") then
+                        tween(sub, Theme.Animation.Menu, { TextTransparency = 0 })
+                    end
+                end
+            end
+        end
+    end
+
     for i, opt in ipairs(options) do
         local optBtn = new("TextButton", {
             Text = "",
             AutoButtonColor = false,
-            Size = UDim2.new(1, 0, 0, 20),
-            Position = UDim2.new(0, 0, 0, (i - 1) * 20),
+            Size = UDim2.new(1, 0, 0, 24),
+            Position = UDim2.new(0, 0, 0, (i - 1) * 24),
             BackgroundColor3 = Theme.Palette.PanelElevated,
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
-            ZIndex = 81,
+            ZIndex = 201,
             Parent = list,
         })
         new("TextLabel", {
@@ -1289,41 +1681,72 @@ local function dropdown(parent, label, options, initial, onChange)
             TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text,
             BackgroundTransparency = 1,
-            Position = UDim2.new(0, 10, 0, 0),
+            TextTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 0),
             Size = UDim2.new(1, -20, 1, 0),
             TextXAlignment = Enum.TextXAlignment.Left,
-            ZIndex = 82,
+            ZIndex = 202,
             Parent = optBtn,
         })
         optBtn.MouseEnter:Connect(function()
-            tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 0.85 })
+            tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 0.7 })
         end)
         optBtn.MouseLeave:Connect(function()
             tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 1 })
         end)
         optBtn.MouseButton1Click:Connect(function()
             valueLbl.Text = opt
-            list.Visible = false
-            tween(caret, Theme.Animation.Fast, { Rotation = 0 })
+            closeList()
             if onChange then onChange(opt) end
         end)
     end
+
     btn.MouseButton1Click:Connect(function()
-        -- close any other open list
-        for other, _ in pairs(openDropdowns) do
-            if other ~= list then other.Visible = false end
-        end
-        list.Visible = not list.Visible
-        openDropdowns[list] = list.Visible or nil
-        tween(caret, Theme.Animation.Fast, { Rotation = list.Visible and 180 or 0 })
+        if isOpen then closeList() else openList() end
     end)
-    return { setValue = function(v) valueLbl.Text = v end }
+    return {
+        setValue = function(v) valueLbl.Text = v end,
+        close = function() closeList(true) end,
+    }
 end
 
+-- outside-click closer: closes any open dropdown OR color picker if click missed
+UserInputService.InputBegan:Connect(function(input, processed)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+    and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local mp = input.Position
+
+    -- dropdowns
+    for list, closer in pairs(openDropdowns) do
+        local abs = list.AbsolutePosition
+        local siz = list.AbsoluteSize
+        local inside = mp.X >= abs.X and mp.X <= abs.X + siz.X
+                   and mp.Y >= abs.Y and mp.Y <= abs.Y + siz.Y
+        if not inside then closer() end
+    end
+
+    -- color picker (skip close if click is on its owning swatch)
+    if ColorPicker.root and ColorPicker.root.Visible then
+        local abs = ColorPicker.root.AbsolutePosition
+        local siz = ColorPicker.root.AbsoluteSize
+        local insidePicker = mp.X >= abs.X and mp.X <= abs.X + siz.X
+                         and mp.Y >= abs.Y and mp.Y <= abs.Y + siz.Y
+        local onSwatch = false
+        if ColorPicker.activeSwatch then
+            local sabs = ColorPicker.activeSwatch.AbsolutePosition
+            local ssiz = ColorPicker.activeSwatch.AbsoluteSize
+            onSwatch = mp.X >= sabs.X and mp.X <= sabs.X + ssiz.X
+                   and mp.Y >= sabs.Y and mp.Y <= sabs.Y + ssiz.Y
+        end
+        if not insidePicker and not onSwatch then
+            closeColorPicker()
+        end
+    end
+end)
+
 --============================================================
--- SLIDER (matcha-style: value in the header, thin track, small knob)
--- Value label doubles as a click-to-edit TextBox for precise input.
--- onChange fires live while dragging AND on textbox commit.
+-- SLIDER (thicker track, bigger knob, knob color contrasts fill)
+-- Value doubles as click-to-edit TextBox with a hover-pill background.
 --============================================================
 local function slider(parent, label, min, max, initial, precision, onChange)
     precision = precision or 0
@@ -1333,7 +1756,7 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     end
     local current = round(math.clamp(initial, min, max))
     local row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 28),
+        Size = UDim2.new(1, 0, 0, 34),
         BackgroundTransparency = 1,
         ZIndex = 34,
         Parent = parent,
@@ -1345,30 +1768,40 @@ local function slider(parent, label, min, max, initial, precision, onChange)
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
         Position = UDim2.new(0, 0, 0, 0),
-        Size = UDim2.new(1, -80, 0, 14),
+        Size = UDim2.new(1, -90, 0, 16),
         TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 35,
         Parent = row,
     })
-    -- value is a TextBox so clicking makes it directly editable
+    -- value = TextBox with pill-hover background (matcha spec)
     local valueBox = new("TextBox", {
         Text = tostring(current),
         PlaceholderText = "",
         FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.Text,
-        BackgroundTransparency = 1,
+        BackgroundColor3 = Theme.Palette.PanelElevated,
+        BackgroundTransparency = 1,   -- invisible until hovered/focused
         AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, 0, 0, 0),
-        Size = UDim2.new(0, 80, 0, 14),
+        Size = UDim2.new(0, 82, 0, 18),
         TextXAlignment = Enum.TextXAlignment.Right,
         ClearTextOnFocus = false,
         ZIndex = 38,
         Parent = row,
+    }, {
+        pillCorner(),
+        stroke(Theme.Palette.BorderSubtle, 1),
+        new("UIPadding", {
+            PaddingLeft = UDim.new(0, 8),
+            PaddingRight = UDim.new(0, 10),
+        }),
     })
+    local valueStroke = valueBox:FindFirstChildOfClass("UIStroke")
+    if valueStroke then valueStroke.Transparency = 1 end   -- hide stroke by default too
     local track = new("Frame", {
-        Position = UDim2.new(0, 0, 0, 20),
-        Size = UDim2.new(1, 0, 0, 2),
+        Position = UDim2.new(0, 0, 0, 24),
+        Size = UDim2.new(1, 0, 0, 4),                     -- was 2 -- thicker per he
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BorderSizePixel = 0,
         ZIndex = 34,
@@ -1382,21 +1815,22 @@ local function slider(parent, label, min, max, initial, precision, onChange)
         ZIndex = 35,
         Parent = track,
     }, { pillCorner() })
+    -- knob: bigger (12 vs 9) and Text/white color (not Accent) per he
     local knob = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(startPct, 0, 0.5, 0),
-        Size = UDim2.new(0, 9, 0, 9),
-        BackgroundColor3 = Theme.Palette.Accent,
+        Size = UDim2.new(0, 12, 0, 12),
+        BackgroundColor3 = Theme.Palette.Text,
         BorderSizePixel = 0,
         ZIndex = 36,
         Parent = track,
-    }, { pillCorner() })
+    }, { pillCorner(), stroke(Theme.Palette.BorderSubtle, 1) })
     local hitArea = new("TextButton", {
         Text = "",
         AutoButtonColor = false,
         BackgroundTransparency = 1,
-        Position = UDim2.new(0, 0, 0, 14),
-        Size = UDim2.new(1, -84, 0, 14),   -- leave value box clickable
+        Position = UDim2.new(0, 0, 0, 18),
+        Size = UDim2.new(1, -86, 0, 14),
         ZIndex = 37,
         Parent = row,
     })
@@ -1439,34 +1873,43 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     end)
     valueBox.FocusLost:Connect(function(enterPressed)
         local n = tonumber(valueBox.Text)
-        if n then
-            current = round(math.clamp(n, min, max))
-        end
+        if n then current = round(math.clamp(n, min, max)) end
         applyValue()
     end)
-    -- hover feedback on the value box
+    -- hover: bg pill lights up
     valueBox.MouseEnter:Connect(function()
-        tween(valueBox, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
+        tween(valueBox, Theme.Animation.Fast, {
+            BackgroundTransparency = 0.35,
+            TextColor3 = Theme.Palette.Accent,
+        })
+        if valueStroke then
+            tween(valueStroke, Theme.Animation.Fast, { Transparency = 0 })
+        end
     end)
     valueBox.MouseLeave:Connect(function()
-        tween(valueBox, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
+        tween(valueBox, Theme.Animation.Fast, {
+            BackgroundTransparency = 1,
+            TextColor3 = Theme.Palette.Text,
+        })
+        if valueStroke then
+            tween(valueStroke, Theme.Animation.Fast, { Transparency = 1 })
+        end
     end)
 end
 
 --============================================================
--- ESP MODULE (v0.0.9 expansion)
--- Config:
---   TeamCheck      -- hide teammates (respects Player.Team)
---   VisibleCheck   -- (flag stored; raycast-based occlusion coloring TBD)
---   TeamBasedColor -- teammates in green, enemies in accent (chams color)
---   TextBackground -- dark box behind name/distance text
---   Outline        -- Highlight OutlineTransparency 0<->1
---   Glow           -- softer text stroke fake-glow
---   SelfESP        -- also apply to LocalPlayer
---   SizingType     -- "Bounding"|"Static"|"Prediction" (flag stored; Box ESP TBD)
---   RenderDistance -- hide beyond N studs (real optimization, not just visual)
--- Colors:
---   Visible / Hidden / Team -- exposed for future color picker
+-- ESP MODULE (v0.0.10)
+-- Master toggle ("Enabled") just turns on the ESP framework. Chams
+-- (colored Highlight fills) is now a SEPARATE future widget -- this
+-- master doesn't apply any color to players.
+--
+-- Default rendering when master on = static 2D box (Boxes widget lets
+-- you customize color/fill/type/corners).
+--
+-- Config groups:
+--   Config (ESP-level toggles) -- shared across future widgets
+--   Boxes (Boxes widget config)
+--   Colors (color pool)
 --============================================================
 local ESP = {
     Config = {
@@ -1480,6 +1923,15 @@ local ESP = {
         SizingType     = "Bounding",
         RenderDistance = 1000,
     },
+    Boxes = {
+        Enabled      = false,
+        OutlineColor = Color3.fromRGB(255, 255, 255),
+        FillColor    = Color3.fromRGB(212, 145, 90),
+        FillBox      = false,
+        BoxType      = "2D",       -- "2D" | "Cube"
+        Corners      = false,
+        CornerLength = 0.3,        -- 0-1, fraction of edge length
+    },
     Colors = {
         Visible = Color3.fromRGB(212, 145, 90),
         Hidden  = Color3.fromRGB(120, 120, 120),
@@ -1488,21 +1940,83 @@ local ESP = {
     Connections = {},
     Rigs = {},
     UpdateConn = nil,
+    BoxLayer = nil,
 }
+
+-- lazy: box layer created on first ESP enable
+local function ensureBoxLayer()
+    if ESP.BoxLayer and ESP.BoxLayer.Parent then return ESP.BoxLayer end
+    ESP.BoxLayer = new("Frame", {
+        Name = "ESPBoxLayer",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ZIndex = 12,   -- above snow (3-7) + active-modules (15 is above), below window (30)
+        Parent = screen,
+    })
+    return ESP.BoxLayer
+end
+
+-- helper: build 8 corner brackets around a rect. returns list of 8 Frame handles.
+-- 2 lines per corner (horizontal + vertical) = 8 line frames total.
+local function makeBoxCorners(parent)
+    local corners = {}
+    for _ = 1, 8 do
+        table.insert(corners, new("Frame", {
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0,
+            BackgroundTransparency = 0,
+            Visible = false,
+            ZIndex = 14,
+            Parent = parent,
+        }))
+    end
+    return corners
+end
+
+-- 12 cube edges reusable as generic thin-line frames
+local function makeCubeEdges(parent)
+    local edges = {}
+    for _ = 1, 12 do
+        table.insert(edges, new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0,
+            Visible = false,
+            ZIndex = 14,
+            Parent = parent,
+        }))
+    end
+    return edges
+end
 
 local function makeRig(plr, character)
     local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 3)
     if not head then return nil end
 
-    local hl = Instance.new("Highlight")
-    hl.Name = "KoffeeESP"
-    hl.FillColor = ESP.Colors.Visible
-    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-    hl.FillTransparency = 0.65
-    hl.OutlineTransparency = ESP.Config.Outline and 0 or 1
-    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Adornee = character
-    hl.Parent = character
+    -- box widget (screen-space, lives in ESP.BoxLayer)
+    ensureBoxLayer()
+    local boxRoot = new("Frame", {
+        Name = "Box_" .. plr.Name,
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 13,
+        Parent = ESP.BoxLayer,
+    }, { stroke(Color3.new(1, 1, 1), 1) })
+    local boxOutline = boxRoot:FindFirstChildOfClass("UIStroke")
+    local boxFill = new("Frame", {
+        Name = "Fill",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.fromRGB(212, 145, 90),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ZIndex = 13,
+        Parent = boxRoot,
+    })
+    local boxCorners = makeBoxCorners(boxRoot)
+    local cubeEdges = makeCubeEdges(ESP.BoxLayer)
 
     local bb = Instance.new("BillboardGui")
     bb.Name = "KoffeeName"
@@ -1580,23 +2094,32 @@ local function makeRig(plr, character)
     fCorner.CornerRadius = UDim.new(1, 0)
 
     return {
-        character = character,
-        head      = head,
-        plr       = plr,
-        hl        = hl,
-        bb        = bb,
-        nameLbl   = nameLbl,
-        distLbl   = distLbl,
+        character  = character,
+        head       = head,
+        plr        = plr,
+        bb         = bb,
+        nameLbl    = nameLbl,
+        distLbl    = distLbl,
         healthWrap = healthWrap,
         healthFill = healthFill,
-        textBg    = textBg,
+        textBg     = textBg,
+        boxRoot    = boxRoot,
+        boxOutline = boxOutline,
+        boxFill    = boxFill,
+        boxCorners = boxCorners,
+        cubeEdges  = cubeEdges,
     }
 end
 
 local function cleanRig(rig)
     if not rig then return end
-    pcall(function() rig.hl:Destroy() end)
     pcall(function() rig.bb:Destroy() end)
+    pcall(function() rig.boxRoot:Destroy() end)
+    if rig.cubeEdges then
+        for _, e in ipairs(rig.cubeEdges) do
+            pcall(function() e:Destroy() end)
+        end
+    end
 end
 
 -- Self ESP: LocalPlayer now allowed, gating happens in updateESPRigs.
@@ -1625,6 +2148,43 @@ local function stripESP(plr)
     ESP.Rigs[plr] = nil
 end
 
+-- project 8 bounding-box corners to viewport, return the screen coords + anyInFront
+local CUBE_EDGE_INDICES = {
+    {1,2},{3,4},{1,3},{2,4},   -- front face
+    {5,6},{7,8},{5,7},{6,8},   -- back face
+    {1,5},{2,6},{3,7},{4,8},   -- connectors
+}
+
+local function project8(character)
+    local ok, cf, size = pcall(character.GetBoundingBox, character)
+    if not ok or not cf then return nil, false end
+    local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+    local worldCorners = {
+        (cf * CFrame.new( hx,  hy,  hz)).Position,
+        (cf * CFrame.new(-hx,  hy,  hz)).Position,
+        (cf * CFrame.new( hx, -hy,  hz)).Position,
+        (cf * CFrame.new(-hx, -hy,  hz)).Position,
+        (cf * CFrame.new( hx,  hy, -hz)).Position,
+        (cf * CFrame.new(-hx,  hy, -hz)).Position,
+        (cf * CFrame.new( hx, -hy, -hz)).Position,
+        (cf * CFrame.new(-hx, -hy, -hz)).Position,
+    }
+    local screenCorners = table.create(8)
+    local anyInFront = false
+    for i, wp in ipairs(worldCorners) do
+        local sp = Camera:WorldToViewportPoint(wp)
+        screenCorners[i] = { x = sp.X, y = sp.Y, z = sp.Z }
+        if sp.Z > 0 then anyInFront = true end
+    end
+    return screenCorners, anyInFront
+end
+
+local function hideRigVisuals(rig)
+    rig.bb.Enabled = false
+    rig.boxRoot.Visible = false
+    for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+end
+
 local function updateESPRigs()
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -1634,59 +2194,43 @@ local function updateESPRigs()
         local rig = entry.rig
         if not (rig and rig.head and rig.head.Parent) then continue end
 
-        -- Self ESP gate
+        -- gates
         if plr == LocalPlayer and not ESP.Config.SelfESP then
-            rig.hl.Enabled = false
-            rig.bb.Enabled = false
-            continue
+            hideRigVisuals(rig); continue
         end
-
-        -- Team check
         local sameTeam = plr.Team and localTeam and plr.Team == localTeam
         if sameTeam and ESP.Config.TeamCheck then
-            rig.hl.Enabled = false
-            rig.bb.Enabled = false
-            continue
+            hideRigVisuals(rig); continue
         end
-
-        -- Render distance (real optimization -- hides + skips rest of work)
         local dist = (rig.head.Position - camPos).Magnitude
         if dist > ESP.Config.RenderDistance then
-            rig.hl.Enabled = false
-            rig.bb.Enabled = false
-            continue
+            hideRigVisuals(rig); continue
         end
 
-        rig.hl.Enabled = true
         rig.bb.Enabled = true
 
-        -- Color selection
-        local color = ESP.Colors.Visible
+        -- text color (only Team Based Color affects it; master ESP is colorless)
+        local textColor = Theme.Palette.Text
         if ESP.Config.TeamBasedColor and sameTeam then
-            color = ESP.Colors.Team
+            textColor = ESP.Colors.Team
         end
-        rig.hl.FillColor = color
-        rig.nameLbl.TextColor3 = color
+        rig.nameLbl.TextColor3 = textColor
 
-        -- Outline
-        rig.hl.OutlineTransparency = ESP.Config.Outline and 0 or 1
-
-        -- Glow (softer text stroke)
+        -- Glow / Outline apply to text stroke
         if ESP.Config.Glow then
             rig.nameLbl.TextStrokeTransparency = 0.15
             rig.distLbl.TextStrokeTransparency = 0.25
-        else
+        elseif ESP.Config.Outline then
             rig.nameLbl.TextStrokeTransparency = 0.4
             rig.distLbl.TextStrokeTransparency = 0.6
+        else
+            rig.nameLbl.TextStrokeTransparency = 1
+            rig.distLbl.TextStrokeTransparency = 1
         end
-
-        -- Text background
         rig.textBg.Visible = ESP.Config.TextBackground
 
-        -- Distance
         rig.distLbl.Text = math.floor(dist + 0.5) .. " studs"
 
-        -- Health
         local hum = rig.character:FindFirstChildOfClass("Humanoid")
         if hum and hum.MaxHealth > 0 then
             local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
@@ -1697,6 +2241,97 @@ local function updateESPRigs()
             rig.healthWrap.Visible = true
         else
             rig.healthWrap.Visible = false
+        end
+
+        -- BOX ESP (always drawn when master ESP is on; Boxes widget customizes)
+        local corners, anyInFront = project8(rig.character)
+        if not corners or not anyInFront then
+            rig.boxRoot.Visible = false
+            for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+        else
+            local useCustom     = ESP.Boxes.Enabled
+            local outlineColor  = useCustom and ESP.Boxes.OutlineColor or Color3.new(1, 1, 1)
+            local fillColor     = useCustom and ESP.Boxes.FillColor    or ESP.Colors.Visible
+            local fillOn        = useCustom and ESP.Boxes.FillBox
+            local cornersMode   = useCustom and ESP.Boxes.Corners
+            local cornerLen     = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
+            local isCube        = ESP.Boxes.BoxType == "Cube"
+
+            if isCube then
+                rig.boxRoot.Visible = false
+                for i, pair in ipairs(CUBE_EDGE_INDICES) do
+                    local a = corners[pair[1]]
+                    local b = corners[pair[2]]
+                    local edge = rig.cubeEdges[i]
+                    local dx, dy = b.x - a.x, b.y - a.y
+                    local length = math.sqrt(dx * dx + dy * dy)
+                    if length < 1 then
+                        edge.Visible = false
+                    elseif cornersMode then
+                        -- draw only a small centered segment near midpoint on each edge:
+                        -- effectively shrinks the visible edge, gives corner-hint look.
+                        local visLen = length * cornerLen * 2
+                        edge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
+                        edge.Size = UDim2.new(0, math.max(2, visLen), 0, 1)
+                        edge.Rotation = math.deg(math.atan2(dy, dx))
+                        edge.BackgroundColor3 = outlineColor
+                        edge.Visible = true
+                    else
+                        edge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
+                        edge.Size = UDim2.new(0, length, 0, 1)
+                        edge.Rotation = math.deg(math.atan2(dy, dx))
+                        edge.BackgroundColor3 = outlineColor
+                        edge.Visible = true
+                    end
+                end
+            else
+                -- 2D bounding box
+                for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+                local minX, minY = math.huge, math.huge
+                local maxX, maxY = -math.huge, -math.huge
+                for _, c in ipairs(corners) do
+                    if c.x < minX then minX = c.x end
+                    if c.x > maxX then maxX = c.x end
+                    if c.y < minY then minY = c.y end
+                    if c.y > maxY then maxY = c.y end
+                end
+                local w = maxX - minX
+                local h = maxY - minY
+                rig.boxRoot.Visible = true
+                rig.boxRoot.Position = UDim2.new(0, minX, 0, minY)
+                rig.boxRoot.Size = UDim2.new(0, w, 0, h)
+                if rig.boxOutline then
+                    rig.boxOutline.Color = outlineColor
+                    rig.boxOutline.Enabled = not cornersMode
+                    rig.boxOutline.Transparency = ESP.Config.Outline and 0 or 0.5
+                end
+                rig.boxFill.BackgroundColor3 = fillColor
+                rig.boxFill.BackgroundTransparency = fillOn and 0.72 or 1
+
+                if cornersMode then
+                    local segLen = math.min(w, h) * cornerLen
+                    local thick = 2
+                    local specs = {
+                        { UDim2.new(0, 0, 0, 0),                 UDim2.new(0, segLen, 0, thick) },   -- TL horiz
+                        { UDim2.new(0, 0, 0, 0),                 UDim2.new(0, thick,  0, segLen) },  -- TL vert
+                        { UDim2.new(1, -segLen, 0, 0),           UDim2.new(0, segLen, 0, thick) },   -- TR horiz
+                        { UDim2.new(1, -thick, 0, 0),            UDim2.new(0, thick,  0, segLen) },  -- TR vert
+                        { UDim2.new(0, 0, 1, -thick),            UDim2.new(0, segLen, 0, thick) },   -- BL horiz
+                        { UDim2.new(0, 0, 1, -segLen),           UDim2.new(0, thick,  0, segLen) },  -- BL vert
+                        { UDim2.new(1, -segLen, 1, -thick),      UDim2.new(0, segLen, 0, thick) },   -- BR horiz
+                        { UDim2.new(1, -thick, 1, -segLen),      UDim2.new(0, thick,  0, segLen) },  -- BR vert
+                    }
+                    for i, spec in ipairs(specs) do
+                        local f = rig.boxCorners[i]
+                        f.Position = spec[1]
+                        f.Size = spec[2]
+                        f.BackgroundColor3 = outlineColor
+                        f.Visible = true
+                    end
+                else
+                    for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+                end
+            end
         end
     end
 end
@@ -1802,24 +2437,15 @@ registerModule("customtime", "Custom Time",
 -- tab order (per he): combat visuals world character options configs npc teams
 addTab("Combat")
 
-addTab("Visuals", function(root)
-    local espPanel = panel(root, "esp")
-
-    -- master toggle with rebindable keybind pill
-    local master = moduleCheckbox(espPanel, "Enabled", "esp")
-    keybindPill(master.row, "esp", Enum.KeyCode.E)
-
-    configCheckbox(espPanel, "Team Check",       ESP.Config.TeamCheck,      function(v) ESP.Config.TeamCheck      = v end)
-
-    -- Visible Check row: two color swatches on the right (visible / hidden)
-    local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
-    local swatchWrap = new("Frame", {
+-- helper: attach two color swatches (visible + hidden) to a Visible Check row
+local function attachDualSwatch(row, visColor, hidColor, onVis, onHid)
+    local wrap = new("Frame", {
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, 0, 0.5, 0),
-        Size = UDim2.new(0, 34, 0, 14),
+        Size = UDim2.new(0, 36, 0, 16),
         BackgroundTransparency = 1,
         ZIndex = 38,
-        Parent = visRow.row,
+        Parent = row,
     }, {
         new("UIListLayout", {
             FillDirection = Enum.FillDirection.Horizontal,
@@ -1829,8 +2455,24 @@ addTab("Visuals", function(root)
             SortOrder = Enum.SortOrder.LayoutOrder,
         }),
     })
-    colorSwatch(swatchWrap, ESP.Colors.Visible, 14)
-    colorSwatch(swatchWrap, ESP.Colors.Hidden,  14)
+    colorSwatch(wrap, visColor, 14, { onChange = onVis })
+    colorSwatch(wrap, hidColor, 14, { onChange = onHid })
+end
+
+addTab("Visuals", function(root)
+    -- ESP panel
+    local espPanel = panel(root, "esp")
+
+    local master = moduleCheckbox(espPanel, "Enabled", "esp")
+    keybindPill(master.row, "esp", Enum.KeyCode.E)
+
+    configCheckbox(espPanel, "Team Check",       ESP.Config.TeamCheck,      function(v) ESP.Config.TeamCheck      = v end)
+
+    local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
+    attachDualSwatch(visRow.row,
+        ESP.Colors.Visible, ESP.Colors.Hidden,
+        function(c) ESP.Colors.Visible = c end,
+        function(c) ESP.Colors.Hidden  = c end)
 
     configCheckbox(espPanel, "Team Based Color", ESP.Config.TeamBasedColor, function(v) ESP.Config.TeamBasedColor = v end)
     configCheckbox(espPanel, "Text Background",  ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
@@ -1843,6 +2485,28 @@ addTab("Visuals", function(root)
 
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end)
+
+    -- Boxes panel (below ESP)
+    local boxesPanel = panel(root, "boxes")
+
+    local boxesMaster = configCheckbox(boxesPanel, "Enabled", ESP.Boxes.Enabled,
+        function(v) ESP.Boxes.Enabled = v end)
+    attachDualSwatch(boxesMaster.row,
+        ESP.Boxes.OutlineColor, ESP.Boxes.FillColor,
+        function(c) ESP.Boxes.OutlineColor = c end,
+        function(c) ESP.Boxes.FillColor    = c end)
+
+    configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox,
+        function(v) ESP.Boxes.FillBox = v end)
+
+    dropdown(boxesPanel, "Box Type", { "2D", "Cube" }, ESP.Boxes.BoxType,
+        function(v) ESP.Boxes.BoxType = v end)
+
+    configCheckbox(boxesPanel, "Corners", ESP.Boxes.Corners,
+        function(v) ESP.Boxes.Corners = v end)
+
+    slider(boxesPanel, "Corner Length", 0.05, 0.5, ESP.Boxes.CornerLength, 2,
+        function(v) ESP.Boxes.CornerLength = v end)
 end)
 
 addTab("World", function(root)
