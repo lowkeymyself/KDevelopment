@@ -1,9 +1,9 @@
--- koffee v0.0.3
+-- koffee v0.0.4
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.3"
+Koffee.Version = "0.0.4"
 
 --============================================================
 -- THEME
@@ -175,29 +175,46 @@ local function viewport()
     return Camera.ViewportSize
 end
 
+-- each flake is a stack of 3 concentric circles (outer/mid/core) with
+-- decreasing size and increasing opacity -- fakes a radial soft edge
+-- since Roblox UIGradient is linear-only. no assets required.
 local function newSnowflake()
     local vp = viewport()
-    local size = math.random(20, 50) / 10   -- 2.0 - 5.0 px diameter
+    local core = math.random(15, 30) / 10   -- 1.5 - 3.0 px core diameter
     local sf = {
-        size     = size,
-        speedY   = math.random(15, 38),
-        swayAmp  = math.random(4, 14),
-        swayFreq = math.random(30, 90) / 100,
+        speedY    = math.random(15, 38),
+        swayAmp   = math.random(4, 14),
+        swayFreq  = math.random(30, 90) / 100,
         swayPhase = math.random() * math.pi * 2,
-        baseX    = math.random() * vp.X,
-        y        = math.random() * vp.Y,
-        alpha    = math.random(45, 85) / 100,
+        baseX     = math.random() * vp.X,
+        y         = math.random() * vp.Y,
+        alpha     = math.random(50, 90) / 100,
     }
-    local f = new("Frame", {
+    local wrap = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
-        Size = UDim2.new(0, size, 0, size),
-        BackgroundColor3 = Theme.Palette.Snow,
+        Size = UDim2.new(0, core, 0, core),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ZIndex = 5,
         Parent = snowLayer,
-    }, { pillCorner() })
-    sf.frame = f
+    })
+    local function layer(mult, alphaMult, z)
+        local f = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0, core * mult, 0, core * mult),
+            BackgroundColor3 = Theme.Palette.Snow,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ZIndex = z,
+            Parent = wrap,
+        }, { pillCorner() })
+        return { frame = f, alphaMult = alphaMult }
+    end
+    sf.wrap  = wrap
+    sf.outer = layer(2.0, 0.12, 5)   -- softest halo
+    sf.mid   = layer(1.4, 0.40, 6)   -- diffuse mid
+    sf.core  = layer(1.0, 1.00, 7)   -- bright center
     return sf
 end
 
@@ -225,8 +242,11 @@ RunService.RenderStepped:Connect(function(dt)
             sf.baseX = math.random() * vp.X
         end
         local x = sf.baseX + math.sin(sf.swayPhase) * sf.swayAmp
-        sf.frame.Position = UDim2.new(0, x, 0, sf.y)
-        sf.frame.BackgroundTransparency = 1 - (sf.alpha * snowFade)
+        sf.wrap.Position = UDim2.new(0, x, 0, sf.y)
+        local visible = sf.alpha * snowFade
+        sf.outer.frame.BackgroundTransparency = 1 - (visible * sf.outer.alphaMult)
+        sf.mid.frame.BackgroundTransparency   = 1 - (visible * sf.mid.alphaMult)
+        sf.core.frame.BackgroundTransparency  = 1 - (visible * sf.core.alphaMult)
     end
 end)
 
