@@ -1,9 +1,9 @@
--- koffee v0.0.4
+-- koffee v0.0.5
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.4"
+Koffee.Version = "0.0.5"
 
 --============================================================
 -- THEME
@@ -24,12 +24,19 @@ local Theme = {
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
     },
-    Fonts = {
-        Regular = Enum.Font.Gotham,
-        Medium  = Enum.Font.GothamMedium,
-        Bold    = Enum.Font.GothamBold,
-        Mono    = Enum.Font.Code,
-    },
+    -- interface font. everything content-facing (module names, config text,
+    -- etc.) will later get a user-selectable font from a small allowlist;
+    -- this Ubuntu family is only for chrome (hud, tabs, toggles, toasts).
+    Fonts = (function()
+        local UI = "rbxasset://fonts/families/Ubuntu.json"
+        local MONO = "rbxasset://fonts/families/RobotoMono.json"
+        return {
+            Regular = Font.new(UI,   Enum.FontWeight.Regular),
+            Medium  = Font.new(UI,   Enum.FontWeight.Medium),
+            Bold    = Font.new(UI,   Enum.FontWeight.Bold),
+            Mono    = Font.new(MONO, Enum.FontWeight.Regular),
+        }
+    end)(),
     Sizes = {
         HudHeight    = 32,
         WindowWidth  = 620,
@@ -304,7 +311,7 @@ local hudLeft = new("Frame", {
 new("TextLabel", {
     Name = "Brand",
     Text = "koffee",
-    Font = Theme.Fonts.Bold,
+    FontFace = Theme.Fonts.Bold,
     TextSize = Theme.Text.Title,
     TextColor3 = Theme.Palette.Accent,
     BackgroundTransparency = 1,
@@ -340,7 +347,7 @@ local function statLabel(name, initial)
     return new("TextLabel", {
         Name = name,
         Text = initial,
-        Font = Theme.Fonts.Mono,
+        FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1,
@@ -408,7 +415,7 @@ local function hotkey(keyText, actionText)
     })
     new("TextLabel", {
         Text = keyText,
-        Font = Theme.Fonts.Mono,
+        FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.Accent,
         BackgroundTransparency = 1,
@@ -419,7 +426,7 @@ local function hotkey(keyText, actionText)
     })
     new("TextLabel", {
         Text = actionText,
-        Font = Theme.Fonts.Regular,
+        FontFace = Theme.Fonts.Regular,
         TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1,
@@ -465,78 +472,110 @@ end)
 --============================================================
 -- MODULE SYSTEM + ACTIVE-MODULES TYPEWRITER ARRAY
 --============================================================
+-- markdown-blockquote-style module list:
+--   |  ESP
+--   |  Aimbot
+-- vertical line on the left grows/shrinks smoothly with content,
+-- each label fades in + settles up from a small y-offset.
 local activeArray = new("Frame", {
     Name = "ActiveModules",
     AnchorPoint = Vector2.new(0, 0),
-    Position = UDim2.new(0, 14, 0, Theme.Sizes.HudHeight + 10),
-    Size = UDim2.new(0, 220, 0, 300),
+    Position = UDim2.new(0, 16, 0, Theme.Sizes.HudHeight + 12),
+    Size = UDim2.new(0, 240, 0, 300),
     BackgroundTransparency = 1,
     ZIndex = 15,
     Parent = screen,
-}, {
-    new("UIListLayout", {
-        FillDirection = Enum.FillDirection.Vertical,
-        SortOrder = Enum.SortOrder.LayoutOrder,
-        Padding = UDim.new(0, 4),
-        HorizontalAlignment = Enum.HorizontalAlignment.Left,
-    }),
 })
+
+local activeLine = new("Frame", {
+    Name = "Line",
+    AnchorPoint = Vector2.new(0, 0),
+    Position = UDim2.new(0, 0, 0, 2),
+    Size = UDim2.new(0, 2, 0, 0),
+    BackgroundColor3 = Theme.Palette.TextFaint,
+    BackgroundTransparency = 0.35,
+    BorderSizePixel = 0,
+    ZIndex = 16,
+    Parent = activeArray,
+}, { pillCorner() })
+
+local labelsColumn = new("Frame", {
+    Name = "Labels",
+    Position = UDim2.new(0, 12, 0, 0),
+    Size = UDim2.new(1, -12, 1, 0),
+    BackgroundTransparency = 1,
+    ZIndex = 16,
+    Parent = activeArray,
+})
+
+local labelsLayout = new("UIListLayout", {
+    FillDirection = Enum.FillDirection.Vertical,
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 4),
+    HorizontalAlignment = Enum.HorizontalAlignment.Left,
+    Parent = labelsColumn,
+})
+
+-- line height tracks the labels column's actual content size
+labelsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    local h = labelsLayout.AbsoluteContentSize.Y
+    tween(activeLine, TweenInfo.new(0.32, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 2, 0, h),
+    })
+end)
 
 local Modules = {}
 local nextLayoutOrder = 0
-
-local function typewriter(label, text)
-    label.Text = ""
-    task.spawn(function()
-        for i = 1, #text do
-            label.Text = text:sub(1, i)
-            task.wait(0.018)
-        end
-    end)
-end
+local ROW_HEIGHT = 20
+local ROW_ENTER = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local function addToActiveArray(mod)
     nextLayoutOrder = nextLayoutOrder + 1
+    -- wrapper is managed by UIListLayout; label inside is what we animate,
+    -- so ListLayout doesn't fight us on Position.
+    local wrapper = new("Frame", {
+        Name = mod.Id,
+        Size = UDim2.new(1, 0, 0, ROW_HEIGHT),
+        BackgroundTransparency = 1,
+        LayoutOrder = nextLayoutOrder,
+        ZIndex = 17,
+        Parent = labelsColumn,
+    })
     local label = new("TextLabel", {
-        Name = mod.Name,
-        Text = "",
-        Font = Theme.Fonts.Medium,
+        Text = mod.DisplayName,
+        FontFace = Theme.Fonts.Medium,
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
-        AutomaticSize = Enum.AutomaticSize.X,
-        Size = UDim2.new(0, 0, 0, 16),
+        Size = UDim2.new(1, 0, 1, 0),
+        Position = UDim2.new(0, 0, 0, 6),  -- start slightly below final resting position
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTransparency = 1,
-        LayoutOrder = nextLayoutOrder,
-        ZIndex = 16,
-        Parent = activeArray,
+        ZIndex = 18,
+        Parent = wrapper,
     })
-    -- subtle accent dot before name
-    local dot = new("Frame", {
-        Name = "Dot",
-        Size = UDim2.new(0, 4, 0, 4),
-        Position = UDim2.new(0, -10, 0.5, -2),
-        AnchorPoint = Vector2.new(0, 0),
-        BackgroundColor3 = Theme.Palette.Accent,
-        BorderSizePixel = 0,
-        BackgroundTransparency = 1,
-        ZIndex = 17,
-        Parent = label,
-    }, { pillCorner() })
-
-    tween(label, Theme.Animation.Fast, { TextTransparency = 0 })
-    tween(dot,   Theme.Animation.Fast, { BackgroundTransparency = 0 })
-    typewriter(label, mod.DisplayName)
-    mod._label = label
+    tween(label, ROW_ENTER, {
+        Position = UDim2.new(0, 0, 0, 0),
+        TextTransparency = 0,
+    })
+    mod._wrapper = wrapper
 end
 
 local function removeFromActiveArray(mod)
-    if not mod._label then return end
-    local label = mod._label
-    mod._label = nil
-    tween(label, Theme.Animation.Fast, { TextTransparency = 1 })
-    task.delay(0.15, function() label:Destroy() end)
+    if not mod._wrapper then return end
+    local w = mod._wrapper
+    mod._wrapper = nil
+    for _, child in ipairs(w:GetChildren()) do
+        if child:IsA("TextLabel") then
+            tween(child, Theme.Animation.Fast, {
+                TextTransparency = 1,
+                Position = UDim2.new(0, 0, 0, 6),
+            })
+        end
+    end
+    task.delay(0.18, function()
+        if w and w.Parent then w:Destroy() end
+    end)
 end
 
 local function registerModule(id, displayName, onEnable, onDisable)
@@ -594,7 +633,7 @@ local titleBar = new("Frame", {
 
 new("TextLabel", {
     Text = "koffee",
-    Font = Theme.Fonts.Medium,
+    FontFace = Theme.Fonts.Medium,
     TextSize = Theme.Text.Header,
     TextColor3 = Theme.Palette.Text,
     BackgroundTransparency = 1,
@@ -606,7 +645,7 @@ new("TextLabel", {
 
 new("TextLabel", {
     Text = "v" .. Koffee.Version,
-    Font = Theme.Fonts.Mono,
+    FontFace = Theme.Fonts.Mono,
     TextSize = Theme.Text.Small,
     TextColor3 = Theme.Palette.TextFaint,
     BackgroundTransparency = 1,
@@ -729,7 +768,7 @@ local function addTab(name, buildFn)
     local button = new("TextButton", {
         Name = name,
         Text = name:lower(),
-        Font = Theme.Fonts.Medium,
+        FontFace = Theme.Fonts.Medium,
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1,
@@ -759,7 +798,7 @@ local function addTab(name, buildFn)
     else
         new("TextLabel", {
             Text = name:lower() .. " -- coming soon",
-            Font = Theme.Fonts.Regular,
+            FontFace = Theme.Fonts.Regular,
             TextSize = Theme.Text.Body,
             TextColor3 = Theme.Palette.TextFaint,
             BackgroundTransparency = 1,
@@ -798,7 +837,7 @@ local function toggleRow(parent, label, moduleId)
     })
     new("TextLabel", {
         Text = label,
-        Font = Theme.Fonts.Regular,
+        FontFace = Theme.Fonts.Regular,
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
@@ -884,7 +923,7 @@ local function applyESP(plr)
             nameLabel.BackgroundTransparency = 1
             nameLabel.Size = UDim2.new(1, 0, 1, 0)
             nameLabel.Text = plr.Name
-            nameLabel.Font = Theme.Fonts.Medium
+            nameLabel.FontFace = Theme.Fonts.Medium
             nameLabel.TextSize = 13
             nameLabel.TextColor3 = Theme.Palette.Text
             nameLabel.TextStrokeTransparency = 0.4
@@ -931,16 +970,17 @@ registerModule("esp", "Player ESP",
 --============================================================
 -- TABS: build panels
 --============================================================
+-- tab order (per he): combat visuals world character options configs npc teams
 addTab("Combat")
 addTab("Visuals", function(panel)
     toggleRow(panel, "Player ESP", "esp")
 end)
 addTab("World")
 addTab("Character")
-addTab("NPC")
-addTab("Teams")
 addTab("Options")
 addTab("Configs")
+addTab("NPC")
+addTab("Teams")
 
 -- select first tab AFTER UIListLayout has assigned button sizes,
 -- otherwise the pill lands at (0,0) with size 0 on first show.
@@ -978,7 +1018,7 @@ local toast = new("Frame", {
 
 new("TextLabel", {
     Text = "session validated",
-    Font = Theme.Fonts.Medium,
+    FontFace = Theme.Fonts.Medium,
     TextSize = Theme.Text.Body,
     TextColor3 = Theme.Palette.Success,
     BackgroundTransparency = 1,
@@ -990,7 +1030,7 @@ new("TextLabel", {
 
 new("TextLabel", {
     Text = "do not attempt to crack koffee or share credentials",
-    Font = Theme.Fonts.Regular,
+    FontFace = Theme.Fonts.Regular,
     TextSize = Theme.Text.Small,
     TextColor3 = Theme.Palette.TextMuted,
     BackgroundTransparency = 1,
