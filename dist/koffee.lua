@@ -1,9 +1,9 @@
--- koffee v0.0.14
+-- koffee v0.0.15
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.14"
+Koffee.Version = "0.0.15"
 
 --============================================================
 -- THEME
@@ -162,6 +162,23 @@ end
 for _, e in ipairs(Lighting:GetChildren()) do
     if e.Name == "KoffeeBlur" then pcall(function() e:Destroy() end) end
 end
+-- v0.0.15: purge stale BillboardGuis from previous script versions. Older
+-- makeRig parented "KoffeeName" bb to the character's Head; a fresh load
+-- without cleanup would leave those visible over players. New rigs don't
+-- create these, but old sessions in the same game session might have.
+pcall(function()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local ch = plr.Character
+        if ch then
+            local h = ch:FindFirstChild("Head")
+            if h then
+                for _, kid in ipairs(h:GetChildren()) do
+                    if kid.Name == "KoffeeName" then pcall(function() kid:Destroy() end) end
+                end
+            end
+        end
+    end
+end)
 
 local screen = new("ScreenGui", {
     Name = "Koffee",
@@ -2121,22 +2138,26 @@ end
 --============================================================
 local ESP = {
     Config = {
-        -- v0.0.14: Names + Distance removed -- they become a dedicated module
-        -- ("Names / Distance") later, same pattern as Boxes/Chams/Health. ESP
-        -- master is now purely plumbing (visibility gates + shared config that
-        -- overlay sub-modules read from). Text-related state (TextBackground,
-        -- BillboardGui, name labels) also gone from the rig -- comes back
-        -- when the dedicated module ships.
+        -- v0.0.15: text stuff (Names / Distance / their labels + BillboardGui)
+        -- lives in the future Names module. TextBackground is SHARED plumbing
+        -- for any future text-rendering module -- kept here as a bool because
+        -- multiple overlays (Names, Distance, Health) will read the same
+        -- preference. Currently no module renders text, so this is a stored
+        -- config value only.
+        TextBackground = false,
         CharacterOnly  = false,      -- ignore accessories/tools in bounding-box calc
         ImmediateMode  = true,       -- true = snap-to-frame, false = lerp smoothing
         TeamCheck      = false,
         VisibleCheck   = false,
         TeamBasedColor = false,      -- team color overrides box outline color on same-team
-        -- Outline is a DECORATIVE thin-line accent. Default TRUE so enabling
-        -- Boxes.Enabled alone shows a visible 1px outline box -- otherwise
-        -- Boxes on + everything else default = invisible box, which reads as
-        -- "ESP is broken". Outline still gates the 2D UIStroke + arraylist
-        -- accent line; it does NOT gate box existence.
+        -- v0.0.15 Outline semantics (final): Outline gates the box LINES
+        -- (the 2D UIStroke, the cube edges). Fill + Corners are independent
+        -- and unaffected. When Outline is off + Fill is on + Corners is off,
+        -- 2D box shows just fill / cube shows just AABB fill. When Outline
+        -- is off + Corners is on, corners still render (they're the box's
+        -- line style, not a decorative accent). So the box "exists" as long
+        -- as Fill or Corners is on -- Outline just controls its full outline.
+        -- Also drives the arraylist accent line via applyGlobalOutline.
         Outline        = true,
         Glow           = false,
         SelfESP        = false,
@@ -2250,6 +2271,16 @@ local function collectBodyParts(character)
     return parts
 end
 
+-- v0.0.15: torso resolver. Prefers HumanoidRootPart (always present on
+-- both R6 + R15 characters, sits at hip level = the true anchor for a
+-- centered ESP box). Falls back to UpperTorso (R15) then Torso (R6) for
+-- rigs without an HRP.
+local function findTorso(character)
+    return character:FindFirstChild("HumanoidRootPart")
+        or character:FindFirstChild("UpperTorso")
+        or character:FindFirstChild("Torso")
+end
+
 -- v0.0.12: real glow via layered halos. UIStroke can only be single-layer, so
 -- we stack two frames behind the box, each larger + softer, colored by outline.
 -- Enabled only when ESP.Config.Glow is on. Halo lives in ESP.BoxLayer next to
@@ -2275,14 +2306,22 @@ local function makeBoxHalo(parent)
 end
 
 local function makeRig(plr, character)
-    local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 3)
-    if not head then return nil end
-
-    -- static-size snapshot for SizingType == "Static" -- captured once,
-    -- character can animate but the box won't breathe with it.
-    local staticSize = Vector3.new(4, 6, 2)
-    local ok, _, size = pcall(character.GetBoundingBox, character)
-    if ok and size then staticSize = size end
+    -- v0.0.15: anchor is torso, not head. Head is on top of the character;
+    -- anchoring distance / life-gate / static projection off it produced
+    -- boxes that drifted upward and read as "grabbing UI" (projected point
+    -- sat above the character silhouette when close). Torso (HRP) is at hip
+    -- level and centered on the visible body.
+    local torso = findTorso(character)
+    if not torso then
+        -- rig parts not loaded yet -- wait briefly, then bail if still absent.
+        -- CharacterAdded fires on the fresh character before ALL descendants
+        -- are guaranteed loaded, so a short wait catches the common case
+        -- without blocking a full 3s per player.
+        torso = character:WaitForChild("HumanoidRootPart", 2)
+              or character:WaitForChild("UpperTorso", 0.5)
+              or character:WaitForChild("Torso", 0.5)
+    end
+    if not torso then return nil end
 
     -- box widget (screen-space, lives in ESP.BoxLayer)
     -- boxRoot's own bg is the FILL now (was a separate boxFill child --
@@ -2310,14 +2349,17 @@ local function makeRig(plr, character)
 
     return {
         character  = character,
-        head       = head,
+        torso      = torso,                           -- v0.0.15 anchor
         plr        = plr,
         boxRoot    = boxRoot,
         boxOutline = boxOutline,
         boxCorners = boxCorners,
         cubeEdges  = cubeEdges,
         boxHalo    = boxHalo,
-        staticSize = staticSize,
+        -- v0.0.15: staticSize snapshot dropped. projectStatic uses fixed
+        -- world-space marker offsets (+3 up / -4 down) instead of the old
+        -- character:GetBoundingBox() snapshot -- distance / FOV drive size,
+        -- so no per-rig snapshot is meaningful.
         bodyParts  = collectBodyParts(character),   -- for CharacterOnly mode
         -- smoothing state (used when ImmediateMode = false)
         lastBoxPos  = nil,
@@ -2417,10 +2459,13 @@ local STATIC_TOP_STUDS = 3
 local STATIC_BOT_STUDS = 4
 local STATIC_ASPECT    = 0.5   -- width = height * 0.5
 
-local function projectStatic(character)
-    local ok, pivot = pcall(character.GetPivot, character)
-    if not ok or not pivot then return nil, false, false end
-    local pos = pivot.Position
+local function projectStatic(torso)
+    -- v0.0.15: anchor is torso.Position, not character:GetPivot(). Pivot
+    -- can be stale/unset on some rigs (returns Model.WorldPivot which may
+    -- not track HRP movement), which produced Static boxes drifting off
+    -- the character. Torso.Position is a live world-space read.
+    if not torso or not torso.Parent then return nil, false, false end
+    local pos = torso.Position
     local topWorld = pos + Vector3.new(0, STATIC_TOP_STUDS, 0)
     local botWorld = pos + Vector3.new(0, -STATIC_BOT_STUDS, 0)
     local top2D = Camera:WorldToViewportPoint(topWorld)
@@ -2475,9 +2520,19 @@ local function characterOnlyBBox(bodyParts)
     return CFrame.new(center), size
 end
 
-local function project8(character, sizingType, characterOnly, bodyParts)
+local function project8(character, sizingType, characterOnly, bodyParts, rig)
     local cf, size
-    if characterOnly and bodyParts and #bodyParts > 0 then
+    if characterOnly then
+        -- v0.0.15: refresh the cached body-parts list if it's empty (rig was
+        -- created before parts fully loaded). Previously we silently fell
+        -- back to full GetBoundingBox in this case, which read as "Character
+        -- Only doesn't work" -- accessories still counted.
+        if not bodyParts or #bodyParts == 0 then
+            local fresh = collectBodyParts(character)
+            if rig then rig.bodyParts = fresh end
+            bodyParts = fresh
+        end
+        if #bodyParts == 0 then return nil, false, false end
         local c, s = characterOnlyBBox(bodyParts)
         if not c then return nil, false, false end
         cf, size = c, s
@@ -2490,8 +2545,16 @@ local function project8(character, sizingType, characterOnly, bodyParts)
     if sizingType == "Prediction" then
         local hrp = character:FindFirstChild("HumanoidRootPart")
         if hrp then
+            -- v0.0.15: prediction stretching fix. Two issues:
+            --   1. Vertical velocity (jumping / falling) shifted the box up
+            --      while GetBoundingBox stayed grounded -> visible stretch
+            --      as the projected corners diverged from ground contact.
+            --   2. 0.083s lead was too aggressive for real-world lag.
+            -- Fix: zero out Y velocity (predict horizontal motion only) and
+            -- drop the lead to 0.05s (~3 frames @ 60fps).
             local vel = hrp.AssemblyLinearVelocity
-            cf = cf + vel * 0.083   -- 5 frames @ 60fps lead
+            local flat = Vector3.new(vel.X, 0, vel.Z)
+            cf = cf + flat * 0.05
         end
     end
 
@@ -2540,16 +2603,19 @@ local function updateESPRigs()
     local localTeam = LocalPlayer.Team
     for plr, entry in pairs(ESP.Rigs) do
         local rig = entry.rig
-        -- v0.0.13 hard life gate. Previously we only checked rig.head.Parent
-        -- which misses "character exists but humanoid died" and "character was
-        -- swapped for a new one mid-frame". Now we check everything the render
-        -- pipeline depends on, and hide (but don't clean) on any failure. Clean
-        -- happens on CharacterRemoving in applyESP.
+        -- v0.0.15 hard life gate. Torso (HRP) replaces head as the anchor:
+        -- head is above the visible body so anchoring there produced boxes
+        -- offset upward + reading as "grabbing UI." Torso sits at hip level,
+        -- centered on the visible body. If the torso reference goes stale
+        -- (rig-swapping games, respawn mid-frame), re-resolve from character.
         if not rig then continue end
         if not (rig.character and rig.character.Parent) then
             hideRigVisuals(rig); continue
         end
-        if not (rig.head and rig.head.Parent) then
+        if not (rig.torso and rig.torso.Parent) then
+            rig.torso = findTorso(rig.character)
+        end
+        if not (rig.torso and rig.torso.Parent) then
             hideRigVisuals(rig); continue
         end
         local hum = rig.character:FindFirstChildOfClass("Humanoid")
@@ -2565,7 +2631,7 @@ local function updateESPRigs()
         if sameTeam and ESP.Config.TeamCheck then
             hideRigVisuals(rig); continue
         end
-        local dist = (rig.head.Position - camPos).Magnitude
+        local dist = (rig.torso.Position - camPos).Magnitude
         if dist > ESP.Config.RenderDistance then
             hideRigVisuals(rig); continue
         end
@@ -2588,15 +2654,24 @@ local function updateESPRigs()
         end
 
         -- BOX projection dispatch:
-        --   Static -> aspect-locked, distance-linked screen box (no camera-angle warp)
-        --   Bounding / Prediction -> 8-corner world projection with optional CharacterOnly
+        --   Static -> aspect-locked, distance-linked screen box (no camera-angle warp).
+        --             Cube mode is inherently 3D and needs depth info Static doesn't
+        --             have, so Cube auto-falls-through to Bounding regardless of the
+        --             SizingType dropdown -- otherwise a "Static + Cube" combo would
+        --             draw a flat 2D rect (front and back corners identical).
+        --   Bounding / Prediction -> 8-corner world projection with optional CharacterOnly.
         local corners, anyInFront, allInFront
-        if ESP.Config.SizingType == "Static" then
-            corners, anyInFront, allInFront = projectStatic(rig.character)
+        local isCube = ESP.Boxes.BoxType == "Cube"
+        local effectiveSizing = ESP.Config.SizingType
+        if isCube and effectiveSizing == "Static" then
+            effectiveSizing = "Bounding"
+        end
+        if effectiveSizing == "Static" then
+            corners, anyInFront, allInFront = projectStatic(rig.torso)
         else
             corners, anyInFront, allInFront =
-                project8(rig.character, ESP.Config.SizingType,
-                         ESP.Config.CharacterOnly, rig.bodyParts)
+                project8(rig.character, effectiveSizing,
+                         ESP.Config.CharacterOnly, rig.bodyParts, rig)
         end
 
         if not corners or not anyInFront or not allInFront then
@@ -2621,11 +2696,12 @@ local function updateESPRigs()
         local fillOn       = ESP.Boxes.FillBox
         local cornersMode  = ESP.Boxes.Corners
         local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
-        local isCube       = ESP.Boxes.BoxType == "Cube"
-        -- v0.0.13: Outline is a decorative accent switch, NOT a gate on the
-        -- box existing. In 2D mode it controls whether the UIStroke shows.
-        -- In cube mode it has no effect on edges (edges ARE the box).
+        -- v0.0.15 Outline: gates the box LINES (2D UIStroke AND cube edges).
+        -- Fill + Corners are independent visual elements not gated by Outline.
+        -- Turning Outline off means "no full-outline lines"; the box still
+        -- exists via Fill and/or Corners.
         local outlineOn    = ESP.Config.Outline
+        -- (isCube already declared above at the projection dispatch)
 
         -- projected AABB (2D box uses this directly; cube uses it for the
         -- optional Fill layer that sits behind the edges)
@@ -2691,7 +2767,16 @@ local function updateESPRigs()
             if rig.boxOutline then rig.boxOutline.Enabled = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
 
+            -- v0.0.15: cube edges/vertices gated by Outline OR Corners. In
+            -- cube mode the edges ARE the box lines -- Outline off means "no
+            -- full-outline lines," so full edges hide. Corners on is the
+            -- alternative line style (vertex brackets) and shows regardless
+            -- of Outline. If BOTH are off, cube shows only fill (if enabled).
+            local wantLines = outlineOn or cornersMode
             local thick = ESP.Config.Glow and 2 or 1
+            -- v0.0.15: cap corner segment length at CORNER_MAX_PX so brackets
+            -- don't dominate huge close-up boxes.
+            local CORNER_MAX_PX = 28
             for i, pair in ipairs(CUBE_EDGE_INDICES) do
                 local a = corners[pair[1]]
                 local b = corners[pair[2]]
@@ -2699,13 +2784,13 @@ local function updateESPRigs()
                 local bEdge = rig.cubeEdges[i + 12]      -- slots 13..24
                 local dx, dy = b.x - a.x, b.y - a.y
                 local length = math.sqrt(dx * dx + dy * dy)
-                if length < 1 then
+                if length < 1 or not wantLines then
                     aEdge.Visible = false
                     bEdge.Visible = false
                 else
                     local rot = math.deg(math.atan2(dy, dx))
                     if cornersMode then
-                        local segLen = math.max(3, length * cornerLen)
+                        local segLen = math.clamp(length * cornerLen, 3, CORNER_MAX_PX)
                         aEdge.AnchorPoint = Vector2.new(0, 0.5)
                         aEdge.Position = UDim2.new(0, a.x, 0, a.y)
                         aEdge.Size = UDim2.new(0, segLen, 0, thick)
@@ -2749,8 +2834,10 @@ local function updateESPRigs()
 
             -- Corner brackets: independent of Outline (they ARE the box lines
             -- in corners mode, not a decorative accent on top of a stroke).
+            -- v0.0.15: cap segment length at 28px so brackets don't dominate
+            -- huge close-up boxes.
             if cornersMode then
-                local segLen = math.min(tW, tH) * cornerLen
+                local segLen = math.clamp(math.min(tW, tH) * cornerLen, 3, 28)
                 local thick = 1
                 local specs = {
                     { UDim2.new(0, 0, 0, 0),            UDim2.new(0, segLen, 0, thick) },
@@ -2940,6 +3027,11 @@ addTab("Visuals", function(root)
         function(c) ESP.Colors.Hidden  = c end)
 
     configCheckbox(espPanel, "Team Based Color", ESP.Config.TeamBasedColor, function(v) ESP.Config.TeamBasedColor = v end)
+    -- v0.0.15: Text Background is shared plumbing. Multiple future overlays
+    -- (Names, Distance, Health) will read this flag to decide whether their
+    -- text sits on a subtle background pill. Stored here so preferences
+    -- follow the ESP module, which is always loaded.
+    configCheckbox(espPanel, "Text Background",  ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
     configCheckbox(espPanel, "Outline",          ESP.Config.Outline,        function(v)
         ESP.Config.Outline = v
         applyGlobalOutline()   -- flips arraylist accent line + future overlays
