@@ -1,9 +1,9 @@
--- koffee v0.0.13
+-- koffee v0.0.14
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.13"
+Koffee.Version = "0.0.14"
 
 --============================================================
 -- THEME
@@ -579,7 +579,33 @@ local nextLayoutOrder = 0
 local ROW_HEIGHT = 20
 local ROW_ENTER = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
+-- v0.0.14: arraylist label uses RichText. Base module name in Text color,
+-- optional detail suffix (e.g. " box" / " box, chams") in Muted color.
+-- Format: string.format("%s<font color='rgb(...)'>%s</font>", name, detail)
+local ARRAYLIST_MUTED_COLOR = "rgb(138,125,112)"   -- Theme.Palette.TextMuted
+
+local function buildArrayLabelText(mod)
+    local base = mod.DisplayName or mod.Id or "?"
+    local detail = mod.GetDetail and mod.GetDetail() or ""
+    if detail and detail ~= "" then
+        return string.format("%s<font color='%s'>%s</font>", base, ARRAYLIST_MUTED_COLOR, detail)
+    end
+    return base
+end
+
 local function addToActiveArray(mod)
+    -- v0.0.14: if a previous entry is still fading out (destroy pending) OR
+    -- an already-live entry exists, kill it first. Prevents zombie rows when
+    -- the user rapid-toggles a module.
+    if mod._destroyThread then
+        pcall(task.cancel, mod._destroyThread)
+        mod._destroyThread = nil
+    end
+    if mod._wrapper and mod._wrapper.Parent then
+        mod._wrapper:Destroy()
+    end
+    mod._wrapper = nil
+
     nextLayoutOrder = nextLayoutOrder + 1
     -- wrapper is managed by UIListLayout; label inside is what we animate,
     -- so ListLayout doesn't fight us on Position.
@@ -592,7 +618,8 @@ local function addToActiveArray(mod)
         Parent = labelsColumn,
     })
     local label = new("TextLabel", {
-        Text = mod.DisplayName,
+        Text = buildArrayLabelText(mod),
+        RichText = true,                                 -- v0.0.14 muted suffix
         FontFace = Theme.Fonts.Medium,
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text,
@@ -609,12 +636,35 @@ local function addToActiveArray(mod)
         TextTransparency = 0,
     })
     mod._wrapper = wrapper
+    mod._arrayLabel = label
+
+    -- v0.0.14: if the module reports a detail string, refresh it lazily on
+    -- Heartbeat (throttled to ~0.2s so we're not stringifying every frame).
+    -- Disconnected in removeFromActiveArray.
+    if mod.GetDetail then
+        local accum = 0
+        mod._detailConn = RunService.Heartbeat:Connect(function(dt)
+            accum = accum + dt
+            if accum < 0.2 then return end
+            accum = 0
+            if not (mod._arrayLabel and mod._arrayLabel.Parent) then return end
+            local newText = buildArrayLabelText(mod)
+            if mod._arrayLabel.Text ~= newText then
+                mod._arrayLabel.Text = newText
+            end
+        end)
+    end
 end
 
 local function removeFromActiveArray(mod)
-    if not mod._wrapper then return end
     local w = mod._wrapper
+    if not w then return end
     mod._wrapper = nil
+    mod._arrayLabel = nil
+    if mod._detailConn then
+        mod._detailConn:Disconnect()
+        mod._detailConn = nil
+    end
     for _, child in ipairs(w:GetChildren()) do
         if child:IsA("TextLabel") then
             tween(child, Theme.Animation.Fast, {
@@ -623,7 +673,12 @@ local function removeFromActiveArray(mod)
             })
         end
     end
-    task.delay(0.14, function()
+    -- v0.0.14: track the destroy thread so a re-enable during the fade window
+    -- can cancel it and prevent the "new row destroyed by old scheduled kill"
+    -- bug.
+    if mod._destroyThread then pcall(task.cancel, mod._destroyThread) end
+    mod._destroyThread = task.delay(0.14, function()
+        mod._destroyThread = nil
         if w and w.Parent then w:Destroy() end
     end)
 end
@@ -655,24 +710,41 @@ local function subscribeModule(id, fn)
     end
 end
 
+-- v0.0.14: toggleModule was blocking the click for as long as OnEnable took
+-- (makeRig's WaitForChild("Head", 3) on each player in a full server -> up to
+-- ~90s to release the checkbox). The user saw this as "Enabled takes YEARS to
+-- toggle." Now the flow is:
+--   1. flip the boolean         (instant)
+--   2. update the arraylist     (instant, animation starts this frame)
+--   3. fire watchers            (instant, checkbox visual + any observers)
+--   4. run OnEnable/OnDisable   (task.spawn'd -- any yielding it does is
+--                                 isolated from the click path)
+-- The visual feedback is immediate; the actual module wiring races along
+-- behind it.
 local function toggleModule(id)
     local m = Modules[id]
     if not m then return end
     m.Enabled = not m.Enabled
     if m.Enabled then
-        local ok, err = pcall(m.OnEnable)
-        if not ok then warn("[koffee] " .. id .. " enable failed: " .. tostring(err)) end
         addToActiveArray(m)
     else
-        local ok, err = pcall(m.OnDisable)
-        if not ok then warn("[koffee] " .. id .. " disable failed: " .. tostring(err)) end
         removeFromActiveArray(m)
     end
-    -- notify subscribers AFTER on-enable/disable so they see the new state
-    -- with any side effects already applied
+    -- fire watchers BEFORE spawning the work so the visual updates land
+    -- while the work is still starting
     for _, watcher in ipairs(m.Watchers) do
         pcall(watcher, m.Enabled)
     end
+    -- async: any yielding inside on-enable/disable won't stall the toggle
+    task.spawn(function()
+        local cb = m.Enabled and m.OnEnable or m.OnDisable
+        if not cb then return end
+        local ok, err = pcall(cb)
+        if not ok then
+            warn("[koffee] " .. id .. " " .. (m.Enabled and "enable" or "disable")
+                 .. " failed: " .. tostring(err))
+        end
+    end)
 end
 
 --============================================================
@@ -2049,21 +2121,23 @@ end
 --============================================================
 local ESP = {
     Config = {
-        -- v0.0.13: ESP master is a TRUE master. All visible elements are
-        -- opt-in via their own sub-toggle. Enabling ESP with everything else
-        -- off shows nothing on screen -- ESP just wires up the plumbing.
-        Names          = false,      -- name label above head
-        Distance       = false,      -- distance label under name
+        -- v0.0.14: Names + Distance removed -- they become a dedicated module
+        -- ("Names / Distance") later, same pattern as Boxes/Chams/Health. ESP
+        -- master is now purely plumbing (visibility gates + shared config that
+        -- overlay sub-modules read from). Text-related state (TextBackground,
+        -- BillboardGui, name labels) also gone from the rig -- comes back
+        -- when the dedicated module ships.
         CharacterOnly  = false,      -- ignore accessories/tools in bounding-box calc
         ImmediateMode  = true,       -- true = snap-to-frame, false = lerp smoothing
         TeamCheck      = false,
         VisibleCheck   = false,
-        TeamBasedColor = false,
-        TextBackground = false,
-        -- Outline is DECORATIVE thin-line accent (not a box gate). When off it
-        -- hides the 2D-box UIStroke and the arraylist accent line -- the box
-        -- itself (fill / cube edges / corner brackets) still draws.
-        Outline        = false,
+        TeamBasedColor = false,      -- team color overrides box outline color on same-team
+        -- Outline is a DECORATIVE thin-line accent. Default TRUE so enabling
+        -- Boxes.Enabled alone shows a visible 1px outline box -- otherwise
+        -- Boxes on + everything else default = invisible box, which reads as
+        -- "ESP is broken". Outline still gates the 2D UIStroke + arraylist
+        -- accent line; it does NOT gate box existence.
+        Outline        = true,
         Glow           = false,
         SelfESP        = false,
         SizingType     = "Static",     -- per he: Static first + default
@@ -2229,69 +2303,15 @@ local function makeRig(plr, character)
     local cubeEdges = makeCubeEdges(ESP.BoxLayer)
     local boxHalo   = makeBoxHalo(ESP.BoxLayer)
 
-    local bb = Instance.new("BillboardGui")
-    bb.Name = "KoffeeName"
-    bb.Adornee = head
-    bb.Size = UDim2.new(0, 180, 0, 52)
-    bb.StudsOffset = Vector3.new(0, 2.8, 0)
-    bb.AlwaysOnTop = true
-    bb.MaxDistance = 5000
-    bb.Parent = head
-
-    -- text background (Text Background toggle)
-    local textBg = Instance.new("Frame")
-    textBg.Name = "TextBg"
-    textBg.AnchorPoint = Vector2.new(0.5, 0)
-    textBg.Position = UDim2.new(0.5, 0, 0, -1)
-    textBg.Size = UDim2.new(0, 100, 0, 32)
-    textBg.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    textBg.BackgroundTransparency = 0.5
-    textBg.BorderSizePixel = 0
-    textBg.Visible = ESP.Config.TextBackground
-    textBg.ZIndex = 1
-    textBg.Parent = bb
-    local tbCorner = Instance.new("UICorner", textBg)
-    tbCorner.CornerRadius = UDim.new(0, 3)
-
-    local nameLbl = Instance.new("TextLabel")
-    nameLbl.Name = "Name"
-    nameLbl.BackgroundTransparency = 1
-    nameLbl.Size = UDim2.new(1, 0, 0, 16)
-    nameLbl.Position = UDim2.new(0, 0, 0, 0)
-    nameLbl.FontFace = Theme.Fonts.Medium
-    nameLbl.TextSize = 12
-    nameLbl.TextColor3 = ESP.Colors.Visible
-    nameLbl.TextStrokeTransparency = 0.4
-    nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    nameLbl.Text = plr.Name
-    nameLbl.ZIndex = 2
-    nameLbl.Parent = bb
-
-    local distLbl = Instance.new("TextLabel")
-    distLbl.Name = "Distance"
-    distLbl.BackgroundTransparency = 1
-    distLbl.Size = UDim2.new(1, 0, 0, 12)
-    distLbl.Position = UDim2.new(0, 0, 0, 17)
-    distLbl.FontFace = Theme.Fonts.Mono
-    distLbl.TextSize = 9
-    distLbl.TextColor3 = Theme.Palette.TextMuted
-    distLbl.TextStrokeTransparency = 0.6
-    distLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    distLbl.Text = "-- studs"
-    distLbl.ZIndex = 2
-    distLbl.Parent = bb
-
-    -- v0.0.13: health bar removed. It's getting a dedicated overlay module
-    -- ("Health") later -- doesn't belong under ESP.
+    -- v0.0.14: BillboardGui + name/dist/textBg removed. Names / Distance /
+    -- Text Background are all becoming a dedicated overlay module ("Names")
+    -- with its own rig/subscription. Health same. ESP rig now contains only
+    -- box widget state -- clean split by concern.
 
     return {
         character  = character,
         head       = head,
         plr        = plr,
-        bb         = bb,
-        nameLbl    = nameLbl,
-        distLbl    = distLbl,
-        textBg     = textBg,
         boxRoot    = boxRoot,
         boxOutline = boxOutline,
         boxCorners = boxCorners,
@@ -2307,7 +2327,6 @@ end
 
 local function cleanRig(rig)
     if not rig then return end
-    pcall(function() rig.bb:Destroy() end)
     pcall(function() rig.boxRoot:Destroy() end)
     if rig.cubeEdges then
         for _, e in ipairs(rig.cubeEdges) do
@@ -2498,7 +2517,6 @@ local function project8(character, sizingType, characterOnly, bodyParts)
 end
 
 local function hideRigVisuals(rig)
-    rig.bb.Enabled = false
     rig.boxRoot.Visible = false
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
@@ -2552,45 +2570,11 @@ local function updateESPRigs()
             hideRigVisuals(rig); continue
         end
 
-        -- v0.0.13 master-ESP-with-no-defaults:
-        -- BillboardGui only enabled if user opted in to Names, Distance, or
-        -- Text Background. Otherwise no floating text renders at all.
-        local anyTextOn = ESP.Config.Names or ESP.Config.Distance or ESP.Config.TextBackground
-        rig.bb.Enabled = anyTextOn
+        -- v0.0.14: text-side rendering (names, distance, text background) all
+        -- lives in the future Names/Distance module. This block is now just
+        -- box logic -- no BillboardGui to enable, no labels to update.
 
-        if anyTextOn then
-            local textColor = Theme.Palette.Text
-            if ESP.Config.TeamBasedColor and sameTeam then
-                textColor = ESP.Colors.Team
-            end
-            rig.nameLbl.TextColor3 = textColor
-            rig.nameLbl.Text = plr.Name
-            rig.nameLbl.Visible = ESP.Config.Names
-            rig.distLbl.Visible = ESP.Config.Distance
-            rig.distLbl.Text = math.floor(dist + 0.5) .. " studs"
-            rig.textBg.Visible = ESP.Config.TextBackground
-
-            -- text stroke: Outline off = no stroke, Glow on = colored halo,
-            -- otherwise a subtle black readability stroke.
-            if not ESP.Config.Outline then
-                rig.nameLbl.TextStrokeTransparency = 1
-                rig.distLbl.TextStrokeTransparency = 1
-            elseif ESP.Config.Glow then
-                local glowColor = (ESP.Boxes.Enabled and ESP.Boxes.OutlineColor)
-                                  or Color3.fromRGB(255, 255, 255)
-                rig.nameLbl.TextStrokeColor3 = glowColor
-                rig.distLbl.TextStrokeColor3 = glowColor
-                rig.nameLbl.TextStrokeTransparency = 0.1
-                rig.distLbl.TextStrokeTransparency = 0.2
-            else
-                rig.nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-                rig.distLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-                rig.nameLbl.TextStrokeTransparency = 0.4
-                rig.distLbl.TextStrokeTransparency = 0.6
-            end
-        end
-
-        -- v0.0.13 box gate: whole box widget hides when Boxes.Enabled is off.
+        -- v0.0.14 box gate: whole box widget hides when Boxes.Enabled is off.
         -- Enabling ESP alone shows NO box -- Boxes has to be turned on for it.
         if not ESP.Boxes.Enabled then
             rig.boxRoot.Visible = false
@@ -2627,6 +2611,12 @@ local function updateESPRigs()
         end
 
         local outlineColor = ESP.Boxes.OutlineColor
+        -- v0.0.14: TeamBasedColor now applies to box outline (was applied to
+        -- text, which no longer exists in this module). Overrides only for
+        -- same-team players.
+        if ESP.Config.TeamBasedColor and sameTeam then
+            outlineColor = ESP.Colors.Team
+        end
         local fillColor    = ESP.Boxes.FillColor
         local fillOn       = ESP.Boxes.FillBox
         local cornersMode  = ESP.Boxes.Corners
@@ -2787,10 +2777,18 @@ local function updateESPRigs()
     end
 end
 
-registerModule("esp", "ESP",
+local espModule = registerModule("esp", "ESP",
     function()
-        for _, plr in ipairs(Players:GetPlayers()) do applyESP(plr) end
-        table.insert(ESP.Connections, Players.PlayerAdded:Connect(applyESP))
+        -- v0.0.14: task.spawn per-player so makeRig's WaitForChild("Head", 3)
+        -- doesn't cascade -- each player's rig setup runs in its own coroutine.
+        -- Full-server initial attach is now roughly single-player-latency
+        -- instead of Nx it.
+        for _, plr in ipairs(Players:GetPlayers()) do
+            task.spawn(applyESP, plr)
+        end
+        table.insert(ESP.Connections, Players.PlayerAdded:Connect(function(plr)
+            task.spawn(applyESP, plr)
+        end))
         table.insert(ESP.Connections, Players.PlayerRemoving:Connect(stripESP))
         ESP.UpdateConn = RunService.RenderStepped:Connect(updateESPRigs)
     end,
@@ -2801,6 +2799,17 @@ registerModule("esp", "ESP",
         for _, plr in ipairs(Players:GetPlayers()) do stripESP(plr) end
     end
 )
+
+-- v0.0.14: arraylist subtitle -- "ESP box" (or "ESP box, chams" when chams
+-- ships). Returns leading-space + comma-joined sub-mode names. Empty string
+-- when nothing sub-active so the label renders as just "ESP" cleanly.
+espModule.GetDetail = function()
+    local parts = {}
+    if ESP.Boxes.Enabled then table.insert(parts, "box") end
+    -- future: chams, health, names, distance -- append their Enabled flags here
+    if #parts == 0 then return "" end
+    return " " .. table.concat(parts, ", ")
+end
 
 --============================================================
 -- WORLD MODULES: fullbright, no fog, custom time
@@ -2917,10 +2926,11 @@ addTab("Visuals", function(root)
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
     keybindPill(master.row, "esp", Enum.KeyCode.E)
 
-    -- v0.0.13: master ESP is truly a master. Every visible element is opt-in.
-    configCheckbox(espPanel, "Names",            ESP.Config.Names,          function(v) ESP.Config.Names          = v end)
-    configCheckbox(espPanel, "Distance",         ESP.Config.Distance,       function(v) ESP.Config.Distance       = v end)
-
+    -- v0.0.14: Names / Distance / Text Background rows removed. They're moving
+    -- to a dedicated "Names" module later. ESP master now controls the shared
+    -- plumbing (team / visibility / outline / glow / self-esp / character-only /
+    -- immediate / sizing / render distance) that the box + future name/chams/
+    -- health modules read from.
     configCheckbox(espPanel, "Team Check",       ESP.Config.TeamCheck,      function(v) ESP.Config.TeamCheck      = v end)
 
     local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
@@ -2930,7 +2940,6 @@ addTab("Visuals", function(root)
         function(c) ESP.Colors.Hidden  = c end)
 
     configCheckbox(espPanel, "Team Based Color", ESP.Config.TeamBasedColor, function(v) ESP.Config.TeamBasedColor = v end)
-    configCheckbox(espPanel, "Text Background",  ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
     configCheckbox(espPanel, "Outline",          ESP.Config.Outline,        function(v)
         ESP.Config.Outline = v
         applyGlobalOutline()   -- flips arraylist accent line + future overlays
