@@ -1,9 +1,9 @@
--- koffee v0.0.12
+-- koffee v0.0.13
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.12"
+Koffee.Version = "0.0.13"
 
 --============================================================
 -- THEME
@@ -24,16 +24,22 @@ local Theme = {
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
     },
-    -- interface font: Nunito Medium as baseline -- Regular was too thin
-    -- per he, but SemiBold reads too heavy. Medium is the goldilocks weight.
+    -- v0.0.13 typography reset. Nunito read too "Roblox 2020" per he. Swapping
+    -- to BuilderSans (Roblox's newer editorial sans -- cleaner geometry, less
+    -- friendly-rounded, more UI-established) as the baseline. Sarpanch handles
+    -- the AAA-game accent for brand mark + section headers -- it's a condensed
+    -- grotesque (Rajdhani / Tungsten family vibe) which is where modern AAA game
+    -- HUDs live typographically. Reads premium at UI sizes without shouting.
     Fonts = (function()
-        local UI = "rbxasset://fonts/families/Nunito.json"
-        local MONO = "rbxasset://fonts/families/RobotoMono.json"
+        local UI    = "rbxasset://fonts/families/BuilderSans.json"
+        local TITLE = "rbxasset://fonts/families/Sarpanch.json"
+        local MONO  = "rbxasset://fonts/families/RobotoMono.json"
         return {
-            Regular = Font.new(UI,   Enum.FontWeight.Medium),
-            Medium  = Font.new(UI,   Enum.FontWeight.SemiBold),
-            Bold    = Font.new(UI,   Enum.FontWeight.Bold),
-            Mono    = Font.new(MONO, Enum.FontWeight.Medium),
+            Regular = Font.new(UI,    Enum.FontWeight.Medium),
+            Medium  = Font.new(UI,    Enum.FontWeight.SemiBold),
+            Bold    = Font.new(UI,    Enum.FontWeight.Bold),
+            Title   = Font.new(TITLE, Enum.FontWeight.Bold),
+            Mono    = Font.new(MONO,  Enum.FontWeight.Medium),
         }
     end)(),
     Sizes = {
@@ -354,7 +360,7 @@ local hudLeft = new("Frame", {
 new("TextLabel", {
     Name = "Brand",
     Text = "koffee",
-    FontFace = Theme.Fonts.Bold,
+    FontFace = Theme.Fonts.Title,   -- Sarpanch Bold -- AAA-game brand feel
     TextSize = Theme.Text.Title,
     TextColor3 = Theme.Palette.Accent,
     BackgroundTransparency = 1,
@@ -629,8 +635,24 @@ local function registerModule(id, displayName, onEnable, onDisable)
         Enabled = false,
         OnEnable = onEnable,
         OnDisable = onDisable,
+        Watchers = {},   -- v0.0.13: subscribers get notified after every state
+                         -- flip so keybind-driven toggles update the checkbox
+                         -- visual too. general pubsub -- any observer works.
     }
     return Modules[id]
+end
+
+-- v0.0.13: subscribe to a module's Enabled state. Callback receives the new
+-- boolean state on every toggle (click OR keybind). Returns an unsubscribe fn.
+local function subscribeModule(id, fn)
+    local m = Modules[id]
+    if not m then return function() end end
+    table.insert(m.Watchers, fn)
+    return function()
+        for i, f in ipairs(m.Watchers) do
+            if f == fn then table.remove(m.Watchers, i); break end
+        end
+    end
 end
 
 local function toggleModule(id)
@@ -645,6 +667,11 @@ local function toggleModule(id)
         local ok, err = pcall(m.OnDisable)
         if not ok then warn("[koffee] " .. id .. " disable failed: " .. tostring(err)) end
         removeFromActiveArray(m)
+    end
+    -- notify subscribers AFTER on-enable/disable so they see the new state
+    -- with any side effects already applied
+    for _, watcher in ipairs(m.Watchers) do
+        pcall(watcher, m.Enabled)
     end
 end
 
@@ -1130,7 +1157,12 @@ local function moduleCheckbox(parent, label, moduleId)
     local ctrl = checkboxVisual(parent, label, mod and mod.Enabled or false)
     ctrl.button.MouseButton1Click:Connect(function()
         toggleModule(moduleId)
-        ctrl.setState(Modules[moduleId] and Modules[moduleId].Enabled)
+        -- state sync is handled by the watcher below -- covers keybind toggles too
+    end)
+    -- v0.0.13: subscribe so keybind toggles (or any other toggleModule caller)
+    -- keep the visual in lockstep with the actual module state
+    subscribeModule(moduleId, function(newState)
+        ctrl.setState(newState)
     end)
     return ctrl
 end
@@ -2017,11 +2049,21 @@ end
 --============================================================
 local ESP = {
     Config = {
+        -- v0.0.13: ESP master is a TRUE master. All visible elements are
+        -- opt-in via their own sub-toggle. Enabling ESP with everything else
+        -- off shows nothing on screen -- ESP just wires up the plumbing.
+        Names          = false,      -- name label above head
+        Distance       = false,      -- distance label under name
+        CharacterOnly  = false,      -- ignore accessories/tools in bounding-box calc
+        ImmediateMode  = true,       -- true = snap-to-frame, false = lerp smoothing
         TeamCheck      = false,
         VisibleCheck   = false,
         TeamBasedColor = false,
         TextBackground = false,
-        Outline        = true,
+        -- Outline is DECORATIVE thin-line accent (not a box gate). When off it
+        -- hides the 2D-box UIStroke and the arraylist accent line -- the box
+        -- itself (fill / cube edges / corner brackets) still draws.
+        Outline        = false,
         Glow           = false,
         SelfESP        = false,
         SizingType     = "Static",     -- per he: Static first + default
@@ -2107,6 +2149,31 @@ local function makeCubeEdges(parent)
         }))
     end
     return edges
+end
+
+-- v0.0.13: known rig part names (R6 + R15). Used by CharacterOnly mode to
+-- compute a bounding box from just the humanoid rig, excluding accessories,
+-- tools, held items, and other model props parented under the character.
+local RIG_PART_NAMES = {
+    -- R6
+    ["Head"] = true, ["HumanoidRootPart"] = true, ["Torso"] = true,
+    ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
+    -- R15
+    ["UpperTorso"] = true, ["LowerTorso"] = true,
+    ["LeftUpperArm"] = true, ["LeftLowerArm"] = true, ["LeftHand"] = true,
+    ["RightUpperArm"] = true, ["RightLowerArm"] = true, ["RightHand"] = true,
+    ["LeftUpperLeg"] = true, ["LeftLowerLeg"] = true, ["LeftFoot"] = true,
+    ["RightUpperLeg"] = true, ["RightLowerLeg"] = true, ["RightFoot"] = true,
+}
+
+local function collectBodyParts(character)
+    local parts = {}
+    for _, ch in ipairs(character:GetChildren()) do
+        if ch:IsA("BasePart") and RIG_PART_NAMES[ch.Name] then
+            table.insert(parts, ch)
+        end
+    end
+    return parts
 end
 
 -- v0.0.12: real glow via layered halos. UIStroke can only be single-layer, so
@@ -2214,28 +2281,8 @@ local function makeRig(plr, character)
     distLbl.ZIndex = 2
     distLbl.Parent = bb
 
-    local healthWrap = Instance.new("Frame")
-    healthWrap.Name = "HealthWrap"
-    healthWrap.BackgroundColor3 = Color3.fromRGB(15, 12, 10)
-    healthWrap.BackgroundTransparency = 0.35
-    healthWrap.BorderSizePixel = 0
-    healthWrap.AnchorPoint = Vector2.new(0.5, 0)
-    healthWrap.Position = UDim2.new(0.5, 0, 0, 34)
-    healthWrap.Size = UDim2.new(0.75, 0, 0, 3)
-    healthWrap.ZIndex = 2
-    healthWrap.Parent = bb
-    local wCorner = Instance.new("UICorner", healthWrap)
-    wCorner.CornerRadius = UDim.new(1, 0)
-
-    local healthFill = Instance.new("Frame")
-    healthFill.Name = "HealthFill"
-    healthFill.BackgroundColor3 = Theme.Palette.Success
-    healthFill.BorderSizePixel = 0
-    healthFill.Size = UDim2.new(1, 0, 1, 0)
-    healthFill.ZIndex = 3
-    healthFill.Parent = healthWrap
-    local fCorner = Instance.new("UICorner", healthFill)
-    fCorner.CornerRadius = UDim.new(1, 0)
+    -- v0.0.13: health bar removed. It's getting a dedicated overlay module
+    -- ("Health") later -- doesn't belong under ESP.
 
     return {
         character  = character,
@@ -2244,8 +2291,6 @@ local function makeRig(plr, character)
         bb         = bb,
         nameLbl    = nameLbl,
         distLbl    = distLbl,
-        healthWrap = healthWrap,
-        healthFill = healthFill,
         textBg     = textBg,
         boxRoot    = boxRoot,
         boxOutline = boxOutline,
@@ -2253,6 +2298,10 @@ local function makeRig(plr, character)
         cubeEdges  = cubeEdges,
         boxHalo    = boxHalo,
         staticSize = staticSize,
+        bodyParts  = collectBodyParts(character),   -- for CharacterOnly mode
+        -- smoothing state (used when ImmediateMode = false)
+        lastBoxPos  = nil,
+        lastBoxSize = nil,
     }
 end
 
@@ -2271,28 +2320,48 @@ local function cleanRig(rig)
     end
 end
 
--- Self ESP: LocalPlayer now allowed, gating happens in updateESPRigs.
+-- v0.0.13 orphan-box fix:
+--   Previous applyESP created a new rig on CharacterAdded but didn't clean
+--   up the old one -- boxRoot/cubeEdges/halo/bb from the dead character stayed
+--   parented to ESP.BoxLayer forever. That's the "boxes stick around after
+--   enemy dies" bug and the "new round doesn't work" bug both.
+--   Fix: clean the previous rig before making a new one, AND hook
+--   CharacterRemoving so visuals disappear the frame the character despawns
+--   instead of waiting for a stale render tick.
 local function applyESP(plr)
     if ESP.Rigs[plr] then return end
+    local entry = { rig = nil, addedConn = nil, removingConn = nil }
+    ESP.Rigs[plr] = entry
     local function attach(character)
         if not character then return end
+        -- kill the previous rig if there was one -- prevents leaked frames
+        if entry.rig then
+            cleanRig(entry.rig)
+            entry.rig = nil
+        end
+        -- also purge any stale attachment left over from a prior session
         pcall(function()
             local old = character:FindFirstChild("KoffeeESP")
             if old then old:Destroy() end
         end)
         local rig = makeRig(plr, character)
-        if rig then
-            ESP.Rigs[plr].rig = rig
-        end
+        if rig then entry.rig = rig end
     end
-    ESP.Rigs[plr] = { conn = plr.CharacterAdded:Connect(attach) }
+    entry.addedConn = plr.CharacterAdded:Connect(attach)
+    entry.removingConn = plr.CharacterRemoving:Connect(function()
+        if entry.rig then
+            cleanRig(entry.rig)
+            entry.rig = nil
+        end
+    end)
     if plr.Character then attach(plr.Character) end
 end
 
 local function stripESP(plr)
     local entry = ESP.Rigs[plr]
     if not entry then return end
-    if entry.conn then entry.conn:Disconnect() end
+    if entry.addedConn then entry.addedConn:Disconnect() end
+    if entry.removingConn then entry.removingConn:Disconnect() end
     cleanRig(entry.rig)
     ESP.Rigs[plr] = nil
 end
@@ -2301,8 +2370,13 @@ end
 --   screenCorners  -- list of {x, y, z} in viewport space
 --   anyInFront     -- at least one corner visible
 --   allInFront     -- every corner visible (safe for cube edge drawing)
--- Sizing modes:
---   "Static"     -- fixed size snapshot from rig creation, current pivot
+-- Sizing modes (v0.0.13):
+--   "Static"     -- distance-linked, aspect-locked screen box. Width/height
+--                   are LINKED (both derived from a single projected height
+--                   scalar). Only shrinks / grows -- never distorts. Uses a
+--                   two-point vertical projection (top/bottom stud markers)
+--                   so FOV + distance are respected but character animation
+--                   and camera angle don't warp the aspect ratio.
 --   "Bounding"   -- fresh GetBoundingBox per frame (breathes with animation)
 --   "Prediction" -- Bounding + velocity lookahead to reduce jitter at high ping
 local CUBE_EDGE_INDICES = {
@@ -2311,24 +2385,94 @@ local CUBE_EDGE_INDICES = {
     {1,5},{2,6},{3,7},{4,8},   -- connectors
 }
 
-local function project8(character, staticSize, sizingType)
+-- v0.0.13 Static: aspect-locked, distance-linked, upward offset corrected.
+--   Anchor is the character pivot (HumanoidRootPart). We project a 3-stud
+--   marker above and a 4-stud marker below (asymmetric -- HRP sits at hip
+--   height, so the box extending 3 up + 4 down centers on the visible body
+--   and no longer reads as "offset upward"). Screen height = |top2D - bot2D|.
+--   Width = height * STATIC_ASPECT (human-silhouette narrow rectangle).
+--   Result: only ONE screen scalar drives everything, so width and height
+--   are truly linked. Camera angle / character rotation / animation do NOT
+--   change the box shape.
+local STATIC_TOP_STUDS = 3
+local STATIC_BOT_STUDS = 4
+local STATIC_ASPECT    = 0.5   -- width = height * 0.5
+
+local function projectStatic(character)
+    local ok, pivot = pcall(character.GetPivot, character)
+    if not ok or not pivot then return nil, false, false end
+    local pos = pivot.Position
+    local topWorld = pos + Vector3.new(0, STATIC_TOP_STUDS, 0)
+    local botWorld = pos + Vector3.new(0, -STATIC_BOT_STUDS, 0)
+    local top2D = Camera:WorldToViewportPoint(topWorld)
+    local bot2D = Camera:WorldToViewportPoint(botWorld)
+    if top2D.Z <= 0 or bot2D.Z <= 0 then return nil, false, false end
+    local height  = math.abs(bot2D.Y - top2D.Y)
+    local width   = height * STATIC_ASPECT
+    local centerX = (top2D.X + bot2D.X) * 0.5
+    local centerY = (top2D.Y + bot2D.Y) * 0.5
+    local x0 = centerX - width * 0.5
+    local y0 = centerY - height * 0.5
+    local x1 = x0 + width
+    local y1 = y0 + height
+    -- Emit 8 "corners" so the render pipeline can treat Static like the
+    -- other modes. Front and back use the same 2D rectangle since Static
+    -- has no depth information -- Cube mode with Static will render as a
+    -- flat rect (Cube is really designed for Bounding / Prediction).
+    local avgZ = (top2D.Z + bot2D.Z) * 0.5
+    local c = table.create(8)
+    c[1] = { x = x1, y = y0, z = avgZ }
+    c[2] = { x = x0, y = y0, z = avgZ }
+    c[3] = { x = x1, y = y1, z = avgZ }
+    c[4] = { x = x0, y = y1, z = avgZ }
+    c[5], c[6], c[7], c[8] = c[1], c[2], c[3], c[4]
+    return c, true, true
+end
+
+-- v0.0.13: manual AABB from cached body parts. Ignores accessories/tools.
+-- Uses part.Position + part.Size (axis-aligned) -- fine for character parts
+-- which are mostly upright. Returns cframe (center) + size, matching the
+-- shape of character:GetBoundingBox.
+local function characterOnlyBBox(bodyParts)
+    local minX, minY, minZ =  math.huge,  math.huge,  math.huge
+    local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+    local found = false
+    for _, part in ipairs(bodyParts) do
+        if part.Parent then
+            local pos = part.Position
+            local hx, hy, hz = part.Size.X * 0.5, part.Size.Y * 0.5, part.Size.Z * 0.5
+            if pos.X - hx < minX then minX = pos.X - hx end
+            if pos.X + hx > maxX then maxX = pos.X + hx end
+            if pos.Y - hy < minY then minY = pos.Y - hy end
+            if pos.Y + hy > maxY then maxY = pos.Y + hy end
+            if pos.Z - hz < minZ then minZ = pos.Z - hz end
+            if pos.Z + hz > maxZ then maxZ = pos.Z + hz end
+            found = true
+        end
+    end
+    if not found then return nil end
+    local center = Vector3.new((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5)
+    local size = Vector3.new(maxX - minX, maxY - minY, maxZ - minZ)
+    return CFrame.new(center), size
+end
+
+local function project8(character, sizingType, characterOnly, bodyParts)
     local cf, size
-    if sizingType == "Static" then
-        local ok, pivot = pcall(character.GetPivot, character)
-        if not ok or not pivot then return nil, false, false end
-        cf = pivot
-        size = staticSize
+    if characterOnly and bodyParts and #bodyParts > 0 then
+        local c, s = characterOnlyBBox(bodyParts)
+        if not c then return nil, false, false end
+        cf, size = c, s
     else
         local ok, cframe, sz = pcall(character.GetBoundingBox, character)
         if not ok or not cframe then return nil, false, false end
         cf = cframe
         size = sz
-        if sizingType == "Prediction" then
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            if hrp then
-                local vel = hrp.AssemblyLinearVelocity
-                cf = cf + vel * 0.083   -- 5 frames @ 60fps lead
-            end
+    end
+    if sizingType == "Prediction" then
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local vel = hrp.AssemblyLinearVelocity
+            cf = cf + vel * 0.083   -- 5 frames @ 60fps lead
         end
     end
 
@@ -2357,12 +2501,20 @@ local function hideRigVisuals(rig)
     rig.bb.Enabled = false
     rig.boxRoot.Visible = false
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+    for _, f in ipairs(rig.boxCorners) do f.Visible = false end
     if rig.boxHalo then
         rig.boxHalo.outer.Visible = false
         rig.boxHalo.inner.Visible = false
     end
+    -- reset smoothing state so re-enable snaps rather than lerping from stale
+    rig.lastBoxPos = nil
+    rig.lastBoxSize = nil
 end
 
+-- v0.0.13 render: gates are strict (dead / despawned / out-of-range / ancestry
+-- broken -> hide immediately). Every visible ESP element is opt-in via its own
+-- config toggle -- master ESP shows nothing on its own. Outline is a decorative
+-- accent switch, NOT a gate for the box existing.
 local function updateESPRigs()
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -2370,7 +2522,22 @@ local function updateESPRigs()
     local localTeam = LocalPlayer.Team
     for plr, entry in pairs(ESP.Rigs) do
         local rig = entry.rig
-        if not (rig and rig.head and rig.head.Parent) then continue end
+        -- v0.0.13 hard life gate. Previously we only checked rig.head.Parent
+        -- which misses "character exists but humanoid died" and "character was
+        -- swapped for a new one mid-frame". Now we check everything the render
+        -- pipeline depends on, and hide (but don't clean) on any failure. Clean
+        -- happens on CharacterRemoving in applyESP.
+        if not rig then continue end
+        if not (rig.character and rig.character.Parent) then
+            hideRigVisuals(rig); continue
+        end
+        if not (rig.head and rig.head.Parent) then
+            hideRigVisuals(rig); continue
+        end
+        local hum = rig.character:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then
+            hideRigVisuals(rig); continue
+        end
 
         -- gates
         if plr == LocalPlayer and not ESP.Config.SelfESP then
@@ -2385,58 +2552,69 @@ local function updateESPRigs()
             hideRigVisuals(rig); continue
         end
 
-        rig.bb.Enabled = true
+        -- v0.0.13 master-ESP-with-no-defaults:
+        -- BillboardGui only enabled if user opted in to Names, Distance, or
+        -- Text Background. Otherwise no floating text renders at all.
+        local anyTextOn = ESP.Config.Names or ESP.Config.Distance or ESP.Config.TextBackground
+        rig.bb.Enabled = anyTextOn
 
-        -- text color (only Team Based Color affects it; master ESP is colorless)
-        local textColor = Theme.Palette.Text
-        if ESP.Config.TeamBasedColor and sameTeam then
-            textColor = ESP.Colors.Team
+        if anyTextOn then
+            local textColor = Theme.Palette.Text
+            if ESP.Config.TeamBasedColor and sameTeam then
+                textColor = ESP.Colors.Team
+            end
+            rig.nameLbl.TextColor3 = textColor
+            rig.nameLbl.Text = plr.Name
+            rig.nameLbl.Visible = ESP.Config.Names
+            rig.distLbl.Visible = ESP.Config.Distance
+            rig.distLbl.Text = math.floor(dist + 0.5) .. " studs"
+            rig.textBg.Visible = ESP.Config.TextBackground
+
+            -- text stroke: Outline off = no stroke, Glow on = colored halo,
+            -- otherwise a subtle black readability stroke.
+            if not ESP.Config.Outline then
+                rig.nameLbl.TextStrokeTransparency = 1
+                rig.distLbl.TextStrokeTransparency = 1
+            elseif ESP.Config.Glow then
+                local glowColor = (ESP.Boxes.Enabled and ESP.Boxes.OutlineColor)
+                                  or Color3.fromRGB(255, 255, 255)
+                rig.nameLbl.TextStrokeColor3 = glowColor
+                rig.distLbl.TextStrokeColor3 = glowColor
+                rig.nameLbl.TextStrokeTransparency = 0.1
+                rig.distLbl.TextStrokeTransparency = 0.2
+            else
+                rig.nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+                rig.distLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+                rig.nameLbl.TextStrokeTransparency = 0.4
+                rig.distLbl.TextStrokeTransparency = 0.6
+            end
         end
-        rig.nameLbl.TextColor3 = textColor
 
-        -- v0.0.12 text stroke logic:
-        --   Outline OFF: no text stroke (invisible)
-        --   Outline ON + Glow OFF: subtle black stroke for readability
-        --   Outline ON + Glow ON: colored glow using outline color, more punchy
-        if not ESP.Config.Outline then
-            rig.nameLbl.TextStrokeTransparency = 1
-            rig.distLbl.TextStrokeTransparency = 1
-        elseif ESP.Config.Glow then
-            local glowColor = (ESP.Boxes.Enabled and ESP.Boxes.OutlineColor)
-                              or Color3.fromRGB(255, 255, 255)
-            rig.nameLbl.TextStrokeColor3 = glowColor
-            rig.distLbl.TextStrokeColor3 = glowColor
-            rig.nameLbl.TextStrokeTransparency = 0.1
-            rig.distLbl.TextStrokeTransparency = 0.2
+        -- v0.0.13 box gate: whole box widget hides when Boxes.Enabled is off.
+        -- Enabling ESP alone shows NO box -- Boxes has to be turned on for it.
+        if not ESP.Boxes.Enabled then
+            rig.boxRoot.Visible = false
+            for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+            for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+            if rig.boxHalo then
+                rig.boxHalo.outer.Visible = false
+                rig.boxHalo.inner.Visible = false
+            end
+            continue
+        end
+
+        -- BOX projection dispatch:
+        --   Static -> aspect-locked, distance-linked screen box (no camera-angle warp)
+        --   Bounding / Prediction -> 8-corner world projection with optional CharacterOnly
+        local corners, anyInFront, allInFront
+        if ESP.Config.SizingType == "Static" then
+            corners, anyInFront, allInFront = projectStatic(rig.character)
         else
-            rig.nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-            rig.distLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-            rig.nameLbl.TextStrokeTransparency = 0.4
-            rig.distLbl.TextStrokeTransparency = 0.6
-        end
-        rig.textBg.Visible = ESP.Config.TextBackground
-
-        rig.distLbl.Text = math.floor(dist + 0.5) .. " studs"
-
-        local hum = rig.character:FindFirstChildOfClass("Humanoid")
-        if hum and hum.MaxHealth > 0 then
-            local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
-            rig.healthFill.Size = UDim2.new(pct, 0, 1, 0)
-            rig.healthFill.BackgroundColor3 =
-                pct > 0.55 and Theme.Palette.Success
-                or (pct > 0.25 and Color3.fromRGB(220, 180, 100) or Theme.Palette.Danger)
-            rig.healthWrap.Visible = true
-        else
-            rig.healthWrap.Visible = false
+            corners, anyInFront, allInFront =
+                project8(rig.character, ESP.Config.SizingType,
+                         ESP.Config.CharacterOnly, rig.bodyParts)
         end
 
-        -- BOX ESP
-        local corners, anyInFront, allInFront =
-            project8(rig.character, rig.staticSize, ESP.Config.SizingType)
-
-        -- hide if nothing visible OR any corner is behind camera (fixes the
-        -- "cube goes crazy at screen edges" bug -- projection flips for
-        -- points behind cam, so we bail rather than draw garbage)
         if not corners or not anyInFront or not allInFront then
             rig.boxRoot.Visible = false
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
@@ -2445,158 +2623,165 @@ local function updateESPRigs()
                 rig.boxHalo.outer.Visible = false
                 rig.boxHalo.inner.Visible = false
             end
+            continue
+        end
+
+        local outlineColor = ESP.Boxes.OutlineColor
+        local fillColor    = ESP.Boxes.FillColor
+        local fillOn       = ESP.Boxes.FillBox
+        local cornersMode  = ESP.Boxes.Corners
+        local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
+        local isCube       = ESP.Boxes.BoxType == "Cube"
+        -- v0.0.13: Outline is a decorative accent switch, NOT a gate on the
+        -- box existing. In 2D mode it controls whether the UIStroke shows.
+        -- In cube mode it has no effect on edges (edges ARE the box).
+        local outlineOn    = ESP.Config.Outline
+
+        -- projected AABB (2D box uses this directly; cube uses it for the
+        -- optional Fill layer that sits behind the edges)
+        local minX, minY = math.huge, math.huge
+        local maxX, maxY = -math.huge, -math.huge
+        for _, c in ipairs(corners) do
+            if c.x < minX then minX = c.x end
+            if c.x > maxX then maxX = c.x end
+            if c.y < minY then minY = c.y end
+            if c.y > maxY then maxY = c.y end
+        end
+        local w, h = maxX - minX, maxY - minY
+
+        -- v0.0.13 Immediate Mode:
+        --   true  = snap box pos/size to target each frame (matches character
+        --           movement 1:1, no lag, may jitter slightly on fast pans)
+        --   false = lerp pos/size toward target at 0.35 per frame (smoother,
+        --           slight visible drag when the character teleports)
+        local tX, tY, tW, tH
+        if ESP.Config.ImmediateMode then
+            tX, tY, tW, tH = minX, minY, w, h
+            rig.lastBoxPos = nil     -- reset smoothing state so re-enable snaps
+            rig.lastBoxSize = nil
         else
-            local useCustom    = ESP.Boxes.Enabled
-            local outlineColor = useCustom and ESP.Boxes.OutlineColor or Color3.new(1, 1, 1)
-            local fillColor    = useCustom and ESP.Boxes.FillColor    or ESP.Colors.Visible
-            local fillOn       = useCustom and ESP.Boxes.FillBox
-            local cornersMode  = useCustom and ESP.Boxes.Corners
-            local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
-            local isCube       = ESP.Boxes.BoxType == "Cube"
+            rig.lastBoxPos  = rig.lastBoxPos  or Vector2.new(minX, minY)
+            rig.lastBoxSize = rig.lastBoxSize or Vector2.new(w, h)
+            rig.lastBoxPos  = rig.lastBoxPos:Lerp(Vector2.new(minX, minY), 0.35)
+            rig.lastBoxSize = rig.lastBoxSize:Lerp(Vector2.new(w, h), 0.35)
+            tX, tY = rig.lastBoxPos.X, rig.lastBoxPos.Y
+            tW, tH = rig.lastBoxSize.X, rig.lastBoxSize.Y
+        end
+        rig.boxRoot.Position = UDim2.new(0, tX, 0, tY)
+        rig.boxRoot.Size = UDim2.new(0, tW, 0, tH)
+        rig.boxRoot.BackgroundColor3 = fillColor
 
-            -- v0.0.12 Outline semantics: Outline is a MASTER thin-line accent.
-            -- OFF = no box lines drawn at all (activelist accent line also
-            -- follows this via applyGlobalOutline hooked at checkbox change).
-            -- Glow is a separate visual: adds soft halo layers behind the box.
-            local strokeEnabled = ESP.Config.Outline
-            local strokeThick   = 1                                    -- thin, per he
-            local strokeTrans   = 0
-
-            -- always compute projected AABB (used by both 2D box AND cube fill)
-            local minX, minY = math.huge, math.huge
-            local maxX, maxY = -math.huge, -math.huge
-            for _, c in ipairs(corners) do
-                if c.x < minX then minX = c.x end
-                if c.x > maxX then maxX = c.x end
-                if c.y < minY then minY = c.y end
-                if c.y > maxY then maxY = c.y end
+        -- HALO (glow): scaled outward from AABB, tinted with outline color.
+        -- 2 layers for a soft falloff. Uses the AABB even in cube mode so the
+        -- halo remains a coherent bright bloom instead of a rotating polygon.
+        if rig.boxHalo then
+            if ESP.Config.Glow then
+                local o = rig.boxHalo.outer
+                local n = rig.boxHalo.inner
+                o.Position = UDim2.new(0, tX - 6, 0, tY - 6)
+                o.Size = UDim2.new(0, tW + 12, 0, tH + 12)
+                o.BackgroundColor3 = outlineColor
+                o.BackgroundTransparency = 0.85
+                o.Visible = true
+                n.Position = UDim2.new(0, tX - 3, 0, tY - 3)
+                n.Size = UDim2.new(0, tW + 6, 0, tH + 6)
+                n.BackgroundColor3 = outlineColor
+                n.BackgroundTransparency = 0.65
+                n.Visible = true
+            else
+                rig.boxHalo.outer.Visible = false
+                rig.boxHalo.inner.Visible = false
             end
-            local w, h = maxX - minX, maxY - minY
+        end
 
-            -- BOX ROOT: used for 2D bounding box (fill + stroke + optional
-            -- corner brackets) AND for cube fill (fill only, stroke disabled).
-            rig.boxRoot.Position = UDim2.new(0, minX, 0, minY)
-            rig.boxRoot.Size = UDim2.new(0, w, 0, h)
-            rig.boxRoot.BackgroundColor3 = fillColor
+        if isCube then
+            -- boxRoot serves as the AABB Fill layer only in cube mode.
+            rig.boxRoot.Visible = fillOn
+            rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
+            if rig.boxOutline then rig.boxOutline.Enabled = false end
+            for _, f in ipairs(rig.boxCorners) do f.Visible = false end
 
-            -- HALO (glow): scaled outward from AABB, tinted with outlineColor.
-            -- 2 layers for a soft falloff. Only visible when Glow is on and
-            -- outline is enabled (glow without a box makes no visual sense).
-            if rig.boxHalo then
-                if ESP.Config.Glow and strokeEnabled then
-                    local o = rig.boxHalo.outer
-                    local n = rig.boxHalo.inner
-                    o.Position = UDim2.new(0, minX - 6, 0, minY - 6)
-                    o.Size = UDim2.new(0, w + 12, 0, h + 12)
-                    o.BackgroundColor3 = outlineColor
-                    o.BackgroundTransparency = 0.85
-                    o.Visible = true
-                    n.Position = UDim2.new(0, minX - 3, 0, minY - 3)
-                    n.Size = UDim2.new(0, w + 6, 0, h + 6)
-                    n.BackgroundColor3 = outlineColor
-                    n.BackgroundTransparency = 0.65
-                    n.Visible = true
+            local thick = ESP.Config.Glow and 2 or 1
+            for i, pair in ipairs(CUBE_EDGE_INDICES) do
+                local a = corners[pair[1]]
+                local b = corners[pair[2]]
+                local aEdge = rig.cubeEdges[i]           -- slots 1..12
+                local bEdge = rig.cubeEdges[i + 12]      -- slots 13..24
+                local dx, dy = b.x - a.x, b.y - a.y
+                local length = math.sqrt(dx * dx + dy * dy)
+                if length < 1 then
+                    aEdge.Visible = false
+                    bEdge.Visible = false
                 else
-                    rig.boxHalo.outer.Visible = false
-                    rig.boxHalo.inner.Visible = false
+                    local rot = math.deg(math.atan2(dy, dx))
+                    if cornersMode then
+                        local segLen = math.max(3, length * cornerLen)
+                        aEdge.AnchorPoint = Vector2.new(0, 0.5)
+                        aEdge.Position = UDim2.new(0, a.x, 0, a.y)
+                        aEdge.Size = UDim2.new(0, segLen, 0, thick)
+                        aEdge.Rotation = rot
+                        aEdge.BackgroundColor3 = outlineColor
+                        aEdge.BackgroundTransparency = 0
+                        aEdge.Visible = true
+                        bEdge.AnchorPoint = Vector2.new(1, 0.5)
+                        bEdge.Position = UDim2.new(0, b.x, 0, b.y)
+                        bEdge.Size = UDim2.new(0, segLen, 0, thick)
+                        bEdge.Rotation = rot
+                        bEdge.BackgroundColor3 = outlineColor
+                        bEdge.BackgroundTransparency = 0
+                        bEdge.Visible = true
+                    else
+                        aEdge.AnchorPoint = Vector2.new(0.5, 0.5)
+                        aEdge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
+                        aEdge.Size = UDim2.new(0, length, 0, thick)
+                        aEdge.Rotation = rot
+                        aEdge.BackgroundColor3 = outlineColor
+                        aEdge.BackgroundTransparency = 0
+                        aEdge.Visible = true
+                        bEdge.Visible = false
+                    end
                 end
             end
+        else
+            -- 2D bounding box. boxRoot IS the box. cube frames off.
+            for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+            rig.boxRoot.Visible = true
+            rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
 
-            if isCube then
-                -- Cube: boxRoot serves as the FILL layer only (stroke off, no
-                -- 2D-corner brackets). Cube edges/corners drawn on top via
-                -- rig.cubeEdges. Fill Box in cube mode = AABB fill under edges,
-                -- per he: "corners are outside" (cube edges can extend past AABB).
-                rig.boxRoot.Visible = fillOn
-                rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
-                if rig.boxOutline then rig.boxOutline.Enabled = false end
-                for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+            -- UIStroke controlled by Outline toggle (accent). When corners
+            -- mode is on, the stroke gives way to the corner brackets.
+            if rig.boxOutline then
+                rig.boxOutline.Color = outlineColor
+                rig.boxOutline.Thickness = 1
+                rig.boxOutline.Transparency = 0
+                rig.boxOutline.Enabled = outlineOn and not cornersMode
+            end
 
-                local thick = ESP.Config.Glow and 2 or 1
-                for i, pair in ipairs(CUBE_EDGE_INDICES) do
-                    local a = corners[pair[1]]
-                    local b = corners[pair[2]]
-                    local aEdge = rig.cubeEdges[i]           -- slots 1..12
-                    local bEdge = rig.cubeEdges[i + 12]      -- slots 13..24
-                    local dx, dy = b.x - a.x, b.y - a.y
-                    local length = math.sqrt(dx * dx + dy * dy)
-                    if length < 1 or not strokeEnabled then
-                        aEdge.Visible = false
-                        bEdge.Visible = false
-                    else
-                        local rot = math.deg(math.atan2(dy, dx))
-                        if cornersMode then
-                            -- L-brackets: draw short segment anchored at each
-                            -- vertex, extending toward the other vertex. The
-                            -- 8 cube vertices each become a proper corner
-                            -- mark because 3 edges meet at each vertex.
-                            local segLen = math.max(3, length * cornerLen)
-                            -- A-side: anchor left-mid at A, extends toward B
-                            aEdge.AnchorPoint = Vector2.new(0, 0.5)
-                            aEdge.Position = UDim2.new(0, a.x, 0, a.y)
-                            aEdge.Size = UDim2.new(0, segLen, 0, thick)
-                            aEdge.Rotation = rot
-                            aEdge.BackgroundColor3 = outlineColor
-                            aEdge.BackgroundTransparency = 0
-                            aEdge.Visible = true
-                            -- B-side: anchor right-mid at B, extends toward A
-                            bEdge.AnchorPoint = Vector2.new(1, 0.5)
-                            bEdge.Position = UDim2.new(0, b.x, 0, b.y)
-                            bEdge.Size = UDim2.new(0, segLen, 0, thick)
-                            bEdge.Rotation = rot
-                            bEdge.BackgroundColor3 = outlineColor
-                            bEdge.BackgroundTransparency = 0
-                            bEdge.Visible = true
-                        else
-                            -- Full edge: single frame centered between A and B
-                            aEdge.AnchorPoint = Vector2.new(0.5, 0.5)
-                            aEdge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
-                            aEdge.Size = UDim2.new(0, length, 0, thick)
-                            aEdge.Rotation = rot
-                            aEdge.BackgroundColor3 = outlineColor
-                            aEdge.BackgroundTransparency = 0
-                            aEdge.Visible = true
-                            bEdge.Visible = false
-                        end
-                    end
+            -- Corner brackets: independent of Outline (they ARE the box lines
+            -- in corners mode, not a decorative accent on top of a stroke).
+            if cornersMode then
+                local segLen = math.min(tW, tH) * cornerLen
+                local thick = 1
+                local specs = {
+                    { UDim2.new(0, 0, 0, 0),            UDim2.new(0, segLen, 0, thick) },
+                    { UDim2.new(0, 0, 0, 0),            UDim2.new(0, thick,  0, segLen) },
+                    { UDim2.new(1, -segLen, 0, 0),      UDim2.new(0, segLen, 0, thick) },
+                    { UDim2.new(1, -thick, 0, 0),       UDim2.new(0, thick,  0, segLen) },
+                    { UDim2.new(0, 0, 1, -thick),       UDim2.new(0, segLen, 0, thick) },
+                    { UDim2.new(0, 0, 1, -segLen),      UDim2.new(0, thick,  0, segLen) },
+                    { UDim2.new(1, -segLen, 1, -thick), UDim2.new(0, segLen, 0, thick) },
+                    { UDim2.new(1, -thick, 1, -segLen), UDim2.new(0, thick,  0, segLen) },
+                }
+                for i, spec in ipairs(specs) do
+                    local f = rig.boxCorners[i]
+                    f.Position = spec[1]
+                    f.Size = spec[2]
+                    f.BackgroundColor3 = outlineColor
+                    f.BackgroundTransparency = 0
+                    f.Visible = true
                 end
             else
-                -- 2D bounding box: boxRoot IS the box. Hide cube frames.
-                for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
-                rig.boxRoot.Visible = true
-                rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
-
-                if rig.boxOutline then
-                    rig.boxOutline.Color = outlineColor
-                    rig.boxOutline.Thickness = strokeThick
-                    rig.boxOutline.Transparency = strokeTrans
-                    rig.boxOutline.Enabled = strokeEnabled and not cornersMode
-                end
-
-                if cornersMode and strokeEnabled then
-                    local segLen = math.min(w, h) * cornerLen
-                    local thick = 1
-                    local specs = {
-                        { UDim2.new(0, 0, 0, 0),            UDim2.new(0, segLen, 0, thick) },
-                        { UDim2.new(0, 0, 0, 0),            UDim2.new(0, thick,  0, segLen) },
-                        { UDim2.new(1, -segLen, 0, 0),      UDim2.new(0, segLen, 0, thick) },
-                        { UDim2.new(1, -thick, 0, 0),       UDim2.new(0, thick,  0, segLen) },
-                        { UDim2.new(0, 0, 1, -thick),       UDim2.new(0, segLen, 0, thick) },
-                        { UDim2.new(0, 0, 1, -segLen),      UDim2.new(0, thick,  0, segLen) },
-                        { UDim2.new(1, -segLen, 1, -thick), UDim2.new(0, segLen, 0, thick) },
-                        { UDim2.new(1, -thick, 1, -segLen), UDim2.new(0, thick,  0, segLen) },
-                    }
-                    for i, spec in ipairs(specs) do
-                        local f = rig.boxCorners[i]
-                        f.Position = spec[1]
-                        f.Size = spec[2]
-                        f.BackgroundColor3 = outlineColor
-                        f.BackgroundTransparency = 0
-                        f.Visible = true
-                    end
-                else
-                    for _, f in ipairs(rig.boxCorners) do f.Visible = false end
-                end
+                for _, f in ipairs(rig.boxCorners) do f.Visible = false end
             end
         end
     end
@@ -2732,6 +2917,10 @@ addTab("Visuals", function(root)
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
     keybindPill(master.row, "esp", Enum.KeyCode.E)
 
+    -- v0.0.13: master ESP is truly a master. Every visible element is opt-in.
+    configCheckbox(espPanel, "Names",            ESP.Config.Names,          function(v) ESP.Config.Names          = v end)
+    configCheckbox(espPanel, "Distance",         ESP.Config.Distance,       function(v) ESP.Config.Distance       = v end)
+
     configCheckbox(espPanel, "Team Check",       ESP.Config.TeamCheck,      function(v) ESP.Config.TeamCheck      = v end)
 
     local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
@@ -2748,6 +2937,8 @@ addTab("Visuals", function(root)
     end)
     configCheckbox(espPanel, "Glow",             ESP.Config.Glow,           function(v) ESP.Config.Glow           = v end)
     configCheckbox(espPanel, "Self ESP",         ESP.Config.SelfESP,        function(v) ESP.Config.SelfESP        = v end)
+    configCheckbox(espPanel, "Character Only",   ESP.Config.CharacterOnly,  function(v) ESP.Config.CharacterOnly  = v end)
+    configCheckbox(espPanel, "Immediate Mode",   ESP.Config.ImmediateMode,  function(v) ESP.Config.ImmediateMode  = v end)
 
     dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
