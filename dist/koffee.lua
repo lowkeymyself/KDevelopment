@@ -1,9 +1,9 @@
--- koffee v0.0.15
+-- koffee v0.0.18
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.15"
+Koffee.Version = "0.0.18"
 
 --============================================================
 -- THEME
@@ -82,7 +82,9 @@ local Stats            = game:GetService("Stats")
 local Workspace        = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
-local Camera      = Workspace.CurrentCamera
+-- v0.0.17: removed cached `Camera` global. All camera reads now go through
+-- Workspace.CurrentCamera fresh, so games that swap CurrentCamera (custom
+-- camera systems) don't leave us projecting through a dead camera.
 
 local function new(class, props, children)
     local inst = Instance.new(class)
@@ -236,7 +238,10 @@ local snowflakes = {}
 local snowActive = false
 
 local function viewport()
-    return Camera.ViewportSize
+    -- v0.0.17: read CurrentCamera fresh each call. Caching it at script init
+    -- goes stale in games that swap CurrentCamera (custom camera systems).
+    local cam = Workspace.CurrentCamera
+    return cam and cam.ViewportSize or Vector2.new(0, 0)
 end
 
 -- each flake is a stack of 3 concentric circles for a soft radial edge,
@@ -597,15 +602,18 @@ local ROW_HEIGHT = 20
 local ROW_ENTER = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 -- v0.0.14: arraylist label uses RichText. Base module name in Text color,
--- optional detail suffix (e.g. " box" / " box, chams") in Muted color.
--- Format: string.format("%s<font color='rgb(...)'>%s</font>", name, detail)
+-- optional detail suffix (e.g. "box" / "box, chams") in Muted color.
+-- v0.0.17: detail suffix is now smaller (size 12 vs body 14) + wider spacing
+-- from the base name per he. RichText <font size='N'> drives the size delta.
 local ARRAYLIST_MUTED_COLOR = "rgb(138,125,112)"   -- Theme.Palette.TextMuted
+local ARRAYLIST_DETAIL_SIZE = 12                    -- smaller than Body (14)
 
 local function buildArrayLabelText(mod)
     local base = mod.DisplayName or mod.Id or "?"
     local detail = mod.GetDetail and mod.GetDetail() or ""
     if detail and detail ~= "" then
-        return string.format("%s<font color='%s'>%s</font>", base, ARRAYLIST_MUTED_COLOR, detail)
+        return string.format("%s<font size='%d' color='%s'>%s</font>",
+            base, ARRAYLIST_DETAIL_SIZE, ARRAYLIST_MUTED_COLOR, detail)
     end
     return base
 end
@@ -676,7 +684,13 @@ end
 local function removeFromActiveArray(mod)
     local w = mod._wrapper
     if not w then return end
-    mod._wrapper = nil
+    -- v0.0.16: do NOT nil mod._wrapper here. addToActiveArray needs the
+    -- reference to destroy the dying wrapper if the module is re-enabled
+    -- during the 0.14s fade window. Nilling it here orphaned the wrapper
+    -- (the canceled destroy thread never ran, the frame stayed parented to
+    -- labelsColumn consuming a LayoutOrder slot and ROW_HEIGHT pixels).
+    -- If the destroy thread completes normally, mod._wrapper.Parent becomes
+    -- nil and addToActiveArray's existence check skips the Destroy call.
     mod._arrayLabel = nil
     if mod._detailConn then
         mod._detailConn:Disconnect()
@@ -1282,6 +1296,7 @@ local function keybindPill(row, moduleId, initialKey)
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, 0, 0.5, 0),
         Size = UDim2.new(0, 34, 0, 15),
+        AutomaticSize = Enum.AutomaticSize.X,   -- v0.0.17: grow for long key names
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BackgroundTransparency = 0.2,
         BorderSizePixel = 0,
@@ -1292,7 +1307,15 @@ local function keybindPill(row, moduleId, initialKey)
         TextColor3 = Theme.Palette.TextMuted,
         ZIndex = 38,
         Parent = row,
-    }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+    }, {
+        pillCorner(),
+        stroke(Theme.Palette.BorderSubtle),
+        -- v0.0.17: pad so AutomaticSize.X doesn't glue text to the edges
+        new("UIPadding", {
+            PaddingLeft = UDim.new(0, 8),
+            PaddingRight = UDim.new(0, 8),
+        }),
+    })
     pill.MouseEnter:Connect(function()
         tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
     end)
@@ -1302,6 +1325,14 @@ local function keybindPill(row, moduleId, initialKey)
         end
     end)
     pill.MouseButton1Click:Connect(function()
+        -- v0.0.17: restore any previously-pending pill before switching rebind
+        -- target. Without this, clicking pill A then pill B leaves pill A
+        -- stuck showing "..." forever.
+        if pendingRebind and pendingRebind.pill ~= pill then
+            local prev = Keybinds[pendingRebind.moduleId]
+            pendingRebind.pill.Text = prev and prev.Name or "-"
+            tween(pendingRebind.pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+        end
         pill.Text = "..."
         tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
         pendingRebind = { moduleId = moduleId, pill = pill }
@@ -1503,10 +1534,7 @@ local function buildColorPicker()
         Parent = root,
     }, { corner(6), stroke(Theme.Palette.Border, 1) })
 
-    local suppressRefresh = false
-
     local function applyToUI()
-        suppressRefresh = true
         svArea.BackgroundColor3 = Color3.fromHSV(ColorPicker.h, 1, 1)
         svCursor.Position = UDim2.new(ColorPicker.s, 0, 1 - ColorPicker.v, 0)
         hueCursor.Position = UDim2.new(0.5, 0, ColorPicker.h, 0)
@@ -1518,7 +1546,6 @@ local function buildColorPicker()
         if ColorPicker.callback then
             ColorPicker.callback(c)
         end
-        suppressRefresh = false
     end
 
     local svDragging = false
@@ -1584,6 +1611,13 @@ end
 
 local function openColorPicker(swatchInstance, initialColor, onChange)
     if not ColorPicker.root then buildColorPicker() end
+    -- v0.0.16: cancel any pending close from a prior closeColorPicker call.
+    -- Without this, the task.delay(0.22) from close fires AFTER open and
+    -- hides the now-visible picker.
+    if ColorPicker.closeTask then
+        pcall(task.cancel, ColorPicker.closeTask)
+        ColorPicker.closeTask = nil
+    end
     ColorPicker.activeSwatch = swatchInstance
     ColorPicker.callback = onChange
     local h, s, v = initialColor:ToHSV()
@@ -1591,7 +1625,7 @@ local function openColorPicker(swatchInstance, initialColor, onChange)
     -- position near swatch (below + right, but clamp to viewport)
     local abs = swatchInstance.AbsolutePosition
     local siz = swatchInstance.AbsoluteSize
-    local vp = Camera.ViewportSize
+    local vp = Workspace.CurrentCamera.ViewportSize
     local pickerW, pickerH = 260, 260
     local x = math.min(abs.X, vp.X - pickerW - 8)
     local y = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
@@ -1610,7 +1644,13 @@ local function closeColorPicker()
     tween(ColorPicker.root, Theme.Animation.Menu, {
         BackgroundTransparency = 1,
     })
-    task.delay(0.22, function()
+    -- v0.0.16: track the close thread so openColorPicker can cancel it if
+    -- the picker is reopened before the fade completes.
+    if ColorPicker.closeTask then
+        pcall(task.cancel, ColorPicker.closeTask)
+    end
+    ColorPicker.closeTask = task.delay(0.22, function()
+        ColorPicker.closeTask = nil
         if ColorPicker.root then ColorPicker.root.Visible = false end
     end)
     ColorPicker.activeSwatch = nil
@@ -1635,17 +1675,19 @@ local function colorSwatch(parent, initialColor, size, opts)
         Parent = parent,
     }, { corner(3), stroke(Theme.Palette.Border, 1) })
 
+    -- v0.0.17: tooltip parented to popupScreen (not the swatch) so it
+    -- escapes the window CanvasGroup's clip bounds. Positioned live on
+    -- every hover from the swatch's AbsolutePosition.
+    local TIP_W, TIP_H = 132, 34
     local tip = new("Frame", {
         Name = "Tooltip",
-        AnchorPoint = Vector2.new(0.5, 1),
-        Position = UDim2.new(0.5, 0, 0, -8),
-        Size = UDim2.new(0, 132, 0, 34),
+        Size = UDim2.new(0, TIP_W, 0, TIP_H),
         BackgroundColor3 = Theme.Palette.Panel,
         BackgroundTransparency = 0.05,
         BorderSizePixel = 0,
         Visible = false,
         ZIndex = 100,
-        Parent = sw,
+        Parent = popupScreen,
     }, { corner(4), stroke(Theme.Palette.Border) })
     local chip = new("Frame", {
         Position = UDim2.new(0, 4, 0, 4),
@@ -1687,7 +1729,17 @@ local function colorSwatch(parent, initialColor, size, opts)
         rgbLbl.Text = colorToRGB(currentColor)
     end
 
-    sw.MouseEnter:Connect(function() tip.Visible = true end)
+    sw.MouseEnter:Connect(function()
+        local abs = sw.AbsolutePosition
+        local siz = sw.AbsoluteSize
+        local vp  = Workspace.CurrentCamera.ViewportSize
+        local tipX = abs.X + siz.X * 0.5 - TIP_W * 0.5
+        local tipY = abs.Y - TIP_H - 8
+        tipX = math.clamp(tipX, 4, vp.X - TIP_W - 4)
+        if tipY < 4 then tipY = abs.Y + siz.Y + 8 end
+        tip.Position = UDim2.new(0, tipX, 0, tipY)
+        tip.Visible = true
+    end)
     sw.MouseLeave:Connect(function() tip.Visible = false end)
 
     sw.MouseButton1Click:Connect(function()
@@ -1845,9 +1897,11 @@ local function dropdown(parent, label, options, initial, onChange)
                 if not isOpen then list.Visible = false end
             end)
         end
+        -- v0.0.17: option buttons stay at BackgroundTransparency = 1 always
+        -- (only hover brings them to 0.7). The old transparency tween here
+        -- was a no-op. Only the text labels need to fade out.
         for _, child in ipairs(list:GetChildren()) do
             if child:IsA("TextButton") then
-                tween(child, Theme.Animation.Menu, { BackgroundTransparency = 1 })
                 for _, sub in ipairs(child:GetChildren()) do
                     if sub:IsA("TextLabel") then
                         tween(sub, Theme.Animation.Menu, { TextTransparency = 1 })
@@ -1876,9 +1930,10 @@ local function dropdown(parent, label, options, initial, onChange)
             BackgroundTransparency = 0.05,
         })
         tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
+        -- v0.0.17: only text labels fade in. Option button bg is always 1
+        -- (invisible) -- hover drives it to 0.7.
         for _, child in ipairs(list:GetChildren()) do
             if child:IsA("TextButton") then
-                tween(child, Theme.Animation.Menu, { BackgroundTransparency = 1 })
                 for _, sub in ipairs(child:GetChildren()) do
                     if sub:IsA("TextLabel") then
                         tween(sub, Theme.Animation.Menu, { TextTransparency = 0 })
@@ -2150,14 +2205,12 @@ local ESP = {
         TeamCheck      = false,
         VisibleCheck   = false,
         TeamBasedColor = false,      -- team color overrides box outline color on same-team
-        -- v0.0.15 Outline semantics (final): Outline gates the box LINES
-        -- (the 2D UIStroke, the cube edges). Fill + Corners are independent
-        -- and unaffected. When Outline is off + Fill is on + Corners is off,
-        -- 2D box shows just fill / cube shows just AABB fill. When Outline
-        -- is off + Corners is on, corners still render (they're the box's
-        -- line style, not a decorative accent). So the box "exists" as long
-        -- as Fill or Corners is on -- Outline just controls its full outline.
-        -- Also drives the arraylist accent line via applyGlobalOutline.
+        -- v0.0.17 Outline redesign: Outline is a thickness ACCENT, not a
+        -- gate. Box lines (2D stroke / cube edges) ALWAYS render when the
+        -- box is visible -- that's the box's inherent rendering. Outline
+        -- adds +1px thickness to all box lines AND controls the arraylist
+        -- accent line. Glow adds another +1px + halo layers.
+        --   neither: 1px | outline: 2px | glow: 2px | both: 3px
         Outline        = true,
         Glow           = false,
         SelfESP        = false,
@@ -2184,9 +2237,10 @@ local ESP = {
     BoxLayer = nil,
 }
 
--- v0.0.12: Outline is a global thin-line accent switch. When OFF, the
--- arraylist's white vertical line hides too. Extend this function whenever
--- a new overlay module (Health, future) gains a subtle accent line.
+-- v0.0.12: Outline is a global thin-line accent switch. v0.0.17: decoupled
+-- from box existence -- box lines always render, Outline adds thickness (+1px)
+-- to all box lines AND controls the arraylist accent line. Extend this function
+-- whenever a new overlay module (Health, future) gains a subtle accent line.
 -- (Main-interface strokes -- window/tabs/pills/widgets -- are NOT affected;
 -- those are chrome, not accent.)
 local function applyGlobalOutline()
@@ -2447,16 +2501,20 @@ local CUBE_EDGE_INDICES = {
 }
 
 -- v0.0.13 Static: aspect-locked, distance-linked, upward offset corrected.
---   Anchor is the character pivot (HumanoidRootPart). We project a 3-stud
---   marker above and a 4-stud marker below (asymmetric -- HRP sits at hip
---   height, so the box extending 3 up + 4 down centers on the visible body
---   and no longer reads as "offset upward"). Screen height = |top2D - bot2D|.
---   Width = height * STATIC_ASPECT (human-silhouette narrow rectangle).
+--   Anchor is the character pivot (HumanoidRootPart). We project markers
+--   above and below the torso. v0.0.16: markers are now SYMMETRIC (+3/-3).
+--   The old +3/-4 was asymmetric -- HRP sits at hip level (~3 studs), head
+--   top is ~5.5, feet are at ~0. So +3 reaches head, -3 reaches feet. The
+--   old -4 extended 1 stud below ground, shifting the box center 0.5 studs
+--   below the visible character center. At range this read as "the top is
+--   offset from the bottom" because the character sat in the upper portion
+--   of the box with empty space at the bottom.
+--   Screen height = |top2D - bot2D|. Width = height * STATIC_ASPECT.
 --   Result: only ONE screen scalar drives everything, so width and height
 --   are truly linked. Camera angle / character rotation / animation do NOT
 --   change the box shape.
 local STATIC_TOP_STUDS = 3
-local STATIC_BOT_STUDS = 4
+local STATIC_BOT_STUDS = 3
 local STATIC_ASPECT    = 0.5   -- width = height * 0.5
 
 local function projectStatic(torso)
@@ -2465,11 +2523,13 @@ local function projectStatic(torso)
     -- not track HRP movement), which produced Static boxes drifting off
     -- the character. Torso.Position is a live world-space read.
     if not torso or not torso.Parent then return nil, false, false end
+    local cam = Workspace.CurrentCamera
+    if not cam then return nil, false, false end
     local pos = torso.Position
     local topWorld = pos + Vector3.new(0, STATIC_TOP_STUDS, 0)
     local botWorld = pos + Vector3.new(0, -STATIC_BOT_STUDS, 0)
-    local top2D = Camera:WorldToViewportPoint(topWorld)
-    local bot2D = Camera:WorldToViewportPoint(botWorld)
+    local top2D = cam:WorldToViewportPoint(topWorld)
+    local bot2D = cam:WorldToViewportPoint(botWorld)
     if top2D.Z <= 0 or bot2D.Z <= 0 then return nil, false, false end
     local height  = math.abs(bot2D.Y - top2D.Y)
     local width   = height * STATIC_ASPECT
@@ -2489,7 +2549,14 @@ local function projectStatic(torso)
     c[2] = { x = x0, y = y0, z = avgZ }
     c[3] = { x = x1, y = y1, z = avgZ }
     c[4] = { x = x0, y = y1, z = avgZ }
-    c[5], c[6], c[7], c[8] = c[1], c[2], c[3], c[4]
+    -- v0.0.17: assign by VALUE (new tables), not by reference. The old
+    -- `c[5..8] = c[1..4]` shared table refs -- a future mutation of c[1]
+    -- would silently corrupt c[5]. Nothing mutates today, but this kills
+    -- the latent footgun.
+    c[5] = { x = x1, y = y0, z = avgZ }
+    c[6] = { x = x0, y = y0, z = avgZ }
+    c[7] = { x = x1, y = y1, z = avgZ }
+    c[8] = { x = x0, y = y1, z = avgZ }
     return c, true, true
 end
 
@@ -2571,8 +2638,10 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
     }
     local screenCorners = table.create(8)
     local anyInFront, allInFront = false, true
+    local cam = Workspace.CurrentCamera
+    if not cam then return nil, false, false end
     for i, wp in ipairs(worldCorners) do
-        local sp = Camera:WorldToViewportPoint(wp)
+        local sp = cam:WorldToViewportPoint(wp)
         screenCorners[i] = { x = sp.X, y = sp.Y, z = sp.Z }
         if sp.Z > 0 then anyInFront = true else allInFront = false end
     end
@@ -2594,8 +2663,8 @@ end
 
 -- v0.0.13 render: gates are strict (dead / despawned / out-of-range / ancestry
 -- broken -> hide immediately). Every visible ESP element is opt-in via its own
--- config toggle -- master ESP shows nothing on its own. Outline is a decorative
--- accent switch, NOT a gate for the box existing.
+-- config toggle -- master ESP shows nothing on its own. v0.0.17: Outline is a
+-- thickness accent, NOT a gate for box line existence.
 local function updateESPRigs()
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -2696,11 +2765,15 @@ local function updateESPRigs()
         local fillOn       = ESP.Boxes.FillBox
         local cornersMode  = ESP.Boxes.Corners
         local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
-        -- v0.0.15 Outline: gates the box LINES (2D UIStroke AND cube edges).
-        -- Fill + Corners are independent visual elements not gated by Outline.
-        -- Turning Outline off means "no full-outline lines"; the box still
-        -- exists via Fill and/or Corners.
+        -- v0.0.17 Outline redesign: Outline is no longer a gate for box lines.
+        -- The box ALWAYS has its lines (2D stroke / cube edges) -- that's what
+        -- makes it a box. Outline is now a thickness ACCENT: +1px on all box
+        -- lines when on. Glow adds another +1px + halo layers. Stack:
+        --   neither: 1px | outline: 2px | glow: 2px | both: 3px
+        -- Outline also controls the arraylist accent line (applyGlobalOutline).
         local outlineOn    = ESP.Config.Outline
+        local glowOn       = ESP.Config.Glow
+        local lineThick    = 1 + (outlineOn and 1 or 0) + (glowOn and 1 or 0)
         -- (isCube already declared above at the projection dispatch)
 
         -- projected AABB (2D box uses this directly; cube uses it for the
@@ -2767,13 +2840,12 @@ local function updateESPRigs()
             if rig.boxOutline then rig.boxOutline.Enabled = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
 
-            -- v0.0.15: cube edges/vertices gated by Outline OR Corners. In
-            -- cube mode the edges ARE the box lines -- Outline off means "no
-            -- full-outline lines," so full edges hide. Corners on is the
-            -- alternative line style (vertex brackets) and shows regardless
-            -- of Outline. If BOTH are off, cube shows only fill (if enabled).
-            local wantLines = outlineOn or cornersMode
-            local thick = ESP.Config.Glow and 2 or 1
+            -- v0.0.17: cube edges always render when box visible -- they ARE
+            -- the box in cube mode. Corners mode changes the line STYLE
+            -- (vertex brackets instead of full edges), not existence. Outline
+            -- and Glow add thickness via lineThick (computed above).
+            local wantLines = true
+            local thick = lineThick
             -- v0.0.15: cap corner segment length at CORNER_MAX_PX so brackets
             -- don't dominate huge close-up boxes.
             local CORNER_MAX_PX = 28
@@ -2823,22 +2895,24 @@ local function updateESPRigs()
             rig.boxRoot.Visible = true
             rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
 
-            -- UIStroke controlled by Outline toggle (accent). When corners
-            -- mode is on, the stroke gives way to the corner brackets.
+            -- v0.0.17: primary stroke ALWAYS enabled (suppressed only by
+            -- corners mode which replaces it with brackets). Thickness scales
+            -- with Outline/Glow via lineThick. Outline no longer gates
+            -- existence -- the box's border is inherent, not decorative.
             if rig.boxOutline then
                 rig.boxOutline.Color = outlineColor
-                rig.boxOutline.Thickness = 1
+                rig.boxOutline.Thickness = lineThick
                 rig.boxOutline.Transparency = 0
-                rig.boxOutline.Enabled = outlineOn and not cornersMode
+                rig.boxOutline.Enabled = not cornersMode
             end
 
-            -- Corner brackets: independent of Outline (they ARE the box lines
-            -- in corners mode, not a decorative accent on top of a stroke).
+            -- Corner brackets: the box's line STYLE alternative to the full
+            -- stroke. Uses lineThick so Outline/Glow emphasis applies here too.
             -- v0.0.15: cap segment length at 28px so brackets don't dominate
             -- huge close-up boxes.
             if cornersMode then
                 local segLen = math.clamp(math.min(tW, tH) * cornerLen, 3, 28)
-                local thick = 1
+                local thick = lineThick
                 local specs = {
                     { UDim2.new(0, 0, 0, 0),            UDim2.new(0, segLen, 0, thick) },
                     { UDim2.new(0, 0, 0, 0),            UDim2.new(0, thick,  0, segLen) },
@@ -2884,6 +2958,12 @@ local espModule = registerModule("esp", "ESP",
         table.clear(ESP.Connections)
         if ESP.UpdateConn then ESP.UpdateConn:Disconnect() ESP.UpdateConn = nil end
         for _, plr in ipairs(Players:GetPlayers()) do stripESP(plr) end
+        -- v0.0.17: destroy the box layer too so a full ESP disable leaves
+        -- no orphan frames on screen. ensureBoxLayer recreates it on next enable.
+        if ESP.BoxLayer then
+            pcall(function() ESP.BoxLayer:Destroy() end)
+            ESP.BoxLayer = nil
+        end
     end
 )
 
@@ -2895,18 +2975,20 @@ espModule.GetDetail = function()
     if ESP.Boxes.Enabled then table.insert(parts, "box") end
     -- future: chams, health, names, distance -- append their Enabled flags here
     if #parts == 0 then return "" end
-    return " " .. table.concat(parts, ", ")
+    -- v0.0.17: wider separator (4 spaces) so the detail reads as a distinct
+    -- subtitle rather than glued to the base name
+    return "    " .. table.concat(parts, ", ")
 end
 
 --============================================================
 -- WORLD MODULES: fullbright, no fog, custom time
 -- Each module saves the original Lighting values on enable and restores on disable.
--- Custom Time additionally installs a Heartbeat that re-asserts ClockTime so
--- server-side day/night cycles can't fight us.
+-- v0.0.17: all three now install a Heartbeat that re-asserts values so
+-- server-side day/night cycles / dynamic weather can't override us.
 --============================================================
 local World = {
-    Fullbright = { Saved = nil },
-    NoFog      = { Saved = nil },
+    Fullbright = { Saved = nil, Conn = nil },
+    NoFog      = { Saved = nil, Conn = nil },
     Time       = { Saved = nil, Target = 14, Conn = nil },
 }
 
@@ -2926,8 +3008,24 @@ registerModule("fullbright", "Fullbright",
         Lighting.ColorShift_Bottom = Color3.fromRGB(0, 0, 0)
         Lighting.Brightness        = 1
         Lighting.GlobalShadows     = false
+        -- v0.0.17: re-assert every frame so server day/night cycles can't
+        -- override us (consistent with Custom Time's Heartbeat).
+        World.Fullbright.Conn = RunService.Heartbeat:Connect(function()
+            if Lighting.Ambient ~= Color3.fromRGB(178, 178, 178) then
+                Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+            end
+            Lighting.OutdoorAmbient    = Color3.fromRGB(178, 178, 178)
+            Lighting.ColorShift_Top    = Color3.fromRGB(0, 0, 0)
+            Lighting.ColorShift_Bottom = Color3.fromRGB(0, 0, 0)
+            Lighting.Brightness        = 1
+            Lighting.GlobalShadows     = false
+        end)
     end,
     function()
+        if World.Fullbright.Conn then
+            World.Fullbright.Conn:Disconnect()
+            World.Fullbright.Conn = nil
+        end
         local s = World.Fullbright.Saved
         if not s then return end
         Lighting.Ambient           = s.Ambient
@@ -2948,8 +3046,17 @@ registerModule("nofog", "No Fog",
         }
         Lighting.FogEnd   = 100000
         Lighting.FogStart = 100000
+        -- v0.0.17: re-assert so games that dynamically push fog can't fight us.
+        World.NoFog.Conn = RunService.Heartbeat:Connect(function()
+            if Lighting.FogEnd ~= 100000 then Lighting.FogEnd = 100000 end
+            if Lighting.FogStart ~= 100000 then Lighting.FogStart = 100000 end
+        end)
     end,
     function()
+        if World.NoFog.Conn then
+            World.NoFog.Conn:Disconnect()
+            World.NoFog.Conn = nil
+        end
         local s = World.NoFog.Saved
         if not s then return end
         Lighting.FogEnd   = s.FogEnd
@@ -3006,6 +3113,27 @@ local function attachDualSwatch(row, visColor, hidColor, onVis, onHid)
     colorSwatch(wrap, hidColor, 14, { onChange = onHid })
 end
 
+-- v0.0.18: single-swatch variant for rows that own one color (Outline accent).
+-- Same right-aligned placement pattern as attachDualSwatch, just one swatch.
+local function attachSingleSwatch(row, initialColor, onChange)
+    local wrap = new("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 14, 0, 16),
+        BackgroundTransparency = 1,
+        ZIndex = 38,
+        Parent = row,
+    }, {
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal,
+            HorizontalAlignment = Enum.HorizontalAlignment.Right,
+            VerticalAlignment = Enum.VerticalAlignment.Center,
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
+    })
+    colorSwatch(wrap, initialColor, 14, { onChange = onChange })
+end
+
 addTab("Visuals", function(root)
     -- ESP panel
     local espPanel = panel(root, "esp")
@@ -3032,9 +3160,16 @@ addTab("Visuals", function(root)
     -- text sits on a subtle background pill. Stored here so preferences
     -- follow the ESP module, which is always loaded.
     configCheckbox(espPanel, "Text Background",  ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
-    configCheckbox(espPanel, "Outline",          ESP.Config.Outline,        function(v)
+    -- v0.0.18: Outline now has its own color swatch. Drives the same
+    -- ESP.Boxes.OutlineColor that box lines + cube edges + corner brackets
+    -- read from, so the accent color is editable from the Outline row itself
+    -- rather than only from the Boxes master's dual swatch.
+    local outlineRow = configCheckbox(espPanel, "Outline", ESP.Config.Outline, function(v)
         ESP.Config.Outline = v
         applyGlobalOutline()   -- flips arraylist accent line + future overlays
+    end)
+    attachSingleSwatch(outlineRow.row, ESP.Boxes.OutlineColor, function(c)
+        ESP.Boxes.OutlineColor = c
     end)
     configCheckbox(espPanel, "Glow",             ESP.Config.Glow,           function(v) ESP.Config.Glow           = v end)
     configCheckbox(espPanel, "Self ESP",         ESP.Config.SelfESP,        function(v) ESP.Config.SelfESP        = v end)
