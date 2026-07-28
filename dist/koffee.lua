@@ -1,9 +1,9 @@
--- koffee v0.0.28
+-- koffee v0.0.29
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.28"
+Koffee.Version = "0.0.29"
 
 --============================================================
 -- THEME
@@ -31,8 +31,68 @@ local Theme = {
     -- never goes thin like the v0.0.5 Regular-weight attempt did. Bold for
     -- emphasis + wordmark. Mono stays RobotoMono for keybind pills / numerals.
     Fonts = (function()
-        local UI    = "rbxasset://fonts/families/Nunito.json"
         local MONO  = "rbxasset://fonts/families/RobotoMono.json"
+        -- v0.0.29: Matcha's ACTUAL face is Proxima Soft Bold. We host the .ttf on a
+        -- public repo and AUTO-DOWNLOAD it once (cached to the executor's workspace
+        -- folder), wrap it in a Roblox font-family JSON so getcustomasset can hand a
+        -- content id to Font.new. No manual file drop needed. Everything is pcall'd
+        -- with a Nunito (closest built-in) fallback, so a locked-down executor or a
+        -- failed download still renders -- the font is a nicety, never a hard dep.
+        local FONT_URL  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProximaSoft-Bold.ttf"
+        local FONT_FILE = "koffee_proximasoft.ttf"
+        local FONT_JSON = "koffee_proximasoft.json"
+        local customFam = (function()
+            local ok, res = pcall(function()
+                local getasset = getcustomasset or getsynasset
+                    or (syn and syn.getcustomasset)
+                local isf, wf = isfile, writefile
+                if not (getasset and isf and wf) then return nil end
+
+                -- honour a manual drop first (any local proxima/koffee_font file),
+                -- otherwise download the hosted ttf once and cache it.
+                local target
+                for _, name in ipairs({
+                    FONT_FILE, "koffee_font.ttf", "koffee_font.otf",
+                    "ProximaSoft-Bold.ttf", "ProximaSoft-Bold.otf",
+                }) do
+                    if not target and isf(name) then target = name end
+                end
+                if not target then
+                    -- download: prefer a binary-safe request API, fall back to HttpGet
+                    local body
+                    local req = (syn and syn.request) or (http and http.request)
+                        or http_request or request
+                    if req then
+                        local rok, r = pcall(req, { Url = FONT_URL, Method = "GET" })
+                        if rok and r and r.Body and #r.Body > 4096 then body = r.Body end
+                    end
+                    if not body then
+                        local hok, h = pcall(function() return game:HttpGetAsync(FONT_URL) end)
+                        if hok and h and #h > 4096 then body = h end
+                    end
+                    if not body then return nil end   -- no HTTP -> Nunito fallback
+                    wf(FONT_FILE, body)
+                    target = FONT_FILE
+                end
+
+                local ttfId = getasset(target)
+                -- one bold face driving every weight (Matcha's UI is single-weight).
+                local fam = {
+                    name  = "ProximaSoft",
+                    faces = {
+                        { name = "Regular",   weight = 400, style = "normal", assetId = ttfId },
+                        { name = "SemiBold",  weight = 600, style = "normal", assetId = ttfId },
+                        { name = "Bold",      weight = 700, style = "normal", assetId = ttfId },
+                        { name = "ExtraBold", weight = 800, style = "normal", assetId = ttfId },
+                    },
+                }
+                wf(FONT_JSON, game:GetService("HttpService"):JSONEncode(fam))
+                return getasset(FONT_JSON)
+            end)
+            return ok and res or nil
+        end)()
+        local UI = customFam or "rbxasset://fonts/families/Nunito.json"
+        Koffee.UsingCustomFont = customFam ~= nil
         return {
             Regular = Font.new(UI,   Enum.FontWeight.SemiBold),
             Medium  = Font.new(UI,   Enum.FontWeight.Bold),
