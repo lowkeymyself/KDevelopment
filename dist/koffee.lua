@@ -1,9 +1,9 @@
--- koffee v0.0.27
+-- koffee v0.0.28
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.27"
+Koffee.Version = "0.0.28"
 
 --============================================================
 -- THEME
@@ -2358,6 +2358,25 @@ local function rightClickSettings(row, title, buildFn)
         function api:dropdown(label, options, initial, onChange)
             dropdown(popupFrame, label, options, initial, onChange)
         end
+        -- v0.0.28: colour control inside a settings popup (label + right swatch).
+        function api:swatch(label, initial, onChange)
+            local r = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1,
+                ZIndex = 211, Parent = popupFrame,
+            })
+            new("TextLabel", {
+                Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+                Size = UDim2.new(1, -22, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 212, Parent = r,
+            })
+            local wrap = new("Frame", {
+                AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+                Size = UDim2.new(0, 14, 0, 16), BackgroundTransparency = 1,
+                ZIndex = 212, Parent = r,
+            })
+            colorSwatch(wrap, initial, 14, { onChange = onChange })
+        end
         buildFn(api)
     end
 
@@ -2420,8 +2439,16 @@ local ESP = {
         -- preference. Currently no module renders text, so this is a stored
         -- config value only.
         TextBackground = false,
+        -- v0.0.28: Text Background is now tunable (right-click the toggle): colour,
+        -- transparency, and padding around every ESP text tag.
+        TextBgColor        = Color3.fromRGB(0, 0, 0),
+        TextBgTransparency = 0.35,
+        TextBgPadding      = 5,
         CharacterOnly  = false,      -- ignore accessories/tools in bounding-box calc
-        FollowDirection = true,      -- v0.0.23: box/cube orients to the player's facing
+        -- v0.0.28: Follow Direction is a CUBE-ONLY feature (orienting a flat 2D box
+        -- to facing only made it less accurate). Default OFF; the Box Type dropdown
+        -- forces it off on any switch and the toggle refuses to arm unless Cube.
+        FollowDirection = false,     -- v0.0.23: box/cube orients to the player's facing
         ImmediateMode  = true,       -- true = snap-to-frame, false = lerp smoothing
         TeamCheck      = false,
         VisibleCheck   = false,
@@ -2472,6 +2499,7 @@ local ESP = {
         OutlineColor = Color3.fromRGB(0, 0, 0),
         FillColor    = Color3.fromRGB(212, 145, 90),
         FillBox      = false,
+        FillTransparency = 0.72,   -- v0.0.28: right-click Fill Box to tune (0=solid, 1=invisible)
         BoxType      = "2D",       -- "2D" | "Cube"
         Corners      = false,
         CornerLength = 0.3,        -- 0-1, fraction of edge length
@@ -2484,15 +2512,18 @@ local ESP = {
         Enabled = false,
         Type    = "Name",          -- "Name" (username) | "Display Name"
         Color   = Color3.fromRGB(255, 255, 255),
+        TextSize         = 14,     -- v0.0.28: right-click Name to change
+        OutlineThickness = 1,      -- v0.0.28: right-click Name to change
     },
     -- v0.0.21: Indicators -- small per-target markers.
     -- v0.0.25: per-feature settings (right-click popups): Distance.TextSize,
     -- Skeleton.Thickness (0 = use the universal Thickness), HeadDot.Size.
     Indicators = {
-        Distance       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), TextSize = 13 }, -- below feet
+        Distance       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), TextSize = 13, OutlineThickness = 1 }, -- below feet
         Skeleton       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Thickness = 0 }, -- 0 = universal
         HeadDot        = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Size = 6 },       -- dot at head
-        ProfilePicture = { Enabled = false },                                        -- avatar above name
+        -- v0.0.28: right-click Profile Picture for Size / Outline Thickness / Y Offset.
+        ProfilePicture = { Enabled = false, Size = 40, OutlineThickness = 1, YOffset = 0 },          -- avatar above name
     },
     -- v0.0.21: Health -- vertical bar on the character's left, full body height.
     Health = {
@@ -2580,8 +2611,13 @@ end
 -- is drawn as a stack of horizontal strips spanning the projected convex
 -- silhouette of the 8 box corners. Reads as a translucent solid occupying the
 -- box volume instead of the old flat AABB rectangle. Strips are pooled per rig.
-local MAX_FILL_ROWS = 90
-local FILL_ROW_STEP = 3   -- v0.0.26: denser strips -> smoother/more accurate silhouette
+-- v0.0.28: trimmed from 90/3. A 90-strip CanvasGroup PER RIG was heavy enough that
+-- compositing them while the menu's own CanvasGroup faded in stalled the open
+-- ("menu takes a second to open with fill on"). 40 strips at step 5 still reads as
+-- a smooth solid (the cube edges draw on top and hide any stair-stepping) for a
+-- fraction of the frames + fill/hull work.
+local MAX_FILL_ROWS = 40
+local FILL_ROW_STEP = 5
 
 local function makeFillRows(parent)
     -- v0.0.22: strips live in a CanvasGroup so overlapping/adjacent strips are
@@ -3059,7 +3095,7 @@ local CUBE_VERTEX_NEIGHBORS = {
 --   change the box shape.
 local STATIC_TOP_STUDS = 3
 local STATIC_BOT_STUDS = 3
-local STATIC_ASPECT    = 0.5   -- width = height * 0.5
+local STATIC_ASPECT    = 0.5   -- fallback width = height * 0.5 (used only if no bbox)
 
 local function projectStatic(torso, character)
     -- v0.0.15: anchor is torso.Position (live world read).
@@ -3069,16 +3105,24 @@ local function projectStatic(torso, character)
     -- v0.0.26: derive the vertical extent from the ACTUAL character bounding box
     -- (centred on the real body), not a fixed ±3 studs off the hip. HRP sits at
     -- hip level, so ±3 was R6-calibrated and left R15 / non-blocky rigs offset.
-    local topWorld, botWorld
+    -- v0.0.28: also derive a real WIDTH from the body instead of a flat 0.5 aspect
+    -- ("the snapshot static gets is really bad"). We take the body's horizontal
+    -- girth (min of X/Z so a gun-pointing pose's depth doesn't inflate it) and
+    -- project it along the camera's right axis, so the box actually hugs the body
+    -- yet never warps with camera yaw (a single world width, aspect-stable).
+    local centerWorld, topWorld, botWorld, girth
     if character then
         local ok, cf, size = pcall(character.GetBoundingBox, character)
         if ok and cf then
+            centerWorld = cf.Position
             topWorld = cf.Position + Vector3.new(0, size.Y * 0.5, 0)
             botWorld = cf.Position - Vector3.new(0, size.Y * 0.5, 0)
+            girth = math.min(size.X, size.Z)
         end
     end
     if not topWorld then
         local pos = torso.Position
+        centerWorld = pos
         topWorld = pos + Vector3.new(0, STATIC_TOP_STUDS, 0)
         botWorld = pos + Vector3.new(0, -STATIC_BOT_STUDS, 0)
     end
@@ -3086,7 +3130,15 @@ local function projectStatic(torso, character)
     local bot2D = cam:WorldToViewportPoint(botWorld)
     if top2D.Z <= 0 or bot2D.Z <= 0 then return nil, false, false end
     local height  = math.abs(bot2D.Y - top2D.Y)
-    local width   = height * STATIC_ASPECT
+    local width
+    if girth and centerWorld then
+        -- project the body's half-girth along camera-right, measured at the body
+        local right = cam.CFrame.RightVector
+        local l2D = cam:WorldToViewportPoint(centerWorld - right * (girth * 0.5))
+        local r2D = cam:WorldToViewportPoint(centerWorld + right * (girth * 0.5))
+        width = math.abs(r2D.X - l2D.X)
+    end
+    if not width or width <= 0 then width = height * STATIC_ASPECT end
     local centerX = (top2D.X + bot2D.X) * 0.5
     local centerY = (top2D.Y + bot2D.Y) * 0.5
     local x0 = centerX - width * 0.5
@@ -3214,11 +3266,19 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
         local c, s = characterOnlyBBox(bodyParts, refCF)
         if not c then return nil, false, false end
         cf, size = c, s
+        -- v0.0.28: cap depth in the oriented (torso-local) frame so a forward
+        -- reach doesn't bloat the projected width.
+        if refCF then size = Vector3.new(size.X, size.Y, math.min(size.Z, size.X)) end
     else
         local ok, cframe, sz = pcall(character.GetBoundingBox, character)
         if not ok or not cframe then return nil, false, false end
         cf = cframe
         size = sz
+        -- v0.0.28: clamp the box DEPTH (front-back) to its width in the box's OWN
+        -- oriented frame, BEFORE any axis-align. A character aiming/pointing at the
+        -- camera extends its arms forward; that long depth otherwise projects as
+        -- extra screen width and the box reads "too big when looking forward".
+        size = Vector3.new(size.X, size.Y, math.min(size.Z, size.X))
         -- Follow Direction OFF: flatten the oriented GetBoundingBox to a plain
         -- world-axis box so the cube stops rotating with the character.
         if not ESP.Config.FollowDirection then
@@ -3331,6 +3391,24 @@ end
 -- v0.0.24: toggle/colour a line-frame's separate outline border (the KOutline
 -- UIStroke added by lineOutline()). Called wherever a feature line is shown so
 -- the global Outline effect reaches EVERY feature, in its own colour.
+-- v0.0.28: pin a UIStroke's colour against a sibling UIGradient bleeding into it.
+-- A UIGradient parented to a GuiObject also tints that object's UIStroke, so with
+-- the feature Gradient on, every outline turned rainbow ("outline doesn't work with
+-- gradient on"). A UIGradient placed INSIDE the stroke, holding a flat one-colour
+-- sequence, overrides the bleed and keeps the outline its own solid colour.
+local function pinStrokeColor(stroke, on, color)
+    local g = stroke:FindFirstChildOfClass("UIGradient")
+    if not on then
+        if g then g.Enabled = false end
+        return
+    end
+    if not g then g = new("UIGradient", { Parent = stroke }) end
+    g.Enabled = true
+    g.Color = ColorSequence.new(color)
+    g.Offset = Vector2.new(0, 0)
+    g.Rotation = 0
+end
+
 local function applyLineOutline(frame, on, color, thick)
     local s = frame:FindFirstChild("KOutline")
     if not s then return end
@@ -3339,15 +3417,42 @@ local function applyLineOutline(frame, on, color, thick)
         s.Color = color
         s.Thickness = thick
     end
+    -- keep the outline solid even when the frame's KGrad is animating
+    local grad = frame:FindFirstChild("KGrad")
+    pinStrokeColor(s, on and grad ~= nil and grad.Enabled, color)
 end
 
 -- v0.0.24: the Outline effect on ESP text. The label's Contextual UIStroke hugs
 -- the glyphs; the Outline toggle drives whether it shows and in what colour.
-local function applyTextOutline(lbl, on, color)
+-- v0.0.28: optional thickness + gradient-pin so the outline survives a text gradient.
+local function applyTextOutline(lbl, on, color, thick)
     local s = lbl:FindFirstChildOfClass("UIStroke")
     if not s then return end
     s.Enabled = on
-    if on then s.Color = color end
+    if on then
+        s.Color = color
+        if thick then s.Thickness = thick end
+    end
+    local grad = lbl:FindFirstChildOfClass("UIGradient")
+    pinStrokeColor(s, on and grad ~= nil and grad.Enabled, color)
+end
+
+-- v0.0.28: gradient that lives INSIDE a UIStroke (colours the stroke itself). The
+-- 2D box's visible line IS a UIStroke; a UIGradient on the parent Frame did not
+-- reliably tint it, so the box sat forced-white with the gradient invisible ("2D
+-- box stuck white, colour/gradient don't work"). Driving the gradient from within
+-- the stroke makes it show, and lets the flat-colour fallback restore any colour.
+local function applyStrokeGradient(stroke, on, a, b)
+    local g = stroke:FindFirstChildOfClass("UIGradient")
+    if not on then
+        if g then g.Enabled = false end
+        return
+    end
+    if not g then g = new("UIGradient", { Parent = stroke }) end
+    g.Enabled = true
+    g.Color = lineGradSeq(a, b, ESP.Config.GradientSpacing)
+    g.Rotation = ESP.Config.GradientRotation
+    g.Offset = gradOffset()
 end
 local function applyGradient(lbl, on)
     local g = lbl:FindFirstChildOfClass("UIGradient")
@@ -3381,10 +3486,24 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     local names  = ESP.Names
     local health = ESP.Health
     local grad   = ESP.Config.TextGradient
-    local pfpOn  = ESP.Indicators.ProfilePicture.Enabled
-    local textBg = ESP.Config.TextBackground and 0.35 or 1   -- v0.0.22 Text Background
+    local pfpCfg = ESP.Indicators.ProfilePicture
+    local pfpOn  = pfpCfg.Enabled
+    -- v0.0.28: Text Background is tunable (colour / transparency / padding).
+    local bgOn   = ESP.Config.TextBackground
+    local textBg = bgOn and ESP.Config.TextBgTransparency or 1
+    local bgCol  = ESP.Config.TextBgColor
+    local bgPad  = ESP.Config.TextBgPadding
     local outlineOn  = ESP.Config.Outline                    -- v0.0.24 Outline on text
     local outlineCol = ESP.Boxes.OutlineColor
+    local function styleTextBg(lbl)
+        lbl.BackgroundColor3 = bgCol
+        lbl.BackgroundTransparency = textBg
+        local pad = lbl:FindFirstChildOfClass("UIPadding")
+        if pad then
+            pad.PaddingLeft  = UDim.new(0, bgPad)
+            pad.PaddingRight = UDim.new(0, bgPad)
+        end
+    end
 
     -- health text "Above Name" prefixes [hp] onto the name line
     local prefix = ""
@@ -3415,24 +3534,29 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     -- NAME (bottom-anchored just above the head top)
     if headOn and showName then
         rig.nameLbl.Text = nameStr
-        rig.nameLbl.TextSize = 14
+        rig.nameLbl.TextSize = names.TextSize or 14
         rig.nameLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or names.Color)
-        rig.nameLbl.BackgroundTransparency = textBg
+        styleTextBg(rig.nameLbl)
         rig.nameLbl.Position = UDim2.new(0, hp.X, 0, hp.Y - 3)
         rig.nameLbl.Visible = true
-        applyTextOutline(rig.nameLbl, outlineOn, outlineCol)
+        applyTextOutline(rig.nameLbl, outlineOn, outlineCol, names.OutlineThickness)
         applyGradient(rig.nameLbl, grad)
     else
         rig.nameLbl.Visible = false
     end
 
     -- PROFILE PICTURE (stacked above the name, else above the head)
+    -- v0.0.28: size / outline thickness / Y offset are right-click tunable.
     if headOn and pfpOn then
         if rig.pfp.Image == "" then
             rig.pfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
         end
+        local pfpSize = pfpCfg.Size or 40
+        rig.pfp.Size = UDim2.new(0, pfpSize, 0, pfpSize)
+        local pfpStroke = rig.pfp:FindFirstChildOfClass("UIStroke")
+        if pfpStroke then pfpStroke.Thickness = pfpCfg.OutlineThickness or 1 end
         local nameH = (showName and rig.nameLbl.Visible) and (rig.nameLbl.AbsoluteSize.Y + 3) or 0
-        rig.pfp.Position = UDim2.new(0, hp.X, 0, hp.Y - 3 - nameH)
+        rig.pfp.Position = UDim2.new(0, hp.X, 0, hp.Y - 3 - nameH - (pfpCfg.YOffset or 0))
         rig.pfp.Visible = true
     else
         rig.pfp.Visible = false
@@ -3447,10 +3571,10 @@ local function updateBillboards(rig, plr, dist, overrideColor)
             rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
             rig.distLbl.TextSize = distCfg.TextSize or 13
             rig.distLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or distCfg.Color)
-            rig.distLbl.BackgroundTransparency = textBg
+            styleTextBg(rig.distLbl)
             rig.distLbl.Position = UDim2.new(0, fp.X, 0, fp.Y + 3)
             rig.distLbl.Visible = true
-            applyTextOutline(rig.distLbl, outlineOn, outlineCol)
+            applyTextOutline(rig.distLbl, outlineOn, outlineCol, distCfg.OutlineThickness)
             applyGradient(rig.distLbl, grad)
         else
             rig.distLbl.Visible = false
@@ -3700,6 +3824,7 @@ local function updateESPRigs()
                 local rowCount = math.clamp(math.floor(totalH / FILL_ROW_STEP), 1, MAX_FILL_ROWS)
                 local rowH = totalH / rowCount
                 rig.fillGroup.Visible = true
+                rig.fillGroup.GroupTransparency = ESP.Boxes.FillTransparency
                 for i = 1, MAX_FILL_ROWS do
                     local f = rig.fillRows[i]
                     if i <= rowCount then
@@ -3804,19 +3929,22 @@ local function updateESPRigs()
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             rig.fillGroup.Visible = false
             rig.boxRoot.Visible = true
-            rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
+            rig.boxRoot.BackgroundTransparency = fillOn and ESP.Boxes.FillTransparency or 1
+            rig.boxRoot.BackgroundColor3 = fillColor
 
             -- v0.0.17: primary stroke ALWAYS enabled (suppressed only by
-            -- corners mode which replaces it with brackets). Thickness scales
-            -- with Outline/Glow via lineThick. Outline no longer gates
-            -- existence -- the box's border is inherent, not decorative.
+            -- corners mode which replaces it with brackets). v0.0.28: the box line
+            -- is a UIStroke; colour it directly and drive the Gradient from INSIDE
+            -- the stroke (a parent-frame gradient didn't tint it -> "stuck white").
             if rig.boxOutline then
-                rig.boxOutline.Color = lineGradOn and Color3.new(1, 1, 1) or boxColor
+                local strokeGrad = lineGradOn and not cornersMode
+                rig.boxOutline.Color = strokeGrad and Color3.new(1, 1, 1) or boxColor
                 rig.boxOutline.Thickness = boxThick
                 rig.boxOutline.Transparency = 0
                 rig.boxOutline.Enabled = not cornersMode
+                applyStrokeGradient(rig.boxOutline, strokeGrad,
+                    ESP.Config.GradientColorA2, ESP.Config.GradientColorB2)
             end
-            applyLineGradient(rig.boxRoot, lineGradOn and not cornersMode)
             -- v0.0.26: separate outline frame behind the box -- its thicker stroke
             -- shows as a border around the main line (reliable single-stroke render).
             if rig.boxOutlineFrame then
@@ -4290,13 +4418,28 @@ addTab("Visuals", function(root)
     end
     rightClickSettings(grad2Row.row, "gradient", gradientSettings)
     rightClickSettings(gradRow.row, "gradient", gradientSettings)
-    configCheckbox(espPanel, "Text Background", ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
+    -- v0.0.28: Text Background is tunable -- right-click for colour / transparency / padding.
+    local textBgRow = configCheckbox(espPanel, "Text Background", ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
+    rightClickSettings(textBgRow.row, "text background", function(popup)
+        popup:swatch("Color", ESP.Config.TextBgColor, function(c) ESP.Config.TextBgColor = c end)
+        popup:slider("Transparency", 0, 1, ESP.Config.TextBgTransparency, 2, function(v) ESP.Config.TextBgTransparency = v end)
+        popup:slider("Padding", 0, 16, ESP.Config.TextBgPadding, 0, function(v) ESP.Config.TextBgPadding = v end)
+    end)
     local outlineRow = configCheckbox(espPanel, "Outline", ESP.Config.Outline, function(v) ESP.Config.Outline = v end)
     attachSingleSwatch(outlineRow.row, ESP.Boxes.OutlineColor, function(c) ESP.Boxes.OutlineColor = c end)
     configCheckbox(espPanel, "Self ESP", ESP.Config.SelfESP, function(v) ESP.Config.SelfESP = v end)
     -- koffee extras (not in Matcha, kept): finer-grained bbox + smoothing control
     configCheckbox(espPanel, "Character Only", ESP.Config.CharacterOnly, function(v) ESP.Config.CharacterOnly = v end)
-    configCheckbox(espPanel, "Follow Direction", ESP.Config.FollowDirection, function(v) ESP.Config.FollowDirection = v end)
+    -- v0.0.28: Follow Direction is Cube-only. It refuses to arm unless Box Type is
+    -- Cube, and the Box Type dropdown forces it off on every switch (below).
+    local followDirCtrl
+    followDirCtrl = configCheckbox(espPanel, "Follow Direction", ESP.Config.FollowDirection, function(v)
+        if v and ESP.Boxes.BoxType ~= "Cube" then
+            followDirCtrl.setState(false)   -- 2D box -> not allowed, snap back off
+            return
+        end
+        ESP.Config.FollowDirection = v
+    end)
     configCheckbox(espPanel, "Immediate Mode", ESP.Config.ImmediateMode, function(v) ESP.Config.ImmediateMode = v end)
     dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
@@ -4304,9 +4447,10 @@ addTab("Visuals", function(root)
         function(v) ESP.Config.RenderDistance = v end)
     -- v0.0.22: global Feature-Interface thickness + distance-invariance.
     -- v0.0.23: supports sub-1 (down to 0.1) for hairline lines.
+    -- v0.0.28: Equal Size removed -- it broke distance-scaled features, so it's
+    -- pinned ON permanently (constant thickness). Thickness slider still applies.
     slider(espPanel, "Thickness", 0.1, 8, ESP.Render.Thickness, 1,
         function(v) ESP.Render.Thickness = v end)
-    configCheckbox(espPanel, "Equal Size", ESP.Render.EqualSize, function(v) ESP.Render.EqualSize = v end)
 
     --------------------------------------------------------------- Box
     local boxesPanel = panel(leftCol, "box")
@@ -4320,9 +4464,14 @@ addTab("Visuals", function(root)
         popup:slider("Thickness", 0.1, 8, ESP.Boxes.Thickness > 0 and ESP.Boxes.Thickness or ESP.Render.Thickness, 1, function(v) ESP.Boxes.Thickness = v end)
         popup:slider("Outline Thickness", 0, 6, ESP.Boxes.OutlineThickness, 1, function(v) ESP.Boxes.OutlineThickness = v end)
     end)
-    configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox, function(v) ESP.Boxes.FillBox = v end)
+    -- v0.0.28: right-click Fill Box to tune its transparency.
+    local fillRow = configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox, function(v) ESP.Boxes.FillBox = v end)
+    rightClickSettings(fillRow.row, "fill box", function(popup)
+        popup:slider("Transparency", 0, 1, ESP.Boxes.FillTransparency, 2, function(v) ESP.Boxes.FillTransparency = v end)
+    end)
     -- v0.0.26: Corners is 2D-only. Switching to Cube forces it off; you can't turn
     -- it on while Cube is selected.
+    -- v0.0.28: switching Box Type ALSO forces Follow Direction off (it's Cube-only).
     local cornersCtrl
     dropdown(boxesPanel, "Box Type", { "2D", "Cube" }, ESP.Boxes.BoxType, function(v)
         ESP.Boxes.BoxType = v
@@ -4330,6 +4479,9 @@ addTab("Visuals", function(root)
             ESP.Boxes.Corners = false
             if cornersCtrl then cornersCtrl.setState(false) end
         end
+        -- reset Follow Direction on any switch (per he) so it never lingers wrong
+        ESP.Config.FollowDirection = false
+        if followDirCtrl then followDirCtrl.setState(false) end
     end)
     cornersCtrl = configCheckbox(boxesPanel, "Corners", ESP.Boxes.Corners, function(v)
         if v and ESP.Boxes.BoxType == "Cube" then
@@ -4344,6 +4496,11 @@ addTab("Visuals", function(root)
     local namePanel = panel(leftCol, "name")
     local nameMaster = configCheckbox(namePanel, "Enabled", ESP.Names.Enabled, function(v) ESP.Names.Enabled = v end)
     attachSingleSwatch(nameMaster.row, ESP.Names.Color, function(c) ESP.Names.Color = c end)
+    -- v0.0.28: right-click Name for text size + outline thickness (all text does this).
+    rightClickSettings(nameMaster.row, "name", function(popup)
+        popup:slider("Text Size", 8, 28, ESP.Names.TextSize, 0, function(v) ESP.Names.TextSize = v end)
+        popup:slider("Outline Thickness", 0, 6, ESP.Names.OutlineThickness, 1, function(v) ESP.Names.OutlineThickness = v end)
+    end)
     dropdown(namePanel, "Type", { "Name", "Display Name" }, ESP.Names.Type, function(v) ESP.Names.Type = v end)
 
     --------------------------------------------------------------- Indicators
@@ -4355,6 +4512,7 @@ addTab("Visuals", function(root)
     attachSingleSwatch(distRow.row, ESP.Indicators.Distance.Color, function(c) ESP.Indicators.Distance.Color = c end)
     rightClickSettings(distRow.row, "distance", function(popup)
         popup:slider("Text Size", 8, 28, ESP.Indicators.Distance.TextSize, 0, function(v) ESP.Indicators.Distance.TextSize = v end)
+        popup:slider("Outline Thickness", 0, 6, ESP.Indicators.Distance.OutlineThickness, 1, function(v) ESP.Indicators.Distance.OutlineThickness = v end)
     end)
     local skelRow = configCheckbox(indPanel, "Skeleton", ESP.Indicators.Skeleton.Enabled, function(v) ESP.Indicators.Skeleton.Enabled = v end)
     attachSingleSwatch(skelRow.row, ESP.Indicators.Skeleton.Color, function(c) ESP.Indicators.Skeleton.Color = c end)
@@ -4366,7 +4524,13 @@ addTab("Visuals", function(root)
     rightClickSettings(hdRow.row, "head dot", function(popup)
         popup:slider("Size", 2, 24, ESP.Indicators.HeadDot.Size or 6, 0, function(v) ESP.Indicators.HeadDot.Size = v end)
     end)
-    configCheckbox(indPanel, "Profile Picture", ESP.Indicators.ProfilePicture.Enabled, function(v) ESP.Indicators.ProfilePicture.Enabled = v end)
+    -- v0.0.28: right-click Profile Picture for size / outline thickness / Y offset.
+    local pfpRow = configCheckbox(indPanel, "Profile Picture", ESP.Indicators.ProfilePicture.Enabled, function(v) ESP.Indicators.ProfilePicture.Enabled = v end)
+    rightClickSettings(pfpRow.row, "profile picture", function(popup)
+        popup:slider("Size", 16, 96, ESP.Indicators.ProfilePicture.Size, 0, function(v) ESP.Indicators.ProfilePicture.Size = v end)
+        popup:slider("Outline Thickness", 0, 6, ESP.Indicators.ProfilePicture.OutlineThickness, 1, function(v) ESP.Indicators.ProfilePicture.OutlineThickness = v end)
+        popup:slider("Y Offset", -80, 80, ESP.Indicators.ProfilePicture.YOffset, 0, function(v) ESP.Indicators.ProfilePicture.YOffset = v end)
+    end)
 
     --------------------------------------------------------------- Health
     local healthPanel = panel(rightCol, "health")
