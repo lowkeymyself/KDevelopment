@@ -1,9 +1,9 @@
--- koffee v0.0.24
+-- koffee v0.0.25
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.24"
+Koffee.Version = "0.0.25"
 
 --============================================================
 -- THEME
@@ -109,6 +109,20 @@ local function textStroke(color, thick)
         Color = color or Color3.new(0, 0, 0),
         Thickness = thick or 1,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+    })
+end
+-- v0.0.24: the global Outline effect as a border around a thin feature line-frame
+-- (skeleton, cube edge, tracer, corner, head dot). A UIStroke around the frame
+-- renders as a separate dark edge on every side -- an outline that is truly its
+-- OWN line, independent of the feature's fill colour. Disabled by default; the
+-- render loop enables/colours/sizes it per frame. Named so it's findable.
+local function lineOutline()
+    return new("UIStroke", {
+        Name = "KOutline",
+        Color = Color3.new(0, 0, 0),
+        Thickness = 1,
+        Enabled = false,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
     })
 end
 local function tween(inst, info, props)
@@ -2336,7 +2350,13 @@ local ESP = {
     },
     Boxes = {
         Enabled      = false,
-        OutlineColor = Color3.fromRGB(255, 255, 255),
+        -- v0.0.24: box's MAIN line color, now separate from the Outline. Changing
+        -- this no longer drags the outline with it.
+        Color        = Color3.fromRGB(255, 255, 255),
+        -- Outline is a SEPARATE bordering line drawn around every feature (see
+        -- ESP.Config.Outline). This is its color -- default black so it reads as a
+        -- crisp border regardless of the feature colors.
+        OutlineColor = Color3.fromRGB(0, 0, 0),
         FillColor    = Color3.fromRGB(212, 145, 90),
         FillBox      = false,
         BoxType      = "2D",       -- "2D" | "Cube"
@@ -2412,7 +2432,7 @@ local function makeBoxCorners(parent)
             Visible = false,
             ZIndex = 14,
             Parent = parent,
-        }))
+        }, { lineOutline() }))
     end
     return corners
 end
@@ -2430,7 +2450,7 @@ local function makeCubeEdges(parent)
             Visible = false,
             ZIndex = 14,
             Parent = parent,
-        }))
+        }, { lineOutline() }))
     end
     return edges
 end
@@ -2542,7 +2562,7 @@ local function makeSkeletonLines(parent)
             Visible = false,
             ZIndex = 13,
             Parent = parent,
-        })
+        }, { lineOutline() })
     end
     return lines
 end
@@ -2555,7 +2575,7 @@ local function makeHeadDot(parent)
         Visible = false,
         ZIndex = 14,
         Parent = parent,
-    }, { pillCorner() })
+    }, { pillCorner(), lineOutline() })
 end
 
 local function makeTracer(parent)
@@ -2566,7 +2586,7 @@ local function makeTracer(parent)
         Visible = false,
         ZIndex = 13,
         Parent = parent,
-    })
+    }, { lineOutline() })
 end
 
 local function makeHealthBar(parent)
@@ -2791,8 +2811,17 @@ local function makeRig(plr, character)
         Visible = false,
         ZIndex = 13,
         Parent = ESP.BoxLayer,
-    }, { stroke(Color3.new(1, 1, 1), 2) })
-    local boxOutline = boxRoot:FindFirstChildOfClass("UIStroke")
+    }, {
+        -- v0.0.24: two strokes -- a thicker OUTLINE behind (own colour, toggled by
+        -- Outline) and the MAIN box line on top. Gives the 2D box a separate
+        -- bordering line instead of one colour doing both jobs.
+        new("UIStroke", { Name = "KOutline", Color = Color3.new(0, 0, 0), Thickness = 3,
+            Enabled = false, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
+        new("UIStroke", { Name = "KMain", Color = Color3.new(1, 1, 1), Thickness = 2,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
+    })
+    local boxOutline = boxRoot:FindFirstChild("KMain")             -- main box line
+    local boxOutlineStroke = boxRoot:FindFirstChild("KOutline")    -- separate outline border
     local boxCorners = makeBoxCorners(boxRoot)
     local cubeEdges = makeCubeEdges(ESP.BoxLayer)
     local fillGroup, fillRows = makeFillRows(ESP.BoxLayer)   -- v0.0.20 cube 3D fill
@@ -2818,6 +2847,7 @@ local function makeRig(plr, character)
         plr        = plr,
         boxRoot    = boxRoot,
         boxOutline = boxOutline,
+        boxOutlineStroke = boxOutlineStroke,   -- v0.0.24 separate outline border
         boxCorners = boxCorners,
         cubeEdges  = cubeEdges,
         fillGroup  = fillGroup,                        -- v0.0.22 CanvasGroup wrapping fill strips
@@ -3195,6 +3225,28 @@ local GRAD_SPEED = 0.5
 local function gradOffsetX()
     return 1 - ((os.clock() * GRAD_SPEED) % 2)   -- 1 -> -1, seamless (periodic seq)
 end
+
+-- v0.0.24: toggle/colour a line-frame's separate outline border (the KOutline
+-- UIStroke added by lineOutline()). Called wherever a feature line is shown so
+-- the global Outline effect reaches EVERY feature, in its own colour.
+local function applyLineOutline(frame, on, color, thick)
+    local s = frame:FindFirstChild("KOutline")
+    if not s then return end
+    s.Enabled = on
+    if on then
+        s.Color = color
+        s.Thickness = thick
+    end
+end
+
+-- v0.0.24: the Outline effect on ESP text. The label's Contextual UIStroke hugs
+-- the glyphs; the Outline toggle drives whether it shows and in what colour.
+local function applyTextOutline(lbl, on, color)
+    local s = lbl:FindFirstChildOfClass("UIStroke")
+    if not s then return end
+    s.Enabled = on
+    if on then s.Color = color end
+end
 local function applyGradient(lbl, on)
     local g = lbl:FindFirstChildOfClass("UIGradient")
     if not g then return end
@@ -3214,6 +3266,8 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     local grad   = ESP.Config.TextGradient
     local pfpOn  = ESP.Indicators.ProfilePicture.Enabled
     local textBg = ESP.Config.TextBackground and 0.35 or 1   -- v0.0.22 Text Background
+    local outlineOn  = ESP.Config.Outline                    -- v0.0.24 Outline on text
+    local outlineCol = ESP.Boxes.OutlineColor
 
     -- health text "Above Name" prefixes [hp] onto the name line
     local prefix = ""
@@ -3237,6 +3291,7 @@ local function updateBillboards(rig, plr, dist, overrideColor)
                 rig.nameLbl.Text = nameStr
                 rig.nameLbl.TextColor3 = overrideColor or names.Color
                 rig.nameLbl.BackgroundTransparency = textBg
+                applyTextOutline(rig.nameLbl, outlineOn, outlineCol)
                 applyGradient(rig.nameLbl, grad)
             end
             if pfpOn then
@@ -3257,6 +3312,7 @@ local function updateBillboards(rig, plr, dist, overrideColor)
             rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
             rig.distLbl.TextColor3 = overrideColor or distCfg.Color
             rig.distLbl.BackgroundTransparency = textBg
+            applyTextOutline(rig.distLbl, outlineOn, outlineCol)
             applyGradient(rig.distLbl, grad)
         else
             rig.distBB.Enabled = false
@@ -3269,6 +3325,9 @@ end
 local function updateSkeleton(rig, overrideColor, dist)
     local cfg = ESP.Indicators.Skeleton
     local thick = featureThickness(dist)
+    local outlineOn = ESP.Config.Outline
+    local outlineCol = ESP.Boxes.OutlineColor
+    local outlineThick = math.max(1, thick)
     if not cfg.Enabled then
         for _, l in ipairs(rig.skeleton) do l.Visible = false end
         return
@@ -3298,6 +3357,7 @@ local function updateSkeleton(rig, overrideColor, dist)
                     line.Rotation = math.deg(math.atan2(dy, dx))
                     line.BackgroundColor3 = col
                     line.Visible = true
+                    applyLineOutline(line, outlineOn, outlineCol, outlineThick)
                 end
             end
         end
@@ -3417,16 +3477,20 @@ local function updateESPRigs()
             continue
         end
 
-        local outlineColor = overrideColor or ESP.Boxes.OutlineColor
+        -- v0.0.24: box MAIN line colour (separate from Outline now). Team/visible
+        -- override still wins.
+        local boxColor     = overrideColor or ESP.Boxes.Color
         local fillColor    = ESP.Boxes.FillColor
         local fillOn       = ESP.Boxes.FillBox
         local cornersMode  = ESP.Boxes.Corners
         local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
-        -- v0.0.22: base line thickness now comes from the shared render model
-        -- (Thickness slider + Equal Size). Outline is a SEPARATE bordering line
-        -- (see outline pass), no longer folded into this thickness.
+        -- v0.0.22: base line thickness comes from the shared render model
+        -- (Thickness slider + Equal Size). v0.0.24: Outline is a SEPARATE border
+        -- line drawn around every feature, in its own colour.
         local outlineOn    = ESP.Config.Outline
+        local outlineCol   = ESP.Boxes.OutlineColor
         local lineThick    = featureThickness(dist)
+        local outlineThick = math.max(1, lineThick)   -- border width for the outline
 
         -- projected AABB (2D box uses this directly; cube uses it for the
         -- optional Fill layer that sits behind the edges)
@@ -3552,9 +3616,10 @@ local function updateESPRigs()
                                 e.Position = UDim2.new(0, a.x, 0, a.y)
                                 e.Size = UDim2.new(0, segLen, 0, thick)
                                 e.Rotation = math.deg(math.atan2(dy, dx))
-                                e.BackgroundColor3 = outlineColor
+                                e.BackgroundColor3 = boxColor
                                 e.BackgroundTransparency = 0
                                 e.Visible = true
+                                applyLineOutline(e, outlineOn, outlineCol, outlineThick)
                             else
                                 e.Visible = false
                             end
@@ -3577,9 +3642,10 @@ local function updateESPRigs()
                         aEdge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
                         aEdge.Size = UDim2.new(0, length, 0, thick)
                         aEdge.Rotation = math.deg(math.atan2(dy, dx))
-                        aEdge.BackgroundColor3 = outlineColor
+                        aEdge.BackgroundColor3 = boxColor
                         aEdge.BackgroundTransparency = 0
                         aEdge.Visible = true
+                        applyLineOutline(aEdge, outlineOn, outlineCol, outlineThick)
                     end
                 end
                 for i = 13, #rig.cubeEdges do rig.cubeEdges[i].Visible = false end
@@ -3596,10 +3662,18 @@ local function updateESPRigs()
             -- with Outline/Glow via lineThick. Outline no longer gates
             -- existence -- the box's border is inherent, not decorative.
             if rig.boxOutline then
-                rig.boxOutline.Color = outlineColor
+                rig.boxOutline.Color = boxColor
                 rig.boxOutline.Thickness = lineThick
                 rig.boxOutline.Transparency = 0
                 rig.boxOutline.Enabled = not cornersMode
+            end
+            -- separate outline border: a thicker stroke behind the main line.
+            if rig.boxOutlineStroke then
+                rig.boxOutlineStroke.Enabled = outlineOn and not cornersMode
+                if outlineOn then
+                    rig.boxOutlineStroke.Color = outlineCol
+                    rig.boxOutlineStroke.Thickness = lineThick + outlineThick
+                end
             end
 
             -- Corner brackets: the box's line STYLE alternative to the full
@@ -3623,9 +3697,10 @@ local function updateESPRigs()
                     local f = rig.boxCorners[i]
                     f.Position = spec[1]
                     f.Size = spec[2]
-                    f.BackgroundColor3 = outlineColor
+                    f.BackgroundColor3 = boxColor
                     f.BackgroundTransparency = 0
                     f.Visible = true
+                    applyLineOutline(f, outlineOn, outlineCol, outlineThick)
                 end
             else
                 for _, f in ipairs(rig.boxCorners) do f.Visible = false end
@@ -3654,6 +3729,7 @@ local function updateESPRigs()
                 d.Position = UDim2.new(0, sp.X, 0, sp.Y)
                 d.BackgroundColor3 = overrideColor or ESP.Indicators.HeadDot.Color
                 d.Visible = true
+                applyLineOutline(d, outlineOn, outlineCol, outlineThick)
             else
                 rig.headDot.Visible = false
             end
@@ -3728,6 +3804,7 @@ local function updateESPRigs()
             t.Rotation = math.deg(math.atan2(dy, dx))
             t.BackgroundColor3 = overrideColor or ESP.Tracer.Color
             t.Visible = true
+            applyLineOutline(t, outlineOn, outlineCol, outlineThick)
         else
             rig.tracer.Visible = false
         end
@@ -4005,9 +4082,11 @@ addTab("Visuals", function(root)
     --------------------------------------------------------------- Box
     local boxesPanel = panel(leftCol, "box")
     local boxesMaster = configCheckbox(boxesPanel, "Enabled", ESP.Boxes.Enabled, function(v) ESP.Boxes.Enabled = v end)
-    attachDualSwatch(boxesMaster.row, ESP.Boxes.OutlineColor, ESP.Boxes.FillColor,
-        function(c) ESP.Boxes.OutlineColor = c end,
-        function(c) ESP.Boxes.FillColor    = c end)
+    -- v0.0.24: main box line colour + fill colour. Outline colour is its own swatch
+    -- on the esp panel's Outline row (separate now).
+    attachDualSwatch(boxesMaster.row, ESP.Boxes.Color, ESP.Boxes.FillColor,
+        function(c) ESP.Boxes.Color     = c end,
+        function(c) ESP.Boxes.FillColor = c end)
     configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox, function(v) ESP.Boxes.FillBox = v end)
     dropdown(boxesPanel, "Box Type", { "2D", "Cube" }, ESP.Boxes.BoxType, function(v) ESP.Boxes.BoxType = v end)
     configCheckbox(boxesPanel, "Corners", ESP.Boxes.Corners, function(v) ESP.Boxes.Corners = v end)
@@ -4020,14 +4099,22 @@ addTab("Visuals", function(root)
     dropdown(namePanel, "Type", { "Name", "Display Name" }, ESP.Names.Type, function(v) ESP.Names.Type = v end)
 
     --------------------------------------------------------------- Indicators
-    local indPanel = panel(rightCol, "indicators")
-    local distRow = configCheckbox(indPanel, "Distance", ESP.Indicators.Distance.Enabled, function(v) ESP.Indicators.Distance.Enabled = v end)
+    -- v0.0.24: each indicator is now its OWN feature box (per Matcha) instead of
+    -- rows inside one "indicators" panel.
+    local distPanel = panel(rightCol, "distance")
+    local distRow = configCheckbox(distPanel, "Enabled", ESP.Indicators.Distance.Enabled, function(v) ESP.Indicators.Distance.Enabled = v end)
     attachSingleSwatch(distRow.row, ESP.Indicators.Distance.Color, function(c) ESP.Indicators.Distance.Color = c end)
-    local skelRow = configCheckbox(indPanel, "Skeleton", ESP.Indicators.Skeleton.Enabled, function(v) ESP.Indicators.Skeleton.Enabled = v end)
+
+    local skelPanel = panel(rightCol, "skeleton")
+    local skelRow = configCheckbox(skelPanel, "Enabled", ESP.Indicators.Skeleton.Enabled, function(v) ESP.Indicators.Skeleton.Enabled = v end)
     attachSingleSwatch(skelRow.row, ESP.Indicators.Skeleton.Color, function(c) ESP.Indicators.Skeleton.Color = c end)
-    local hdRow = configCheckbox(indPanel, "Head Dot", ESP.Indicators.HeadDot.Enabled, function(v) ESP.Indicators.HeadDot.Enabled = v end)
+
+    local hdPanel = panel(rightCol, "head dot")
+    local hdRow = configCheckbox(hdPanel, "Enabled", ESP.Indicators.HeadDot.Enabled, function(v) ESP.Indicators.HeadDot.Enabled = v end)
     attachSingleSwatch(hdRow.row, ESP.Indicators.HeadDot.Color, function(c) ESP.Indicators.HeadDot.Color = c end)
-    configCheckbox(indPanel, "Profile Picture", ESP.Indicators.ProfilePicture.Enabled, function(v) ESP.Indicators.ProfilePicture.Enabled = v end)
+
+    local pfpPanel = panel(rightCol, "profile picture")
+    configCheckbox(pfpPanel, "Enabled", ESP.Indicators.ProfilePicture.Enabled, function(v) ESP.Indicators.ProfilePicture.Enabled = v end)
 
     --------------------------------------------------------------- Health
     local healthPanel = panel(rightCol, "health")
