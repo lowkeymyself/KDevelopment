@@ -1,9 +1,9 @@
--- koffee v0.0.29
+-- koffee v0.0.30
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.29"
+Koffee.Version = "0.0.30"
 
 --============================================================
 -- THEME
@@ -109,8 +109,10 @@ local Theme = {
         TabBarHeight = 40,
     },
     Radius = { Small = 4, Medium = 6, Large = 8, XLarge = 12 },
-    -- bumped +2 across the board: v0.0.10 sizes shrank visibly with Nunito
-    Text   = { Tiny = 12, Small = 13, Body = 14, Header = 15, Title = 17 },
+    -- v0.0.10 bumped +2 for Nunito (it rendered small). v0.0.30: Proxima Soft Bold
+    -- has a larger apparent size than Nunito at the same point size, so we pull the
+    -- whole scale back down -2 to match the previous (Nunito) visual weight.
+    Text   = { Tiny = 10, Small = 11, Body = 12, Header = 13, Title = 15 },
     Animation = {
         Fast       = TweenInfo.new(0.10, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
         Normal     = TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
@@ -1076,58 +1078,75 @@ local tabOrder = 0        -- explicit LayoutOrder per tab
 local activeTab = nil
 local pillFirstShow = true
 
--- Apple-style: on tab switch the pill first stretches to span both the current
--- and the destination tab, then contracts down to the destination. Two-phase
--- tween, both ease-out. Feels alive.
+-- v0.0.30 pill machinery, rewritten. The pill is a follower: its resting state is
+-- ALWAYS the active tab button's live rect (position + size, both relative to the
+-- tabBar). On a user tab-switch it plays a two-phase stretch->contract to the new
+-- rect; the rest of the time it just snaps to the active button whenever that
+-- button's geometry moves. That last part is the fix -- an AutomaticSize tab button
+-- grows a few frames AFTER creation once the custom font's glyph metrics land, and
+-- since the tabBar itself doesn't move, the old code never re-snapped and the pill
+-- sat offset until you clicked another tab. Now every source of reflow (font load,
+-- window drag, resize) re-snaps through the single geometry watcher below.
 local PILL_STRETCH  = TweenInfo.new(0.20, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 local PILL_CONTRACT = TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local pillAnimating = false
+local pillT1, pillT2 = nil, nil
+
+-- active button's rect expressed in tabBar-local offsets
+local function pillRectFor(button)
+    return UDim2.new(0, button.AbsolutePosition.X - tabBar.AbsolutePosition.X,
+                     0, button.AbsolutePosition.Y - tabBar.AbsolutePosition.Y),
+           UDim2.new(0, button.AbsoluteSize.X, 0, button.AbsoluteSize.Y)
+end
+
+local function pillSnap(button)
+    if pillT1 then pillT1:Cancel(); pillT1 = nil end
+    if pillT2 then pillT2:Cancel(); pillT2 = nil end
+    pillAnimating = false
+    local pos, size = pillRectFor(button)
+    pill.Position, pill.Size = pos, size
+    if pillFirstShow then
+        tween(pill, Theme.Animation.Normal, { BackgroundTransparency = 0 })
+        pillFirstShow = false
+    end
+end
 
 local function movePillTo(button, snap)
-    local relX = button.AbsolutePosition.X - tabBar.AbsolutePosition.X
-    local relY = button.AbsolutePosition.Y - tabBar.AbsolutePosition.Y
-    local targetPos  = UDim2.new(0, relX, 0, relY)
-    local targetSize = UDim2.new(0, button.AbsoluteSize.X, 0, button.AbsoluteSize.Y)
-    if pillFirstShow or snap then
-        pill.Position = targetPos
-        pill.Size = targetSize
-        if pillFirstShow then
-            tween(pill, Theme.Animation.Normal, { BackgroundTransparency = 0 })
-            pillFirstShow = false
-        end
-        return
-    end
-
-    -- stretch phase: cover both current + target
-    local curX = pill.Position.X.Offset
-    local curW = pill.Size.X.Offset
-    local endX = relX
-    local endW = button.AbsoluteSize.X
+    if pillFirstShow or snap then pillSnap(button); return end
+    local targetPos, targetSize = pillRectFor(button)
+    -- stretch phase: span both the current pill and the destination, then contract.
+    local curX, curW = pill.Position.X.Offset, pill.Size.X.Offset
+    local endX, endW = targetPos.X.Offset, targetSize.X.Offset
     local stretchX = math.min(curX, endX)
     local stretchW = math.max(curX + curW, endX + endW) - stretchX
-
-    local t1 = TweenService:Create(pill, PILL_STRETCH, {
-        Position = UDim2.new(0, stretchX, 0, relY),
-        Size     = UDim2.new(0, stretchW, 0, button.AbsoluteSize.Y),
+    if pillT1 then pillT1:Cancel() end
+    if pillT2 then pillT2:Cancel() end
+    pillAnimating = true
+    pillT1 = TweenService:Create(pill, PILL_STRETCH, {
+        Position = UDim2.new(0, stretchX, 0, targetPos.Y.Offset),
+        Size     = UDim2.new(0, stretchW, 0, targetSize.Y.Offset),
     })
-    t1:Play()
-    t1.Completed:Connect(function(state)
-        if state == Enum.PlaybackState.Completed then
-            TweenService:Create(pill, PILL_CONTRACT, {
-                Position = targetPos,
-                Size     = targetSize,
-            }):Play()
-        end
+    pillT1:Play()
+    pillT1.Completed:Connect(function(state)
+        if state ~= Enum.PlaybackState.Completed then return end
+        pillT2 = TweenService:Create(pill, PILL_CONTRACT, { Position = targetPos, Size = targetSize })
+        pillT2:Play()
+        pillT2.Completed:Connect(function(s2)
+            if s2 == Enum.PlaybackState.Completed then pillAnimating = false end
+        end)
     end)
 end
 
--- reposition pill instantly whenever the tabBar moves (window drag, resize).
--- also acts as belt-and-suspenders on first-load: as soon as tabBar has a real
--- AbsolutePosition, this fires and snaps the pill onto the active tab.
-tabBar:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
-    if not activeTab then return end
+-- single geometry watcher: re-snap the pill to the active button whenever anything
+-- shifts its rect (font reflow, window drag/resize) UNLESS a switch animation owns
+-- the pill right now. Fed by the tabBar move signal + each button's own size/pos
+-- signals (hooked in addTab).
+local function pillResync()
+    if pillAnimating or not activeTab then return end
     local tab = tabs[activeTab]
-    if tab then movePillTo(tab.Button, true) end
-end)
+    if tab then pillSnap(tab.Button) end
+end
+tabBar:GetPropertyChangedSignal("AbsolutePosition"):Connect(pillResync)
 
 local function selectTab(name)
     if activeTab == name then return end
@@ -1163,6 +1182,12 @@ local function addTab(name, buildFn)
             PaddingRight = UDim.new(0, 12),
         }),
     })
+
+    -- v0.0.30: the button's own rect changing (AutomaticSize settling after the
+    -- font's glyph metrics load, or a reflow) re-snaps the pill if this tab is the
+    -- active one -- kills the "pill offset on launch until you switch tabs" bug.
+    button:GetPropertyChangedSignal("AbsoluteSize"):Connect(pillResync)
+    button:GetPropertyChangedSignal("AbsolutePosition"):Connect(pillResync)
 
     -- ScrollingFrame per tab so long panel stacks don't clip. AutomaticCanvasSize
     -- reads its own children's total height so we don't have to size manually.
