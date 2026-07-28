@@ -1,9 +1,9 @@
--- koffee v0.0.25
+-- koffee v0.0.26
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.25"
+Koffee.Version = "0.0.26"
 
 --============================================================
 -- THEME
@@ -124,6 +124,11 @@ local function lineOutline()
         Enabled = false,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
     })
+end
+-- v0.0.25: per-line animated gradient (the "Gradient" toggle). Disabled by
+-- default; the render loop enables/colours/offsets it. Named so it's findable.
+local function lineGradient()
+    return new("UIGradient", { Name = "KGrad", Enabled = false })
 end
 local function tween(inst, info, props)
     local t = TweenService:Create(inst, info, props)
@@ -2298,6 +2303,98 @@ local function slider(parent, label, min, max, initial, precision, onChange)
 end
 
 --============================================================
+-- RIGHT-CLICK SETTINGS POPUP (v0.0.25)
+-- Right-click a config row to open a small floating panel of extra controls
+-- (built by the caller via api:slider(...)). Lives in popupScreen like the
+-- dropdowns / colour picker, positioned inset-safe, closes on outside click.
+--============================================================
+local openSettingsPopups = {}   -- frame -> close fn
+
+local function rightClickSettings(row, title, buildFn)
+    local btn
+    for _, c in ipairs(row:GetDescendants()) do
+        if c:IsA("TextButton") then btn = c break end
+    end
+    if not btn then return end
+
+    local popupFrame, isOpen = nil, false
+    local function ensurePopup()
+        if popupFrame then return end
+        popupFrame = new("Frame", {
+            Name = "Settings",
+            Size = UDim2.new(0, 210, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundColor3 = Theme.Palette.Panel,
+            BackgroundTransparency = 0.02,
+            BorderSizePixel = 0,
+            Visible = false,
+            ZIndex = 210,
+            Parent = popupScreen,
+        }, {
+            corner(6), stroke(Theme.Palette.Border, 1),
+            new("UIPadding", {
+                PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
+                PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12),
+            }),
+            new("UIListLayout", {
+                FillDirection = Enum.FillDirection.Vertical,
+                Padding = UDim.new(0, 4),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            }),
+        })
+        new("TextLabel", {
+            Text = title, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 211, Parent = popupFrame,
+        })
+        local api = {}
+        function api:slider(label, mn, mx, initial, precision, onChange)
+            slider(popupFrame, label, mn, mx, initial, precision, onChange)
+        end
+        buildFn(api)
+    end
+
+    local function closePopup()
+        if not isOpen then return end
+        isOpen = false
+        openSettingsPopups[popupFrame] = nil
+        if popupFrame then popupFrame.Visible = false end
+    end
+    local function openPopup()
+        ensurePopup()
+        for _, closer in pairs(openSettingsPopups) do closer() end
+        for _, closer in pairs(openDropdowns) do closer(true) end
+        isOpen = true
+        openSettingsPopups[popupFrame] = closePopup
+        local abs, siz, vp = btn.AbsolutePosition, btn.AbsoluteSize, viewport()
+        local dx = math.min(abs.X + siz.X - 40, math.max(4, vp.X - 214))
+        local dy = math.min(abs.Y, math.max(4, vp.Y - 90))
+        local ox, oy = popupOffsetFor(popupFrame, dx, dy)
+        popupFrame.Position = UDim2.new(0, ox, 0, oy)
+        popupFrame.Visible = true
+    end
+
+    btn.MouseButton2Click:Connect(function()
+        if isOpen then closePopup() else openPopup() end
+    end)
+end
+
+-- outside-click closer for the settings popups (own handler since openSettingsPopups
+-- is declared below the main dropdown/picker closer).
+UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+    and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local mp = input.Position
+    for frame, closer in pairs(openSettingsPopups) do
+        local abs, siz = frame.AbsolutePosition, frame.AbsoluteSize
+        local inside = mp.X >= abs.X and mp.X <= abs.X + siz.X
+                   and mp.Y >= abs.Y and mp.Y <= abs.Y + siz.Y
+        if not inside then closer() end
+    end
+end)
+
+--============================================================
 -- ESP MODULE (v0.0.10)
 -- Master toggle ("Enabled") just turns on the ESP framework + render loop.
 -- Nothing draws until a sub-feature (Box / Name / Indicators / Health /
@@ -2331,11 +2428,16 @@ local ESP = {
         -- v0.0.19: Outline no longer controls the arraylist accent line.
         Outline        = true,
         SelfESP        = false,
-        TextGradient   = false,        -- v0.0.21: gradient sweep on all ESP text
-        -- v0.0.22: gradient endpoint colors, editable via two swatches. The
-        -- gradient animates these right->left forever (see gradientOffset loop).
+        TextGradient   = false,        -- v0.0.21: animated gradient on all ESP text
+        -- v0.0.22: text gradient endpoint colors, editable via two swatches.
         GradientColorA = Color3.fromRGB(255, 253, 248),
         GradientColorB = Color3.fromRGB(212, 145, 90),
+        -- v0.0.25: Gradient = animated gradient on every NON-text Second-Interface
+        -- element (box, cube edges, corners, skeleton, tracer, head dot). Own
+        -- colours. When on it OVERRIDES each feature's colour.
+        Gradient       = false,
+        GradientColorA2 = Color3.fromRGB(120, 200, 255),
+        GradientColorB2 = Color3.fromRGB(200, 130, 255),
         SizingType     = "Static",     -- per he: Static first + default
         RenderDistance = 1000,
     },
@@ -2370,10 +2472,12 @@ local ESP = {
         Color   = Color3.fromRGB(255, 255, 255),
     },
     -- v0.0.21: Indicators -- small per-target markers.
+    -- v0.0.25: per-feature settings (right-click popups): Distance.TextSize,
+    -- Skeleton.Thickness (0 = use the universal Thickness), HeadDot.Size.
     Indicators = {
-        Distance       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255) }, -- studs, below feet
-        Skeleton       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255) }, -- joint lines
-        HeadDot        = { Enabled = false, Color = Color3.fromRGB(255, 255, 255) }, -- dot at head
+        Distance       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), TextSize = 13 }, -- below feet
+        Skeleton       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Thickness = 0 }, -- 0 = universal
+        HeadDot        = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Size = 6 },       -- dot at head
         ProfilePicture = { Enabled = false },                                        -- avatar above name
     },
     -- v0.0.21: Health -- vertical bar on the character's left, full body height.
@@ -2384,10 +2488,12 @@ local ESP = {
         TextPos = "Above Name",     -- "Above Name" ([hp] Name) | "On Health Bar"
     },
     -- v0.0.21: Tracer -- line from a screen origin to the target.
+    -- v0.0.25: Location = where on the target the tracer points (Below/Middle/Above).
     Tracer = {
-        Enabled = false,
-        Color   = Color3.fromRGB(255, 255, 255),
-        Origin  = "Bottom",         -- "Mouse" | "Bottom" | "Middle" | "Top"
+        Enabled  = false,
+        Color    = Color3.fromRGB(255, 255, 255),
+        Origin   = "Bottom",         -- "Mouse" | "Bottom" | "Middle" | "Top" (screen start point)
+        Location = "Middle",         -- "Below" | "Middle" | "Above" (target end point)
     },
     Colors = {
         Visible = Color3.fromRGB(212, 145, 90),
@@ -2432,7 +2538,7 @@ local function makeBoxCorners(parent)
             Visible = false,
             ZIndex = 14,
             Parent = parent,
-        }, { lineOutline() }))
+        }, { lineOutline(), lineGradient() }))
     end
     return corners
 end
@@ -2450,7 +2556,7 @@ local function makeCubeEdges(parent)
             Visible = false,
             ZIndex = 14,
             Parent = parent,
-        }, { lineOutline() }))
+        }, { lineOutline(), lineGradient() }))
     end
     return edges
 end
@@ -2562,7 +2668,7 @@ local function makeSkeletonLines(parent)
             Visible = false,
             ZIndex = 13,
             Parent = parent,
-        }, { lineOutline() })
+        }, { lineOutline(), lineGradient() })
     end
     return lines
 end
@@ -2575,7 +2681,7 @@ local function makeHeadDot(parent)
         Visible = false,
         ZIndex = 14,
         Parent = parent,
-    }, { pillCorner(), lineOutline() })
+    }, { pillCorner(), lineOutline(), lineGradient() })
 end
 
 local function makeTracer(parent)
@@ -2586,7 +2692,7 @@ local function makeTracer(parent)
         Visible = false,
         ZIndex = 13,
         Parent = parent,
-    }, { lineOutline() })
+    }, { lineOutline(), lineGradient() })
 end
 
 local function makeHealthBar(parent)
@@ -2819,6 +2925,7 @@ local function makeRig(plr, character)
             Enabled = false, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
         new("UIStroke", { Name = "KMain", Color = Color3.new(1, 1, 1), Thickness = 2,
             ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
+        lineGradient(),
     })
     local boxOutline = boxRoot:FindFirstChild("KMain")             -- main box line
     local boxOutlineStroke = boxRoot:FindFirstChild("KOutline")    -- separate outline border
@@ -3105,7 +3212,11 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
         -- created before parts fully loaded). Previously we silently fell
         -- back to full GetBoundingBox in this case, which read as "Character
         -- Only doesn't work" -- accessories still counted.
-        if not bodyParts or #bodyParts == 0 then
+        -- v0.0.25: re-collect when the cache looks INCOMPLETE (< 6 parts), not
+        -- only when empty. A rig created before the R15 limbs finished loading
+        -- would cache just HRP/torso and never refresh -> "Character Only shows
+        -- only the torso" on R15. 6 covers a minimal R6; a fuller rig refreshes up.
+        if not bodyParts or #bodyParts < 6 then
             local fresh = collectBodyParts(character)
             if rig then rig.bodyParts = fresh end
             bodyParts = fresh
@@ -3208,22 +3319,25 @@ end
 -- periodic -- sweeping Offset.X seamlessly loops with no snap at the wrap. Speed
 -- is cycles/sec; we sweep offset 1 -> -1 (right to left) forever. Sequence is
 -- rebuilt only when the endpoint colors actually change (cheap steady state).
-local gradLastA, gradLastB, gradSeq
-local function currentGradSeq()
-    local a, b = ESP.Config.GradientColorA, ESP.Config.GradientColorB
-    if a ~= gradLastA or b ~= gradLastB or not gradSeq then
-        gradLastA, gradLastB = a, b
-        gradSeq = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, a),
-            ColorSequenceKeypoint.new(0.5, b),
-            ColorSequenceKeypoint.new(1, a),
-        })
+local function makeGradSeqGetter()
+    local lastA, lastB, seq
+    return function(a, b)
+        if a ~= lastA or b ~= lastB or not seq then
+            lastA, lastB = a, b
+            seq = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, a),
+                ColorSequenceKeypoint.new(0.5, b),
+                ColorSequenceKeypoint.new(1, a),
+            })
+        end
+        return seq
     end
-    return gradSeq
 end
+local textGradSeq = makeGradSeqGetter()
+local lineGradSeq = makeGradSeqGetter()
 local GRAD_SPEED = 0.5
 local function gradOffsetX()
-    return 1 - ((os.clock() * GRAD_SPEED) % 2)   -- 1 -> -1, seamless (periodic seq)
+    return ((os.clock() * GRAD_SPEED) % 2) - 1   -- -1 -> 1, seamless (left-to-right)
 end
 
 -- v0.0.24: toggle/colour a line-frame's separate outline border (the KOutline
@@ -3252,7 +3366,20 @@ local function applyGradient(lbl, on)
     if not g then return end
     g.Enabled = on
     if on then
-        g.Color = currentGradSeq()
+        g.Color = textGradSeq(ESP.Config.GradientColorA, ESP.Config.GradientColorB)
+        g.Offset = Vector2.new(gradOffsetX(), 0)
+    end
+end
+-- v0.0.25: line gradient (on a feature line-frame's KGrad UIGradient). When on it
+-- OVERRIDES the feature colour (forces white so the gradient shows its own colours
+-- -- gradient wins over per-feature colours, per he).
+local function applyLineGradient(frame, on)
+    local g = frame:FindFirstChild("KGrad")
+    if not g then return end
+    g.Enabled = on
+    if on then
+        frame.BackgroundColor3 = Color3.new(1, 1, 1)
+        g.Color = lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2)
         g.Offset = Vector2.new(gradOffsetX(), 0)
     end
 end
@@ -3289,7 +3416,7 @@ local function updateBillboards(rig, plr, dist, overrideColor)
             rig.nameLbl.Visible = showName
             if showName then
                 rig.nameLbl.Text = nameStr
-                rig.nameLbl.TextColor3 = overrideColor or names.Color
+                rig.nameLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or names.Color)
                 rig.nameLbl.BackgroundTransparency = textBg
                 applyTextOutline(rig.nameLbl, outlineOn, outlineCol)
                 applyGradient(rig.nameLbl, grad)
@@ -3310,7 +3437,8 @@ local function updateBillboards(rig, plr, dist, overrideColor)
         if distCfg.Enabled then
             rig.distBB.Enabled = true
             rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
-            rig.distLbl.TextColor3 = overrideColor or distCfg.Color
+            rig.distLbl.TextSize = distCfg.TextSize or 13   -- v0.0.25 right-click size
+            rig.distLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or distCfg.Color)
             rig.distLbl.BackgroundTransparency = textBg
             applyTextOutline(rig.distLbl, outlineOn, outlineCol)
             applyGradient(rig.distLbl, grad)
@@ -3324,7 +3452,9 @@ end
 -- + R15 since missing parts skip) and draw a rotated line frame between them.
 local function updateSkeleton(rig, overrideColor, dist)
     local cfg = ESP.Indicators.Skeleton
-    local thick = featureThickness(dist)
+    -- v0.0.25: per-skeleton thickness override (right-click). 0 = universal.
+    local st = cfg.Thickness or 0
+    local thick = (st > 0) and st or featureThickness(dist)
     local outlineOn = ESP.Config.Outline
     local outlineCol = ESP.Boxes.OutlineColor
     local outlineThick = math.max(1, thick)
@@ -3358,6 +3488,7 @@ local function updateSkeleton(rig, overrideColor, dist)
                     line.BackgroundColor3 = col
                     line.Visible = true
                     applyLineOutline(line, outlineOn, outlineCol, outlineThick)
+                    applyLineGradient(line, ESP.Config.Gradient)
                 end
             end
         end
@@ -3489,6 +3620,7 @@ local function updateESPRigs()
         -- line drawn around every feature, in its own colour.
         local outlineOn    = ESP.Config.Outline
         local outlineCol   = ESP.Boxes.OutlineColor
+        local lineGradOn   = ESP.Config.Gradient      -- v0.0.25 gradient-everything
         local lineThick    = featureThickness(dist)
         local outlineThick = math.max(1, lineThick)   -- border width for the outline
 
@@ -3620,6 +3752,7 @@ local function updateESPRigs()
                                 e.BackgroundTransparency = 0
                                 e.Visible = true
                                 applyLineOutline(e, outlineOn, outlineCol, outlineThick)
+                                applyLineGradient(e, lineGradOn)
                             else
                                 e.Visible = false
                             end
@@ -3646,6 +3779,7 @@ local function updateESPRigs()
                         aEdge.BackgroundTransparency = 0
                         aEdge.Visible = true
                         applyLineOutline(aEdge, outlineOn, outlineCol, outlineThick)
+                        applyLineGradient(aEdge, lineGradOn)
                     end
                 end
                 for i = 13, #rig.cubeEdges do rig.cubeEdges[i].Visible = false end
@@ -3662,11 +3796,12 @@ local function updateESPRigs()
             -- with Outline/Glow via lineThick. Outline no longer gates
             -- existence -- the box's border is inherent, not decorative.
             if rig.boxOutline then
-                rig.boxOutline.Color = boxColor
+                rig.boxOutline.Color = lineGradOn and Color3.new(1, 1, 1) or boxColor
                 rig.boxOutline.Thickness = lineThick
                 rig.boxOutline.Transparency = 0
                 rig.boxOutline.Enabled = not cornersMode
             end
+            applyLineGradient(rig.boxRoot, lineGradOn and not cornersMode)
             -- separate outline border: a thicker stroke behind the main line.
             if rig.boxOutlineStroke then
                 rig.boxOutlineStroke.Enabled = outlineOn and not cornersMode
@@ -3701,6 +3836,7 @@ local function updateESPRigs()
                     f.BackgroundTransparency = 0
                     f.Visible = true
                     applyLineOutline(f, outlineOn, outlineCol, outlineThick)
+                    applyLineGradient(f, lineGradOn)
                 end
             else
                 for _, f in ipairs(rig.boxCorners) do f.Visible = false end
@@ -3723,13 +3859,19 @@ local function updateESPRigs()
             local sp = cam:WorldToViewportPoint(rig.head.Position)
             if sp.Z > 0 then
                 local d = rig.headDot
-                local sz = math.clamp(4 + featureThickness(dist) * 2, 4, 22)
+                -- v0.0.25: size from the right-click setting; scales with distance
+                -- when Equal Size is off (like the other features).
+                local sz = ESP.Indicators.HeadDot.Size or 6
+                if not ESP.Render.EqualSize then
+                    sz = math.clamp(sz * (EQ_REF_DIST / math.max(dist, 1)), sz * 0.35, sz * 3)
+                end
                 d.AnchorPoint = Vector2.new(0.5, 0.5)
                 d.Size = UDim2.new(0, sz, 0, sz)
                 d.Position = UDim2.new(0, sp.X, 0, sp.Y)
                 d.BackgroundColor3 = overrideColor or ESP.Indicators.HeadDot.Color
                 d.Visible = true
                 applyLineOutline(d, outlineOn, outlineCol, outlineThick)
+                applyLineGradient(d, lineGradOn)
             else
                 rig.headDot.Visible = false
             end
@@ -3745,20 +3887,36 @@ local function updateESPRigs()
             if hum and hum.MaxHealth > 0 then
                 frac = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
             end
-            -- v0.0.23: anchor to a TIGHT character rect (projectStatic) so the bar
-            -- stays glued to the body regardless of box type. In Cube mode the box
-            -- AABB balloons with depth/rotation, which detached the bar; the tight
-            -- rect is the same head->feet span used by the 2D box.
-            local hbMinX, hbMinY, hbMaxY = minX, minY, maxY
-            local tc = projectStatic(rig.torso)
-            if tc then
-                hbMinX = math.min(tc[1].x, tc[2].x, tc[3].x, tc[4].x)
-                hbMinY = math.min(tc[1].y, tc[3].y)
-                hbMaxY = math.max(tc[1].y, tc[3].y)
+            -- v0.0.25: glue to the ACTUAL body, adaptive to R6/R15/any rig.
+            --   vertical span = highest -> lowest projected body part (head->feet)
+            --   left edge     = torso centre minus the torso's projected half-width
+            -- so it hugs the body core -- not the wide Cube AABB, not outstretched
+            -- arms, and not a fixed R6-calibrated stud offset (the old bug).
+            local hbLeft, hbTop, hbBot = minX, minY, maxY
+            do
+                local parts = rig.bodyParts
+                if not parts or #parts < 6 then parts = collectBodyParts(rig.character); rig.bodyParts = parts end
+                local pminY, pmaxY, any = math.huge, -math.huge, false
+                for _, p in ipairs(parts) do
+                    if p.Parent then
+                        local sp = cam:WorldToViewportPoint(p.Position)
+                        if sp.Z > 0 then
+                            any = true
+                            if sp.Y < pminY then pminY = sp.Y end
+                            if sp.Y > pmaxY then pmaxY = sp.Y end
+                        end
+                    end
+                end
+                local tcp = cam:WorldToViewportPoint(rig.torso.Position)
+                local trp = cam:WorldToViewportPoint(rig.torso.Position + cam.CFrame.RightVector * 1.6)
+                if any and tcp.Z > 0 then
+                    hbTop, hbBot = pminY, pmaxY
+                    hbLeft = tcp.X - math.abs(trp.X - tcp.X)
+                end
             end
-            local barW, gap = 3, 7   -- v0.0.23: slightly larger gap to the box
-            rig.healthBg.Position = UDim2.new(0, hbMinX - gap - barW, 0, hbMinY)
-            rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(hbMaxY - hbMinY, 1))
+            local barW, gap = 3, 7
+            rig.healthBg.Position = UDim2.new(0, hbLeft - gap - barW, 0, hbTop)
+            rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(hbBot - hbTop, 1))
             rig.healthBg.Visible = true
             local barColor
             if ESP.Health.Based then
@@ -3795,7 +3953,14 @@ local function updateESPRigs()
             else
                 ox, oy = vp.X * 0.5, vp.Y   -- Bottom
             end
-            local tx2, ty2 = (minX + maxX) * 0.5, maxY
+            -- v0.0.25: Location = which point on the target the tracer ends at.
+            local loc = ESP.Tracer.Location
+            local tx2, ty2 = (minX + maxX) * 0.5, maxY   -- Below (feet), default fallback
+            if loc == "Middle" then
+                ty2 = (minY + maxY) * 0.5
+            elseif loc == "Above" then
+                ty2 = minY
+            end
             local dx, dy = tx2 - ox, ty2 - oy
             local len = math.sqrt(dx * dx + dy * dy)
             local t = rig.tracer
@@ -3805,6 +3970,7 @@ local function updateESPRigs()
             t.BackgroundColor3 = overrideColor or ESP.Tracer.Color
             t.Visible = true
             applyLineOutline(t, outlineOn, outlineCol, outlineThick)
+            applyLineGradient(t, lineGradOn)
         else
             rig.tracer.Visible = false
         end
@@ -3840,20 +4006,50 @@ local espModule = registerModule("esp", "ESP",
     end
 )
 
--- v0.0.14: arraylist subtitle -- e.g. "ESP    box, name, health". Returns a
--- leading-space + comma-joined list of active sub-features. Empty string when
--- nothing sub-active so the label renders as just "ESP" cleanly.
+-- v0.0.25: ESP's arraylist detail lists ONLY box + tracer as its arguments.
+-- Everything else (Name, Distance, Skeleton, Head Dot, Profile Picture, Health)
+-- is its OWN arraylist entry -- see the sub-feature sync below.
 espModule.GetDetail = function()
     local parts = {}
     if ESP.Boxes.Enabled then table.insert(parts, "box") end
-    if ESP.Names.Enabled then table.insert(parts, "name") end
-    if ESP.Health.Bar.Enabled then table.insert(parts, "health") end
-    if ESP.Indicators.Skeleton.Enabled then table.insert(parts, "skeleton") end
     if ESP.Tracer.Enabled then table.insert(parts, "tracer") end
     if #parts == 0 then return "" end
-    -- v0.0.17: wider separator (4 spaces) so the detail reads as a distinct
-    -- subtitle rather than glued to the base name
     return "    " .. table.concat(parts, ", ")
+end
+
+-- v0.0.25: ESP sub-features appear as their OWN lines in the arraylist (per he).
+-- They aren't real modules (the ESP render loop draws them off config flags), so
+-- these are display-only entries synced from the flags. Only shown while ESP
+-- itself is enabled -- an entry the render loop isn't drawing would be a lie.
+local subFeatureDefs = {
+    { id = "esp_name",     name = "Name",            get = function() return ESP.Names.Enabled end },
+    { id = "esp_distance", name = "Distance",        get = function() return ESP.Indicators.Distance.Enabled end },
+    { id = "esp_skeleton", name = "Skeleton",        get = function() return ESP.Indicators.Skeleton.Enabled end },
+    { id = "esp_headdot",  name = "Head Dot",        get = function() return ESP.Indicators.HeadDot.Enabled end },
+    { id = "esp_pfp",      name = "Profile Picture", get = function() return ESP.Indicators.ProfilePicture.Enabled end },
+    { id = "esp_health",   name = "Health",          get = function() return ESP.Health.Bar.Enabled end },
+}
+for _, def in ipairs(subFeatureDefs) do
+    def.mod = { Id = def.id, DisplayName = def.name, Enabled = false, Watchers = {} }
+end
+do
+    local accum = 0
+    RunService.Heartbeat:Connect(function(dt)
+        accum = accum + dt
+        if accum < 0.15 then return end
+        accum = 0
+        local espOn = Modules.esp and Modules.esp.Enabled
+        for _, def in ipairs(subFeatureDefs) do
+            local on = espOn and def.get() or false
+            if on and not def.mod.Enabled then
+                def.mod.Enabled = true
+                addToActiveArray(def.mod)
+            elseif not on and def.mod.Enabled then
+                def.mod.Enabled = false
+                removeFromActiveArray(def.mod)
+            end
+        end
+    end)
 end
 
 --============================================================
@@ -4061,6 +4257,11 @@ addTab("Visuals", function(root)
     attachDualSwatch(gradRow.row, ESP.Config.GradientColorA, ESP.Config.GradientColorB,
         function(c) ESP.Config.GradientColorA = c end,
         function(c) ESP.Config.GradientColorB = c end)
+    -- v0.0.25: Gradient for everything (non-text) in the Feature Interface.
+    local grad2Row = configCheckbox(espPanel, "Gradient", ESP.Config.Gradient, function(v) ESP.Config.Gradient = v end)
+    attachDualSwatch(grad2Row.row, ESP.Config.GradientColorA2, ESP.Config.GradientColorB2,
+        function(c) ESP.Config.GradientColorA2 = c end,
+        function(c) ESP.Config.GradientColorB2 = c end)
     configCheckbox(espPanel, "Text Background", ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
     local outlineRow = configCheckbox(espPanel, "Outline", ESP.Config.Outline, function(v) ESP.Config.Outline = v end)
     attachSingleSwatch(outlineRow.row, ESP.Boxes.OutlineColor, function(c) ESP.Boxes.OutlineColor = c end)
@@ -4099,22 +4300,26 @@ addTab("Visuals", function(root)
     dropdown(namePanel, "Type", { "Name", "Display Name" }, ESP.Names.Type, function(v) ESP.Names.Type = v end)
 
     --------------------------------------------------------------- Indicators
-    -- v0.0.24: each indicator is now its OWN feature box (per Matcha) instead of
-    -- rows inside one "indicators" panel.
-    local distPanel = panel(rightCol, "distance")
-    local distRow = configCheckbox(distPanel, "Enabled", ESP.Indicators.Distance.Enabled, function(v) ESP.Indicators.Distance.Enabled = v end)
+    -- Single panel (toggles live together in the UI); each is its own entry in
+    -- the arraylist though (see GetDetail). Right-click Skeleton / Head Dot /
+    -- Distance for per-feature settings popups.
+    local indPanel = panel(rightCol, "indicators")
+    local distRow = configCheckbox(indPanel, "Distance", ESP.Indicators.Distance.Enabled, function(v) ESP.Indicators.Distance.Enabled = v end)
     attachSingleSwatch(distRow.row, ESP.Indicators.Distance.Color, function(c) ESP.Indicators.Distance.Color = c end)
-
-    local skelPanel = panel(rightCol, "skeleton")
-    local skelRow = configCheckbox(skelPanel, "Enabled", ESP.Indicators.Skeleton.Enabled, function(v) ESP.Indicators.Skeleton.Enabled = v end)
+    rightClickSettings(distRow.row, "distance", function(popup)
+        popup:slider("Text Size", 8, 28, ESP.Indicators.Distance.TextSize, 0, function(v) ESP.Indicators.Distance.TextSize = v end)
+    end)
+    local skelRow = configCheckbox(indPanel, "Skeleton", ESP.Indicators.Skeleton.Enabled, function(v) ESP.Indicators.Skeleton.Enabled = v end)
     attachSingleSwatch(skelRow.row, ESP.Indicators.Skeleton.Color, function(c) ESP.Indicators.Skeleton.Color = c end)
-
-    local hdPanel = panel(rightCol, "head dot")
-    local hdRow = configCheckbox(hdPanel, "Enabled", ESP.Indicators.HeadDot.Enabled, function(v) ESP.Indicators.HeadDot.Enabled = v end)
+    rightClickSettings(skelRow.row, "skeleton", function(popup)
+        popup:slider("Thickness", 0.1, 8, ESP.Indicators.Skeleton.Thickness or 0, 1, function(v) ESP.Indicators.Skeleton.Thickness = v end)
+    end)
+    local hdRow = configCheckbox(indPanel, "Head Dot", ESP.Indicators.HeadDot.Enabled, function(v) ESP.Indicators.HeadDot.Enabled = v end)
     attachSingleSwatch(hdRow.row, ESP.Indicators.HeadDot.Color, function(c) ESP.Indicators.HeadDot.Color = c end)
-
-    local pfpPanel = panel(rightCol, "profile picture")
-    configCheckbox(pfpPanel, "Enabled", ESP.Indicators.ProfilePicture.Enabled, function(v) ESP.Indicators.ProfilePicture.Enabled = v end)
+    rightClickSettings(hdRow.row, "head dot", function(popup)
+        popup:slider("Size", 2, 24, ESP.Indicators.HeadDot.Size or 6, 0, function(v) ESP.Indicators.HeadDot.Size = v end)
+    end)
+    configCheckbox(indPanel, "Profile Picture", ESP.Indicators.ProfilePicture.Enabled, function(v) ESP.Indicators.ProfilePicture.Enabled = v end)
 
     --------------------------------------------------------------- Health
     local healthPanel = panel(rightCol, "health")
@@ -4129,6 +4334,7 @@ addTab("Visuals", function(root)
     local trRow = configCheckbox(tracerPanel, "Enabled", ESP.Tracer.Enabled, function(v) ESP.Tracer.Enabled = v end)
     attachSingleSwatch(trRow.row, ESP.Tracer.Color, function(c) ESP.Tracer.Color = c end)
     dropdown(tracerPanel, "Origin", { "Mouse", "Bottom", "Middle", "Top" }, ESP.Tracer.Origin, function(v) ESP.Tracer.Origin = v end)
+    dropdown(tracerPanel, "Location", { "Below", "Middle", "Above" }, ESP.Tracer.Location, function(v) ESP.Tracer.Location = v end)
 end)
 
 addTab("World", function(root)
@@ -4236,6 +4442,7 @@ local function setWindowOpen(open)
         -- so they don't linger over the game after the menu is hidden.
         closeColorPicker()
         for _, closer in pairs(openDropdowns) do closer(true) end
+        for _, closer in pairs(openSettingsPopups) do closer() end
         tween(window, Theme.Animation.WindowFade, { GroupTransparency = 1 })
         task.delay(0.2, function()
             if not windowOpen then window.Visible = false end
