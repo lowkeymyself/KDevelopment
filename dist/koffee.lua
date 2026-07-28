@@ -1,9 +1,9 @@
--- koffee v0.0.22
+-- koffee v0.0.23
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.22"
+Koffee.Version = "0.0.23"
 
 --============================================================
 -- THEME
@@ -2304,6 +2304,7 @@ local ESP = {
         -- config value only.
         TextBackground = false,
         CharacterOnly  = false,      -- ignore accessories/tools in bounding-box calc
+        FollowDirection = true,      -- v0.0.23: box/cube orients to the player's facing
         ImmediateMode  = true,       -- true = snap-to-frame, false = lerp smoothing
         TeamCheck      = false,
         VisibleCheck   = false,
@@ -2990,14 +2991,38 @@ local function projectStatic(torso)
     return c, true, true
 end
 
--- v0.0.13: manual AABB from cached body parts. Ignores accessories/tools.
--- Uses part.Position + part.Size (axis-aligned) -- fine for character parts
--- which are mostly upright. Returns cframe (center) + size, matching the
--- shape of character:GetBoundingBox.
-local function characterOnlyBBox(bodyParts)
+-- v0.0.13: manual bbox from cached body parts. Ignores accessories/tools.
+-- v0.0.23: `refCF` makes it ORIENTED (Follow Direction). When given, every part
+-- corner is measured in refCF-local space (the torso frame) so the box rotates
+-- with the character instead of being a world-axis box. Without it, it falls back
+-- to the old world-axis-aligned AABB. Returns cframe (center) + size, matching
+-- the shape of character:GetBoundingBox.
+local function characterOnlyBBox(bodyParts, refCF)
     local minX, minY, minZ =  math.huge,  math.huge,  math.huge
     local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
     local found = false
+    if refCF then
+        for _, part in ipairs(bodyParts) do
+            if part.Parent then
+                local pcf, ps = part.CFrame, part.Size
+                local hx, hy, hz = ps.X * 0.5, ps.Y * 0.5, ps.Z * 0.5
+                for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
+                    local lp = refCF:PointToObjectSpace((pcf * CFrame.new(sx * hx, sy * hy, sz * hz)).Position)
+                    if lp.X < minX then minX = lp.X end
+                    if lp.X > maxX then maxX = lp.X end
+                    if lp.Y < minY then minY = lp.Y end
+                    if lp.Y > maxY then maxY = lp.Y end
+                    if lp.Z < minZ then minZ = lp.Z end
+                    if lp.Z > maxZ then maxZ = lp.Z end
+                end end end
+                found = true
+            end
+        end
+        if not found then return nil end
+        local localCenter = Vector3.new((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5)
+        local size = Vector3.new(maxX - minX, maxY - minY, maxZ - minZ)
+        return refCF * CFrame.new(localCenter), size   -- oriented to the torso frame
+    end
     for _, part in ipairs(bodyParts) do
         if part.Parent then
             local pos = part.Position
@@ -3017,6 +3042,26 @@ local function characterOnlyBBox(bodyParts)
     return CFrame.new(center), size
 end
 
+-- v0.0.23: flatten an oriented (cf,size) box to a world-axis-aligned box (used
+-- when Follow Direction is OFF -- the box becomes a plain world box that doesn't
+-- rotate with the character).
+local function axisAlignBox(cf, size)
+    local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+    local minX, minY, minZ =  math.huge,  math.huge,  math.huge
+    local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+    for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
+        local p = (cf * CFrame.new(sx * hx, sy * hy, sz * hz)).Position
+        if p.X < minX then minX = p.X end
+        if p.X > maxX then maxX = p.X end
+        if p.Y < minY then minY = p.Y end
+        if p.Y > maxY then maxY = p.Y end
+        if p.Z < minZ then minZ = p.Z end
+        if p.Z > maxZ then maxZ = p.Z end
+    end end end
+    return CFrame.new((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5),
+           Vector3.new(maxX - minX, maxY - minY, maxZ - minZ)
+end
+
 local function project8(character, sizingType, characterOnly, bodyParts, rig)
     local cf, size
     if characterOnly then
@@ -3030,7 +3075,16 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
             bodyParts = fresh
         end
         if #bodyParts == 0 then return nil, false, false end
-        local c, s = characterOnlyBBox(bodyParts)
+        -- v0.0.23: Follow Direction makes the Character-Only box ORIENTED to the
+        -- torso frame (so Cube tracks the player's facing). Without it, Character
+        -- Only built a world-axis box -- the "Character Only kills Follow
+        -- Direction" bug. Falls back to world-axis when Follow Direction is off.
+        local refCF = nil
+        if ESP.Config.FollowDirection then
+            local torso = (rig and rig.torso) or findTorso(character)
+            if torso and torso.Parent then refCF = torso.CFrame end
+        end
+        local c, s = characterOnlyBBox(bodyParts, refCF)
         if not c then return nil, false, false end
         cf, size = c, s
     else
@@ -3038,6 +3092,11 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
         if not ok or not cframe then return nil, false, false end
         cf = cframe
         size = sz
+        -- Follow Direction OFF: flatten the oriented GetBoundingBox to a plain
+        -- world-axis box so the cube stops rotating with the character.
+        if not ESP.Config.FollowDirection then
+            cf, size = axisAlignBox(cf, size)
+        end
     end
     if sizingType == "Prediction" then
         local hrp = character:FindFirstChild("HumanoidRootPart")
@@ -3106,7 +3165,7 @@ local function featureThickness(dist)
     local base = ESP.Render.Thickness
     if ESP.Render.EqualSize or not dist then return base end
     local s = base * (EQ_REF_DIST / math.max(dist, 1))
-    return math.clamp(s, math.max(1, base * 0.25), base * 5)
+    return math.clamp(s, math.max(0.1, base * 0.25), base * 5)   -- v0.0.23: sub-1 allowed
 end
 
 -- v0.0.22: animated text gradient. The ColorSequence is built A->B->A so it's
@@ -3600,9 +3659,20 @@ local function updateESPRigs()
             if hum and hum.MaxHealth > 0 then
                 frac = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
             end
-            local barW, gap = 3, 4
-            rig.healthBg.Position = UDim2.new(0, minX - gap - barW, 0, minY)
-            rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(maxY - minY, 1))
+            -- v0.0.23: anchor to a TIGHT character rect (projectStatic) so the bar
+            -- stays glued to the body regardless of box type. In Cube mode the box
+            -- AABB balloons with depth/rotation, which detached the bar; the tight
+            -- rect is the same head->feet span used by the 2D box.
+            local hbMinX, hbMinY, hbMaxY = minX, minY, maxY
+            local tc = projectStatic(rig.torso)
+            if tc then
+                hbMinX = math.min(tc[1].x, tc[2].x, tc[3].x, tc[4].x)
+                hbMinY = math.min(tc[1].y, tc[3].y)
+                hbMaxY = math.max(tc[1].y, tc[3].y)
+            end
+            local barW, gap = 3, 7   -- v0.0.23: slightly larger gap to the box
+            rig.healthBg.Position = UDim2.new(0, hbMinX - gap - barW, 0, hbMinY)
+            rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(hbMaxY - hbMinY, 1))
             rig.healthBg.Visible = true
             local barColor
             if ESP.Health.Based then
@@ -3910,13 +3980,15 @@ addTab("Visuals", function(root)
     configCheckbox(espPanel, "Self ESP", ESP.Config.SelfESP, function(v) ESP.Config.SelfESP = v end)
     -- koffee extras (not in Matcha, kept): finer-grained bbox + smoothing control
     configCheckbox(espPanel, "Character Only", ESP.Config.CharacterOnly, function(v) ESP.Config.CharacterOnly = v end)
+    configCheckbox(espPanel, "Follow Direction", ESP.Config.FollowDirection, function(v) ESP.Config.FollowDirection = v end)
     configCheckbox(espPanel, "Immediate Mode", ESP.Config.ImmediateMode, function(v) ESP.Config.ImmediateMode = v end)
     dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end)
     -- v0.0.22: global Feature-Interface thickness + distance-invariance.
-    slider(espPanel, "Thickness", 1, 8, ESP.Render.Thickness, 0,
+    -- v0.0.23: supports sub-1 (down to 0.1) for hairline lines.
+    slider(espPanel, "Thickness", 0.1, 8, ESP.Render.Thickness, 1,
         function(v) ESP.Render.Thickness = v end)
     configCheckbox(espPanel, "Equal Size", ESP.Render.EqualSize, function(v) ESP.Render.EqualSize = v end)
 
