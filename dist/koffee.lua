@@ -1,9 +1,9 @@
--- koffee v0.0.26
+-- koffee v0.0.27
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.26"
+Koffee.Version = "0.0.27"
 
 --============================================================
 -- THEME
@@ -2352,6 +2352,12 @@ local function rightClickSettings(row, title, buildFn)
         function api:slider(label, mn, mx, initial, precision, onChange)
             slider(popupFrame, label, mn, mx, initial, precision, onChange)
         end
+        function api:toggle(label, initial, onChange)
+            configCheckbox(popupFrame, label, initial, onChange)
+        end
+        function api:dropdown(label, options, initial, onChange)
+            dropdown(popupFrame, label, options, initial, onChange)
+        end
         buildFn(api)
     end
 
@@ -2438,6 +2444,11 @@ local ESP = {
         Gradient       = false,
         GradientColorA2 = Color3.fromRGB(120, 200, 255),
         GradientColorB2 = Color3.fromRGB(200, 130, 255),
+        -- v0.0.26: gradient tuning (right-click the Gradient toggle).
+        GradientSpeed     = 0.5,   -- cycles/sec
+        GradientRotation  = 0,     -- degrees; 0 = horizontal, 90 = vertical
+        GradientSpacing   = 0.5,   -- 0..1 where the B color sits between the A ends
+        GradientReverse   = false, -- flip travel direction
         SizingType     = "Static",     -- per he: Static first + default
         RenderDistance = 1000,
     },
@@ -2464,6 +2475,9 @@ local ESP = {
         BoxType      = "2D",       -- "2D" | "Cube"
         Corners      = false,
         CornerLength = 0.3,        -- 0-1, fraction of edge length
+        -- v0.0.26: right-click the box "Enabled" toggle. 0 = use universal Thickness.
+        Thickness        = 0,
+        OutlineThickness = 2,      -- extra px the outline extends beyond the line
     },
     -- v0.0.21: Name overlay (billboard text above the head).
     Names = {
@@ -2566,8 +2580,8 @@ end
 -- is drawn as a stack of horizontal strips spanning the projected convex
 -- silhouette of the 8 box corners. Reads as a translucent solid occupying the
 -- box volume instead of the old flat AABB rectangle. Strips are pooled per rig.
-local MAX_FILL_ROWS = 40
-local FILL_ROW_STEP = 6   -- target px per strip; larger = fewer strips = cheaper
+local MAX_FILL_ROWS = 90
+local FILL_ROW_STEP = 3   -- v0.0.26: denser strips -> smoother/more accurate silhouette
 
 local function makeFillRows(parent)
     -- v0.0.22: strips live in a CanvasGroup so overlapping/adjacent strips are
@@ -2731,105 +2745,49 @@ local function makeHealthBar(parent)
     return bg, fill, txt
 end
 
--- world-anchored info stack above the head: profile picture + name line.
-local function makeInfoBillboard(adornee)
-    local bb = new("BillboardGui", {
-        Name = "KoffeeInfo",
-        Adornee = adornee,
-        Size = UDim2.new(0, 220, 0, 74),
-        -- v0.0.22: ExtentsOffset offsets in units of the billboard's own apparent
-        -- size (which shrinks with distance), so the tag hugs a constant gap above
-        -- the head at ALL ranges. StudsOffset (fixed world studs) made the gap look
-        -- huge when far and tiny when close.
-        StudsOffset = Vector3.new(0, 0, 0),
-        ExtentsOffset = Vector3.new(0, 1, 0),
-        AlwaysOnTop = true,
-        MaxDistance = 1e9,
-        LightInfluence = 0,
-        Enabled = false,
-        Parent = adornee,
+-- v0.0.26: name / profile picture / distance are SCREEN-SPACE (2D) elements in
+-- the box layer, positioned each frame from the projected head/feet. A 3D
+-- BillboardGui drifted onto the head at some camera angles ("name inside the
+-- head"); screen-space keeps text ALWAYS directly above the head / below the feet
+-- no matter where the camera points.
+local function makeTextTag(parent, anchorY, textSize)
+    return new("TextLabel", {
+        Name = "KTag",
+        AnchorPoint = Vector2.new(0.5, anchorY),
+        Size = UDim2.new(0, 0, 0, textSize + 4),
+        AutomaticSize = Enum.AutomaticSize.X,   -- hug text so the optional bg is "small"
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 1,             -- toggled by Text Background
+        BorderSizePixel = 0,
+        FontFace = Theme.Fonts.Medium,
+        TextSize = textSize,
+        TextColor3 = Color3.new(1, 1, 1),
+        Text = "",
+        Visible = false,
+        ZIndex = 16,
+        Parent = parent,
     }, {
-        new("UIListLayout", {
-            FillDirection = Enum.FillDirection.Vertical,
-            HorizontalAlignment = Enum.HorizontalAlignment.Center,
-            VerticalAlignment = Enum.VerticalAlignment.Bottom,
-            Padding = UDim.new(0, 2),
-            SortOrder = Enum.SortOrder.LayoutOrder,
-        }),
+        corner(4),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
+        textStroke(Color3.new(0, 0, 0), 1),
+        new("UIGradient", { Enabled = false }),
     })
+end
+local function makeNameStack(parent)
+    local nameLbl = makeTextTag(parent, 1, 14)   -- anchor bottom-center (sits above head)
     local pfp = new("ImageLabel", {
-        Name = "Pfp",
-        Size = UDim2.new(0, 42, 0, 42),
+        Name = "KPfp",
+        AnchorPoint = Vector2.new(0.5, 1),
+        Size = UDim2.new(0, 40, 0, 40),
         BackgroundColor3 = Color3.fromRGB(20, 16, 14),
         BackgroundTransparency = 0.2,
         ScaleType = Enum.ScaleType.Crop,
         Image = "",
         Visible = false,
-        LayoutOrder = 1,
-        Parent = bb,
+        ZIndex = 16,
+        Parent = parent,
     }, { pillCorner(), stroke(Color3.new(1, 1, 1), 1) })
-    local nameLbl = new("TextLabel", {
-        Name = "Name",
-        Size = UDim2.new(0, 0, 0, 18),
-        AutomaticSize = Enum.AutomaticSize.X,   -- hug text so the optional bg is "small"
-        BackgroundColor3 = Color3.new(0, 0, 0),
-        BackgroundTransparency = 1,             -- toggled by Text Background
-        FontFace = Theme.Fonts.Medium,
-        TextSize = 14,
-        TextColor3 = Color3.new(1, 1, 1),
-        Text = "",
-        Visible = false,
-        LayoutOrder = 2,
-        Parent = bb,
-    }, {
-        corner(4),
-        new("UIPadding", { PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
-        textStroke(Color3.new(0, 0, 0), 1),
-        new("UIGradient", {          -- v0.0.21 Text Gradient (toggled per frame)
-            Enabled = false,
-            Rotation = 25,
-            Color = ColorSequence.new(Color3.fromRGB(255, 253, 248), Color3.fromRGB(212, 145, 90)),
-        }),
-    })
-    return bb, pfp, nameLbl
-end
-
--- world-anchored distance readout below the feet.
-local function makeDistBillboard(adornee)
-    local bb = new("BillboardGui", {
-        Name = "KoffeeDist",
-        Adornee = adornee,
-        Size = UDim2.new(0, 120, 0, 18),
-        StudsOffset = Vector3.new(0, -3.6, 0),   -- below feet (HRP sits at hip)
-        AlwaysOnTop = true,
-        MaxDistance = 1e9,
-        LightInfluence = 0,
-        Enabled = false,
-        Parent = adornee,
-    })
-    local lbl = new("TextLabel", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = UDim2.new(0, 0, 1, 0),
-        AutomaticSize = Enum.AutomaticSize.X,
-        BackgroundColor3 = Color3.new(0, 0, 0),
-        BackgroundTransparency = 1,             -- toggled by Text Background
-        FontFace = Theme.Fonts.Medium,
-        TextSize = 13,
-        TextColor3 = Color3.new(1, 1, 1),
-        Text = "",
-        Parent = bb,
-    }, {
-        corner(4),
-        new("UIPadding", { PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
-        textStroke(Color3.new(0, 0, 0), 1),
-        new("UIGradient", {          -- v0.0.21 Text Gradient (toggled per frame)
-            Enabled = false,
-            Rotation = 25,
-            Color = ColorSequence.new(Color3.fromRGB(255, 253, 248), Color3.fromRGB(212, 145, 90)),
-        }),
-    })
-    return bb, lbl
+    return pfp, nameLbl
 end
 
 -- v0.0.21: skeleton bone pairs. Only pairs whose BOTH parts exist are drawn,
@@ -2909,6 +2867,23 @@ local function makeRig(plr, character)
     -- consolidating fixes a rendering quirk where the fill wouldn't show).
     -- The UIStroke is the OUTLINE.
     ensureBoxLayer()
+    -- v0.0.26: the outline is a SEPARATE frame behind the box (its thicker stroke
+    -- shows around the main line). Two concentric UIStrokes on one frame rendered
+    -- unreliably -- the black outline covered the white main line ("box is just
+    -- black on some people"). One stroke per frame renders correctly, like the
+    -- skeleton lines do.
+    local boxOutlineFrame = new("Frame", {
+        Name = "BoxOutline_" .. plr.Name,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 12,   -- behind boxRoot (13)
+        Parent = ESP.BoxLayer,
+    }, {
+        new("UIStroke", { Name = "KOutline", Color = Color3.new(0, 0, 0), Thickness = 3,
+            Enabled = true, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
+    })
+    local boxOutlineStroke = boxOutlineFrame:FindFirstChild("KOutline")
     local boxRoot = new("Frame", {
         Name = "Box_" .. plr.Name,
         BackgroundColor3 = Color3.fromRGB(212, 145, 90),
@@ -2918,17 +2893,11 @@ local function makeRig(plr, character)
         ZIndex = 13,
         Parent = ESP.BoxLayer,
     }, {
-        -- v0.0.24: two strokes -- a thicker OUTLINE behind (own colour, toggled by
-        -- Outline) and the MAIN box line on top. Gives the 2D box a separate
-        -- bordering line instead of one colour doing both jobs.
-        new("UIStroke", { Name = "KOutline", Color = Color3.new(0, 0, 0), Thickness = 3,
-            Enabled = false, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
         new("UIStroke", { Name = "KMain", Color = Color3.new(1, 1, 1), Thickness = 2,
             ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
         lineGradient(),
     })
     local boxOutline = boxRoot:FindFirstChild("KMain")             -- main box line
-    local boxOutlineStroke = boxRoot:FindFirstChild("KOutline")    -- separate outline border
     local boxCorners = makeBoxCorners(boxRoot)
     local cubeEdges = makeCubeEdges(ESP.BoxLayer)
     local fillGroup, fillRows = makeFillRows(ESP.BoxLayer)   -- v0.0.20 cube 3D fill
@@ -2938,10 +2907,10 @@ local function makeRig(plr, character)
     local headDot  = makeHeadDot(ESP.BoxLayer)
     local tracer   = makeTracer(ESP.BoxLayer)
     local healthBg, healthFill, healthTxt = makeHealthBar(ESP.BoxLayer)
-    -- world-anchored billboards on the character parts.
+    -- v0.0.26: screen-space (2D) name / pfp / distance tags in the box layer.
     local head = character:FindFirstChild("Head") or torso
-    local infoBB, pfp, nameLbl = makeInfoBillboard(head)
-    local distBB, distLbl = makeDistBillboard(torso)
+    local pfp, nameLbl = makeNameStack(ESP.BoxLayer)
+    local distLbl = makeTextTag(ESP.BoxLayer, 0, 13)   -- anchor top-center (sits below feet)
 
     -- v0.0.14: BillboardGui + name/dist/textBg removed. Names / Distance /
     -- Text Background are all becoming a dedicated overlay module ("Names")
@@ -2953,8 +2922,9 @@ local function makeRig(plr, character)
         torso      = torso,                           -- v0.0.15 anchor
         plr        = plr,
         boxRoot    = boxRoot,
-        boxOutline = boxOutline,
-        boxOutlineStroke = boxOutlineStroke,   -- v0.0.24 separate outline border
+        boxOutline = boxOutline,                -- KMain stroke (main box line)
+        boxOutlineFrame  = boxOutlineFrame,     -- v0.0.26 separate outline frame behind
+        boxOutlineStroke = boxOutlineStroke,    -- its stroke
         boxCorners = boxCorners,
         cubeEdges  = cubeEdges,
         fillGroup  = fillGroup,                        -- v0.0.22 CanvasGroup wrapping fill strips
@@ -2967,10 +2937,8 @@ local function makeRig(plr, character)
         healthFill = healthFill,
         healthTxt  = healthTxt,
         head       = head,
-        infoBB     = infoBB,
         pfp        = pfp,
         nameLbl    = nameLbl,
-        distBB     = distBB,
         distLbl    = distLbl,
         -- v0.0.15: staticSize snapshot dropped. projectStatic uses fixed
         -- world-space marker offsets (+3 up / -4 down) instead of the old
@@ -2986,6 +2954,7 @@ end
 local function cleanRig(rig)
     if not rig then return end
     pcall(function() rig.boxRoot:Destroy() end)
+    pcall(function() rig.boxOutlineFrame:Destroy() end)
     if rig.cubeEdges then
         for _, e in ipairs(rig.cubeEdges) do
             pcall(function() e:Destroy() end)
@@ -2999,8 +2968,9 @@ local function cleanRig(rig)
     pcall(function() rig.headDot:Destroy() end)
     pcall(function() rig.tracer:Destroy() end)
     pcall(function() rig.healthBg:Destroy() end)   -- fill is a child, goes with it
-    pcall(function() rig.infoBB:Destroy() end)     -- pfp + name are children
-    pcall(function() rig.distBB:Destroy() end)
+    pcall(function() rig.pfp:Destroy() end)
+    pcall(function() rig.nameLbl:Destroy() end)
+    pcall(function() rig.distLbl:Destroy() end)
 end
 
 -- v0.0.13 orphan-box fix:
@@ -3091,17 +3061,27 @@ local STATIC_TOP_STUDS = 3
 local STATIC_BOT_STUDS = 3
 local STATIC_ASPECT    = 0.5   -- width = height * 0.5
 
-local function projectStatic(torso)
-    -- v0.0.15: anchor is torso.Position, not character:GetPivot(). Pivot
-    -- can be stale/unset on some rigs (returns Model.WorldPivot which may
-    -- not track HRP movement), which produced Static boxes drifting off
-    -- the character. Torso.Position is a live world-space read.
+local function projectStatic(torso, character)
+    -- v0.0.15: anchor is torso.Position (live world read).
     if not torso or not torso.Parent then return nil, false, false end
     local cam = Workspace.CurrentCamera
     if not cam then return nil, false, false end
-    local pos = torso.Position
-    local topWorld = pos + Vector3.new(0, STATIC_TOP_STUDS, 0)
-    local botWorld = pos + Vector3.new(0, -STATIC_BOT_STUDS, 0)
+    -- v0.0.26: derive the vertical extent from the ACTUAL character bounding box
+    -- (centred on the real body), not a fixed ±3 studs off the hip. HRP sits at
+    -- hip level, so ±3 was R6-calibrated and left R15 / non-blocky rigs offset.
+    local topWorld, botWorld
+    if character then
+        local ok, cf, size = pcall(character.GetBoundingBox, character)
+        if ok and cf then
+            topWorld = cf.Position + Vector3.new(0, size.Y * 0.5, 0)
+            botWorld = cf.Position - Vector3.new(0, size.Y * 0.5, 0)
+        end
+    end
+    if not topWorld then
+        local pos = torso.Position
+        topWorld = pos + Vector3.new(0, STATIC_TOP_STUDS, 0)
+        botWorld = pos + Vector3.new(0, -STATIC_BOT_STUDS, 0)
+    end
     local top2D = cam:WorldToViewportPoint(topWorld)
     local bot2D = cam:WorldToViewportPoint(botWorld)
     if top2D.Z <= 0 or bot2D.Z <= 0 then return nil, false, false end
@@ -3285,7 +3265,7 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
 end
 
 local function hideRigVisuals(rig)
-    rig.boxRoot.Visible = false
+    rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
     rig.fillGroup.Visible = false
@@ -3294,8 +3274,9 @@ local function hideRigVisuals(rig)
     rig.headDot.Visible = false
     rig.tracer.Visible = false
     rig.healthBg.Visible = false
-    if rig.infoBB then rig.infoBB.Enabled = false end
-    if rig.distBB then rig.distBB.Enabled = false end
+    if rig.nameLbl then rig.nameLbl.Visible = false end
+    if rig.pfp then rig.pfp.Visible = false end
+    if rig.distLbl then rig.distLbl.Visible = false end
     -- reset smoothing state so re-enable snaps rather than lerping from stale
     rig.lastBoxPos = nil
     rig.lastBoxSize = nil
@@ -3320,13 +3301,16 @@ end
 -- is cycles/sec; we sweep offset 1 -> -1 (right to left) forever. Sequence is
 -- rebuilt only when the endpoint colors actually change (cheap steady state).
 local function makeGradSeqGetter()
-    local lastA, lastB, seq
-    return function(a, b)
-        if a ~= lastA or b ~= lastB or not seq then
-            lastA, lastB = a, b
+    local lastA, lastB, lastS, seq
+    return function(a, b, spacing)
+        spacing = math.clamp(spacing or 0.5, 0.05, 0.95)
+        if a ~= lastA or b ~= lastB or spacing ~= lastS or not seq then
+            lastA, lastB, lastS = a, b, spacing
+            -- A -> B -> A is periodic so the animated offset loops with no snap.
+            -- `spacing` slides where B sits between the two A ends.
             seq = ColorSequence.new({
                 ColorSequenceKeypoint.new(0, a),
-                ColorSequenceKeypoint.new(0.5, b),
+                ColorSequenceKeypoint.new(spacing, b),
                 ColorSequenceKeypoint.new(1, a),
             })
         end
@@ -3335,9 +3319,13 @@ local function makeGradSeqGetter()
 end
 local textGradSeq = makeGradSeqGetter()
 local lineGradSeq = makeGradSeqGetter()
-local GRAD_SPEED = 0.5
-local function gradOffsetX()
-    return ((os.clock() * GRAD_SPEED) % 2) - 1   -- -1 -> 1, seamless (left-to-right)
+-- animated offset (Vector2) along the gradient's rotation, speed + reverse aware.
+local function gradOffset()
+    local sp = ESP.Config.GradientSpeed
+    local t = ((os.clock() * sp) % 2) - 1        -- -1 -> 1, seamless
+    if ESP.Config.GradientReverse then t = -t end
+    local r = math.rad(ESP.Config.GradientRotation)
+    return Vector2.new(math.cos(r) * t, math.sin(r) * t)
 end
 
 -- v0.0.24: toggle/colour a line-frame's separate outline border (the KOutline
@@ -3366,8 +3354,9 @@ local function applyGradient(lbl, on)
     if not g then return end
     g.Enabled = on
     if on then
-        g.Color = textGradSeq(ESP.Config.GradientColorA, ESP.Config.GradientColorB)
-        g.Offset = Vector2.new(gradOffsetX(), 0)
+        g.Color = textGradSeq(ESP.Config.GradientColorA, ESP.Config.GradientColorB, ESP.Config.GradientSpacing)
+        g.Rotation = ESP.Config.GradientRotation
+        g.Offset = gradOffset()
     end
 end
 -- v0.0.25: line gradient (on a feature line-frame's KGrad UIGradient). When on it
@@ -3379,8 +3368,9 @@ local function applyLineGradient(frame, on)
     g.Enabled = on
     if on then
         frame.BackgroundColor3 = Color3.new(1, 1, 1)
-        g.Color = lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2)
-        g.Offset = Vector2.new(gradOffsetX(), 0)
+        g.Color = lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
+        g.Rotation = ESP.Config.GradientRotation
+        g.Offset = gradOffset()
     end
 end
 
@@ -3408,43 +3398,65 @@ local function updateBillboards(rig, plr, dist, overrideColor)
         nameStr = nameStr .. n
     end
     local showName = nameStr ~= ""
-    local showInfo = showName or pfpOn
 
-    if rig.infoBB then
-        rig.infoBB.Enabled = showInfo
-        if showInfo then
-            rig.nameLbl.Visible = showName
-            if showName then
-                rig.nameLbl.Text = nameStr
-                rig.nameLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or names.Color)
-                rig.nameLbl.BackgroundTransparency = textBg
-                applyTextOutline(rig.nameLbl, outlineOn, outlineCol)
-                applyGradient(rig.nameLbl, grad)
-            end
-            if pfpOn then
-                if rig.pfp.Image == "" then
-                    rig.pfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
-                end
-                rig.pfp.Visible = true
-            else
-                rig.pfp.Visible = false
-            end
-        end
+    local cam = Workspace.CurrentCamera
+    -- v0.0.26: project the head TOP (world) so the tags sit directly above the
+    -- head on screen at any camera angle. Fall back to the torso if no head.
+    local head = rig.head
+    local headTopWorld
+    if head and head.Parent then
+        headTopWorld = head.Position + Vector3.new(0, head.Size.Y * 0.5 + 0.4, 0)
+    else
+        headTopWorld = rig.torso.Position + Vector3.new(0, 2.6, 0)
+    end
+    local hp = cam and cam:WorldToViewportPoint(headTopWorld)
+    local headOn = hp and hp.Z > 0
+
+    -- NAME (bottom-anchored just above the head top)
+    if headOn and showName then
+        rig.nameLbl.Text = nameStr
+        rig.nameLbl.TextSize = 14
+        rig.nameLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or names.Color)
+        rig.nameLbl.BackgroundTransparency = textBg
+        rig.nameLbl.Position = UDim2.new(0, hp.X, 0, hp.Y - 3)
+        rig.nameLbl.Visible = true
+        applyTextOutline(rig.nameLbl, outlineOn, outlineCol)
+        applyGradient(rig.nameLbl, grad)
+    else
+        rig.nameLbl.Visible = false
     end
 
+    -- PROFILE PICTURE (stacked above the name, else above the head)
+    if headOn and pfpOn then
+        if rig.pfp.Image == "" then
+            rig.pfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
+        end
+        local nameH = (showName and rig.nameLbl.Visible) and (rig.nameLbl.AbsoluteSize.Y + 3) or 0
+        rig.pfp.Position = UDim2.new(0, hp.X, 0, hp.Y - 3 - nameH)
+        rig.pfp.Visible = true
+    else
+        rig.pfp.Visible = false
+    end
+
+    -- DISTANCE (top-anchored just below the feet)
     local distCfg = ESP.Indicators.Distance
-    if rig.distBB then
-        if distCfg.Enabled then
-            rig.distBB.Enabled = true
+    if distCfg.Enabled then
+        local feetWorld = rig.torso.Position - Vector3.new(0, 3.2, 0)
+        local fp = cam and cam:WorldToViewportPoint(feetWorld)
+        if fp and fp.Z > 0 then
             rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
-            rig.distLbl.TextSize = distCfg.TextSize or 13   -- v0.0.25 right-click size
+            rig.distLbl.TextSize = distCfg.TextSize or 13
             rig.distLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or distCfg.Color)
             rig.distLbl.BackgroundTransparency = textBg
+            rig.distLbl.Position = UDim2.new(0, fp.X, 0, fp.Y + 3)
+            rig.distLbl.Visible = true
             applyTextOutline(rig.distLbl, outlineOn, outlineCol)
             applyGradient(rig.distLbl, grad)
         else
-            rig.distBB.Enabled = false
+            rig.distLbl.Visible = false
         end
+    else
+        rig.distLbl.Visible = false
     end
 end
 
@@ -3569,7 +3581,7 @@ local function updateESPRigs()
         local need2D = ESP.Boxes.Enabled or ESP.Health.Bar.Enabled
                     or ESP.Indicators.HeadDot.Enabled or ESP.Tracer.Enabled
         if not need2D then
-            rig.boxRoot.Visible = false
+            rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
             rig.fillGroup.Visible = false
@@ -3590,7 +3602,7 @@ local function updateESPRigs()
             effectiveSizing = "Bounding"
         end
         if effectiveSizing == "Static" then
-            corners, anyInFront, allInFront = projectStatic(rig.torso)
+            corners, anyInFront, allInFront = projectStatic(rig.torso, rig.character)
         else
             corners, anyInFront, allInFront =
                 project8(rig.character, effectiveSizing,
@@ -3598,7 +3610,7 @@ local function updateESPRigs()
         end
 
         if not corners or not anyInFront or not allInFront then
-            rig.boxRoot.Visible = false
+            rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
             rig.fillGroup.Visible = false
@@ -3613,7 +3625,7 @@ local function updateESPRigs()
         local boxColor     = overrideColor or ESP.Boxes.Color
         local fillColor    = ESP.Boxes.FillColor
         local fillOn       = ESP.Boxes.FillBox
-        local cornersMode  = ESP.Boxes.Corners
+        local cornersMode  = ESP.Boxes.Corners and not isCube   -- v0.0.26: corners are 2D-only
         local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
         -- v0.0.22: base line thickness comes from the shared render model
         -- (Thickness slider + Equal Size). v0.0.24: Outline is a SEPARATE border
@@ -3622,7 +3634,10 @@ local function updateESPRigs()
         local outlineCol   = ESP.Boxes.OutlineColor
         local lineGradOn   = ESP.Config.Gradient      -- v0.0.25 gradient-everything
         local lineThick    = featureThickness(dist)
-        local outlineThick = math.max(1, lineThick)   -- border width for the outline
+        -- v0.0.26: per-box thickness override (right-click box). 0 = universal.
+        local boxThick     = (ESP.Boxes.Thickness > 0) and ESP.Boxes.Thickness or lineThick
+        local boxOutExtra  = ESP.Boxes.OutlineThickness or 2   -- px the outline extends past the line
+        local outlineThick = math.max(1, lineThick)   -- border width for line outlines (skeleton/tracer/etc)
 
         -- projected AABB (2D box uses this directly; cube uses it for the
         -- optional Fill layer that sits behind the edges)
@@ -3670,7 +3685,7 @@ local function updateESPRigs()
             -- translucent solid occupying the 3D box, matching the 2D fill's
             -- 0.72 transparency. Cube edges draw on top and hide the strip stair-
             -- stepping on the slanted sides.
-            rig.boxRoot.Visible = false
+            rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
             if rig.boxOutline then rig.boxOutline.Enabled = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
 
@@ -3719,7 +3734,7 @@ local function updateESPRigs()
             -- the box in cube mode. Corners mode changes the line STYLE
             -- (vertex brackets instead of full edges), not existence. Outline
             -- adds thickness via lineThick (computed above).
-            local thick = lineThick
+            local thick = boxThick
             local CORNER_MAX_PX = 28
             if cornersMode then
                 -- v0.0.23: draw brackets ONLY at the 4 corners nearest the camera,
@@ -3797,17 +3812,21 @@ local function updateESPRigs()
             -- existence -- the box's border is inherent, not decorative.
             if rig.boxOutline then
                 rig.boxOutline.Color = lineGradOn and Color3.new(1, 1, 1) or boxColor
-                rig.boxOutline.Thickness = lineThick
+                rig.boxOutline.Thickness = boxThick
                 rig.boxOutline.Transparency = 0
                 rig.boxOutline.Enabled = not cornersMode
             end
             applyLineGradient(rig.boxRoot, lineGradOn and not cornersMode)
-            -- separate outline border: a thicker stroke behind the main line.
-            if rig.boxOutlineStroke then
-                rig.boxOutlineStroke.Enabled = outlineOn and not cornersMode
-                if outlineOn then
+            -- v0.0.26: separate outline frame behind the box -- its thicker stroke
+            -- shows as a border around the main line (reliable single-stroke render).
+            if rig.boxOutlineFrame then
+                local showOutline = outlineOn and not cornersMode
+                rig.boxOutlineFrame.Visible = showOutline
+                if showOutline then
+                    rig.boxOutlineFrame.Position = UDim2.new(0, tX, 0, tY)
+                    rig.boxOutlineFrame.Size = UDim2.new(0, tW, 0, tH)
                     rig.boxOutlineStroke.Color = outlineCol
-                    rig.boxOutlineStroke.Thickness = lineThick + outlineThick
+                    rig.boxOutlineStroke.Thickness = boxThick + boxOutExtra
                 end
             end
 
@@ -3817,7 +3836,7 @@ local function updateESPRigs()
             -- huge close-up boxes.
             if cornersMode then
                 local segLen = math.clamp(math.min(tW, tH) * cornerLen, 3, 28)
-                local thick = lineThick
+                local thick = boxThick
                 local specs = {
                     { UDim2.new(0, 0, 0, 0),            UDim2.new(0, segLen, 0, thick) },
                     { UDim2.new(0, 0, 0, 0),            UDim2.new(0, thick,  0, segLen) },
@@ -3845,7 +3864,7 @@ local function updateESPRigs()
         else
             -- Boxes widget off: hide every box element. Head dot / health bar /
             -- tracer below still render off the shared projection.
-            rig.boxRoot.Visible = false
+            rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
             rig.fillGroup.Visible = false
@@ -4262,6 +4281,15 @@ addTab("Visuals", function(root)
     attachDualSwatch(grad2Row.row, ESP.Config.GradientColorA2, ESP.Config.GradientColorB2,
         function(c) ESP.Config.GradientColorA2 = c end,
         function(c) ESP.Config.GradientColorB2 = c end)
+    -- right-click either gradient toggle for tuning (shared settings).
+    local function gradientSettings(popup)
+        popup:slider("Speed", 0, 3, ESP.Config.GradientSpeed, 2, function(v) ESP.Config.GradientSpeed = v end)
+        popup:slider("Direction", 0, 360, ESP.Config.GradientRotation, 0, function(v) ESP.Config.GradientRotation = v end)
+        popup:slider("Spacing", 0.05, 0.95, ESP.Config.GradientSpacing, 2, function(v) ESP.Config.GradientSpacing = v end)
+        popup:toggle("Reverse", ESP.Config.GradientReverse, function(v) ESP.Config.GradientReverse = v end)
+    end
+    rightClickSettings(grad2Row.row, "gradient", gradientSettings)
+    rightClickSettings(gradRow.row, "gradient", gradientSettings)
     configCheckbox(espPanel, "Text Background", ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
     local outlineRow = configCheckbox(espPanel, "Outline", ESP.Config.Outline, function(v) ESP.Config.Outline = v end)
     attachSingleSwatch(outlineRow.row, ESP.Boxes.OutlineColor, function(c) ESP.Boxes.OutlineColor = c end)
@@ -4288,9 +4316,28 @@ addTab("Visuals", function(root)
     attachDualSwatch(boxesMaster.row, ESP.Boxes.Color, ESP.Boxes.FillColor,
         function(c) ESP.Boxes.Color     = c end,
         function(c) ESP.Boxes.FillColor = c end)
+    rightClickSettings(boxesMaster.row, "box", function(popup)
+        popup:slider("Thickness", 0.1, 8, ESP.Boxes.Thickness > 0 and ESP.Boxes.Thickness or ESP.Render.Thickness, 1, function(v) ESP.Boxes.Thickness = v end)
+        popup:slider("Outline Thickness", 0, 6, ESP.Boxes.OutlineThickness, 1, function(v) ESP.Boxes.OutlineThickness = v end)
+    end)
     configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox, function(v) ESP.Boxes.FillBox = v end)
-    dropdown(boxesPanel, "Box Type", { "2D", "Cube" }, ESP.Boxes.BoxType, function(v) ESP.Boxes.BoxType = v end)
-    configCheckbox(boxesPanel, "Corners", ESP.Boxes.Corners, function(v) ESP.Boxes.Corners = v end)
+    -- v0.0.26: Corners is 2D-only. Switching to Cube forces it off; you can't turn
+    -- it on while Cube is selected.
+    local cornersCtrl
+    dropdown(boxesPanel, "Box Type", { "2D", "Cube" }, ESP.Boxes.BoxType, function(v)
+        ESP.Boxes.BoxType = v
+        if v == "Cube" and ESP.Boxes.Corners then
+            ESP.Boxes.Corners = false
+            if cornersCtrl then cornersCtrl.setState(false) end
+        end
+    end)
+    cornersCtrl = configCheckbox(boxesPanel, "Corners", ESP.Boxes.Corners, function(v)
+        if v and ESP.Boxes.BoxType == "Cube" then
+            cornersCtrl.setState(false)   -- not allowed with Cube -- snap back off
+            return
+        end
+        ESP.Boxes.Corners = v
+    end)
     slider(boxesPanel, "Corner Length", 0.05, 0.5, ESP.Boxes.CornerLength, 2, function(v) ESP.Boxes.CornerLength = v end)
 
     --------------------------------------------------------------- Name
