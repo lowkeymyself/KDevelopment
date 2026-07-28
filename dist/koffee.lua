@@ -1,9 +1,9 @@
--- koffee v0.0.18
+-- koffee v0.0.21
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.18"
+Koffee.Version = "0.0.21"
 
 --============================================================
 -- THEME
@@ -24,22 +24,21 @@ local Theme = {
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
     },
-    -- v0.0.13 typography reset. Nunito read too "Roblox 2020" per he. Swapping
-    -- to BuilderSans (Roblox's newer editorial sans -- cleaner geometry, less
-    -- friendly-rounded, more UI-established) as the baseline. Sarpanch handles
-    -- the AAA-game accent for brand mark + section headers -- it's a condensed
-    -- grotesque (Rajdhani / Tungsten family vibe) which is where modern AAA game
-    -- HUDs live typographically. Reads premium at UI sizes without shouting.
+    -- v0.0.21 typography: match Matcha. Matcha's face is a soft rounded humanist
+    -- at a heavy-ish weight, kept small -- reads premium without the sharp,
+    -- "Roblox default" edge BuilderSans/Sarpanch had. Nunito is the closest
+    -- built-in family (same soft-round humanist DNA); baselined at SemiBold so it
+    -- never goes thin like the v0.0.5 Regular-weight attempt did. Bold for
+    -- emphasis + wordmark. Mono stays RobotoMono for keybind pills / numerals.
     Fonts = (function()
-        local UI    = "rbxasset://fonts/families/BuilderSans.json"
-        local TITLE = "rbxasset://fonts/families/Sarpanch.json"
+        local UI    = "rbxasset://fonts/families/Nunito.json"
         local MONO  = "rbxasset://fonts/families/RobotoMono.json"
         return {
-            Regular = Font.new(UI,    Enum.FontWeight.Medium),
-            Medium  = Font.new(UI,    Enum.FontWeight.SemiBold),
-            Bold    = Font.new(UI,    Enum.FontWeight.Bold),
-            Title   = Font.new(TITLE, Enum.FontWeight.Bold),
-            Mono    = Font.new(MONO,  Enum.FontWeight.Medium),
+            Regular = Font.new(UI,   Enum.FontWeight.SemiBold),
+            Medium  = Font.new(UI,   Enum.FontWeight.Bold),
+            Bold    = Font.new(UI,   Enum.FontWeight.Bold),
+            Title   = Font.new(UI,   Enum.FontWeight.ExtraBold),
+            Mono    = Font.new(MONO, Enum.FontWeight.Medium),
         }
     end)(),
     Sizes = {
@@ -602,7 +601,7 @@ local ROW_HEIGHT = 20
 local ROW_ENTER = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 -- v0.0.14: arraylist label uses RichText. Base module name in Text color,
--- optional detail suffix (e.g. "box" / "box, chams") in Muted color.
+-- optional detail suffix (e.g. "box" / "box, name") in Muted color.
 -- v0.0.17: detail suffix is now smaller (size 12 vs body 14) + wider spacing
 -- from the base name per he. RichText <font size='N'> drives the size delta.
 local ARRAYLIST_MUTED_COLOR = "rgb(138,125,112)"   -- Theme.Palette.TextMuted
@@ -686,7 +685,8 @@ local function removeFromActiveArray(mod)
     if not w then return end
     -- v0.0.16: do NOT nil mod._wrapper here. addToActiveArray needs the
     -- reference to destroy the dying wrapper if the module is re-enabled
-    -- during the 0.14s fade window. Nilling it here orphaned the wrapper
+    -- during the 0.14s destroy-delay window (the fade itself is 0.10s; the
+    -- wrapper lingers until the task.delay(0.14) below). Nilling it here orphaned the wrapper
     -- (the canceled destroy thread never ran, the frame stayed parented to
     -- labelsColumn consuming a LayoutOrder slot and ROW_HEIGHT pixels).
     -- If the destroy thread completes normally, mod._wrapper.Parent becomes
@@ -1873,12 +1873,32 @@ local function dropdown(parent, label, options, initial, onChange)
                                  -- window drag). This fixes "popup spawns in the
                                  -- wrong place" bugs at their root -- we don't
                                  -- calculate once at open, we calculate every frame.
+    -- v0.0.20: fully rule-based placement. Anchor the list's TOP-LEFT to the
+    -- button's bottom-left every frame, clamp X into the viewport, and flip the
+    -- list ABOVE the button when there isn't room below. No hardcoded offsets --
+    -- everything derives from the button's live rect + the viewport size.
+    local GAP = 6
     local function placeBelow()
         local abs = btn.AbsolutePosition
         local siz = btn.AbsoluteSize
         if siz.X <= 0 or siz.Y <= 0 then return end
-        list.Size = UDim2.new(0, siz.X, 0, #options * 26)
-        list.Position = UDim2.new(0, abs.X, 0, abs.Y + siz.Y + 6)
+        local vp = viewport()
+        local listH = #options * 26
+        -- set Size BEFORE reading it back isn't needed -- listH is deterministic.
+        list.AnchorPoint = Vector2.new(0, 0)
+        local belowY = abs.Y + siz.Y + GAP
+        local aboveY = abs.Y - listH - GAP
+        local y = belowY
+        if vp.Y > 0 and belowY + listH > vp.Y and aboveY >= 0 then
+            y = aboveY   -- no room below, and above fits -> flip up
+        end
+        local x = abs.X
+        if vp.X > 0 then
+            x = math.clamp(abs.X, 4, math.max(4, vp.X - siz.X - 4))
+        end
+        -- Position BEFORE Size so a reshape never flashes at (0,0) for a frame.
+        list.Position = UDim2.new(0, x, 0, y)
+        list.Size = UDim2.new(0, siz.X, 0, listH)
     end
 
     local function closeList(instant)
@@ -2179,12 +2199,9 @@ end
 
 --============================================================
 -- ESP MODULE (v0.0.10)
--- Master toggle ("Enabled") just turns on the ESP framework. Chams
--- (colored Highlight fills) is now a SEPARATE future widget -- this
--- master doesn't apply any color to players.
---
--- Default rendering when master on = static 2D box (Boxes widget lets
--- you customize color/fill/type/corners).
+-- Master toggle ("Enabled") just turns on the ESP framework + render loop.
+-- Nothing draws until a sub-feature (Box / Name / Indicators / Health /
+-- Tracer) is enabled -- the master applies no color to players on its own.
 --
 -- Config groups:
 --   Config (ESP-level toggles) -- shared across future widgets
@@ -2207,13 +2224,13 @@ local ESP = {
         TeamBasedColor = false,      -- team color overrides box outline color on same-team
         -- v0.0.17 Outline redesign: Outline is a thickness ACCENT, not a
         -- gate. Box lines (2D stroke / cube edges) ALWAYS render when the
-        -- box is visible -- that's the box's inherent rendering. Outline
-        -- adds +1px thickness to all box lines AND controls the arraylist
-        -- accent line. Glow adds another +1px + halo layers.
-        --   neither: 1px | outline: 2px | glow: 2px | both: 3px
+        -- box is visible. Outline adds +1px thickness to all box lines.
+        -- v0.0.19: Glow removed (deferred to helper app for real C++ blur).
+        --   off: 1px | on: 2px
+        -- v0.0.19: Outline no longer controls the arraylist accent line.
         Outline        = true,
-        Glow           = false,
         SelfESP        = false,
+        TextGradient   = false,        -- v0.0.21: gradient sweep on all ESP text
         SizingType     = "Static",     -- per he: Static first + default
         RenderDistance = 1000,
     },
@@ -2226,6 +2243,32 @@ local ESP = {
         Corners      = false,
         CornerLength = 0.3,        -- 0-1, fraction of edge length
     },
+    -- v0.0.21: Name overlay (billboard text above the head).
+    Names = {
+        Enabled = false,
+        Type    = "Name",          -- "Name" (username) | "Display Name"
+        Color   = Color3.fromRGB(255, 255, 255),
+    },
+    -- v0.0.21: Indicators -- small per-target markers.
+    Indicators = {
+        Distance       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255) }, -- studs, below feet
+        Skeleton       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255) }, -- joint lines
+        HeadDot        = { Enabled = false, Color = Color3.fromRGB(255, 255, 255) }, -- dot at head
+        ProfilePicture = { Enabled = false },                                        -- avatar above name
+    },
+    -- v0.0.21: Health -- vertical bar on the character's left, full body height.
+    Health = {
+        Bar     = { Enabled = false, Color = Color3.fromRGB(120, 220, 130) },
+        Based   = false,            -- color the bar by health % (green -> red)
+        Text    = false,            -- show the health number
+        TextPos = "Above Name",     -- "Above Name" ([hp] Name) | "On Health Bar"
+    },
+    -- v0.0.21: Tracer -- line from a screen origin to the target.
+    Tracer = {
+        Enabled = false,
+        Color   = Color3.fromRGB(255, 255, 255),
+        Origin  = "Bottom",         -- "Mouse" | "Bottom" | "Middle" | "Top"
+    },
     Colors = {
         Visible = Color3.fromRGB(212, 145, 90),
         Hidden  = Color3.fromRGB(120, 120, 120),
@@ -2237,19 +2280,11 @@ local ESP = {
     BoxLayer = nil,
 }
 
--- v0.0.12: Outline is a global thin-line accent switch. v0.0.17: decoupled
--- from box existence -- box lines always render, Outline adds thickness (+1px)
--- to all box lines AND controls the arraylist accent line. Extend this function
--- whenever a new overlay module (Health, future) gains a subtle accent line.
--- (Main-interface strokes -- window/tabs/pills/widgets -- are NOT affected;
--- those are chrome, not accent.)
-local function applyGlobalOutline()
-    local on = ESP.Config.Outline
-    -- fade the arraylist accent line in/out
-    tween(activeLine, Theme.Animation.Fast, {
-        BackgroundTransparency = on and 0.15 or 1,
-    })
-end
+-- v0.0.19: applyGlobalOutline removed. The arraylist accent line is NO LONGER
+-- gated by the Outline toggle. Outline is purely an ESP box thickness accent
+-- now. The arraylist accent line stays at its default transparency (0.15)
+-- permanently. If a future module needs a global accent toggle, build a
+-- dedicated "Accent Line" toggle instead of hijacking Outline.
 
 -- lazy: box layer created on first ESP enable
 local function ensureBoxLayer()
@@ -2300,6 +2335,261 @@ local function makeCubeEdges(parent)
     return edges
 end
 
+-- v0.0.20: scanline hull fill for CUBE boxes. Roblox GUI can't fill an
+-- arbitrary perspective-skewed quad with a single Frame, so the cube "3D fill"
+-- is drawn as a stack of horizontal strips spanning the projected convex
+-- silhouette of the 8 box corners. Reads as a translucent solid occupying the
+-- box volume instead of the old flat AABB rectangle. Strips are pooled per rig.
+local MAX_FILL_ROWS = 40
+local FILL_ROW_STEP = 6   -- target px per strip; larger = fewer strips = cheaper
+
+local function makeFillRows(parent)
+    local rows = {}
+    for _ = 1, MAX_FILL_ROWS do
+        rows[#rows + 1] = new("Frame", {
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0,
+            Visible = false,
+            ZIndex = 12,   -- behind cube edges (14) and boxRoot (13)
+            Parent = parent,
+        })
+    end
+    return rows
+end
+
+-- Andrew's monotone-chain convex hull. Points are {x=,y=,...} tables; extra
+-- fields (z) are ignored. Returns the hull in CCW order.
+local function convexHull(pts)
+    local n = #pts
+    if n < 3 then return pts end
+    local p = table.create(n)
+    for i = 1, n do p[i] = pts[i] end
+    table.sort(p, function(a, b)
+        if a.x == b.x then return a.y < b.y end
+        return a.x < b.x
+    end)
+    local function cross(o, a, b)
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    end
+    local lower = {}
+    for i = 1, #p do
+        while #lower >= 2 and cross(lower[#lower - 1], lower[#lower], p[i]) <= 0 do
+            lower[#lower] = nil
+        end
+        lower[#lower + 1] = p[i]
+    end
+    local upper = {}
+    for i = #p, 1, -1 do
+        while #upper >= 2 and cross(upper[#upper - 1], upper[#upper], p[i]) <= 0 do
+            upper[#upper] = nil
+        end
+        upper[#upper + 1] = p[i]
+    end
+    lower[#lower] = nil   -- drop the last point of each chain (shared endpoint)
+    upper[#upper] = nil
+    for i = 1, #upper do lower[#lower + 1] = upper[i] end
+    return lower
+end
+
+-- horizontal span [xl,xr] where scanline `y` crosses a convex polygon (exactly
+-- two crossings), or nil if the line misses it entirely.
+local function hullSpanAtY(hull, y)
+    local xl, xr = math.huge, -math.huge
+    local m = #hull
+    for i = 1, m do
+        local a = hull[i]
+        local b = hull[i % m + 1]
+        if (a.y <= y) ~= (b.y <= y) then   -- edge straddles the scanline
+            local t = (y - a.y) / (b.y - a.y)
+            local x = a.x + (b.x - a.x) * t
+            if x < xl then xl = x end
+            if x > xr then xr = x end
+        end
+    end
+    if xr < xl then return nil end
+    return xl, xr
+end
+
+-- v0.0.21 overlay pools + billboards --------------------------------------
+-- Skeleton lines + head dot + health bar + tracer are 2D screen-space frames
+-- living in ESP.BoxLayer (same layer as the box). Name / distance / profile
+-- picture are world-anchored BillboardGuis parented to the character parts.
+
+local SKELETON_MAX = 24
+local function makeSkeletonLines(parent)
+    local lines = {}
+    for _ = 1, SKELETON_MAX do
+        lines[#lines + 1] = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0,
+            Visible = false,
+            ZIndex = 13,
+            Parent = parent,
+        })
+    end
+    return lines
+end
+
+local function makeHeadDot(parent)
+    return new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 14,
+        Parent = parent,
+    }, { pillCorner() })
+end
+
+local function makeTracer(parent)
+    return new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 13,
+        Parent = parent,
+    })
+end
+
+local function makeHealthBar(parent)
+    local bg = new("Frame", {
+        AnchorPoint = Vector2.new(0, 0),
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = 0.4,
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 13,
+        Parent = parent,
+    })
+    local fill = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 1),           -- grow up from the bottom
+        Position = UDim2.new(0.5, 0, 1, 0),
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.fromRGB(120, 220, 130),
+        BorderSizePixel = 0,
+        ZIndex = 14,
+        Parent = bg,
+    })
+    -- health number shown at the bar when Text Pos = "On Health Bar"
+    local txt = new("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 1, 3),          -- just below the bar
+        Size = UDim2.new(0, 44, 0, 14),
+        BackgroundTransparency = 1,
+        FontFace = Theme.Fonts.Medium,
+        TextSize = 12,
+        TextColor3 = Color3.new(1, 1, 1),
+        Text = "",
+        Visible = false,
+        ZIndex = 15,
+        Parent = bg,
+    }, { stroke(Color3.new(0, 0, 0), 1) })
+    return bg, fill, txt
+end
+
+-- world-anchored info stack above the head: profile picture + name line.
+local function makeInfoBillboard(adornee)
+    local bb = new("BillboardGui", {
+        Name = "KoffeeInfo",
+        Adornee = adornee,
+        Size = UDim2.new(0, 220, 0, 74),
+        StudsOffset = Vector3.new(0, 3.4, 0),
+        AlwaysOnTop = true,
+        MaxDistance = 1e9,
+        LightInfluence = 0,
+        Enabled = false,
+        Parent = adornee,
+    }, {
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Vertical,
+            HorizontalAlignment = Enum.HorizontalAlignment.Center,
+            VerticalAlignment = Enum.VerticalAlignment.Bottom,
+            Padding = UDim.new(0, 2),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
+    })
+    local pfp = new("ImageLabel", {
+        Name = "Pfp",
+        Size = UDim2.new(0, 42, 0, 42),
+        BackgroundColor3 = Color3.fromRGB(20, 16, 14),
+        BackgroundTransparency = 0.2,
+        ScaleType = Enum.ScaleType.Crop,
+        Image = "",
+        Visible = false,
+        LayoutOrder = 1,
+        Parent = bb,
+    }, { pillCorner(), stroke(Color3.new(1, 1, 1), 1) })
+    local nameLbl = new("TextLabel", {
+        Name = "Name",
+        Size = UDim2.new(1, 0, 0, 18),
+        BackgroundTransparency = 1,
+        FontFace = Theme.Fonts.Medium,
+        TextSize = 14,
+        TextColor3 = Color3.new(1, 1, 1),
+        Text = "",
+        Visible = false,
+        LayoutOrder = 2,
+        Parent = bb,
+    }, {
+        stroke(Color3.new(0, 0, 0), 1),
+        new("UIGradient", {          -- v0.0.21 Text Gradient (toggled per frame)
+            Enabled = false,
+            Rotation = 25,
+            Color = ColorSequence.new(Color3.fromRGB(255, 253, 248), Color3.fromRGB(212, 145, 90)),
+        }),
+    })
+    return bb, pfp, nameLbl
+end
+
+-- world-anchored distance readout below the feet.
+local function makeDistBillboard(adornee)
+    local bb = new("BillboardGui", {
+        Name = "KoffeeDist",
+        Adornee = adornee,
+        Size = UDim2.new(0, 120, 0, 18),
+        StudsOffset = Vector3.new(0, -3.6, 0),   -- below feet (HRP sits at hip)
+        AlwaysOnTop = true,
+        MaxDistance = 1e9,
+        LightInfluence = 0,
+        Enabled = false,
+        Parent = adornee,
+    })
+    local lbl = new("TextLabel", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        FontFace = Theme.Fonts.Medium,
+        TextSize = 13,
+        TextColor3 = Color3.new(1, 1, 1),
+        Text = "",
+        Parent = bb,
+    }, {
+        stroke(Color3.new(0, 0, 0), 1),
+        new("UIGradient", {          -- v0.0.21 Text Gradient (toggled per frame)
+            Enabled = false,
+            Rotation = 25,
+            Color = ColorSequence.new(Color3.fromRGB(255, 253, 248), Color3.fromRGB(212, 145, 90)),
+        }),
+    })
+    return bb, lbl
+end
+
+-- v0.0.21: skeleton bone pairs. Only pairs whose BOTH parts exist are drawn,
+-- so the same table covers R6 and R15 (missing parts just skip).
+local SKELETON_BONES = {
+    -- R15
+    { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+    { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+    { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+    { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+    { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+    -- R6
+    { "Head", "Torso" },
+    { "Torso", "Left Arm" }, { "Torso", "Right Arm" },
+    { "Torso", "Left Leg" }, { "Torso", "Right Leg" },
+}
+
 -- v0.0.13: known rig part names (R6 + R15). Used by CharacterOnly mode to
 -- compute a bounding box from just the humanoid rig, excluding accessories,
 -- tools, held items, and other model props parented under the character.
@@ -2335,29 +2625,9 @@ local function findTorso(character)
         or character:FindFirstChild("Torso")
 end
 
--- v0.0.12: real glow via layered halos. UIStroke can only be single-layer, so
--- we stack two frames behind the box, each larger + softer, colored by outline.
--- Enabled only when ESP.Config.Glow is on. Halo lives in ESP.BoxLayer next to
--- boxRoot so its ZIndex sits below (13 -> 12,11).
-local function makeBoxHalo(parent)
-    local outer = new("Frame", {
-        BackgroundColor3 = Color3.new(1, 1, 1),
-        BorderSizePixel = 0,
-        BackgroundTransparency = 1,
-        Visible = false,
-        ZIndex = 11,
-        Parent = parent,
-    }, { corner(6) })
-    local inner = new("Frame", {
-        BackgroundColor3 = Color3.new(1, 1, 1),
-        BorderSizePixel = 0,
-        BackgroundTransparency = 1,
-        Visible = false,
-        ZIndex = 12,
-        Parent = parent,
-    }, { corner(5) })
-    return { outer = outer, inner = inner }
-end
+-- v0.0.19: makeBoxHalo removed. Glow is deferred to the Koffee Helper app
+-- (C++ real Gaussian blur). Frame-based halo layers read as flat
+-- semi-transparent rectangles, not actual glow. Don't re-add frame halos.
 
 local function makeRig(plr, character)
     -- v0.0.15: anchor is torso, not head. Head is on top of the character;
@@ -2394,7 +2664,17 @@ local function makeRig(plr, character)
     local boxOutline = boxRoot:FindFirstChildOfClass("UIStroke")
     local boxCorners = makeBoxCorners(boxRoot)
     local cubeEdges = makeCubeEdges(ESP.BoxLayer)
-    local boxHalo   = makeBoxHalo(ESP.BoxLayer)
+    local fillRows = makeFillRows(ESP.BoxLayer)   -- v0.0.20 cube 3D fill
+
+    -- v0.0.21 overlays. 2D screen-space elements in ESP.BoxLayer.
+    local skeleton = makeSkeletonLines(ESP.BoxLayer)
+    local headDot  = makeHeadDot(ESP.BoxLayer)
+    local tracer   = makeTracer(ESP.BoxLayer)
+    local healthBg, healthFill, healthTxt = makeHealthBar(ESP.BoxLayer)
+    -- world-anchored billboards on the character parts.
+    local head = character:FindFirstChild("Head") or torso
+    local infoBB, pfp, nameLbl = makeInfoBillboard(head)
+    local distBB, distLbl = makeDistBillboard(torso)
 
     -- v0.0.14: BillboardGui + name/dist/textBg removed. Names / Distance /
     -- Text Background are all becoming a dedicated overlay module ("Names")
@@ -2409,7 +2689,20 @@ local function makeRig(plr, character)
         boxOutline = boxOutline,
         boxCorners = boxCorners,
         cubeEdges  = cubeEdges,
-        boxHalo    = boxHalo,
+        fillRows   = fillRows,                        -- v0.0.20 cube 3D fill strips
+        -- v0.0.21 overlays
+        skeleton   = skeleton,
+        headDot    = headDot,
+        tracer     = tracer,
+        healthBg   = healthBg,
+        healthFill = healthFill,
+        healthTxt  = healthTxt,
+        head       = head,
+        infoBB     = infoBB,
+        pfp        = pfp,
+        nameLbl    = nameLbl,
+        distBB     = distBB,
+        distLbl    = distLbl,
         -- v0.0.15: staticSize snapshot dropped. projectStatic uses fixed
         -- world-space marker offsets (+3 up / -4 down) instead of the old
         -- character:GetBoundingBox() snapshot -- distance / FOV drive size,
@@ -2429,10 +2722,20 @@ local function cleanRig(rig)
             pcall(function() e:Destroy() end)
         end
     end
-    if rig.boxHalo then
-        pcall(function() rig.boxHalo.outer:Destroy() end)
-        pcall(function() rig.boxHalo.inner:Destroy() end)
+    if rig.fillRows then
+        for _, f in ipairs(rig.fillRows) do
+            pcall(function() f:Destroy() end)
+        end
     end
+    -- v0.0.21 overlays
+    if rig.skeleton then
+        for _, l in ipairs(rig.skeleton) do pcall(function() l:Destroy() end) end
+    end
+    pcall(function() rig.headDot:Destroy() end)
+    pcall(function() rig.tracer:Destroy() end)
+    pcall(function() rig.healthBg:Destroy() end)   -- fill is a child, goes with it
+    pcall(function() rig.infoBB:Destroy() end)     -- pfp + name are children
+    pcall(function() rig.distBB:Destroy() end)
 end
 
 -- v0.0.13 orphan-box fix:
@@ -2652,13 +2955,115 @@ local function hideRigVisuals(rig)
     rig.boxRoot.Visible = false
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
-    if rig.boxHalo then
-        rig.boxHalo.outer.Visible = false
-        rig.boxHalo.inner.Visible = false
-    end
+    for _, f in ipairs(rig.fillRows) do f.Visible = false end
+    -- v0.0.21 overlays
+    for _, l in ipairs(rig.skeleton) do l.Visible = false end
+    rig.headDot.Visible = false
+    rig.tracer.Visible = false
+    rig.healthBg.Visible = false
+    if rig.infoBB then rig.infoBB.Enabled = false end
+    if rig.distBB then rig.distBB.Enabled = false end
     -- reset smoothing state so re-enable snaps rather than lerping from stale
     rig.lastBoxPos = nil
     rig.lastBoxSize = nil
+end
+
+-- v0.0.21: world-anchored overlays (Name + Profile Picture above the head,
+-- Distance below the feet). Independent of the 2D box projection. `overrideColor`
+-- is the shared team/visible-check color (nil = use each element's own color).
+local function updateBillboards(rig, plr, dist, overrideColor)
+    local names  = ESP.Names
+    local health = ESP.Health
+    local grad   = ESP.Config.TextGradient
+    local pfpOn  = ESP.Indicators.ProfilePicture.Enabled
+
+    -- health text "Above Name" prefixes [hp] onto the name line
+    local prefix = ""
+    if health.Text and health.TextPos == "Above Name" then
+        local hum = rig.character:FindFirstChildOfClass("Humanoid")
+        if hum then prefix = "[" .. math.floor(hum.Health + 0.5) .. "] " end
+    end
+    local nameStr = prefix
+    if names.Enabled then
+        local n = (names.Type == "Display Name") and plr.DisplayName or plr.Name
+        nameStr = nameStr .. n
+    end
+    local showName = nameStr ~= ""
+    local showInfo = showName or pfpOn
+
+    if rig.infoBB then
+        rig.infoBB.Enabled = showInfo
+        if showInfo then
+            rig.nameLbl.Visible = showName
+            if showName then
+                rig.nameLbl.Text = nameStr
+                rig.nameLbl.TextColor3 = overrideColor or names.Color
+                local g = rig.nameLbl:FindFirstChildOfClass("UIGradient")
+                if g then g.Enabled = grad end
+            end
+            if pfpOn then
+                if rig.pfp.Image == "" then
+                    rig.pfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
+                end
+                rig.pfp.Visible = true
+            else
+                rig.pfp.Visible = false
+            end
+        end
+    end
+
+    local distCfg = ESP.Indicators.Distance
+    if rig.distBB then
+        if distCfg.Enabled then
+            rig.distBB.Enabled = true
+            rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
+            rig.distLbl.TextColor3 = overrideColor or distCfg.Color
+            local g = rig.distLbl:FindFirstChildOfClass("UIGradient")
+            if g then g.Enabled = grad end
+        else
+            rig.distBB.Enabled = false
+        end
+    end
+end
+
+-- v0.0.21: skeleton -- project each bone pair whose both parts exist (covers R6
+-- + R15 since missing parts skip) and draw a rotated line frame between them.
+local function updateSkeleton(rig, overrideColor)
+    local cfg = ESP.Indicators.Skeleton
+    if not cfg.Enabled then
+        for _, l in ipairs(rig.skeleton) do l.Visible = false end
+        return
+    end
+    local cam = Workspace.CurrentCamera
+    local char = rig.character
+    if not cam or not char then
+        for _, l in ipairs(rig.skeleton) do l.Visible = false end
+        return
+    end
+    local col = overrideColor or cfg.Color
+    local slot = 0
+    for _, bone in ipairs(SKELETON_BONES) do
+        local pa = char:FindFirstChild(bone[1])
+        local pb = char:FindFirstChild(bone[2])
+        if pa and pb and pa:IsA("BasePart") and pb:IsA("BasePart") then
+            local a = cam:WorldToViewportPoint(pa.Position)
+            local b = cam:WorldToViewportPoint(pb.Position)
+            if a.Z > 0 and b.Z > 0 then
+                slot = slot + 1
+                local line = rig.skeleton[slot]
+                if line then
+                    local dx, dy = b.X - a.X, b.Y - a.Y
+                    local len = math.sqrt(dx * dx + dy * dy)
+                    line.Size = UDim2.new(0, len, 0, 2)
+                    line.Position = UDim2.new(0, (a.X + b.X) * 0.5, 0, (a.Y + b.Y) * 0.5)
+                    line.Rotation = math.deg(math.atan2(dy, dx))
+                    line.BackgroundColor3 = col
+                    line.Visible = true
+                end
+            end
+        end
+    end
+    for i = slot + 1, #rig.skeleton do rig.skeleton[i].Visible = false end
 end
 
 -- v0.0.13 render: gates are strict (dead / despawned / out-of-range / ancestry
@@ -2705,29 +3110,48 @@ local function updateESPRigs()
             hideRigVisuals(rig); continue
         end
 
-        -- v0.0.14: text-side rendering (names, distance, text background) all
-        -- lives in the future Names/Distance module. This block is now just
-        -- box logic -- no BillboardGui to enable, no labels to update.
+        -- v0.0.21: shared color override, computed once per rig.
+        --   team-based color (same team) wins, else Visible Check's visible/hidden
+        --   color, else nil -> each element falls back to its own configured color.
+        -- Visible Check does a single camera->torso raycast, excluding the local
+        -- and target characters so only environment occlusion counts.
+        local hidden = false
+        if ESP.Config.VisibleCheck and rig.torso and rig.torso.Parent then
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Exclude
+            rp.FilterDescendantsInstances = { rig.character, LocalPlayer.Character }
+            local hit = Workspace:Raycast(camPos, rig.torso.Position - camPos, rp)
+            hidden = hit ~= nil
+        end
+        local overrideColor = nil
+        if ESP.Config.TeamBasedColor and sameTeam then
+            overrideColor = ESP.Colors.Team
+        elseif ESP.Config.VisibleCheck then
+            overrideColor = hidden and ESP.Colors.Hidden or ESP.Colors.Visible
+        end
 
-        -- v0.0.14 box gate: whole box widget hides when Boxes.Enabled is off.
-        -- Enabling ESP alone shows NO box -- Boxes has to be turned on for it.
-        if not ESP.Boxes.Enabled then
+        -- world-anchored overlays + skeleton render regardless of the box.
+        updateBillboards(rig, plr, dist, overrideColor)
+        updateSkeleton(rig, overrideColor)
+
+        -- 2D box-AABB features (box / health bar / head dot / tracer) share one
+        -- projection. If none is enabled, hide them all and skip projecting.
+        local need2D = ESP.Boxes.Enabled or ESP.Health.Bar.Enabled
+                    or ESP.Indicators.HeadDot.Enabled or ESP.Tracer.Enabled
+        if not need2D then
             rig.boxRoot.Visible = false
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
-            if rig.boxHalo then
-                rig.boxHalo.outer.Visible = false
-                rig.boxHalo.inner.Visible = false
-            end
+            for _, f in ipairs(rig.fillRows) do f.Visible = false end
+            rig.headDot.Visible = false
+            rig.tracer.Visible = false
+            rig.healthBg.Visible = false
             continue
         end
 
         -- BOX projection dispatch:
         --   Static -> aspect-locked, distance-linked screen box (no camera-angle warp).
-        --             Cube mode is inherently 3D and needs depth info Static doesn't
-        --             have, so Cube auto-falls-through to Bounding regardless of the
-        --             SizingType dropdown -- otherwise a "Static + Cube" combo would
-        --             draw a flat 2D rect (front and back corners identical).
+        --             Cube auto-falls-through to Bounding (Static has no depth info).
         --   Bounding / Prediction -> 8-corner world projection with optional CharacterOnly.
         local corners, anyInFront, allInFront
         local isCube = ESP.Boxes.BoxType == "Cube"
@@ -2747,34 +3171,21 @@ local function updateESPRigs()
             rig.boxRoot.Visible = false
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
-            if rig.boxHalo then
-                rig.boxHalo.outer.Visible = false
-                rig.boxHalo.inner.Visible = false
-            end
+            for _, f in ipairs(rig.fillRows) do f.Visible = false end
+            rig.headDot.Visible = false
+            rig.tracer.Visible = false
+            rig.healthBg.Visible = false
             continue
         end
 
-        local outlineColor = ESP.Boxes.OutlineColor
-        -- v0.0.14: TeamBasedColor now applies to box outline (was applied to
-        -- text, which no longer exists in this module). Overrides only for
-        -- same-team players.
-        if ESP.Config.TeamBasedColor and sameTeam then
-            outlineColor = ESP.Colors.Team
-        end
+        local outlineColor = overrideColor or ESP.Boxes.OutlineColor
         local fillColor    = ESP.Boxes.FillColor
         local fillOn       = ESP.Boxes.FillBox
         local cornersMode  = ESP.Boxes.Corners
         local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
-        -- v0.0.17 Outline redesign: Outline is no longer a gate for box lines.
-        -- The box ALWAYS has its lines (2D stroke / cube edges) -- that's what
-        -- makes it a box. Outline is now a thickness ACCENT: +1px on all box
-        -- lines when on. Glow adds another +1px + halo layers. Stack:
-        --   neither: 1px | outline: 2px | glow: 2px | both: 3px
-        -- Outline also controls the arraylist accent line (applyGlobalOutline).
+        -- v0.0.17 Outline: thickness accent (off: 1px | on: 2px), NOT a gate.
         local outlineOn    = ESP.Config.Outline
-        local glowOn       = ESP.Config.Glow
-        local lineThick    = 1 + (outlineOn and 1 or 0) + (glowOn and 1 or 0)
-        -- (isCube already declared above at the projection dispatch)
+        local lineThick    = 1 + (outlineOn and 1 or 0)
 
         -- projected AABB (2D box uses this directly; cube uses it for the
         -- optional Fill layer that sits behind the edges)
@@ -2806,44 +3217,62 @@ local function updateESPRigs()
             tX, tY = rig.lastBoxPos.X, rig.lastBoxPos.Y
             tW, tH = rig.lastBoxSize.X, rig.lastBoxSize.Y
         end
+        -- v0.0.21: the box itself is gated by Boxes.Enabled; the other 2D
+        -- features (head dot / health bar / tracer) render below off the same
+        -- projection whether or not the box widget is on.
+        if ESP.Boxes.Enabled then
         rig.boxRoot.Position = UDim2.new(0, tX, 0, tY)
         rig.boxRoot.Size = UDim2.new(0, tW, 0, tH)
         rig.boxRoot.BackgroundColor3 = fillColor
 
-        -- HALO (glow): scaled outward from AABB, tinted with outline color.
-        -- 2 layers for a soft falloff. Uses the AABB even in cube mode so the
-        -- halo remains a coherent bright bloom instead of a rotating polygon.
-        if rig.boxHalo then
-            if ESP.Config.Glow then
-                local o = rig.boxHalo.outer
-                local n = rig.boxHalo.inner
-                o.Position = UDim2.new(0, tX - 6, 0, tY - 6)
-                o.Size = UDim2.new(0, tW + 12, 0, tH + 12)
-                o.BackgroundColor3 = outlineColor
-                o.BackgroundTransparency = 0.85
-                o.Visible = true
-                n.Position = UDim2.new(0, tX - 3, 0, tY - 3)
-                n.Size = UDim2.new(0, tW + 6, 0, tH + 6)
-                n.BackgroundColor3 = outlineColor
-                n.BackgroundTransparency = 0.65
-                n.Visible = true
-            else
-                rig.boxHalo.outer.Visible = false
-                rig.boxHalo.inner.Visible = false
-            end
-        end
-
         if isCube then
-            -- boxRoot serves as the AABB Fill layer only in cube mode.
-            rig.boxRoot.Visible = fillOn
-            rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
+            -- v0.0.20: boxRoot (a flat AABB rectangle) is NO LONGER the cube
+            -- fill -- that's exactly what made "Fill + Cube" read as a 2D box.
+            -- The fill is now a scanline of horizontal strips spanning the
+            -- projected convex silhouette of the 8 corners, so it looks like a
+            -- translucent solid occupying the 3D box, matching the 2D fill's
+            -- 0.72 transparency. Cube edges draw on top and hide the strip stair-
+            -- stepping on the slanted sides.
+            rig.boxRoot.Visible = false
             if rig.boxOutline then rig.boxOutline.Enabled = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+
+            if fillOn then
+                local hull = convexHull(corners)
+                local hy0, hy1 = math.huge, -math.huge
+                for _, c in ipairs(hull) do
+                    if c.y < hy0 then hy0 = c.y end
+                    if c.y > hy1 then hy1 = c.y end
+                end
+                local totalH = hy1 - hy0
+                local rowCount = math.clamp(math.floor(totalH / FILL_ROW_STEP), 1, MAX_FILL_ROWS)
+                local rowH = totalH / rowCount
+                for i = 1, MAX_FILL_ROWS do
+                    local f = rig.fillRows[i]
+                    if i <= rowCount then
+                        local yc = hy0 + (i - 0.5) * rowH
+                        local xl, xr = hullSpanAtY(hull, yc)
+                        if xl then
+                            f.Position = UDim2.new(0, xl, 0, hy0 + (i - 1) * rowH)
+                            f.Size = UDim2.new(0, math.max(xr - xl, 1), 0, rowH + 1)
+                            f.BackgroundColor3 = fillColor
+                            f.BackgroundTransparency = 0.72
+                            f.Visible = true
+                        else
+                            f.Visible = false
+                        end
+                    else
+                        f.Visible = false
+                    end
+                end
+            else
+                for _, f in ipairs(rig.fillRows) do f.Visible = false end
+            end
 
             -- v0.0.17: cube edges always render when box visible -- they ARE
             -- the box in cube mode. Corners mode changes the line STYLE
             -- (vertex brackets instead of full edges), not existence. Outline
-            -- and Glow add thickness via lineThick (computed above).
+            -- adds thickness via lineThick (computed above).
             local wantLines = true
             local thick = lineThick
             -- v0.0.15: cap corner segment length at CORNER_MAX_PX so brackets
@@ -2862,7 +3291,19 @@ local function updateESPRigs()
                 else
                     local rot = math.deg(math.atan2(dy, dx))
                     if cornersMode then
-                        local segLen = math.clamp(length * cornerLen, 3, CORNER_MAX_PX)
+                        -- v0.0.20: bracket length is a fraction of THIS edge's
+                        -- on-screen length, capped at 45% so the two end-brackets
+                        -- of an edge can never overlap. The v0.0.19 fixed length
+                        -- (CORNER_MAX_PX * cornerLen) overshot short/foreshortened
+                        -- edges -- a 14px bracket on a 5px edge poked out the far
+                        -- end and crossed neighbouring brackets, which is what
+                        -- read as a "star" instead of clean corners. It also
+                        -- capped everything at 14px so cornerLen 0.5 looked tiny.
+                        -- Proportional + overlap-guard traces true corners and
+                        -- lets 0.5 give a real 45%-of-edge bracket.
+                        local maxSeg = length * 0.45
+                        local segLen = math.clamp(length * cornerLen, math.min(3, maxSeg), maxSeg)
+                        if segLen > CORNER_MAX_PX then segLen = CORNER_MAX_PX end
                         aEdge.AnchorPoint = Vector2.new(0, 0.5)
                         aEdge.Position = UDim2.new(0, a.x, 0, a.y)
                         aEdge.Size = UDim2.new(0, segLen, 0, thick)
@@ -2870,10 +3311,10 @@ local function updateESPRigs()
                         aEdge.BackgroundColor3 = outlineColor
                         aEdge.BackgroundTransparency = 0
                         aEdge.Visible = true
-                        bEdge.AnchorPoint = Vector2.new(1, 0.5)
+                        bEdge.AnchorPoint = Vector2.new(0, 0.5)
                         bEdge.Position = UDim2.new(0, b.x, 0, b.y)
                         bEdge.Size = UDim2.new(0, segLen, 0, thick)
-                        bEdge.Rotation = rot
+                        bEdge.Rotation = rot + 180
                         bEdge.BackgroundColor3 = outlineColor
                         bEdge.BackgroundTransparency = 0
                         bEdge.Visible = true
@@ -2890,8 +3331,9 @@ local function updateESPRigs()
                 end
             end
         else
-            -- 2D bounding box. boxRoot IS the box. cube frames off.
+            -- 2D bounding box. boxRoot IS the box. cube frames + fill strips off.
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+            for _, f in ipairs(rig.fillRows) do f.Visible = false end
             rig.boxRoot.Visible = true
             rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
 
@@ -2907,7 +3349,7 @@ local function updateESPRigs()
             end
 
             -- Corner brackets: the box's line STYLE alternative to the full
-            -- stroke. Uses lineThick so Outline/Glow emphasis applies here too.
+            -- stroke. Uses lineThick so Outline emphasis applies here too.
             -- v0.0.15: cap segment length at 28px so brackets don't dominate
             -- huge close-up boxes.
             if cornersMode then
@@ -2935,12 +3377,91 @@ local function updateESPRigs()
                 for _, f in ipairs(rig.boxCorners) do f.Visible = false end
             end
         end
+        else
+            -- Boxes widget off: hide every box element. Head dot / health bar /
+            -- tracer below still render off the shared projection.
+            rig.boxRoot.Visible = false
+            for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+            for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+            for _, f in ipairs(rig.fillRows) do f.Visible = false end
+        end
+
+        -- v0.0.21 HEAD DOT: dot at the top-center of the projected AABB (head).
+        if ESP.Indicators.HeadDot.Enabled then
+            local d = rig.headDot
+            local sz = 6
+            d.Size = UDim2.new(0, sz, 0, sz)
+            d.Position = UDim2.new(0, (minX + maxX) * 0.5, 0, minY + sz * 0.5)
+            d.BackgroundColor3 = overrideColor or ESP.Indicators.HeadDot.Color
+            d.Visible = true
+        else
+            rig.headDot.Visible = false
+        end
+
+        -- v0.0.21 HEALTH BAR: vertical bar just left of the box, full body
+        -- height, fill grows up from the bottom by health %.
+        if ESP.Health.Bar.Enabled then
+            local hum = rig.character:FindFirstChildOfClass("Humanoid")
+            local frac = 1
+            if hum and hum.MaxHealth > 0 then
+                frac = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+            end
+            local barW, gap = 3, 4
+            rig.healthBg.Position = UDim2.new(0, minX - gap - barW, 0, minY)
+            rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(maxY - minY, 1))
+            rig.healthBg.Visible = true
+            local barColor
+            if ESP.Health.Based then
+                barColor = Color3.fromRGB(220, 70, 70):Lerp(Color3.fromRGB(110, 220, 130), frac)
+            else
+                barColor = ESP.Health.Bar.Color
+            end
+            rig.healthFill.Size = UDim2.new(1, 0, frac, 0)
+            rig.healthFill.BackgroundColor3 = barColor
+            if ESP.Health.Text and ESP.Health.TextPos == "On Health Bar" then
+                rig.healthTxt.Text = tostring(math.floor((hum and hum.Health or 0) + 0.5))
+                rig.healthTxt.TextColor3 = barColor
+                rig.healthTxt.Visible = true
+            else
+                rig.healthTxt.Visible = false
+            end
+        else
+            rig.healthBg.Visible = false
+        end
+
+        -- v0.0.21 TRACER: line from the chosen screen origin to the target feet.
+        if ESP.Tracer.Enabled then
+            local vp = viewport()
+            local ox, oy
+            local o = ESP.Tracer.Origin
+            if o == "Mouse" then
+                local m = UserInputService:GetMouseLocation()
+                ox, oy = m.X, m.Y
+            elseif o == "Top" then
+                ox, oy = vp.X * 0.5, 0
+            elseif o == "Middle" then
+                ox, oy = vp.X * 0.5, vp.Y * 0.5
+            else
+                ox, oy = vp.X * 0.5, vp.Y   -- Bottom
+            end
+            local tx2, ty2 = (minX + maxX) * 0.5, maxY
+            local dx, dy = tx2 - ox, ty2 - oy
+            local len = math.sqrt(dx * dx + dy * dy)
+            local t = rig.tracer
+            t.Size = UDim2.new(0, len, 0, 1 + (ESP.Config.Outline and 1 or 0))
+            t.Position = UDim2.new(0, (ox + tx2) * 0.5, 0, (oy + ty2) * 0.5)
+            t.Rotation = math.deg(math.atan2(dy, dx))
+            t.BackgroundColor3 = overrideColor or ESP.Tracer.Color
+            t.Visible = true
+        else
+            rig.tracer.Visible = false
+        end
     end
 end
 
 local espModule = registerModule("esp", "ESP",
     function()
-        -- v0.0.14: task.spawn per-player so makeRig's WaitForChild("Head", 3)
+        -- v0.0.14: task.spawn per-player so makeRig's WaitForChild("HumanoidRootPart", 2)
         -- doesn't cascade -- each player's rig setup runs in its own coroutine.
         -- Full-server initial attach is now roughly single-player-latency
         -- instead of Nx it.
@@ -2967,13 +3488,16 @@ local espModule = registerModule("esp", "ESP",
     end
 )
 
--- v0.0.14: arraylist subtitle -- "ESP box" (or "ESP box, chams" when chams
--- ships). Returns leading-space + comma-joined sub-mode names. Empty string
--- when nothing sub-active so the label renders as just "ESP" cleanly.
+-- v0.0.14: arraylist subtitle -- e.g. "ESP    box, name, health". Returns a
+-- leading-space + comma-joined list of active sub-features. Empty string when
+-- nothing sub-active so the label renders as just "ESP" cleanly.
 espModule.GetDetail = function()
     local parts = {}
     if ESP.Boxes.Enabled then table.insert(parts, "box") end
-    -- future: chams, health, names, distance -- append their Enabled flags here
+    if ESP.Names.Enabled then table.insert(parts, "name") end
+    if ESP.Health.Bar.Enabled then table.insert(parts, "health") end
+    if ESP.Indicators.Skeleton.Enabled then table.insert(parts, "skeleton") end
+    if ESP.Tracer.Enabled then table.insert(parts, "tracer") end
     if #parts == 0 then return "" end
     -- v0.0.17: wider separator (4 spaces) so the detail reads as a distinct
     -- subtitle rather than glued to the base name
@@ -3135,74 +3659,105 @@ local function attachSingleSwatch(row, initialColor, onChange)
 end
 
 addTab("Visuals", function(root)
-    -- ESP panel
-    local espPanel = panel(root, "esp")
+    -- v0.0.21: two-column layout to match Matcha.
+    --   left:  esp / box / name      right: indicators / health / tracer
+    local columns = new("Frame", {
+        Name = "Columns",
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        ZIndex = 32,
+        Parent = root,
+    }, {
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 12),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            VerticalAlignment = Enum.VerticalAlignment.Top,
+        }),
+    })
+    local function column(order)
+        return new("Frame", {
+            Size = UDim2.new(0.5, -6, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1,
+            LayoutOrder = order,
+            ZIndex = 32,
+            Parent = columns,
+        }, {
+            new("UIListLayout", {
+                FillDirection = Enum.FillDirection.Vertical,
+                Padding = UDim.new(0, 12),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            }),
+        })
+    end
+    local leftCol  = column(1)
+    local rightCol = column(2)
 
+    --------------------------------------------------------------- ESP
+    local espPanel = panel(leftCol, "esp")
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
     keybindPill(master.row, "esp", Enum.KeyCode.E)
-
-    -- v0.0.14: Names / Distance / Text Background rows removed. They're moving
-    -- to a dedicated "Names" module later. ESP master now controls the shared
-    -- plumbing (team / visibility / outline / glow / self-esp / character-only /
-    -- immediate / sizing / render distance) that the box + future name/chams/
-    -- health modules read from.
-    configCheckbox(espPanel, "Team Check",       ESP.Config.TeamCheck,      function(v) ESP.Config.TeamCheck      = v end)
-
+    configCheckbox(espPanel, "Team Check", ESP.Config.TeamCheck, function(v) ESP.Config.TeamCheck = v end)
     local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
-    attachDualSwatch(visRow.row,
-        ESP.Colors.Visible, ESP.Colors.Hidden,
+    attachDualSwatch(visRow.row, ESP.Colors.Visible, ESP.Colors.Hidden,
         function(c) ESP.Colors.Visible = c end,
         function(c) ESP.Colors.Hidden  = c end)
-
     configCheckbox(espPanel, "Team Based Color", ESP.Config.TeamBasedColor, function(v) ESP.Config.TeamBasedColor = v end)
-    -- v0.0.15: Text Background is shared plumbing. Multiple future overlays
-    -- (Names, Distance, Health) will read this flag to decide whether their
-    -- text sits on a subtle background pill. Stored here so preferences
-    -- follow the ESP module, which is always loaded.
-    configCheckbox(espPanel, "Text Background",  ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
-    -- v0.0.18: Outline now has its own color swatch. Drives the same
-    -- ESP.Boxes.OutlineColor that box lines + cube edges + corner brackets
-    -- read from, so the accent color is editable from the Outline row itself
-    -- rather than only from the Boxes master's dual swatch.
-    local outlineRow = configCheckbox(espPanel, "Outline", ESP.Config.Outline, function(v)
-        ESP.Config.Outline = v
-        applyGlobalOutline()   -- flips arraylist accent line + future overlays
-    end)
-    attachSingleSwatch(outlineRow.row, ESP.Boxes.OutlineColor, function(c)
-        ESP.Boxes.OutlineColor = c
-    end)
-    configCheckbox(espPanel, "Glow",             ESP.Config.Glow,           function(v) ESP.Config.Glow           = v end)
-    configCheckbox(espPanel, "Self ESP",         ESP.Config.SelfESP,        function(v) ESP.Config.SelfESP        = v end)
-    configCheckbox(espPanel, "Character Only",   ESP.Config.CharacterOnly,  function(v) ESP.Config.CharacterOnly  = v end)
-    configCheckbox(espPanel, "Immediate Mode",   ESP.Config.ImmediateMode,  function(v) ESP.Config.ImmediateMode  = v end)
-
+    configCheckbox(espPanel, "Text Gradient", ESP.Config.TextGradient, function(v) ESP.Config.TextGradient = v end)
+    configCheckbox(espPanel, "Text Background", ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
+    local outlineRow = configCheckbox(espPanel, "Outline", ESP.Config.Outline, function(v) ESP.Config.Outline = v end)
+    attachSingleSwatch(outlineRow.row, ESP.Boxes.OutlineColor, function(c) ESP.Boxes.OutlineColor = c end)
+    configCheckbox(espPanel, "Self ESP", ESP.Config.SelfESP, function(v) ESP.Config.SelfESP = v end)
+    -- koffee extras (not in Matcha, kept): finer-grained bbox + smoothing control
+    configCheckbox(espPanel, "Character Only", ESP.Config.CharacterOnly, function(v) ESP.Config.CharacterOnly = v end)
+    configCheckbox(espPanel, "Immediate Mode", ESP.Config.ImmediateMode, function(v) ESP.Config.ImmediateMode = v end)
     dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
-
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end)
 
-    -- Boxes panel (below ESP)
-    local boxesPanel = panel(root, "boxes")
-
-    local boxesMaster = configCheckbox(boxesPanel, "Enabled", ESP.Boxes.Enabled,
-        function(v) ESP.Boxes.Enabled = v end)
-    attachDualSwatch(boxesMaster.row,
-        ESP.Boxes.OutlineColor, ESP.Boxes.FillColor,
+    --------------------------------------------------------------- Box
+    local boxesPanel = panel(leftCol, "box")
+    local boxesMaster = configCheckbox(boxesPanel, "Enabled", ESP.Boxes.Enabled, function(v) ESP.Boxes.Enabled = v end)
+    attachDualSwatch(boxesMaster.row, ESP.Boxes.OutlineColor, ESP.Boxes.FillColor,
         function(c) ESP.Boxes.OutlineColor = c end,
         function(c) ESP.Boxes.FillColor    = c end)
+    configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox, function(v) ESP.Boxes.FillBox = v end)
+    dropdown(boxesPanel, "Box Type", { "2D", "Cube" }, ESP.Boxes.BoxType, function(v) ESP.Boxes.BoxType = v end)
+    configCheckbox(boxesPanel, "Corners", ESP.Boxes.Corners, function(v) ESP.Boxes.Corners = v end)
+    slider(boxesPanel, "Corner Length", 0.05, 0.5, ESP.Boxes.CornerLength, 2, function(v) ESP.Boxes.CornerLength = v end)
 
-    configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox,
-        function(v) ESP.Boxes.FillBox = v end)
+    --------------------------------------------------------------- Name
+    local namePanel = panel(leftCol, "name")
+    local nameMaster = configCheckbox(namePanel, "Enabled", ESP.Names.Enabled, function(v) ESP.Names.Enabled = v end)
+    attachSingleSwatch(nameMaster.row, ESP.Names.Color, function(c) ESP.Names.Color = c end)
+    dropdown(namePanel, "Type", { "Name", "Display Name" }, ESP.Names.Type, function(v) ESP.Names.Type = v end)
 
-    dropdown(boxesPanel, "Box Type", { "2D", "Cube" }, ESP.Boxes.BoxType,
-        function(v) ESP.Boxes.BoxType = v end)
+    --------------------------------------------------------------- Indicators
+    local indPanel = panel(rightCol, "indicators")
+    local distRow = configCheckbox(indPanel, "Distance", ESP.Indicators.Distance.Enabled, function(v) ESP.Indicators.Distance.Enabled = v end)
+    attachSingleSwatch(distRow.row, ESP.Indicators.Distance.Color, function(c) ESP.Indicators.Distance.Color = c end)
+    local skelRow = configCheckbox(indPanel, "Skeleton", ESP.Indicators.Skeleton.Enabled, function(v) ESP.Indicators.Skeleton.Enabled = v end)
+    attachSingleSwatch(skelRow.row, ESP.Indicators.Skeleton.Color, function(c) ESP.Indicators.Skeleton.Color = c end)
+    local hdRow = configCheckbox(indPanel, "Head Dot", ESP.Indicators.HeadDot.Enabled, function(v) ESP.Indicators.HeadDot.Enabled = v end)
+    attachSingleSwatch(hdRow.row, ESP.Indicators.HeadDot.Color, function(c) ESP.Indicators.HeadDot.Color = c end)
+    configCheckbox(indPanel, "Profile Picture", ESP.Indicators.ProfilePicture.Enabled, function(v) ESP.Indicators.ProfilePicture.Enabled = v end)
 
-    configCheckbox(boxesPanel, "Corners", ESP.Boxes.Corners,
-        function(v) ESP.Boxes.Corners = v end)
+    --------------------------------------------------------------- Health
+    local healthPanel = panel(rightCol, "health")
+    local hbRow = configCheckbox(healthPanel, "Health Bar", ESP.Health.Bar.Enabled, function(v) ESP.Health.Bar.Enabled = v end)
+    attachSingleSwatch(hbRow.row, ESP.Health.Bar.Color, function(c) ESP.Health.Bar.Color = c end)
+    configCheckbox(healthPanel, "Health Based", ESP.Health.Based, function(v) ESP.Health.Based = v end)
+    configCheckbox(healthPanel, "Health Text", ESP.Health.Text, function(v) ESP.Health.Text = v end)
+    dropdown(healthPanel, "Text Pos", { "Above Name", "On Health Bar" }, ESP.Health.TextPos, function(v) ESP.Health.TextPos = v end)
 
-    slider(boxesPanel, "Corner Length", 0.05, 0.5, ESP.Boxes.CornerLength, 2,
-        function(v) ESP.Boxes.CornerLength = v end)
+    --------------------------------------------------------------- Tracer
+    local tracerPanel = panel(rightCol, "tracer")
+    local trRow = configCheckbox(tracerPanel, "Enabled", ESP.Tracer.Enabled, function(v) ESP.Tracer.Enabled = v end)
+    attachSingleSwatch(trRow.row, ESP.Tracer.Color, function(c) ESP.Tracer.Color = c end)
+    dropdown(tracerPanel, "Origin", { "Mouse", "Bottom", "Middle", "Top" }, ESP.Tracer.Origin, function(v) ESP.Tracer.Origin = v end)
 end)
 
 addTab("World", function(root)
