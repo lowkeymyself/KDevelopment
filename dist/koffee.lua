@@ -1,9 +1,9 @@
--- koffee v0.0.23
+-- koffee v0.0.24
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.23"
+Koffee.Version = "0.0.24"
 
 --============================================================
 -- THEME
@@ -2930,6 +2930,12 @@ local CUBE_EDGE_INDICES = {
     {5,6},{7,8},{5,7},{6,8},   -- back face
     {1,5},{2,6},{3,7},{4,8},   -- connectors
 }
+-- v0.0.23: the 3 neighbours of each of the 8 cube corners (for the corner-bracket
+-- render). corners[i] world order is (±hx,±hy,±hz) as built in project8.
+local CUBE_VERTEX_NEIGHBORS = {
+    {2,3,5}, {1,4,6}, {1,4,7}, {2,3,8},
+    {1,6,7}, {2,5,8}, {3,5,8}, {4,6,7},
+}
 
 -- v0.0.13 Static: aspect-locked, distance-linked, upward offset corrected.
 --   Anchor is the character pivot (HumanoidRootPart). We project markers
@@ -3517,62 +3523,66 @@ local function updateESPRigs()
             -- the box in cube mode. Corners mode changes the line STYLE
             -- (vertex brackets instead of full edges), not existence. Outline
             -- adds thickness via lineThick (computed above).
-            local wantLines = true
             local thick = lineThick
-            -- v0.0.15: cap corner segment length at CORNER_MAX_PX so brackets
-            -- don't dominate huge close-up boxes.
             local CORNER_MAX_PX = 28
-            for i, pair in ipairs(CUBE_EDGE_INDICES) do
-                local a = corners[pair[1]]
-                local b = corners[pair[2]]
-                local aEdge = rig.cubeEdges[i]           -- slots 1..12
-                local bEdge = rig.cubeEdges[i + 12]      -- slots 13..24
-                local dx, dy = b.x - a.x, b.y - a.y
-                local length = math.sqrt(dx * dx + dy * dy)
-                if length < 1 or not wantLines then
-                    aEdge.Visible = false
-                    bEdge.Visible = false
-                else
-                    local rot = math.deg(math.atan2(dy, dx))
-                    if cornersMode then
-                        -- v0.0.20: bracket length is a fraction of THIS edge's
-                        -- on-screen length, capped at 45% so the two end-brackets
-                        -- of an edge can never overlap. The v0.0.19 fixed length
-                        -- (CORNER_MAX_PX * cornerLen) overshot short/foreshortened
-                        -- edges -- a 14px bracket on a 5px edge poked out the far
-                        -- end and crossed neighbouring brackets, which is what
-                        -- read as a "star" instead of clean corners. It also
-                        -- capped everything at 14px so cornerLen 0.5 looked tiny.
-                        -- Proportional + overlap-guard traces true corners and
-                        -- lets 0.5 give a real 45%-of-edge bracket.
-                        local maxSeg = length * 0.45
-                        local segLen = math.clamp(length * cornerLen, math.min(3, maxSeg), maxSeg)
-                        if segLen > CORNER_MAX_PX then segLen = CORNER_MAX_PX end
-                        aEdge.AnchorPoint = Vector2.new(0, 0.5)
-                        aEdge.Position = UDim2.new(0, a.x, 0, a.y)
-                        aEdge.Size = UDim2.new(0, segLen, 0, thick)
-                        aEdge.Rotation = rot
-                        aEdge.BackgroundColor3 = outlineColor
-                        aEdge.BackgroundTransparency = 0
-                        aEdge.Visible = true
-                        bEdge.AnchorPoint = Vector2.new(0, 0.5)
-                        bEdge.Position = UDim2.new(0, b.x, 0, b.y)
-                        bEdge.Size = UDim2.new(0, segLen, 0, thick)
-                        bEdge.Rotation = rot + 180
-                        bEdge.BackgroundColor3 = outlineColor
-                        bEdge.BackgroundTransparency = 0
-                        bEdge.Visible = true
+            if cornersMode then
+                -- v0.0.23: draw brackets ONLY at the 4 corners nearest the camera,
+                -- each radiating its 3 incident edges. Bracketing all 8 corners made
+                -- the front + back corner of each edge project onto nearly the same
+                -- screen point and pile their stubs into a 6-line "star". Four front
+                -- corners x 3 edges = clean 3-line 3D corners with no overlap.
+                local order = { 1, 2, 3, 4, 5, 6, 7, 8 }
+                table.sort(order, function(p, q) return corners[p].z < corners[q].z end)
+                local slot = 0
+                for k = 1, 4 do
+                    local vi = order[k]
+                    local a = corners[vi]
+                    for _, nj in ipairs(CUBE_VERTEX_NEIGHBORS[vi]) do
+                        local b = corners[nj]
+                        local dx, dy = b.x - a.x, b.y - a.y
+                        local length = math.sqrt(dx * dx + dy * dy)
+                        slot = slot + 1
+                        local e = rig.cubeEdges[slot]
+                        if e then
+                            if length >= 1 then
+                                local maxSeg = length * 0.5
+                                local segLen = math.clamp(length * cornerLen, math.min(3, maxSeg), maxSeg)
+                                if segLen > CORNER_MAX_PX then segLen = CORNER_MAX_PX end
+                                e.AnchorPoint = Vector2.new(0, 0.5)   -- radiate FROM the corner
+                                e.Position = UDim2.new(0, a.x, 0, a.y)
+                                e.Size = UDim2.new(0, segLen, 0, thick)
+                                e.Rotation = math.deg(math.atan2(dy, dx))
+                                e.BackgroundColor3 = outlineColor
+                                e.BackgroundTransparency = 0
+                                e.Visible = true
+                            else
+                                e.Visible = false
+                            end
+                        end
+                    end
+                end
+                for i = slot + 1, #rig.cubeEdges do rig.cubeEdges[i].Visible = false end
+            else
+                -- full wireframe: one line per cube edge (12), centered.
+                for i, pair in ipairs(CUBE_EDGE_INDICES) do
+                    local a = corners[pair[1]]
+                    local b = corners[pair[2]]
+                    local aEdge = rig.cubeEdges[i]
+                    local dx, dy = b.x - a.x, b.y - a.y
+                    local length = math.sqrt(dx * dx + dy * dy)
+                    if length < 1 then
+                        aEdge.Visible = false
                     else
                         aEdge.AnchorPoint = Vector2.new(0.5, 0.5)
                         aEdge.Position = UDim2.new(0, (a.x + b.x) * 0.5, 0, (a.y + b.y) * 0.5)
                         aEdge.Size = UDim2.new(0, length, 0, thick)
-                        aEdge.Rotation = rot
+                        aEdge.Rotation = math.deg(math.atan2(dy, dx))
                         aEdge.BackgroundColor3 = outlineColor
                         aEdge.BackgroundTransparency = 0
                         aEdge.Visible = true
-                        bEdge.Visible = false
                     end
                 end
+                for i = 13, #rig.cubeEdges do rig.cubeEdges[i].Visible = false end
             end
         else
             -- 2D bounding box. boxRoot IS the box. cube frames + fill strips off.
