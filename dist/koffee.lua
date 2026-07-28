@@ -1,9 +1,9 @@
--- koffee v0.0.21
+-- koffee v0.0.22
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.21"
+Koffee.Version = "0.0.22"
 
 --============================================================
 -- THEME
@@ -48,7 +48,7 @@ local Theme = {
         WindowHeight = 820,
         TabBarHeight = 40,
     },
-    Radius = { Small = 4, Medium = 6, Large = 8 },
+    Radius = { Small = 4, Medium = 6, Large = 8, XLarge = 12 },
     -- bumped +2 across the board: v0.0.10 sizes shrank visibly with Nunito
     Text   = { Tiny = 12, Small = 13, Body = 14, Header = 15, Title = 17 },
     Animation = {
@@ -99,6 +99,16 @@ local function stroke(color, thick)
         Color = color or Theme.Palette.Border,
         Thickness = thick or 1,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    })
+end
+-- v0.0.22: text-specific outline. Contextual mode hugs the GLYPHS of a
+-- transparent-background TextLabel instead of boxing the whole label rect --
+-- Border mode drew a black rectangle around every ESP label ("black box" bug).
+local function textStroke(color, thick)
+    return new("UIStroke", {
+        Color = color or Color3.new(0, 0, 0),
+        Thickness = thick or 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
     })
 end
 local function tween(inst, info, props)
@@ -241,6 +251,22 @@ local function viewport()
     -- goes stale in games that swap CurrentCamera (custom camera systems).
     local cam = Workspace.CurrentCamera
     return cam and cam.ViewportSize or Vector2.new(0, 0)
+end
+
+-- v0.0.22 popup placement fix. Popups (dropdown lists, color picker, tooltips)
+-- live in `popupScreen`, but their anchor buttons/swatches live in the main
+-- `screen`. Empirically these two top-level ScreenGuis report AbsolutePosition in
+-- DIFFERENT reference frames (offset by the GUI inset, e.g. 58px) even though both
+-- set IgnoreGuiInset=true -- so writing a button's AbsolutePosition straight into a
+-- popup's Position.Offset lands it `inset` px too high (the old "dropdown opens in
+-- the middle of the button" bug). Given a desired screen-space TOP-LEFT, this
+-- returns the Position offset that makes the popup's AbsolutePosition hit that
+-- point, by subtracting the popup's live drift (Absolute - Offset). Self-
+-- calibrating: collapses to a no-op when there's no mismatch, so it's always safe.
+local function popupOffsetFor(popupFrame, screenX, screenY)
+    local dx = popupFrame.AbsolutePosition.X - popupFrame.Position.X.Offset
+    local dy = popupFrame.AbsolutePosition.Y - popupFrame.Position.Y.Offset
+    return screenX - dx, screenY - dy
 end
 
 -- each flake is a stack of 3 concentric circles for a soft radial edge,
@@ -836,6 +862,61 @@ new("TextLabel", {
 
 makeDraggable(titleBar, window)
 
+-- v0.0.22: vertical resize grip at the window's bottom edge. Dragging it only
+-- changes the window HEIGHT -- the top edge stays put and the tab ScrollingFrames
+-- just crop/scroll to the new height. Nothing reflows horizontally.
+local MIN_WIN_H, MAX_WIN_H = 360, 1000
+local resizeGrip = new("TextButton", {
+    Name = "ResizeGrip",
+    Text = "",
+    AutoButtonColor = false,
+    AnchorPoint = Vector2.new(0.5, 1),
+    Position = UDim2.new(0.5, 0, 1, 0),
+    Size = UDim2.new(1, -24, 0, 12),
+    BackgroundTransparency = 1,
+    ZIndex = 33,
+    Parent = window,
+}, {
+    new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 42, 0, 3),
+        BackgroundColor3 = Theme.Palette.TextFaint,
+        BackgroundTransparency = 0.45,
+        BorderSizePixel = 0,
+        ZIndex = 34,
+    }, { pillCorner() }),
+})
+do
+    local resizing, startY, startH, startPosOff
+    resizeGrip.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            resizing = true
+            startY = input.Position.Y
+            startH = window.Size.Y.Offset
+            startPosOff = window.Position.Y.Offset
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then resizing = false end
+            end)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if resizing and (input.UserInputType == Enum.UserInputType.MouseMovement
+                       or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position.Y - startY
+            local newH = math.clamp(startH + d, MIN_WIN_H, MAX_WIN_H)
+            local applied = newH - startH
+            window.Size = UDim2.new(window.Size.X.Scale, window.Size.X.Offset, 0, newH)
+            -- center anchor: shift center down by half the growth so the TOP edge
+            -- stays fixed and the window only extends/crops from the bottom.
+            window.Position = UDim2.new(
+                window.Position.X.Scale, window.Position.X.Offset,
+                window.Position.Y.Scale, startPosOff + applied * 0.5)
+        end
+    end)
+end
+
 -- tab bar with sliding pill
 local tabBar = new("Frame", {
     Name = "TabBar",
@@ -1080,7 +1161,7 @@ local function panel(parent, title)
         ZIndex = 33,
         Parent = parent,
     }, {
-        corner(Theme.Radius.Medium),
+        corner(Theme.Radius.XLarge),   -- v0.0.22: rounder feature boxes (per Matcha)
         stroke(Theme.Palette.BorderSubtle),
         new("UIPadding", {
             PaddingTop    = UDim.new(0, 14),
@@ -1627,8 +1708,10 @@ local function openColorPicker(swatchInstance, initialColor, onChange)
     local siz = swatchInstance.AbsoluteSize
     local vp = Workspace.CurrentCamera.ViewportSize
     local pickerW, pickerH = 260, 260
-    local x = math.min(abs.X, vp.X - pickerW - 8)
-    local y = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
+    local dx = math.min(abs.X, vp.X - pickerW - 8)
+    local dy = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
+    -- convert screen-space target -> popup Position offset (inset-safe).
+    local x, y = popupOffsetFor(ColorPicker.root, dx, dy)
     ColorPicker.root.Position = UDim2.new(0, x, 0, y - 4)
     ColorPicker.root.Visible = true
     ColorPicker.root.BackgroundTransparency = 1
@@ -1737,7 +1820,8 @@ local function colorSwatch(parent, initialColor, size, opts)
         local tipY = abs.Y - TIP_H - 8
         tipX = math.clamp(tipX, 4, vp.X - TIP_W - 4)
         if tipY < 4 then tipY = abs.Y + siz.Y + 8 end
-        tip.Position = UDim2.new(0, tipX, 0, tipY)
+        local ox, oy = popupOffsetFor(tip, tipX, tipY)   -- inset-safe placement
+        tip.Position = UDim2.new(0, ox, 0, oy)
         tip.Visible = true
     end)
     sw.MouseLeave:Connect(function() tip.Visible = false end)
@@ -1884,21 +1968,23 @@ local function dropdown(parent, label, options, initial, onChange)
         if siz.X <= 0 or siz.Y <= 0 then return end
         local vp = viewport()
         local listH = #options * 26
-        -- set Size BEFORE reading it back isn't needed -- listH is deterministic.
         list.AnchorPoint = Vector2.new(0, 0)
-        local belowY = abs.Y + siz.Y + GAP
-        local aboveY = abs.Y - listH - GAP
-        local y = belowY
-        if vp.Y > 0 and belowY + listH > vp.Y and aboveY >= 0 then
-            y = aboveY   -- no room below, and above fits -> flip up
+        -- desired TOP-LEFT in the button's screen space.
+        local desX = abs.X
+        local desY = abs.Y + siz.Y + GAP
+        -- flip above only if there is genuinely no room below.
+        if vp.Y > 0 and desY + listH > vp.Y then
+            local aboveY = abs.Y - listH - GAP
+            if aboveY >= 0 then desY = aboveY end
         end
-        local x = abs.X
         if vp.X > 0 then
-            x = math.clamp(abs.X, 4, math.max(4, vp.X - siz.X - 4))
+            desX = math.clamp(desX, 0, math.max(0, vp.X - siz.X))
         end
-        -- Position BEFORE Size so a reshape never flashes at (0,0) for a frame.
-        list.Position = UDim2.new(0, x, 0, y)
+        -- convert the screen-space target into this popup's Position offset so it
+        -- actually lands there (see popupOffsetFor -- fixes the inset mismatch).
+        local ox, oy = popupOffsetFor(list, desX, desY)
         list.Size = UDim2.new(0, siz.X, 0, listH)
+        list.Position = UDim2.new(0, ox, 0, oy)
     end
 
     local function closeList(instant)
@@ -2231,8 +2317,21 @@ local ESP = {
         Outline        = true,
         SelfESP        = false,
         TextGradient   = false,        -- v0.0.21: gradient sweep on all ESP text
+        -- v0.0.22: gradient endpoint colors, editable via two swatches. The
+        -- gradient animates these right->left forever (see gradientOffset loop).
+        GradientColorA = Color3.fromRGB(255, 253, 248),
+        GradientColorB = Color3.fromRGB(212, 145, 90),
         SizingType     = "Static",     -- per he: Static first + default
         RenderDistance = 1000,
+    },
+    -- v0.0.22: shared Feature-Interface render model. One place drives the
+    -- thickness of every rendered feature (box lines, cube edges, skeleton,
+    -- tracer, corners, head dot, health bar). EqualSize on = constant thickness
+    -- regardless of distance; off = thickness scales with distance (thicker up
+    -- close, thinner far) so it reads like classic depth-scaled ESP.
+    Render = {
+        Thickness = 1,       -- base px thickness for all feature lines
+        EqualSize = true,    -- true = distance-invariant, false = distance-scaled
     },
     Boxes = {
         Enabled      = false,
@@ -2344,17 +2443,33 @@ local MAX_FILL_ROWS = 40
 local FILL_ROW_STEP = 6   -- target px per strip; larger = fewer strips = cheaper
 
 local function makeFillRows(parent)
+    -- v0.0.22: strips live in a CanvasGroup so overlapping/adjacent strips are
+    -- flattened into ONE layer before transparency is applied -- this kills the
+    -- double-darkened horizontal seams the old translucent-strip stack produced.
+    -- Strips draw fully OPAQUE; the group carries the ~0.72 translucency.
+    local group = new("CanvasGroup", {
+        Name = "FillGroup",
+        Size = UDim2.new(1, 0, 1, 0),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        GroupTransparency = 0.72,
+        Visible = false,
+        ZIndex = 12,   -- behind cube edges (14) and boxRoot (13)
+        Parent = parent,
+    })
     local rows = {}
     for _ = 1, MAX_FILL_ROWS do
         rows[#rows + 1] = new("Frame", {
             BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundTransparency = 0,
             BorderSizePixel = 0,
             Visible = false,
-            ZIndex = 12,   -- behind cube edges (14) and boxRoot (13)
-            Parent = parent,
+            ZIndex = 12,
+            Parent = group,
         })
     end
-    return rows
+    return group, rows
 end
 
 -- Andrew's monotone-chain convex hull. Points are {x=,y=,...} tables; extra
@@ -2485,7 +2600,7 @@ local function makeHealthBar(parent)
         Visible = false,
         ZIndex = 15,
         Parent = bg,
-    }, { stroke(Color3.new(0, 0, 0), 1) })
+    }, { textStroke(Color3.new(0, 0, 0), 1) })
     return bg, fill, txt
 end
 
@@ -2495,7 +2610,12 @@ local function makeInfoBillboard(adornee)
         Name = "KoffeeInfo",
         Adornee = adornee,
         Size = UDim2.new(0, 220, 0, 74),
-        StudsOffset = Vector3.new(0, 3.4, 0),
+        -- v0.0.22: ExtentsOffset offsets in units of the billboard's own apparent
+        -- size (which shrinks with distance), so the tag hugs a constant gap above
+        -- the head at ALL ranges. StudsOffset (fixed world studs) made the gap look
+        -- huge when far and tiny when close.
+        StudsOffset = Vector3.new(0, 0, 0),
+        ExtentsOffset = Vector3.new(0, 1, 0),
         AlwaysOnTop = true,
         MaxDistance = 1e9,
         LightInfluence = 0,
@@ -2523,8 +2643,10 @@ local function makeInfoBillboard(adornee)
     }, { pillCorner(), stroke(Color3.new(1, 1, 1), 1) })
     local nameLbl = new("TextLabel", {
         Name = "Name",
-        Size = UDim2.new(1, 0, 0, 18),
-        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 0, 0, 18),
+        AutomaticSize = Enum.AutomaticSize.X,   -- hug text so the optional bg is "small"
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 1,             -- toggled by Text Background
         FontFace = Theme.Fonts.Medium,
         TextSize = 14,
         TextColor3 = Color3.new(1, 1, 1),
@@ -2533,7 +2655,9 @@ local function makeInfoBillboard(adornee)
         LayoutOrder = 2,
         Parent = bb,
     }, {
-        stroke(Color3.new(0, 0, 0), 1),
+        corner(4),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
+        textStroke(Color3.new(0, 0, 0), 1),
         new("UIGradient", {          -- v0.0.21 Text Gradient (toggled per frame)
             Enabled = false,
             Rotation = 25,
@@ -2557,15 +2681,21 @@ local function makeDistBillboard(adornee)
         Parent = adornee,
     })
     local lbl = new("TextLabel", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 0, 1, 0),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 1,             -- toggled by Text Background
         FontFace = Theme.Fonts.Medium,
         TextSize = 13,
         TextColor3 = Color3.new(1, 1, 1),
         Text = "",
         Parent = bb,
     }, {
-        stroke(Color3.new(0, 0, 0), 1),
+        corner(4),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
+        textStroke(Color3.new(0, 0, 0), 1),
         new("UIGradient", {          -- v0.0.21 Text Gradient (toggled per frame)
             Enabled = false,
             Rotation = 25,
@@ -2664,7 +2794,7 @@ local function makeRig(plr, character)
     local boxOutline = boxRoot:FindFirstChildOfClass("UIStroke")
     local boxCorners = makeBoxCorners(boxRoot)
     local cubeEdges = makeCubeEdges(ESP.BoxLayer)
-    local fillRows = makeFillRows(ESP.BoxLayer)   -- v0.0.20 cube 3D fill
+    local fillGroup, fillRows = makeFillRows(ESP.BoxLayer)   -- v0.0.20 cube 3D fill
 
     -- v0.0.21 overlays. 2D screen-space elements in ESP.BoxLayer.
     local skeleton = makeSkeletonLines(ESP.BoxLayer)
@@ -2689,6 +2819,7 @@ local function makeRig(plr, character)
         boxOutline = boxOutline,
         boxCorners = boxCorners,
         cubeEdges  = cubeEdges,
+        fillGroup  = fillGroup,                        -- v0.0.22 CanvasGroup wrapping fill strips
         fillRows   = fillRows,                        -- v0.0.20 cube 3D fill strips
         -- v0.0.21 overlays
         skeleton   = skeleton,
@@ -2722,11 +2853,7 @@ local function cleanRig(rig)
             pcall(function() e:Destroy() end)
         end
     end
-    if rig.fillRows then
-        for _, f in ipairs(rig.fillRows) do
-            pcall(function() f:Destroy() end)
-        end
-    end
+    pcall(function() rig.fillGroup:Destroy() end)   -- v0.0.22 destroys child fill strips
     -- v0.0.21 overlays
     if rig.skeleton then
         for _, l in ipairs(rig.skeleton) do pcall(function() l:Destroy() end) end
@@ -2955,7 +3082,7 @@ local function hideRigVisuals(rig)
     rig.boxRoot.Visible = false
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
-    for _, f in ipairs(rig.fillRows) do f.Visible = false end
+    rig.fillGroup.Visible = false
     -- v0.0.21 overlays
     for _, l in ipairs(rig.skeleton) do l.Visible = false end
     rig.headDot.Visible = false
@@ -2968,6 +3095,51 @@ local function hideRigVisuals(rig)
     rig.lastBoxSize = nil
 end
 
+-- v0.0.22: single source of truth for Feature-Interface line thickness.
+--   EqualSize on  -> return the flat base thickness (distance-invariant).
+--   EqualSize off -> scale inversely with distance so lines are thick up close
+--                    and thin far away, clamped so they never vanish or bloat.
+-- REF_DIST is the distance at which scaled == base. Fractional px is fine (the
+-- GUI renderer accepts it) and keeps the falloff smooth.
+local EQ_REF_DIST = 32
+local function featureThickness(dist)
+    local base = ESP.Render.Thickness
+    if ESP.Render.EqualSize or not dist then return base end
+    local s = base * (EQ_REF_DIST / math.max(dist, 1))
+    return math.clamp(s, math.max(1, base * 0.25), base * 5)
+end
+
+-- v0.0.22: animated text gradient. The ColorSequence is built A->B->A so it's
+-- periodic -- sweeping Offset.X seamlessly loops with no snap at the wrap. Speed
+-- is cycles/sec; we sweep offset 1 -> -1 (right to left) forever. Sequence is
+-- rebuilt only when the endpoint colors actually change (cheap steady state).
+local gradLastA, gradLastB, gradSeq
+local function currentGradSeq()
+    local a, b = ESP.Config.GradientColorA, ESP.Config.GradientColorB
+    if a ~= gradLastA or b ~= gradLastB or not gradSeq then
+        gradLastA, gradLastB = a, b
+        gradSeq = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, a),
+            ColorSequenceKeypoint.new(0.5, b),
+            ColorSequenceKeypoint.new(1, a),
+        })
+    end
+    return gradSeq
+end
+local GRAD_SPEED = 0.5
+local function gradOffsetX()
+    return 1 - ((os.clock() * GRAD_SPEED) % 2)   -- 1 -> -1, seamless (periodic seq)
+end
+local function applyGradient(lbl, on)
+    local g = lbl:FindFirstChildOfClass("UIGradient")
+    if not g then return end
+    g.Enabled = on
+    if on then
+        g.Color = currentGradSeq()
+        g.Offset = Vector2.new(gradOffsetX(), 0)
+    end
+end
+
 -- v0.0.21: world-anchored overlays (Name + Profile Picture above the head,
 -- Distance below the feet). Independent of the 2D box projection. `overrideColor`
 -- is the shared team/visible-check color (nil = use each element's own color).
@@ -2976,6 +3148,7 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     local health = ESP.Health
     local grad   = ESP.Config.TextGradient
     local pfpOn  = ESP.Indicators.ProfilePicture.Enabled
+    local textBg = ESP.Config.TextBackground and 0.35 or 1   -- v0.0.22 Text Background
 
     -- health text "Above Name" prefixes [hp] onto the name line
     local prefix = ""
@@ -2998,8 +3171,8 @@ local function updateBillboards(rig, plr, dist, overrideColor)
             if showName then
                 rig.nameLbl.Text = nameStr
                 rig.nameLbl.TextColor3 = overrideColor or names.Color
-                local g = rig.nameLbl:FindFirstChildOfClass("UIGradient")
-                if g then g.Enabled = grad end
+                rig.nameLbl.BackgroundTransparency = textBg
+                applyGradient(rig.nameLbl, grad)
             end
             if pfpOn then
                 if rig.pfp.Image == "" then
@@ -3018,8 +3191,8 @@ local function updateBillboards(rig, plr, dist, overrideColor)
             rig.distBB.Enabled = true
             rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
             rig.distLbl.TextColor3 = overrideColor or distCfg.Color
-            local g = rig.distLbl:FindFirstChildOfClass("UIGradient")
-            if g then g.Enabled = grad end
+            rig.distLbl.BackgroundTransparency = textBg
+            applyGradient(rig.distLbl, grad)
         else
             rig.distBB.Enabled = false
         end
@@ -3028,8 +3201,9 @@ end
 
 -- v0.0.21: skeleton -- project each bone pair whose both parts exist (covers R6
 -- + R15 since missing parts skip) and draw a rotated line frame between them.
-local function updateSkeleton(rig, overrideColor)
+local function updateSkeleton(rig, overrideColor, dist)
     local cfg = ESP.Indicators.Skeleton
+    local thick = featureThickness(dist)
     if not cfg.Enabled then
         for _, l in ipairs(rig.skeleton) do l.Visible = false end
         return
@@ -3054,7 +3228,7 @@ local function updateSkeleton(rig, overrideColor)
                 if line then
                     local dx, dy = b.X - a.X, b.Y - a.Y
                     local len = math.sqrt(dx * dx + dy * dy)
-                    line.Size = UDim2.new(0, len, 0, 2)
+                    line.Size = UDim2.new(0, len, 0, thick)
                     line.Position = UDim2.new(0, (a.X + b.X) * 0.5, 0, (a.Y + b.Y) * 0.5)
                     line.Rotation = math.deg(math.atan2(dy, dx))
                     line.BackgroundColor3 = col
@@ -3132,7 +3306,7 @@ local function updateESPRigs()
 
         -- world-anchored overlays + skeleton render regardless of the box.
         updateBillboards(rig, plr, dist, overrideColor)
-        updateSkeleton(rig, overrideColor)
+        updateSkeleton(rig, overrideColor, dist)
 
         -- 2D box-AABB features (box / health bar / head dot / tracer) share one
         -- projection. If none is enabled, hide them all and skip projecting.
@@ -3142,7 +3316,7 @@ local function updateESPRigs()
             rig.boxRoot.Visible = false
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
-            for _, f in ipairs(rig.fillRows) do f.Visible = false end
+            rig.fillGroup.Visible = false
             rig.headDot.Visible = false
             rig.tracer.Visible = false
             rig.healthBg.Visible = false
@@ -3171,7 +3345,7 @@ local function updateESPRigs()
             rig.boxRoot.Visible = false
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
-            for _, f in ipairs(rig.fillRows) do f.Visible = false end
+            rig.fillGroup.Visible = false
             rig.headDot.Visible = false
             rig.tracer.Visible = false
             rig.healthBg.Visible = false
@@ -3183,9 +3357,11 @@ local function updateESPRigs()
         local fillOn       = ESP.Boxes.FillBox
         local cornersMode  = ESP.Boxes.Corners
         local cornerLen    = math.clamp(ESP.Boxes.CornerLength, 0.02, 0.5)
-        -- v0.0.17 Outline: thickness accent (off: 1px | on: 2px), NOT a gate.
+        -- v0.0.22: base line thickness now comes from the shared render model
+        -- (Thickness slider + Equal Size). Outline is a SEPARATE bordering line
+        -- (see outline pass), no longer folded into this thickness.
         local outlineOn    = ESP.Config.Outline
-        local lineThick    = 1 + (outlineOn and 1 or 0)
+        local lineThick    = featureThickness(dist)
 
         -- projected AABB (2D box uses this directly; cube uses it for the
         -- optional Fill layer that sits behind the edges)
@@ -3247,16 +3423,25 @@ local function updateESPRigs()
                 local totalH = hy1 - hy0
                 local rowCount = math.clamp(math.floor(totalH / FILL_ROW_STEP), 1, MAX_FILL_ROWS)
                 local rowH = totalH / rowCount
+                rig.fillGroup.Visible = true
                 for i = 1, MAX_FILL_ROWS do
                     local f = rig.fillRows[i]
                     if i <= rowCount then
-                        local yc = hy0 + (i - 0.5) * rowH
-                        local xl, xr = hullSpanAtY(hull, yc)
-                        if xl then
-                            f.Position = UDim2.new(0, xl, 0, hy0 + (i - 1) * rowH)
+                        local yTop = hy0 + (i - 1) * rowH
+                        -- widest span across the strip (sample near top AND bottom
+                        -- edges) so the fill edges track the slanted silhouette
+                        -- instead of stair-stepping off a single centre sample.
+                        local l1, r1 = hullSpanAtY(hull, yTop + 0.5)
+                        local l2, r2 = hullSpanAtY(hull, yTop + rowH - 0.5)
+                        local xl = math.min(l1 or math.huge,  l2 or math.huge)
+                        local xr = math.max(r1 or -math.huge, r2 or -math.huge)
+                        if xl < xr then
+                            -- opaque strip; the CanvasGroup carries the translucency
+                            -- so overlaps don't double-darken (no seams). +1 height
+                            -- overlap defeats fractional-rounding gaps for free.
+                            f.Position = UDim2.new(0, xl, 0, yTop)
                             f.Size = UDim2.new(0, math.max(xr - xl, 1), 0, rowH + 1)
                             f.BackgroundColor3 = fillColor
-                            f.BackgroundTransparency = 0.72
                             f.Visible = true
                         else
                             f.Visible = false
@@ -3266,7 +3451,7 @@ local function updateESPRigs()
                     end
                 end
             else
-                for _, f in ipairs(rig.fillRows) do f.Visible = false end
+                rig.fillGroup.Visible = false
             end
 
             -- v0.0.17: cube edges always render when box visible -- they ARE
@@ -3333,7 +3518,7 @@ local function updateESPRigs()
         else
             -- 2D bounding box. boxRoot IS the box. cube frames + fill strips off.
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
-            for _, f in ipairs(rig.fillRows) do f.Visible = false end
+            rig.fillGroup.Visible = false
             rig.boxRoot.Visible = true
             rig.boxRoot.BackgroundTransparency = fillOn and 0.72 or 1
 
@@ -3383,17 +3568,26 @@ local function updateESPRigs()
             rig.boxRoot.Visible = false
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
-            for _, f in ipairs(rig.fillRows) do f.Visible = false end
+            rig.fillGroup.Visible = false
         end
 
-        -- v0.0.21 HEAD DOT: dot at the top-center of the projected AABB (head).
-        if ESP.Indicators.HeadDot.Enabled then
-            local d = rig.headDot
-            local sz = 6
-            d.Size = UDim2.new(0, sz, 0, sz)
-            d.Position = UDim2.new(0, (minX + maxX) * 0.5, 0, minY + sz * 0.5)
-            d.BackgroundColor3 = overrideColor or ESP.Indicators.HeadDot.Color
-            d.Visible = true
+        -- v0.0.22 HEAD DOT: centered on the REAL Head part (was pinned to the
+        -- top of the projected AABB, which sat above the head / on hats). Project
+        -- the head's world position directly and center the dot on it. Size rides
+        -- the render model so it scales with distance when Equal Size is off.
+        if ESP.Indicators.HeadDot.Enabled and rig.head and rig.head.Parent then
+            local sp = cam:WorldToViewportPoint(rig.head.Position)
+            if sp.Z > 0 then
+                local d = rig.headDot
+                local sz = math.clamp(4 + featureThickness(dist) * 2, 4, 22)
+                d.AnchorPoint = Vector2.new(0.5, 0.5)
+                d.Size = UDim2.new(0, sz, 0, sz)
+                d.Position = UDim2.new(0, sp.X, 0, sp.Y)
+                d.BackgroundColor3 = overrideColor or ESP.Indicators.HeadDot.Color
+                d.Visible = true
+            else
+                rig.headDot.Visible = false
+            end
         else
             rig.headDot.Visible = false
         end
@@ -3412,7 +3606,8 @@ local function updateESPRigs()
             rig.healthBg.Visible = true
             local barColor
             if ESP.Health.Based then
-                barColor = Color3.fromRGB(220, 70, 70):Lerp(Color3.fromRGB(110, 220, 130), frac)
+                -- v0.0.22: pure red -> pure green (was a muted/desaturated pair).
+                barColor = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(0, 255, 0), frac)
             else
                 barColor = ESP.Health.Bar.Color
             end
@@ -3448,7 +3643,7 @@ local function updateESPRigs()
             local dx, dy = tx2 - ox, ty2 - oy
             local len = math.sqrt(dx * dx + dy * dy)
             local t = rig.tracer
-            t.Size = UDim2.new(0, len, 0, 1 + (ESP.Config.Outline and 1 or 0))
+            t.Size = UDim2.new(0, len, 0, featureThickness(dist))
             t.Position = UDim2.new(0, (ox + tx2) * 0.5, 0, (oy + ty2) * 0.5)
             t.Rotation = math.deg(math.atan2(dy, dx))
             t.BackgroundColor3 = overrideColor or ESP.Tracer.Color
@@ -3705,7 +3900,10 @@ addTab("Visuals", function(root)
         function(c) ESP.Colors.Visible = c end,
         function(c) ESP.Colors.Hidden  = c end)
     configCheckbox(espPanel, "Team Based Color", ESP.Config.TeamBasedColor, function(v) ESP.Config.TeamBasedColor = v end)
-    configCheckbox(espPanel, "Text Gradient", ESP.Config.TextGradient, function(v) ESP.Config.TextGradient = v end)
+    local gradRow = configCheckbox(espPanel, "Text Gradient", ESP.Config.TextGradient, function(v) ESP.Config.TextGradient = v end)
+    attachDualSwatch(gradRow.row, ESP.Config.GradientColorA, ESP.Config.GradientColorB,
+        function(c) ESP.Config.GradientColorA = c end,
+        function(c) ESP.Config.GradientColorB = c end)
     configCheckbox(espPanel, "Text Background", ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
     local outlineRow = configCheckbox(espPanel, "Outline", ESP.Config.Outline, function(v) ESP.Config.Outline = v end)
     attachSingleSwatch(outlineRow.row, ESP.Boxes.OutlineColor, function(c) ESP.Boxes.OutlineColor = c end)
@@ -3717,6 +3915,10 @@ addTab("Visuals", function(root)
         function(v) ESP.Config.SizingType = v end)
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end)
+    -- v0.0.22: global Feature-Interface thickness + distance-invariance.
+    slider(espPanel, "Thickness", 1, 8, ESP.Render.Thickness, 0,
+        function(v) ESP.Render.Thickness = v end)
+    configCheckbox(espPanel, "Equal Size", ESP.Render.EqualSize, function(v) ESP.Render.EqualSize = v end)
 
     --------------------------------------------------------------- Box
     local boxesPanel = panel(leftCol, "box")
@@ -3860,6 +4062,11 @@ local function setWindowOpen(open)
         window.GroupTransparency = 1
         tween(window, Theme.Animation.WindowFade, { GroupTransparency = 0 })
     else
+        -- v0.0.22: popups live in a SEPARATE ScreenGui, so the window's fade
+        -- doesn't touch them. Dismiss any open color picker + dropdowns on close
+        -- so they don't linger over the game after the menu is hidden.
+        closeColorPicker()
+        for _, closer in pairs(openDropdowns) do closer(true) end
         tween(window, Theme.Animation.WindowFade, { GroupTransparency = 1 })
         task.delay(0.2, function()
             if not windowOpen then window.Visible = false end
