@@ -1,4 +1,4 @@
--- koffee v0.0.32
+-- koffee v0.0.33
 -- universal roblox internal suite
 -- funded by konstant
 
@@ -4900,56 +4900,129 @@ local Combat = {
             pcall(mouse1press); task.wait(); pcall(mouse1release)
         end
     end
-    -- Silent hooks are installed at most ONCE per game session. hookmetamethod
-    -- stacks (each call wraps the previous and is never restored), so re-executing
-    -- the loader used to pile buggy hooks on top of good ones. We now publish this
-    -- exec's live redirect state through getgenv().KoffeeSilentResolve and install
-    -- the metamethod hook only if it isn't already live -- the single persistent
-    -- hook always reads the newest exec's state. (Clearing an ALREADY-stacked hook
-    -- from an older script version still needs one rejoin.)
+    -- UNIVERSAL SILENT AIM
+    --
+    -- Roblox FPS fire paths take three broad shapes:
+    --   (a) mouse-based:  read Mouse.Hit / Mouse.Target / Mouse.UnitRay
+    --   (b) camera-ray:   compute a Ray from Camera:ViewportPointToRay / ScreenPointToRay
+    --   (c) direct cast:  Workspace:Raycast(camera_pos, camera_look * range, params)
+    --                     or the older FindPartOnRayWithIgnoreList / *WithWhitelist
+    --
+    -- We hook all three. (a) + (b) are exact — always redirect when Silent is armed.
+    -- (c) is dangerous because the same API is used by:
+    --   - Popper (camera collision): origin BEHIND cam, direction points TOWARD cam
+    --     (opposite LookVector), length ~5-15 studs
+    --   - streaming/loading probes, character controllers, tool internals
+    -- Distinguisher for a fire ray: forward-facing (dir . LookVector > 0.5)
+    -- AND long-range (magnitude > 20). Popper is negative-dot and short -> skipped.
+    -- Only the direction gets rotated to hit our target; length is preserved so the
+    -- game's range gates still fire, and origin stays where the game put it.
+    --
+    -- Persistence: hookmetamethod stacks across re-executions and is never restored.
+    -- The BODY installs at most once per session. All logic lives in the resolver
+    -- functions we publish through getgenv, so every subsequent loader run rewires
+    -- the behaviour with zero rejoin required.
     local function installSilentHooks()
         if Combat.Silent._hooked then return end
         Combat.Silent._hooked = true
         local genv = getgenv and getgenv()
-        local function resolve() return silentPos, silentTarget end
-        if genv then genv.KoffeeSilentResolve = resolve end
-        if genv and genv.KoffeeSilentHooked then return end   -- hook already live; just re-pointed the resolver
+
+        -- === LIVE LOGIC (repointable through getgenv every exec) ==================
+        -- Each resolver returns (handled, value). handled=true short-circuits the
+        -- game's real call; handled=false falls through to the original metamethod.
+        local PASS_H, PASS_V = false, nil
+        local function resolveIndex(self, key)
+            if key ~= "Hit" and key ~= "Target" and key ~= "UnitRay" then return PASS_H, PASS_V end
+            if not (typeof(self) == "Instance" and self:IsA("Mouse")) then return PASS_H, PASS_V end
+            local pos, tgt = silentPos, silentTarget
+            if not pos then return PASS_H, PASS_V end
+            if key == "Hit" then return true, CFrame.new(pos) end
+            if key == "Target" then return true, tgt end
+            local cam = Workspace.CurrentCamera
+            if cam then return true, Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit) end
+            return PASS_H, PASS_V
+        end
+        local function resolveNamecall(self, method, args)
+            local pos = silentPos
+            if not pos then return PASS_H, PASS_V end
+            local cam = Workspace.CurrentCamera
+            if not cam then return PASS_H, PASS_V end
+            -- Mouse camera-ray methods: always safe to redirect
+            if method == "ViewportPointToRay" or method == "ScreenPointToRay" then
+                local o = cam.CFrame.Position
+                return true, Ray.new(o, (pos - o).Unit)
+            end
+            -- Direct raycast on Workspace (Vector3 origin + Vector3 direction).
+            -- Redirect ONLY when this looks like a fire ray, not Popper collision.
+            -- Same distinguisher for the two deprecated variants that take a Ray.
+            if self == Workspace then
+                if method == "Raycast" then
+                    local origin, dir = args[1], args[2]
+                    if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
+                        local mag = dir.Magnitude
+                        if mag > 20 then
+                            local ok, dirU = pcall(function() return dir.Unit end)
+                            if ok and dirU:Dot(cam.CFrame.LookVector) > 0.5 then
+                                args[2] = (pos - origin).Unit * mag
+                                return "call", args   -- forward to old with mutated args
+                            end
+                        end
+                    end
+                elseif method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist"
+                    or method == "FindPartOnRay" then
+                    local ray = args[1]
+                    if typeof(ray) == "Ray" then
+                        local mag = ray.Direction.Magnitude
+                        if mag > 20 then
+                            local ok, dirU = pcall(function() return ray.Direction.Unit end)
+                            if ok and dirU:Dot(cam.CFrame.LookVector) > 0.5 then
+                                args[1] = Ray.new(ray.Origin, (pos - ray.Origin).Unit * mag)
+                                return "call", args
+                            end
+                        end
+                    end
+                end
+            end
+            return PASS_H, PASS_V
+        end
+        if genv then
+            genv.KoffeeResolveIndex    = resolveIndex
+            genv.KoffeeResolveNamecall = resolveNamecall
+            -- back-compat: pre-v0.0.33 hook bodies read this single resolver
+            genv.KoffeeSilentResolve   = function() return silentPos, silentTarget end
+        end
+
+        -- === HOOK BODY (installed once, forever; delegates to resolvers) ==========
+        if genv and genv.KoffeeSilentHooked then return end
         if genv then genv.KoffeeSilentHooked = true end
         pcall(function()
             local hookmm   = hookmetamethod
             local ncmethod = getnamecallmethod
             local wrap     = newcclosure or function(f) return f end
             if not hookmm then return end
-            local function redir()
-                if genv and genv.KoffeeSilentResolve then return genv.KoffeeSilentResolve() end
-                return resolve()
-            end
             local oldIndex
             oldIndex = hookmm(game, "__index", wrap(function(self, key)
-                if key == "Hit" or key == "Target" or key == "UnitRay" then
-                    local pos, tgt = redir()
-                    if pos and typeof(self) == "Instance" and self:IsA("Mouse") then
-                        if key == "Hit" then return CFrame.new(pos)
-                        elseif key == "Target" then return tgt
-                        else
-                            local cam = Workspace.CurrentCamera
-                            if cam then local o = cam.CFrame.Position; return Ray.new(o, (pos - o).Unit) end
-                        end
-                    end
+                local r = genv and genv.KoffeeResolveIndex
+                if r then
+                    local ok, handled, value = pcall(r, self, key)
+                    if ok and handled then return value end
                 end
                 return oldIndex(self, key)
             end))
             local oldNc
             oldNc = hookmm(game, "__namecall", wrap(function(self, ...)
-                -- capture the method name FIRST; never do a nested namecall (e.g.
-                -- self:IsA) here -- that corrupts the pending namecall and crashes
-                -- the game's own raycasts (Popper "Vector3 passed" spam).
+                -- Capture method BEFORE anything else and NEVER do a nested namecall
+                -- in this hook -- getnamecallmethod reads one shared C state so a
+                -- nested namecall corrupts the pending dispatch (previously broke
+                -- Popper: "argument #1 expects a string, but Vector3 was passed").
                 local m = ncmethod and ncmethod() or ""
-                if m == "ViewportPointToRay" or m == "ScreenPointToRay" then
-                    local pos = select(1, redir())
-                    if pos then
-                        local cam = Workspace.CurrentCamera
-                        if cam then local o = cam.CFrame.Position; return Ray.new(o, (pos - o).Unit) end
+                local r = genv and genv.KoffeeResolveNamecall
+                if r then
+                    local args = table.pack(...)
+                    local ok, handled, value = pcall(r, self, m, args)
+                    if ok then
+                        if handled == true then return value end
+                        if handled == "call" then return oldNc(self, table.unpack(value, 1, args.n)) end
                     end
                 end
                 return oldNc(self, ...)
