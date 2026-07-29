@@ -1,4 +1,4 @@
--- koffee v0.0.30
+-- koffee v0.0.31
 -- universal roblox internal suite
 -- funded by konstant
 
@@ -1555,7 +1555,8 @@ local function parseHex(str)
     return Color3.fromRGB(r, g, b)
 end
 
-local ColorPicker = { root = nil, activeSwatch = nil, callback = nil, h = 0, s = 0, v = 0 }
+local ColorPicker = { root = nil, activeSwatch = nil, callback = nil, h = 0, s = 0, v = 0,
+    a = 1, alphaEnabled = false, onAlpha = nil }
 
 local function makeRainbowSequence()
     -- 7 stops around the hue wheel
@@ -1676,6 +1677,44 @@ local function buildColorPicker()
         ZIndex = 252,
         Parent = hueSlider,
     }, { corner(2), stroke(Color3.new(0, 0, 0), 1) })
+    -- v0.0.31: optional alpha bar (right of hue). Grey backing + colour overlay
+    -- that fades top(opaque)->bottom(transparent) reads as an alpha ramp. Only
+    -- shown when a swatch opts into alpha (used by the FOV fill).
+    local alphaBar = new("Frame", {
+        Name = "AlphaBar",
+        Position = UDim2.new(1, -50, 0, 22),
+        Size = UDim2.new(0, 20, 0, 140),
+        BackgroundColor3 = Color3.fromRGB(120, 120, 120),
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 251,
+        Parent = root,
+    }, { corner(4) })
+    local alphaFill = new("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 252,
+        Parent = alphaBar,
+    }, {
+        corner(4),
+        new("UIGradient", {
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+            Rotation = 90,
+        }),
+    })
+    local alphaCursor = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 0),
+        Size = UDim2.new(1, 4, 0, 3),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 253,
+        Parent = alphaBar,
+    }, { corner(2), stroke(Color3.new(0, 0, 0), 1) })
     -- hex input (leaves room on the right for the preview swatch)
     local hexBox = new("TextBox", {
         Position = UDim2.new(0, 0, 0, 178),
@@ -1728,6 +1767,11 @@ local function buildColorPicker()
         rgbRead.Text = colorToRGB(c)
         svCursor.BackgroundColor3 = c
         preview.BackgroundColor3 = c
+        alphaFill.BackgroundColor3 = c
+        alphaCursor.Position = UDim2.new(0.5, 0, 1 - ColorPicker.a, 0)
+        if ColorPicker.alphaEnabled and ColorPicker.onAlpha then
+            ColorPicker.onAlpha(ColorPicker.a)
+        end
         if ColorPicker.callback then
             ColorPicker.callback(c)
         end
@@ -1754,6 +1798,16 @@ local function buildColorPicker()
         ColorPicker.h = math.clamp((input.Position.Y - abs.Y) / siz.Y, 0, 1)
         applyToUI()
     end)
+    local alphaDragging = false
+    alphaBar.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        alphaDragging = true
+        local abs = alphaBar.AbsolutePosition
+        local siz = alphaBar.AbsoluteSize
+        ColorPicker.a = 1 - math.clamp((input.Position.Y - abs.Y) / siz.Y, 0, 1)
+        applyToUI()
+    end)
     UserInputService.InputChanged:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseMovement
         and input.UserInputType ~= Enum.UserInputType.Touch then return end
@@ -1770,12 +1824,19 @@ local function buildColorPicker()
             ColorPicker.h = math.clamp((input.Position.Y - abs.Y) / siz.Y, 0, 1)
             applyToUI()
         end
+        if alphaDragging then
+            local abs = alphaBar.AbsolutePosition
+            local siz = alphaBar.AbsoluteSize
+            ColorPicker.a = 1 - math.clamp((input.Position.Y - abs.Y) / siz.Y, 0, 1)
+            applyToUI()
+        end
     end)
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             svDragging = false
             hueDragging = false
+            alphaDragging = false
         end
     end)
     hexBox.FocusLost:Connect(function()
@@ -1791,10 +1852,13 @@ local function buildColorPicker()
 
     ColorPicker.root = root
     ColorPicker.apply = applyToUI
+    ColorPicker.svArea = svArea
+    ColorPicker.hueSlider = hueSlider
+    ColorPicker.alphaBar = alphaBar
     return root
 end
 
-local function openColorPicker(swatchInstance, initialColor, onChange)
+local function openColorPicker(swatchInstance, initialColor, onChange, opts)
     if not ColorPicker.root then buildColorPicker() end
     -- v0.0.16: cancel any pending close from a prior closeColorPicker call.
     -- Without this, the task.delay(0.22) from close fires AFTER open and
@@ -1803,15 +1867,29 @@ local function openColorPicker(swatchInstance, initialColor, onChange)
         pcall(task.cancel, ColorPicker.closeTask)
         ColorPicker.closeTask = nil
     end
+    opts = opts or {}
     ColorPicker.activeSwatch = swatchInstance
     ColorPicker.callback = onChange
+    -- v0.0.31: alpha mode (fills). Reflow layout to make room for the alpha bar.
+    ColorPicker.alphaEnabled = opts.alpha == true
+    ColorPicker.a = opts.initialAlpha or 1
+    ColorPicker.onAlpha = opts.onAlpha
+    if ColorPicker.alphaEnabled then
+        ColorPicker.root.Size = UDim2.new(0, 292, 0, 260)
+        ColorPicker.svArea.Size = UDim2.new(1, -58, 0, 140)
+        ColorPicker.alphaBar.Visible = true
+    else
+        ColorPicker.root.Size = UDim2.new(0, 260, 0, 260)
+        ColorPicker.svArea.Size = UDim2.new(1, -32, 0, 140)
+        ColorPicker.alphaBar.Visible = false
+    end
     local h, s, v = initialColor:ToHSV()
     ColorPicker.h, ColorPicker.s, ColorPicker.v = h, s, v
     -- position near swatch (below + right, but clamp to viewport)
     local abs = swatchInstance.AbsolutePosition
     local siz = swatchInstance.AbsoluteSize
     local vp = Workspace.CurrentCamera.ViewportSize
-    local pickerW, pickerH = 260, 260
+    local pickerW, pickerH = (ColorPicker.alphaEnabled and 292 or 260), 260
     local dx = math.min(abs.X, vp.X - pickerW - 8)
     local dy = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
     -- convert screen-space target -> popup Position offset (inset-safe).
@@ -1940,7 +2018,11 @@ local function colorSwatch(parent, initialColor, size, opts)
             currentColor = newColor
             refreshUI()
             if opts.onChange then opts.onChange(newColor) end
-        end)
+        end, {
+            alpha = opts.alpha,
+            initialAlpha = opts.getAlpha and opts.getAlpha() or opts.initialAlpha,
+            onAlpha = opts.onAlpha,
+        })
     end)
 
     return {
@@ -2040,14 +2122,16 @@ local function dropdown(parent, label, options, initial, onChange)
     })
     local caretRoot = chevron(btn, 10)
 
-    -- popup lives in the dedicated popup ScreenGui, above everything
+    -- popup lives in the dedicated popup ScreenGui, above everything -- ZIndex 260
+    -- so it clears the settings popup (210) AND the colour picker (250) when a
+    -- dropdown is opened from inside one of them.
     local list = new("Frame", {
         Size = UDim2.new(0, 100, 0, #options * 26),
         BackgroundColor3 = Theme.Palette.Panel,
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         Visible = false,
-        ZIndex = 200,
+        ZIndex = 260,
         Parent = popupScreen,
     }, {
         corner(4),
@@ -2162,7 +2246,7 @@ local function dropdown(parent, label, options, initial, onChange)
             BackgroundColor3 = Theme.Palette.PanelElevated,
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
-            ZIndex = 201,
+            ZIndex = 261,
             Parent = list,
         })
         new("TextLabel", {
@@ -2175,7 +2259,7 @@ local function dropdown(parent, label, options, initial, onChange)
             Position = UDim2.new(0, 12, 0, 0),
             Size = UDim2.new(1, -20, 1, 0),
             TextXAlignment = Enum.TextXAlignment.Left,
-            ZIndex = 202,
+            ZIndex = 262,
             Parent = optBtn,
         })
         optBtn.MouseEnter:Connect(function()
@@ -2195,6 +2279,8 @@ local function dropdown(parent, label, options, initial, onChange)
         if isOpen then closeList() else openList() end
     end)
     return {
+        frame = wrap,
+        button = btn,
         setValue = function(v) valueLbl.Text = v end,
         close = function() closeList(true) end,
     }
@@ -2246,7 +2332,7 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     end
     local current = round(math.clamp(initial, min, max))
     local row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 34),
+        Size = UDim2.new(1, 0, 0, 44),                       -- v0.0.32: taller
         BackgroundTransparency = 1,
         ZIndex = 34,
         Parent = parent,
@@ -2258,7 +2344,7 @@ local function slider(parent, label, min, max, initial, precision, onChange)
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
         Position = UDim2.new(0, 0, 0, 0),
-        Size = UDim2.new(1, -90, 0, 16),
+        Size = UDim2.new(1, -90, 0, 18),
         TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 35,
         Parent = row,
@@ -2290,8 +2376,8 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     local valueStroke = valueBox:FindFirstChildOfClass("UIStroke")
     if valueStroke then valueStroke.Transparency = 1 end   -- hide stroke by default too
     local track = new("Frame", {
-        Position = UDim2.new(0, 0, 0, 24),
-        Size = UDim2.new(1, 0, 0, 4),                     -- was 2 -- thicker per he
+        Position = UDim2.new(0, 0, 0, 30),
+        Size = UDim2.new(1, 0, 0, 6),                     -- v0.0.32: thicker track
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BorderSizePixel = 0,
         ZIndex = 34,
@@ -2305,31 +2391,28 @@ local function slider(parent, label, min, max, initial, precision, onChange)
         ZIndex = 35,
         Parent = track,
     }, { pillCorner() })
-    -- knob: bigger (12 vs 9) and Text/white color (not Accent) per he
-    local knob = new("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(startPct, 0, 0.5, 0),
-        Size = UDim2.new(0, 12, 0, 12),
-        BackgroundColor3 = Theme.Palette.Text,
-        BorderSizePixel = 0,
-        ZIndex = 36,
-        Parent = track,
-    }, { pillCorner(), stroke(Theme.Palette.BorderSubtle, 1) })
+    -- v0.0.31: dot-less slider -- just the filled accent line, no draggable knob
+    -- (matcha style). The whole track width is the hit/drag area.
     local hitArea = new("TextButton", {
         Text = "",
         AutoButtonColor = false,
         BackgroundTransparency = 1,
-        Position = UDim2.new(0, 0, 0, 18),
-        Size = UDim2.new(1, -86, 0, 14),
+        Position = UDim2.new(0, 0, 0, 24),
+        Size = UDim2.new(1, -86, 0, 18),
         ZIndex = 37,
         Parent = row,
     })
     local dragging = false
 
-    local function applyValue()
+    -- v0.0.32: animate the fill on programmatic set (click / typed value), snap
+    -- during a live drag so it tracks the cursor 1:1.
+    local function applyValue(animate)
         local pct = (current - min) / (max - min)
-        fill.Size = UDim2.new(pct, 0, 1, 0)
-        knob.Position = UDim2.new(pct, 0, 0.5, 0)
+        if animate then
+            tween(fill, Theme.Animation.Fast, { Size = UDim2.new(pct, 0, 1, 0) })
+        else
+            fill.Size = UDim2.new(pct, 0, 1, 0)
+        end
         valueBox.Text = tostring(current)
         if onChange then onChange(current) end
     end
@@ -2339,7 +2422,7 @@ local function slider(parent, label, min, max, initial, precision, onChange)
         if trackW <= 0 then return end
         local pct = math.clamp((inputX - trackAbs) / trackW, 0, 1)
         current = round(min + (max - min) * pct)
-        applyValue()
+        applyValue(false)
     end
     hitArea.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -2364,7 +2447,7 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     valueBox.FocusLost:Connect(function(enterPressed)
         local n = tonumber(valueBox.Text)
         if n then current = round(math.clamp(n, min, max)) end
-        applyValue()
+        applyValue(true)
     end)
     -- hover: bg pill lights up
     valueBox.MouseEnter:Connect(function()
@@ -2438,13 +2521,14 @@ local function rightClickSettings(row, title, buildFn)
             slider(popupFrame, label, mn, mx, initial, precision, onChange)
         end
         function api:toggle(label, initial, onChange)
-            configCheckbox(popupFrame, label, initial, onChange)
+            return configCheckbox(popupFrame, label, initial, onChange)
         end
         function api:dropdown(label, options, initial, onChange)
-            dropdown(popupFrame, label, options, initial, onChange)
+            return dropdown(popupFrame, label, options, initial, onChange)
         end
         -- v0.0.28: colour control inside a settings popup (label + right swatch).
-        function api:swatch(label, initial, onChange)
+        -- v0.0.32: optional `sopts` (alpha etc) forwarded to colorSwatch.
+        function api:swatch(label, initial, onChange, sopts)
             local r = new("Frame", {
                 Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1,
                 ZIndex = 211, Parent = popupFrame,
@@ -2460,7 +2544,21 @@ local function rightClickSettings(row, title, buildFn)
                 Size = UDim2.new(0, 14, 0, 16), BackgroundTransparency = 1,
                 ZIndex = 212, Parent = r,
             })
-            colorSwatch(wrap, initial, 14, { onChange = onChange })
+            local o = { onChange = onChange }
+            if sopts then for k, v in pairs(sopts) do o[k] = v end end
+            colorSwatch(wrap, initial, 14, o)
+            return r
+        end
+        -- v0.0.32: a row of N colour swatches (transparency is separate sliders now).
+        function api:swatchRow(colors, onColor)
+            local r = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1, ZIndex = 211, Parent = popupFrame,
+            }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+                Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+            for i = 1, #colors do
+                colorSwatch(r, colors[i], 14, { onChange = function(c) onColor(i, c) end })
+            end
+            return r
         end
         buildFn(api)
     end
@@ -2709,6 +2807,10 @@ local function makeFillRows(parent)
     -- flattened into ONE layer before transparency is applied -- this kills the
     -- double-darkened horizontal seams the old translucent-strip stack produced.
     -- Strips draw fully OPAQUE; the group carries the ~0.72 translucency.
+    -- v0.0.29: the group carries a KGrad so the cube fill can pick up the
+    -- Gradient toggle. A UIGradient on a CanvasGroup tints the flattened strip
+    -- image in one shot -- but only spans the group's OWN rect, so the render
+    -- code resizes the group to hug the fill AABB (see updateESPRigs).
     local group = new("CanvasGroup", {
         Name = "FillGroup",
         Size = UDim2.new(1, 0, 1, 0),
@@ -2719,7 +2821,7 @@ local function makeFillRows(parent)
         Visible = false,
         ZIndex = 12,   -- behind cube edges (14) and boxRoot (13)
         Parent = parent,
-    })
+    }, { lineGradient() })
     local rows = {}
     for _ = 1, MAX_FILL_ROWS do
         rows[#rows + 1] = new("Frame", {
@@ -3900,16 +4002,29 @@ local function updateESPRigs()
 
             if fillOn then
                 local hull = convexHull(corners)
+                local hx0, hx1 = math.huge, -math.huge
                 local hy0, hy1 = math.huge, -math.huge
                 for _, c in ipairs(hull) do
+                    if c.x < hx0 then hx0 = c.x end
+                    if c.x > hx1 then hx1 = c.x end
                     if c.y < hy0 then hy0 = c.y end
                     if c.y > hy1 then hy1 = c.y end
                 end
                 local totalH = hy1 - hy0
+                local spanX  = math.max(hx1 - hx0, 1)
                 local rowCount = math.clamp(math.floor(totalH / FILL_ROW_STEP), 1, MAX_FILL_ROWS)
                 local rowH = totalH / rowCount
+                -- v0.0.29: group hugs the fill AABB (not the full screen) so a
+                -- gradient on the CanvasGroup spans the silhouette instead of a
+                -- screen-wide slice. Strips are positioned RELATIVE to the group.
+                rig.fillGroup.Position = UDim2.new(0, hx0, 0, hy0)
+                rig.fillGroup.Size = UDim2.new(0, spanX, 0, totalH)
                 rig.fillGroup.Visible = true
                 rig.fillGroup.GroupTransparency = ESP.Boxes.FillTransparency
+                -- v0.0.29: fill obeys the Gradient toggle. White strips + group
+                -- gradient when on; flat fillColor when off.
+                applyLineGradient(rig.fillGroup, lineGradOn)
+                local stripCol = lineGradOn and Color3.new(1, 1, 1) or fillColor
                 for i = 1, MAX_FILL_ROWS do
                     local f = rig.fillRows[i]
                     if i <= rowCount then
@@ -3925,9 +4040,10 @@ local function updateESPRigs()
                             -- opaque strip; the CanvasGroup carries the translucency
                             -- so overlaps don't double-darken (no seams). +1 height
                             -- overlap defeats fractional-rounding gaps for free.
-                            f.Position = UDim2.new(0, xl, 0, yTop)
+                            -- coords are RELATIVE to the group's AABB origin now.
+                            f.Position = UDim2.new(0, xl - hx0, 0, yTop - hy0)
                             f.Size = UDim2.new(0, math.max(xr - xl, 1), 0, rowH + 1)
-                            f.BackgroundColor3 = fillColor
+                            f.BackgroundColor3 = stripCol
                             f.Visible = true
                         else
                             f.Visible = false
@@ -4016,6 +4132,11 @@ local function updateESPRigs()
             rig.boxRoot.Visible = true
             rig.boxRoot.BackgroundTransparency = fillOn and ESP.Boxes.FillTransparency or 1
             rig.boxRoot.BackgroundColor3 = fillColor
+            -- v0.0.29: 2D fill obeys the Gradient toggle. boxRoot's own KGrad
+            -- tints its background (the fill); off -> falls back to fillColor.
+            -- The KGrad bleeds onto the KMain stroke, but that stroke carries its
+            -- own inner gradient (applyStrokeGradient below) which overrides it.
+            applyLineGradient(rig.boxRoot, lineGradOn and fillOn)
 
             -- v0.0.17: primary stroke ALWAYS enabled (suppressed only by
             -- corners mode which replaces it with brackets). v0.0.28: the box line
@@ -4393,7 +4514,1008 @@ registerModule("customtime", "Custom Time",
 -- TABS: build panels
 --============================================================
 -- tab order (per he): combat visuals world character options configs npc teams
-addTab("Combat")
+--============================================================
+-- COMBAT TAB (v0.0.31) -- matcha-parity restructure
+-- Two columns, each a sub-tab panel (pill switcher inside the card):
+--   left : Aimbot / Prediction / Smoothness / FOV   + Misc(Resolver)
+--   right: Silent Aim / Prediction / FOV            + Trigger Bot
+-- Wrapped in its own scope so its locals don't count against the main
+-- chunk's 200-local ceiling. Backends: shared targeting engine + camera
+-- aimbot (Camera/Mouse), prediction, per-axis smoothness, ragebot teleports,
+-- silent-aim hook (fake-camera fire-read redirect), triggerbot, FOV circle.
+--============================================================
+-- IIFE (not a bare do-block): Luau's 200-local limit is per FUNCTION and a
+-- do-block shares the enclosing function's registers, so all of Combat's locals
+-- were counting against the main chunk (-> "Out of local registers"). A function
+-- scope gives this whole tab its own register budget.
+;(function()
+local Combat = {
+    Aim = {
+        Enabled       = false,
+        ActivationKey = Enum.UserInputType.MouseButton2,  -- KeyCode OR UserInputType
+        ActivationMode= "Hold",                           -- "Hold" | "Toggle"
+        Priority      = "Crosshair",                      -- "Nearest" | "Crosshair"
+        HitPart       = "Head",
+        AimType       = "Camera",                         -- "Camera" | "Mouse"
+        Distance      = 500,
+        Sensitivity   = 0.4,
+        TeamCheck     = true,
+        VisibleCheck  = false,
+        HealthCheck   = false,
+        Sticky        = false,
+        Rage          = false,
+        RageType      = "Camera Teleport",                -- "Camera Teleport" | "Character Teleport"
+        RageYOffset   = 0,                                -- Character Teleport vertical offset (-10..10)
+        Snaplines     = false,                            -- one snapline toggle at a time (aim XOR silent)
+        Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
+        Smooth        = { Enabled = false, X = 1.0, Y = 1.0 },
+        _target       = nil,
+    },
+    -- FOV is per-context now: Combat.Aim.FOV + Combat.Silent.FOV, each an
+    -- independent circle (own size/style/fill). Built via defaultFovCfg() below.
+    Trigger = {
+        Enabled       = false,
+        ActivationKey = Enum.KeyCode.Q,
+        ActivationMode= "Hold",
+        UseKey        = false,
+        Priority      = "Crosshair",
+        HitPart       = "Head",
+        HitboxMul     = 1.0,
+        Delay         = 1,        -- ms
+        Release       = 10,       -- ms
+        TeamCheck     = false,
+        VisibleCheck  = false,
+    },
+    Silent = {   -- fake-camera silent aim
+        Enabled       = false,
+        ActivationKey = Enum.KeyCode.E,
+        ActivationMode= "Hold",
+        Priority      = "Crosshair",
+        HitPart       = "Head",
+        Method        = "Forced Magic-Bullet",            -- our fake-camera fire-read redirect
+        Distance      = 500,
+        TeamCheck     = true,
+        VisibleCheck  = false,
+        HealthCheck   = false,
+        Sticky        = false,
+        RequireLMB    = true,
+        Snaplines     = false,
+        Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
+        _hooked       = false,
+    },
+    Misc = { Resolver = false },
+}
+
+    -- one FOV config per context (aimbot + silent). Both can be active at once;
+    -- each draws its own concentric ring at the size the user sets.
+    local function defaultFovCfg()
+        return {
+            Enabled = false, Size = 100, Origin = "Center", Filled = false, Spin = false,
+            Style = "Smooth", Color = Color3.new(1, 1, 1), FillColor = Color3.fromRGB(212, 145, 90),
+            FillTransparency = 0.5, Thickness = 1, DotSize = 4, DotGap = 18,
+            Fill = {
+                RemoveOutline = false, Spin = false,
+                Custom = {
+                    Enabled = false, Points = 2, Triangle = false,
+                    Colors = { Color3.fromRGB(212,145,90), Color3.fromRGB(230,200,120),
+                               Color3.fromRGB(160,120,220), Color3.fromRGB(120,200,255) },
+                    Alphas = { 0, 0, 0, 0 },
+                    Moving = { Enabled = false, Speed = 1, Direction = 0 },
+                },
+            },
+        }
+    end
+    Combat.Aim.FOV    = defaultFovCfg()
+    Combat.Silent.FOV = defaultFovCfg()
+
+    --== math helpers ==--
+    local function shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
+    local function lookAngles(dir)
+        local flat = math.sqrt(dir.X * dir.X + dir.Z * dir.Z)
+        return math.atan2(-dir.X, -dir.Z), math.atan2(dir.Y, flat)   -- yaw, pitch
+    end
+    local function aimCFrame(cam, from, targetPos, aX, aY)
+        local dir = targetPos - from
+        if dir.Magnitude < 1e-3 then return cam.CFrame end
+        local gy, gp = lookAngles(dir)
+        local cy, cp = lookAngles(cam.CFrame.LookVector)
+        local ny = cy + shortestAngle(gy - cy) * aX
+        local np = cp + (gp - cp) * aY
+        return CFrame.new(from) * CFrame.fromEulerAnglesYXZ(np, ny, 0)
+    end
+
+    --== targeting engine (shared by aimbot / trigger / silent) ==--
+    local function fovCenter(cfg)
+        local vp = viewport()
+        if cfg and cfg.Origin == "Mouse" then
+            local m = UserInputService:GetMouseLocation()
+            return Vector2.new(m.X, m.Y)
+        end
+        return Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+    end
+
+    -- friendly hit-part name -> candidate real part names (R15 first, R6 fallback)
+    local HITPARTS = { "Head", "Torso", "HRP", "Left Arm", "Right Arm", "Left Leg",
+        "Right Leg", "Left Hand", "Right Hand", "Left Foot", "Right Foot" }
+    local HITMAP = {
+        ["Head"]       = { "Head" },
+        ["Torso"]      = { "UpperTorso", "Torso", "LowerTorso" },
+        ["HRP"]        = { "HumanoidRootPart" },
+        ["Left Arm"]   = { "LeftUpperArm", "LeftLowerArm", "Left Arm" },
+        ["Right Arm"]  = { "RightUpperArm", "RightLowerArm", "Right Arm" },
+        ["Left Leg"]   = { "LeftUpperLeg", "LeftLowerLeg", "Left Leg" },
+        ["Right Leg"]  = { "RightUpperLeg", "RightLowerLeg", "Right Leg" },
+        ["Left Hand"]  = { "LeftHand", "Left Arm" },
+        ["Right Hand"] = { "RightHand", "Right Arm" },
+        ["Left Foot"]  = { "LeftFoot", "Left Leg" },
+        ["Right Foot"] = { "RightFoot", "Right Leg" },
+    }
+    local function aimPart(character, partName)
+        local cands = HITMAP[partName] or { "Head" }
+        for _, n in ipairs(cands) do
+            local p = character:FindFirstChild(n)
+            if p then return p end
+        end
+        return findTorso(character)
+    end
+
+    local function occluded(character, fromPos, toPos)
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        rp.FilterDescendantsInstances = { character, LocalPlayer.Character }
+        return Workspace:Raycast(fromPos, toPos - fromPos, rp) ~= nil
+    end
+
+    -- HealthCheck: skip protected targets (ForceField / spawn shield) or dead.
+    local function healthOk(character, hum)
+        if not (hum and hum.Health > 0) then return false end
+        if character:FindFirstChildOfClass("ForceField") then return false end
+        return true
+    end
+
+    -- returns player, part. maxRadius in screen px (math.huge = no FOV limit).
+    local function getBestTarget(cfg, maxRadius, center)
+        local cam = Workspace.CurrentCamera
+        if not cam then return nil end
+        center = center or fovCenter()
+        local camPos = cam.CFrame.Position
+        local localTeam = LocalPlayer.Team
+        local best, bestPart, bestScore = nil, nil, math.huge
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local char = plr.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                local alive = char and hum and hum.Health > 0
+                local hcOk = (not cfg.HealthCheck) or (char and healthOk(char, hum))
+                if alive and hcOk then
+                    local sameTeam = plr.Team and localTeam and plr.Team == localTeam
+                    if not (cfg.TeamCheck and sameTeam) then
+                        local part = aimPart(char, cfg.HitPart)
+                        if part then
+                            local worldDist = (part.Position - camPos).Magnitude
+                            if worldDist <= (cfg.Distance or math.huge) then
+                                local sp = cam:WorldToViewportPoint(part.Position)
+                                if sp.Z > 0 then
+                                    local crossDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                                    if crossDist <= maxRadius then
+                                        local vis = not (cfg.VisibleCheck and occluded(char, camPos, part.Position))
+                                        if vis then
+                                            local score = (cfg.Priority == "Nearest") and worldDist or crossDist
+                                            if score < bestScore then
+                                                bestScore, best, bestPart = score, plr, part
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return best, bestPart
+    end
+
+    local function predicted(plr, part, pr)
+        local pos = part.Position
+        if not pr.Enabled then return pos end
+        local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return pos end
+        local v = hrp.AssemblyLinearVelocity
+        return pos + Vector3.new(v.X / math.max(pr.X, 0.01), v.Y / math.max(pr.Y, 0.01), v.Z / math.max(pr.X, 0.01))
+    end
+
+    --== FOV circles (one per context -- aimbot + silent -- both can be active) ==--
+    -- (glow removed in v0.0.32 -- the real soft glow waits on the external app.)
+    local FOV_MAX_DOTS = 160
+    local function makeFov(name)
+        local circle = new("Frame", {
+            Name = name,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.new(0, 200, 0, 200),
+            BackgroundColor3 = Color3.fromRGB(212, 145, 90),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Visible = false,
+            ZIndex = 11,
+            Parent = screen,
+        }, { pillCorner(), stroke(Color3.new(1, 1, 1), 1), lineGradient() })
+        local dotContainer = new("Frame", {
+            Name = "Dots", Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1, Visible = false, ZIndex = 12, Parent = circle,
+        })
+        local dots = {}
+        for _ = 1, FOV_MAX_DOTS do
+            dots[#dots + 1] = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.new(0, 4, 0, 4),
+                BackgroundColor3 = Color3.new(1, 1, 1),
+                BorderSizePixel = 0, ZIndex = 12, Parent = dotContainer,
+            }, { pillCorner() })
+        end
+        return {
+            circle = circle,
+            stroke = circle:FindFirstChildOfClass("UIStroke"),
+            grad = circle:FindFirstChild("KGrad"),
+            dotContainer = dotContainer,
+            dots = dots,
+        }
+    end
+    local aimFov    = makeFov("KoffeeFOV_Aim")
+    local silentFov = makeFov("KoffeeFOV_Silent")
+
+    -- snaplines: a single line from the FOV origin (mouse/center) to the target.
+    -- Only one context drives it at a time (aim XOR silent), so one frame suffices.
+    local snapLine = new("Frame", {
+        Name = "KoffeeSnapline", AnchorPoint = Vector2.new(0, 0.5),
+        Size = UDim2.new(0, 0, 0, 1), BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0, Visible = false, ZIndex = 11, Parent = screen,
+    })
+
+    --== activation state ==--
+    local aimHeld  = false
+    local trigHeld = false
+    local trigBusy = false
+    local silentTarget = nil   -- the part (for Mouse.Target)
+    local silentPos    = nil   -- Vector3 redirect point (predicted; drives Hit/UnitRay)
+
+    local function inputMatches(input, bind)
+        if typeof(bind) == "EnumItem" then
+            if bind.EnumType == Enum.KeyCode then
+                return input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == bind
+            elseif bind.EnumType == Enum.UserInputType then
+                return input.UserInputType == bind
+            end
+        end
+        return false
+    end
+    local MOUSE_SHORT = { MouseButton1 = "lmb", MouseButton2 = "rmb", MouseButton3 = "mmb" }
+    local function inputName(bind)
+        if typeof(bind) == "EnumItem" then
+            if bind.EnumType == Enum.UserInputType then
+                return MOUSE_SHORT[bind.Name] or bind.Name
+            end
+            return bind.Name:lower()
+        end
+        return "-"
+    end
+
+    --== Hold/Toggle chooser popup (right-click the activation pill) ==--
+    local activeChooser = nil
+    local function closeChooser()
+        if activeChooser then
+            pcall(function() activeChooser.frame:Destroy() end)
+            if activeChooser.conn then activeChooser.conn:Disconnect() end
+            activeChooser = nil
+        end
+    end
+    local function openChooser(pill, cfg)
+        closeChooser()
+        local frame = new("Frame", {
+            Name = "ModeChooser", Size = UDim2.new(0, 120, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.Palette.Panel,
+            BackgroundTransparency = 0.02, BorderSizePixel = 0, ZIndex = 230, Parent = popupScreen,
+        }, {
+            corner(6), stroke(Theme.Palette.Border, 1),
+            new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+                PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
+            new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+        })
+        for _, mode in ipairs({ "Hold", "Toggle" }) do
+            local sel = cfg.ActivationMode == mode
+            local opt = new("TextButton", {
+                Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Theme.Palette.PanelElevated,
+                BackgroundTransparency = sel and 0.2 or 1, AutoButtonColor = false, Text = mode:lower(),
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+                TextColor3 = sel and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 231, Parent = frame,
+            }, { corner(4) })
+            opt.MouseButton1Click:Connect(function()
+                cfg.ActivationMode = mode
+                closeChooser()
+            end)
+        end
+        local abs, siz = pill.AbsolutePosition, pill.AbsoluteSize
+        local ox, oy = popupOffsetFor(frame, abs.X + siz.X - 120, abs.Y + siz.Y + 6)
+        frame.Position = UDim2.new(0, ox, 0, oy)
+        activeChooser = { frame = frame }
+        task.defer(function()
+            if not activeChooser then return end
+            activeChooser.conn = UserInputService.InputBegan:Connect(function(input)
+                local it = input.UserInputType
+                if it == Enum.UserInputType.MouseButton1 or it == Enum.UserInputType.MouseButton2
+                or it == Enum.UserInputType.Touch then
+                    local mp = input.Position
+                    local a, s = frame.AbsolutePosition, frame.AbsoluteSize
+                    if not (mp.X >= a.X and mp.X <= a.X + s.X and mp.Y >= a.Y and mp.Y <= a.Y + s.Y) then
+                        closeChooser()
+                    end
+                end
+            end)
+        end)
+    end
+
+    --== activation pill: click = rebind (any input), right-click = hold/toggle ==--
+    local pendingActivation = nil
+    local function activationPill(row, cfg)
+        local pill = new("TextButton", {
+            Name = "ActivationPill", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 30, 0, 16), AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+            AutoButtonColor = false, Text = "-", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = Theme.Palette.TextMuted, ZIndex = 38, Parent = row,
+        }, {
+            pillCorner(), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+        })
+        local function refresh() pill.Text = inputName(cfg.ActivationKey) end
+        refresh()
+        pill.MouseEnter:Connect(function()
+            tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
+        end)
+        pill.MouseLeave:Connect(function()
+            if not (pendingActivation and pendingActivation.pill == pill) then
+                tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+            end
+        end)
+        pill.MouseButton1Click:Connect(function()
+            if pendingActivation and pendingActivation.pill ~= pill then pendingActivation.refresh() end
+            pill.Text = "..."
+            tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
+            pendingActivation = { pill = pill, cfg = cfg, refresh = refresh }
+        end)
+        pill.MouseButton2Click:Connect(function() openChooser(pill, cfg) end)
+        return pill
+    end
+
+    --== firing / silent hooks (executor globals guarded -- degrade cleanly) ==--
+    local function clickMouse()
+        if mouse1click then pcall(mouse1click)
+        elseif mouse1press and mouse1release then
+            pcall(mouse1press); task.wait(); pcall(mouse1release)
+        end
+    end
+    local function installSilentHooks()
+        if Combat.Silent._hooked then return end
+        local ok = pcall(function()
+            local getmt, hookmm = getrawmetatable, hookmetamethod
+            local ncmethod = getnamecallmethod
+            local wrap = newcclosure or function(f) return f end
+            if not (getmt and hookmm) then return end
+            local function redirPos() return silentPos or (silentTarget and silentTarget.Position) end
+            local oldIndex
+            oldIndex = hookmm(game, "__index", wrap(function(self, key)
+                local tp = redirPos()
+                if tp and (key == "Hit" or key == "Target" or key == "UnitRay")
+                and typeof(self) == "Instance" and self:IsA("Mouse") then
+                    if key == "Hit" then return CFrame.new(tp)
+                    elseif key == "Target" then return silentTarget
+                    elseif key == "UnitRay" then
+                        local cam = Workspace.CurrentCamera
+                        if cam then
+                            local o = cam.CFrame.Position
+                            return Ray.new(o, (tp - o).Unit)
+                        end
+                    end
+                end
+                return oldIndex(self, key)
+            end))
+            local oldNc
+            oldNc = hookmm(game, "__namecall", wrap(function(self, ...)
+                local tp = redirPos()
+                if tp then
+                    local m = ncmethod and ncmethod() or ""
+                    if m == "ViewportPointToRay" or m == "ScreenPointToRay" then
+                        local cam = Workspace.CurrentCamera
+                        if cam then
+                            local o = cam.CFrame.Position
+                            return Ray.new(o, (tp - o).Unit)
+                        end
+                    elseif m == "Raycast" and typeof(self) == "Instance" and self:IsA("WorldRoot") then
+                        -- redirect a camera-origin raycast toward the target so
+                        -- games that raycast from the camera resolve onto the part
+                        local args = { ... }
+                        local origin = args[1]
+                        if typeof(origin) == "Vector3" then
+                            local dir = (tp - origin)
+                            return oldNc(self, origin, dir.Unit * math.max(dir.Magnitude, 1), select(3, ...))
+                        end
+                    end
+                end
+                return oldNc(self, ...)
+            end))
+        end)
+        Combat.Silent._hooked = ok
+    end
+
+    --== render loops ==--
+    -- aimbot: run AFTER the default camera update so our CFrame wins. cold-start
+    -- safety: a prior run's binding survives re-exec and re-binding the same name
+    -- throws -- unbind first so the loader can be re-run cleanly.
+    pcall(function() RunService:UnbindFromRenderStep("KoffeeAimbot") end)
+    RunService:BindToRenderStep("KoffeeAimbot", Enum.RenderPriority.Camera.Value + 1, function()
+        if not (Combat.Aim.Enabled and aimHeld) then Combat.Aim._target = nil; return end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        local maxR = Combat.Aim.FOV.Enabled and Combat.Aim.FOV.Size or math.huge
+        local aimCenter = fovCenter(Combat.Aim.FOV)
+        local plr, part
+        if Combat.Aim.Sticky and Combat.Aim._target then
+            local t = Combat.Aim._target
+            local char = t.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if char and hum and hum.Health > 0 then
+                local p = aimPart(char, Combat.Aim.HitPart)
+                if p then
+                    local sp = cam:WorldToViewportPoint(p.Position)
+                    if sp.Z > 0 and (Vector2.new(sp.X, sp.Y) - aimCenter).Magnitude <= maxR then
+                        plr, part = t, p
+                    end
+                end
+            end
+        end
+        if not plr then
+            plr, part = getBestTarget(Combat.Aim, maxR, aimCenter)
+            Combat.Aim._target = plr
+        end
+        if not (plr and part) then return end
+        local tpos = predicted(plr, part, Combat.Aim.Predict)
+
+        -- ragebot teleports override normal aim while active
+        if Combat.Aim.Rage then
+            if Combat.Aim.RageType == "Character Teleport" then
+                local myc = LocalPlayer.Character
+                local myroot = myc and (myc:FindFirstChild("HumanoidRootPart") or findTorso(myc))
+                if myroot then
+                    local dest = tpos + Vector3.new(0, Combat.Aim.RageYOffset, 0)
+                    myroot.CFrame = CFrame.new(dest) * myroot.CFrame.Rotation
+                end
+            else
+                cam.CFrame = CFrame.new(tpos) * cam.CFrame.Rotation
+            end
+            return
+        end
+
+        -- sensitivity (base pull) + optional per-axis smoothness (higher = slower)
+        local sens = math.clamp(Combat.Aim.Sensitivity, 0.01, 1)
+        local aX, aY = sens, sens
+        if Combat.Aim.Smooth.Enabled then
+            aX = math.clamp(sens / math.max(Combat.Aim.Smooth.X, 0.01), 0, 1)
+            aY = math.clamp(sens / math.max(Combat.Aim.Smooth.Y, 0.01), 0, 1)
+        end
+
+        if Combat.Aim.AimType == "Mouse" then
+            local sp = cam:WorldToViewportPoint(tpos)
+            if sp.Z > 0 and mousemoverel then
+                pcall(mousemoverel, (sp.X - aimCenter.X) * aX, (sp.Y - aimCenter.Y) * aY)
+            end
+        else
+            cam.CFrame = aimCFrame(cam, cam.CFrame.Position, tpos, aX, aY)
+        end
+    end)
+
+    -- custom multi-point gradient. Colors/Alphas map LEFT-TO-RIGHT by index:
+    -- point 1 = swatch 1, point 2 = swatch 2, ... (no more 1st/last endpoint jump).
+    --
+    -- STATIC (moving off): a plain linear ramp c1..cn evenly spaced across 0..1.
+    -- MOVING (moving on): a seamless cyclic scroll -- the palette is treated as a
+    -- ring (cn wraps back to c1) and sampled at fixed screen positions offset by a
+    -- phase. Because position 0 and position 1 sample the same ring point, the loop
+    -- has no visible seam and never snaps back (fixes the "bounce" + stretch).
+    local function ringSample(t, get, n)
+        t = t % 1
+        local seg = t * n
+        local i = math.floor(seg)
+        local f = seg - i
+        local a = get((i % n) + 1)
+        local b = get(((i + 1) % n) + 1)
+        return a, b, f
+    end
+    local function ringColor(C, n, t)
+        local a, b, f = ringSample(t, function(k) return C[k] end, n)
+        return a:Lerp(b, f)
+    end
+    local function ringAlpha(A, n, t)
+        local a, b, f = ringSample(t, function(k) return A[k] end, n)
+        return a + (b - a) * f
+    end
+    local function customColorSeq(cs)
+        local C, n = cs.Colors, math.clamp(cs.Points or 2, 2, 4)
+        local kps = {}
+        for k = 1, n do kps[k] = ColorSequenceKeypoint.new((k - 1) / (n - 1), C[k]) end
+        return ColorSequence.new(kps)
+    end
+    local function customTransSeq(cs)
+        local A, n = cs.Alphas, math.clamp(cs.Points or 2, 2, 4)
+        local kps = {}
+        for k = 1, n do kps[k] = NumberSequenceKeypoint.new((k - 1) / (n - 1), A[k]) end
+        return NumberSequence.new(kps)
+    end
+    local function scrollColorSeq(cs, s)
+        local C, n = cs.Colors, math.clamp(cs.Points or 2, 2, 4)
+        local kps = {}
+        for k = 0, n do kps[k + 1] = ColorSequenceKeypoint.new(k / n, ringColor(C, n, (k / n) + s)) end
+        return ColorSequence.new(kps)
+    end
+    local function scrollTransSeq(cs, s)
+        local A, n = cs.Alphas, math.clamp(cs.Points or 2, 2, 4)
+        local kps = {}
+        for k = 0, n do kps[k + 1] = NumberSequenceKeypoint.new(k / n, ringAlpha(A, n, (k / n) + s)) end
+        return NumberSequence.new(kps)
+    end
+
+    -- draw one FOV circle from its config. Both aimbot + silent circles use this.
+    local function drawFov(h, cfg)
+        if not cfg.Enabled then h.circle.Visible = false; return end
+        local size = cfg.Size
+        local c = fovCenter(cfg)
+        h.circle.Visible = true
+        h.circle.Position = UDim2.new(0, c.X, 0, c.Y)
+        h.circle.Size = UDim2.new(0, size * 2, 0, size * 2)
+        local dotsMode = cfg.Style == "Dots"
+        local fillCfg  = cfg.Fill
+        local custom   = fillCfg.Custom
+        local filled   = cfg.Filled and not dotsMode
+        local now      = os.clock()
+        local spinDeg  = (now * 90) % 360
+
+        -- FILL
+        if filled then
+            if custom.Enabled then
+                h.circle.BackgroundColor3 = Color3.new(1, 1, 1)
+                h.circle.BackgroundTransparency = cfg.FillTransparency
+                if h.grad then
+                    h.grad.Enabled = true
+                    h.grad.Offset = Vector2.new(0, 0)   -- scroll is baked into the seq, never the offset
+                    if custom.Moving.Enabled and not custom.Triangle then
+                        local s = (now * custom.Moving.Speed * 0.15) % 1
+                        h.grad.Color = scrollColorSeq(custom, s)
+                        h.grad.Transparency = scrollTransSeq(custom, s)
+                    else
+                        h.grad.Color = customColorSeq(custom)
+                        h.grad.Transparency = customTransSeq(custom)
+                    end
+                    local rot = custom.Moving.Direction or 0
+                    if fillCfg.Spin or cfg.Spin then rot = rot + spinDeg end
+                    h.grad.Rotation = rot
+                end
+            elseif ESP.Config.Gradient then
+                h.circle.BackgroundColor3 = Color3.new(1, 1, 1)
+                h.circle.BackgroundTransparency = cfg.FillTransparency
+                applyLineGradient(h.circle, true)
+                if h.grad and (fillCfg.Spin or cfg.Spin) then h.grad.Rotation = spinDeg end
+            else
+                if h.grad then h.grad.Enabled = false end
+                h.circle.BackgroundColor3 = cfg.FillColor
+                h.circle.BackgroundTransparency = cfg.FillTransparency
+            end
+        else
+            if h.grad then h.grad.Enabled = false end
+            h.circle.BackgroundTransparency = 1
+        end
+
+        -- OUTLINE (RemoveOutline drops the ring even with fill on)
+        if h.stroke then
+            h.stroke.Color = cfg.Color
+            h.stroke.Thickness = cfg.Thickness
+            h.stroke.Enabled = (not dotsMode) and (not fillCfg.RemoveOutline)
+        end
+
+        -- DOTS (count scales with size; gap + dot size configurable; spins)
+        h.dotContainer.Visible = dotsMode
+        if dotsMode then
+            local count = math.clamp(math.floor((2 * math.pi * size) / math.max(cfg.DotGap, 4)), 3, FOV_MAX_DOTS)
+            local baseRot = cfg.Spin and math.rad(spinDeg) or 0
+            for i = 1, FOV_MAX_DOTS do
+                local d = h.dots[i]
+                if i <= count then
+                    local ang = (i / count) * math.pi * 2 + baseRot
+                    d.Position = UDim2.new(0.5, math.cos(ang) * size, 0.5, math.sin(ang) * size)
+                    d.Size = UDim2.new(0, cfg.DotSize, 0, cfg.DotSize)
+                    d.BackgroundColor3 = cfg.Color
+                    d.Visible = true
+                else
+                    d.Visible = false
+                end
+            end
+        end
+    end
+
+    -- snapline: origin from the context FOV (center/mouse, works with FOV off),
+    -- pointing at whoever that context would target.
+    local function drawSnaplines()
+        local cfg, ctx
+        if Combat.Aim.Snaplines then cfg, ctx = Combat.Aim, Combat.Aim.FOV
+        elseif Combat.Silent.Snaplines then cfg, ctx = Combat.Silent, Combat.Silent.FOV end
+        if not cfg then snapLine.Visible = false; return end
+        local cam = Workspace.CurrentCamera
+        if not cam then snapLine.Visible = false; return end
+        local origin = fovCenter(ctx)
+        local maxR = ctx.Enabled and ctx.Size or math.huge
+        local part
+        if cfg == Combat.Aim and Combat.Aim._target and Combat.Aim._target.Character then
+            part = aimPart(Combat.Aim._target.Character, cfg.HitPart)
+        end
+        if not part then local _, p = getBestTarget(cfg, maxR, origin); part = p end
+        if not part then snapLine.Visible = false; return end
+        local sp = cam:WorldToViewportPoint(part.Position)
+        if sp.Z <= 0 then snapLine.Visible = false; return end
+        local delta = Vector2.new(sp.X, sp.Y) - origin
+        snapLine.Visible = true
+        snapLine.Position = UDim2.new(0, origin.X, 0, origin.Y)
+        snapLine.Size = UDim2.new(0, delta.Magnitude, 0, math.max(ctx.Thickness, 1))
+        snapLine.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+        snapLine.BackgroundColor3 = ctx.Color
+    end
+
+    -- both FOV circles render independently of the aimbot/silent master toggles.
+    RunService.RenderStepped:Connect(function()
+        drawFov(aimFov, Combat.Aim.FOV)
+        drawFov(silentFov, Combat.Silent.FOV)
+        drawSnaplines()
+    end)
+
+    -- triggerbot
+    RunService.Heartbeat:Connect(function()
+        if not Combat.Trigger.Enabled then return end
+        if Combat.Trigger.UseKey and not trigHeld then return end
+        if trigBusy then return end
+        local radius = 5 * math.max(Combat.Trigger.HitboxMul, 0.1)
+        local plr = getBestTarget(Combat.Trigger, radius)
+        if not plr then return end
+        trigBusy = true
+        task.spawn(function()
+            if Combat.Trigger.Delay > 0 then task.wait(Combat.Trigger.Delay / 1000) end
+            if Combat.Trigger.Enabled and getBestTarget(Combat.Trigger, radius) then clickMouse() end
+            if Combat.Trigger.Release > 0 then task.wait(Combat.Trigger.Release / 1000) end
+            trigBusy = false
+        end)
+    end)
+
+    -- silent aim: refresh the redirect target every frame while active
+    RunService.Heartbeat:Connect(function()
+        if not Combat.Silent.Enabled then silentTarget = nil; silentPos = nil; return end
+        if Combat.Silent.RequireLMB
+        and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+            silentTarget = nil; silentPos = nil; return
+        end
+        local maxR = Combat.Silent.FOV.Enabled and Combat.Silent.FOV.Size or math.huge
+        local plr, part = getBestTarget(Combat.Silent, maxR, fovCenter(Combat.Silent.FOV))
+        if plr and part then
+            silentTarget = part
+            -- prediction shifts the redirect point for lead; the hooks read silentPos
+            silentPos = predicted(plr, part, Combat.Silent.Predict)
+        else
+            silentTarget = nil; silentPos = nil
+        end
+    end)
+
+    --== input: rebind capture + activation ==--
+    UserInputService.InputBegan:Connect(function(input, gpe)
+        if pendingActivation then
+            local it = input.UserInputType
+            local bind
+            if it == Enum.UserInputType.Keyboard then
+                if input.KeyCode == Enum.KeyCode.Escape then
+                    pendingActivation.refresh(); pendingActivation = nil; return
+                end
+                bind = input.KeyCode
+            elseif it == Enum.UserInputType.MouseButton1 or it == Enum.UserInputType.MouseButton2
+                or it == Enum.UserInputType.MouseButton3 then
+                bind = it
+            end
+            if bind then
+                pendingActivation.cfg.ActivationKey = bind
+                pendingActivation.refresh()
+                pendingActivation = nil
+            end
+            return
+        end
+        if gpe then return end
+        if Combat.Aim.Enabled and inputMatches(input, Combat.Aim.ActivationKey) then
+            if Combat.Aim.ActivationMode == "Toggle" then aimHeld = not aimHeld else aimHeld = true end
+        end
+        if Combat.Trigger.Enabled and inputMatches(input, Combat.Trigger.ActivationKey) then
+            if Combat.Trigger.ActivationMode == "Toggle" then trigHeld = not trigHeld else trigHeld = true end
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if Combat.Aim.ActivationMode == "Hold" and inputMatches(input, Combat.Aim.ActivationKey) then
+            aimHeld = false
+        end
+        if Combat.Trigger.ActivationMode == "Hold" and inputMatches(input, Combat.Trigger.ActivationKey) then
+            trigHeld = false
+        end
+    end)
+
+    --== modules (arraylist + master toggles) ==--
+    registerModule("aimbot", "Aimbot",
+        function() Combat.Aim.Enabled = true end,
+        function() Combat.Aim.Enabled = false; aimHeld = false; Combat.Aim._target = nil end)
+    registerModule("triggerbot", "Trigger Bot",
+        function() Combat.Trigger.Enabled = true end,
+        function() Combat.Trigger.Enabled = false; trigHeld = false end)
+    registerModule("silentaim", "Silent Aim",
+        function() installSilentHooks(); Combat.Silent.Enabled = true end,
+        function() Combat.Silent.Enabled = false; silentTarget = nil end)
+    -- FOV is an arraylist marker; the two per-context toggles (Aim.FOV / Silent.FOV)
+    -- drive rendering. Detail shows "x2" when both circles are active.
+    registerModule("fov", "FOV", function() end, function() end)
+    Modules.fov.GetDetail = function()
+        local n = (Combat.Aim.FOV.Enabled and 1 or 0) + (Combat.Silent.FOV.Enabled and 1 or 0)
+        return n >= 2 and "    x2" or ""
+    end
+    local function syncFovModule()
+        local want = Combat.Aim.FOV.Enabled or Combat.Silent.FOV.Enabled
+        if want ~= (Modules.fov and Modules.fov.Enabled) then toggleModule("fov") end
+    end
+
+    --== small UI helpers scoped to this tab ==--
+    local function attachSwatch(row, initial, onChange, opts)
+        local wrap = new("Frame", {
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 14, 0, 16), BackgroundTransparency = 1, ZIndex = 38, Parent = row,
+        })
+        local o = { onChange = onChange }
+        if opts then for k, v in pairs(opts) do o[k] = v end end
+        return colorSwatch(wrap, initial, 14, o)
+    end
+    -- two swatches on one row (outline + fill-with-alpha) for a given FOV cfg
+    local function attachFovSwatches(row, F)
+        local wrap = new("Frame", {
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 36, 0, 16), BackgroundTransparency = 1, ZIndex = 38, Parent = row,
+        }, {
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+                HorizontalAlignment = Enum.HorizontalAlignment.Right, VerticalAlignment = Enum.VerticalAlignment.Center,
+                Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+        })
+        colorSwatch(wrap, F.Color, 14, { onChange = function(c) F.Color = c end })
+        colorSwatch(wrap, F.FillColor, 14, { onChange = function(c) F.FillColor = c end })
+    end
+    local function attachHelp(row)
+        new("TextLabel", {
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.new(0, 14, 0, 14),
+            Text = "?", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
+            BackgroundTransparency = 1, ZIndex = 38, Parent = row,
+        })
+    end
+
+    -- shared FOV control set -- built in both the left (aimbot -> Aim.FOV) and
+    -- right (silent -> Silent.FOV) sub-tabs, each bound to its own config.
+    local function buildFovTab(parent, F)
+        local enRow = configCheckbox(parent, "Enabled", F.Enabled, function(v)
+            F.Enabled = v
+            syncFovModule()   -- keep the single "FOV" arraylist marker + x2 detail in sync
+        end)
+        attachFovSwatches(enRow.row, F)
+        -- right-click the Fill row: Remove Outline / Custom Gradient / Spin / Moving.
+        -- Fill state is preserved across Style switches -- Dots just suppresses the
+        -- fill visually (drawFov gates on `not dotsMode`), so flipping back to Smooth
+        -- restores it without a re-toggle.
+        local fillRow = configCheckbox(parent, "Filled", F.Filled, function(v) F.Filled = v end)
+        rightClickSettings(fillRow.row, "fill", function(api)
+            api:toggle("Remove Outline", F.Fill.RemoveOutline, function(v) F.Fill.RemoveOutline = v end)
+            api:toggle("Spin", F.Fill.Spin, function(v) F.Fill.Spin = v end)
+            local cg = F.Fill.Custom
+            api:toggle("Custom Gradient", cg.Enabled, function(v) cg.Enabled = v end)
+            api:swatchRow(cg.Colors, function(i, c) cg.Colors[i] = c end)
+            for i = 1, 4 do
+                api:slider(i .. " Transparency", 0, 1, cg.Alphas[i], 2, function(v) cg.Alphas[i] = v end)
+            end
+            api:dropdown("Points", { "2", "3", "4" }, tostring(cg.Points), function(v)
+                cg.Points = tonumber(v) or 2
+                if cg.Points ~= 3 then cg.Triangle = false end
+            end)
+            api:toggle("Triangle", cg.Triangle, function(v)
+                if cg.Points ~= 3 then return end
+                cg.Triangle = v
+                if v then cg.Moving.Enabled = false end
+            end)
+            api:toggle("Moving Gradient", cg.Moving.Enabled, function(v)
+                if cg.Triangle then return end
+                cg.Moving.Enabled = v
+            end)
+            api:slider("Speed", 0, 5, cg.Moving.Speed, 2, function(v) cg.Moving.Speed = v end)
+            api:slider("Direction", 0, 360, cg.Moving.Direction, 0, function(v) cg.Moving.Direction = v end)
+        end)
+        configCheckbox(parent, "Spin", F.Spin, function(v) F.Spin = v end)
+        slider(parent, "Fill Transparency", 0, 1, F.FillTransparency, 2, function(v) F.FillTransparency = v end)
+        slider(parent, "Size", 20, 500, F.Size, 0, function(v) F.Size = v end)
+        dropdown(parent, "Origin", { "Center", "Mouse" }, F.Origin, function(v) F.Origin = v end)
+        local styleDd = dropdown(parent, "Style", { "Smooth", "Dots" }, F.Style, function(v)
+            F.Style = v
+        end)
+        -- right-click the Style dropdown to tune Dots
+        rightClickSettings(styleDd.frame, "dots", function(api)
+            api:slider("Dot Size", 1, 12, F.DotSize, 0, function(v) F.DotSize = v end)
+            api:slider("Gap", 6, 60, F.DotGap, 0, function(v) F.DotGap = v end)
+        end)
+    end
+
+    -- sub-tab pill switcher inside a card. Returns { name -> contentFrame }.
+    local function subTabs(card, names)
+        local bar = new("Frame", {
+            Name = "SubTabs", Size = UDim2.new(1, 0, 0, 28),
+            BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.35, BorderSizePixel = 0,
+            LayoutOrder = 0, ZIndex = 34, Parent = card,
+        }, {
+            corner(6),
+            new("UIPadding", { PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 3),
+                PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3) }),
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 2),
+                VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }),
+        })
+        local buttons, content = {}, {}
+        -- v0.0.32: fade content in on switch (CanvasGroup GroupTransparency).
+        local function select(name)
+            for n, b in pairs(buttons) do
+                local on = (n == name)
+                tween(b, Theme.Animation.Fast, {
+                    BackgroundTransparency = on and 0.15 or 1,
+                    TextColor3 = on and Theme.Palette.Text or Theme.Palette.TextMuted,
+                })
+                local cf = content[n]
+                if on then
+                    cf.Visible = true
+                    cf.GroupTransparency = 0.4
+                    tween(cf, Theme.Animation.Normal, { GroupTransparency = 0 })
+                else
+                    cf.Visible = false
+                end
+            end
+        end
+        for i, name in ipairs(names) do
+            local b = new("TextButton", {
+                Text = name:lower(), AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0),
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 1, AutoButtonColor = false,
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body, TextColor3 = Theme.Palette.TextMuted,
+                LayoutOrder = i, ZIndex = 35, Parent = bar,
+            }, { corner(5), new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+            buttons[name] = b
+            local cf = new("CanvasGroup", {
+                Name = name, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundTransparency = 1, Visible = false, LayoutOrder = i, ZIndex = 33, Parent = card,
+            }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 6),
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
+            content[name] = cf
+            b.MouseButton1Click:Connect(function() select(name) end)
+        end
+        select(names[1])
+        return content
+    end
+
+    --== tab UI ==--
+    addTab("Combat", function(cpanel)
+        local cols = new("Frame", {
+            Name = "Columns", Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1, ZIndex = 33, Parent = cpanel,
+        }, {
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 12),
+                SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Left }),
+        })
+        local leftCol = new("Frame", {
+            Name = "Left", Size = UDim2.new(0.5, -6, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1, LayoutOrder = 1, ZIndex = 33, Parent = cols,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 12),
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local rightCol = new("Frame", {
+            Name = "Right", Size = UDim2.new(0.5, -6, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1, LayoutOrder = 2, ZIndex = 33, Parent = cols,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 12),
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        -- snapline checkbox handles -- captured so enabling one clears the other
+        -- (only one snapline context may be active at a time).
+        local aimSnapCtrl, silentSnapCtrl
+
+        --== LEFT COLUMN ==--
+        local leftCard = panel(leftCol)
+        local L = subTabs(leftCard, { "Aimbot", "Prediction", "Smoothness", "FOV" })
+
+        -- Aimbot
+        local aimRow = moduleCheckbox(L.Aimbot, "Enabled", "aimbot")
+        activationPill(aimRow.row, Combat.Aim)
+        configCheckbox(L.Aimbot, "Team Check", Combat.Aim.TeamCheck, function(v) Combat.Aim.TeamCheck = v end)
+        configCheckbox(L.Aimbot, "Visible Check", Combat.Aim.VisibleCheck, function(v) Combat.Aim.VisibleCheck = v end)
+        configCheckbox(L.Aimbot, "Health Check", Combat.Aim.HealthCheck, function(v) Combat.Aim.HealthCheck = v end)
+        configCheckbox(L.Aimbot, "Sticky Aim", Combat.Aim.Sticky, function(v) Combat.Aim.Sticky = v end)
+        slider(L.Aimbot, "Distance", 50, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end)
+        slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
+        dropdown(L.Aimbot, "Hit Part", HITPARTS, Combat.Aim.HitPart, function(v) Combat.Aim.HitPart = v end)
+        dropdown(L.Aimbot, "Aim Type", { "Camera", "Mouse" }, Combat.Aim.AimType, function(v) Combat.Aim.AimType = v end)
+        local rageRow = configCheckbox(L.Aimbot, "Ragebot", Combat.Aim.Rage, function(v) Combat.Aim.Rage = v end)
+        attachHelp(rageRow.row)
+        local rageTypeDd = dropdown(L.Aimbot, "Type", { "Camera Teleport", "Character Teleport" }, Combat.Aim.RageType,
+            function(v) Combat.Aim.RageType = v end)
+        -- right-click the Type dropdown to tune the Character Teleport vertical offset
+        rightClickSettings(rageTypeDd.frame, "character teleport", function(api)
+            api:slider("Y Offset", -10, 10, Combat.Aim.RageYOffset, 1, function(v) Combat.Aim.RageYOffset = v end)
+        end)
+        aimSnapCtrl = configCheckbox(L.Aimbot, "Snaplines", Combat.Aim.Snaplines, function(v)
+            Combat.Aim.Snaplines = v
+            if v then Combat.Silent.Snaplines = false; if silentSnapCtrl then silentSnapCtrl.setState(false) end end
+        end)
+
+        -- Prediction
+        local predRow = configCheckbox(L.Prediction, "Enabled", Combat.Aim.Predict.Enabled,
+            function(v) Combat.Aim.Predict.Enabled = v end)
+        attachHelp(predRow.row)
+        slider(L.Prediction, "X (Division)", 0.1, 10, Combat.Aim.Predict.X, 2, function(v) Combat.Aim.Predict.X = v end)
+        slider(L.Prediction, "Y (Division)", 0.1, 10, Combat.Aim.Predict.Y, 2, function(v) Combat.Aim.Predict.Y = v end)
+
+        -- Smoothness
+        configCheckbox(L.Smoothness, "Enabled", Combat.Aim.Smooth.Enabled, function(v) Combat.Aim.Smooth.Enabled = v end)
+        slider(L.Smoothness, "Smoothness X", 0.1, 20, Combat.Aim.Smooth.X, 1, function(v) Combat.Aim.Smooth.X = v end)
+        slider(L.Smoothness, "Smoothness Y", 0.1, 20, Combat.Aim.Smooth.Y, 1, function(v) Combat.Aim.Smooth.Y = v end)
+
+        -- FOV (shared control set)
+        buildFovTab(L.FOV, Combat.Aim.FOV)
+
+        -- Misc
+        local miscCard = panel(leftCol, "Misc")
+        configCheckbox(miscCard, "Resolver", Combat.Misc.Resolver, function(v) Combat.Misc.Resolver = v end)
+
+        --== RIGHT COLUMN ==--
+        local rightCard = panel(rightCol)
+        local R = subTabs(rightCard, { "Silent Aim", "Prediction", "FOV" })
+
+        -- Silent Aim
+        local sRow = moduleCheckbox(R["Silent Aim"], "Enabled", "silentaim")
+        activationPill(sRow.row, Combat.Silent)
+        configCheckbox(R["Silent Aim"], "Team Check", Combat.Silent.TeamCheck, function(v) Combat.Silent.TeamCheck = v end)
+        configCheckbox(R["Silent Aim"], "Visible Check", Combat.Silent.VisibleCheck, function(v) Combat.Silent.VisibleCheck = v end)
+        configCheckbox(R["Silent Aim"], "Health Check", Combat.Silent.HealthCheck, function(v) Combat.Silent.HealthCheck = v end)
+        configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
+        slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end)
+        dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
+        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet" }, Combat.Silent.Method,
+            function(v) Combat.Silent.Method = v end)
+        configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
+        silentSnapCtrl = configCheckbox(R["Silent Aim"], "Snaplines", Combat.Silent.Snaplines, function(v)
+            Combat.Silent.Snaplines = v
+            if v then Combat.Aim.Snaplines = false; if aimSnapCtrl then aimSnapCtrl.setState(false) end end
+        end)
+
+        -- Prediction (silent)
+        configCheckbox(R.Prediction, "Enabled", Combat.Silent.Predict.Enabled, function(v) Combat.Silent.Predict.Enabled = v end)
+        slider(R.Prediction, "X (Division)", 0.1, 10, Combat.Silent.Predict.X, 2, function(v) Combat.Silent.Predict.X = v end)
+        slider(R.Prediction, "Y (Division)", 0.1, 10, Combat.Silent.Predict.Y, 2, function(v) Combat.Silent.Predict.Y = v end)
+
+        -- FOV (same shared control set as the aimbot side)
+        buildFovTab(R.FOV, Combat.Silent.FOV)
+
+        -- Trigger Bot
+        local trigCard = panel(rightCol, "Trigger Bot")
+        local tRow = moduleCheckbox(trigCard, "Enabled", "triggerbot")
+        activationPill(tRow.row, Combat.Trigger)
+        configCheckbox(trigCard, "Visible Check", Combat.Trigger.VisibleCheck, function(v) Combat.Trigger.VisibleCheck = v end)
+        configCheckbox(trigCard, "Team Check", Combat.Trigger.TeamCheck, function(v) Combat.Trigger.TeamCheck = v end)
+        configCheckbox(trigCard, "Use Key", Combat.Trigger.UseKey, function(v) Combat.Trigger.UseKey = v end)
+        slider(trigCard, "Hitbox Mul", 1, 10, Combat.Trigger.HitboxMul, 2, function(v) Combat.Trigger.HitboxMul = v end)
+        slider(trigCard, "Delay (ms)", 0, 500, Combat.Trigger.Delay, 0, function(v) Combat.Trigger.Delay = v end)
+        slider(trigCard, "Release (ms)", 0, 500, Combat.Trigger.Release, 0, function(v) Combat.Trigger.Release = v end)
+    end)
+end)()
 
 -- helper: attach two color swatches (visible + hidden) to a Visible Check row
 local function attachDualSwatch(row, visColor, hidColor, onVis, onHid)
