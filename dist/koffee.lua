@@ -1,4 +1,4 @@
--- koffee v0.0.31
+-- koffee v0.0.32
 -- universal roblox internal suite
 -- funded by konstant
 
@@ -4550,6 +4550,7 @@ local Combat = {
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         Smooth        = { Enabled = false, X = 1.0, Y = 1.0 },
         _target       = nil,
+        _rageLock     = nil,   -- locked ragebot victim (held for the key duration)
     },
     -- FOV is per-context now: Combat.Aim.FOV + Combat.Silent.FOV, each an
     -- independent circle (own size/style/fill). Built via defaultFovCfg() below.
@@ -4607,6 +4608,10 @@ local Combat = {
     end
     Combat.Aim.FOV    = defaultFovCfg()
     Combat.Silent.FOV = defaultFovCfg()
+    -- distinct defaults so both rings are visible at once -- identical size + origin
+    -- overlap into a single ring ("can't see both"). The user can still match them.
+    Combat.Silent.FOV.Size  = 140
+    Combat.Silent.FOV.Color = Color3.fromRGB(130, 200, 255)
 
     --== math helpers ==--
     local function shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
@@ -4764,13 +4769,14 @@ local Combat = {
     local aimFov    = makeFov("KoffeeFOV_Aim")
     local silentFov = makeFov("KoffeeFOV_Silent")
 
-    -- snaplines: a single line from the FOV origin (mouse/center) to the target.
-    -- Only one context drives it at a time (aim XOR silent), so one frame suffices.
+    -- snaplines: one line from the FOV origin (mouse/center) to the targeted
+    -- person. Uses the tracer backend (KGrad + KOutline, featureThickness, ESP
+    -- tracer colour/gradient/outline). Only one context drives it (aim XOR silent).
     local snapLine = new("Frame", {
-        Name = "KoffeeSnapline", AnchorPoint = Vector2.new(0, 0.5),
+        Name = "KoffeeSnapline", AnchorPoint = Vector2.new(0.5, 0.5),
         Size = UDim2.new(0, 0, 0, 1), BackgroundColor3 = Color3.new(1, 1, 1),
         BorderSizePixel = 0, Visible = false, ZIndex = 11, Parent = screen,
-    })
+    }, { lineGradient(), lineOutline() })
 
     --== activation state ==--
     local aimHeld  = false
@@ -4894,26 +4900,40 @@ local Combat = {
             pcall(mouse1press); task.wait(); pcall(mouse1release)
         end
     end
+    -- Silent hooks are installed at most ONCE per game session. hookmetamethod
+    -- stacks (each call wraps the previous and is never restored), so re-executing
+    -- the loader used to pile buggy hooks on top of good ones. We now publish this
+    -- exec's live redirect state through getgenv().KoffeeSilentResolve and install
+    -- the metamethod hook only if it isn't already live -- the single persistent
+    -- hook always reads the newest exec's state. (Clearing an ALREADY-stacked hook
+    -- from an older script version still needs one rejoin.)
     local function installSilentHooks()
         if Combat.Silent._hooked then return end
-        local ok = pcall(function()
-            local getmt, hookmm = getrawmetatable, hookmetamethod
+        Combat.Silent._hooked = true
+        local genv = getgenv and getgenv()
+        local function resolve() return silentPos, silentTarget end
+        if genv then genv.KoffeeSilentResolve = resolve end
+        if genv and genv.KoffeeSilentHooked then return end   -- hook already live; just re-pointed the resolver
+        if genv then genv.KoffeeSilentHooked = true end
+        pcall(function()
+            local hookmm   = hookmetamethod
             local ncmethod = getnamecallmethod
-            local wrap = newcclosure or function(f) return f end
-            if not (getmt and hookmm) then return end
-            local function redirPos() return silentPos or (silentTarget and silentTarget.Position) end
+            local wrap     = newcclosure or function(f) return f end
+            if not hookmm then return end
+            local function redir()
+                if genv and genv.KoffeeSilentResolve then return genv.KoffeeSilentResolve() end
+                return resolve()
+            end
             local oldIndex
             oldIndex = hookmm(game, "__index", wrap(function(self, key)
-                local tp = redirPos()
-                if tp and (key == "Hit" or key == "Target" or key == "UnitRay")
-                and typeof(self) == "Instance" and self:IsA("Mouse") then
-                    if key == "Hit" then return CFrame.new(tp)
-                    elseif key == "Target" then return silentTarget
-                    elseif key == "UnitRay" then
-                        local cam = Workspace.CurrentCamera
-                        if cam then
-                            local o = cam.CFrame.Position
-                            return Ray.new(o, (tp - o).Unit)
+                if key == "Hit" or key == "Target" or key == "UnitRay" then
+                    local pos, tgt = redir()
+                    if pos and typeof(self) == "Instance" and self:IsA("Mouse") then
+                        if key == "Hit" then return CFrame.new(pos)
+                        elseif key == "Target" then return tgt
+                        else
+                            local cam = Workspace.CurrentCamera
+                            if cam then local o = cam.CFrame.Position; return Ray.new(o, (pos - o).Unit) end
                         end
                     end
                 end
@@ -4921,30 +4941,20 @@ local Combat = {
             end))
             local oldNc
             oldNc = hookmm(game, "__namecall", wrap(function(self, ...)
-                local tp = redirPos()
-                if tp then
-                    local m = ncmethod and ncmethod() or ""
-                    if m == "ViewportPointToRay" or m == "ScreenPointToRay" then
+                -- capture the method name FIRST; never do a nested namecall (e.g.
+                -- self:IsA) here -- that corrupts the pending namecall and crashes
+                -- the game's own raycasts (Popper "Vector3 passed" spam).
+                local m = ncmethod and ncmethod() or ""
+                if m == "ViewportPointToRay" or m == "ScreenPointToRay" then
+                    local pos = select(1, redir())
+                    if pos then
                         local cam = Workspace.CurrentCamera
-                        if cam then
-                            local o = cam.CFrame.Position
-                            return Ray.new(o, (tp - o).Unit)
-                        end
-                    elseif m == "Raycast" and typeof(self) == "Instance" and self:IsA("WorldRoot") then
-                        -- redirect a camera-origin raycast toward the target so
-                        -- games that raycast from the camera resolve onto the part
-                        local args = { ... }
-                        local origin = args[1]
-                        if typeof(origin) == "Vector3" then
-                            local dir = (tp - origin)
-                            return oldNc(self, origin, dir.Unit * math.max(dir.Magnitude, 1), select(3, ...))
-                        end
+                        if cam then local o = cam.CFrame.Position; return Ray.new(o, (pos - o).Unit) end
                     end
                 end
                 return oldNc(self, ...)
             end))
         end)
-        Combat.Silent._hooked = ok
     end
 
     --== render loops ==--
@@ -4953,11 +4963,43 @@ local Combat = {
     -- throws -- unbind first so the loader can be re-run cleanly.
     pcall(function() RunService:UnbindFromRenderStep("KoffeeAimbot") end)
     RunService:BindToRenderStep("KoffeeAimbot", Enum.RenderPriority.Camera.Value + 1, function()
-        if not (Combat.Aim.Enabled and aimHeld) then Combat.Aim._target = nil; return end
+        if not (Combat.Aim.Enabled and aimHeld) then
+            Combat.Aim._target = nil; Combat.Aim._rageLock = nil; return
+        end
         local cam = Workspace.CurrentCamera
         if not cam then return end
         local maxR = Combat.Aim.FOV.Enabled and Combat.Aim.FOV.Size or math.huge
         local aimCenter = fovCenter(Combat.Aim.FOV)
+
+        -- RAGEBOT: lock onto ONE victim when the key goes down and keep teleporting
+        -- to them EVERY frame until release -- independent of Sticky, so you keep
+        -- full camera look (up/down) while the teleport tracks the locked player.
+        if Combat.Aim.Rage then
+            local lock = Combat.Aim._rageLock
+            local part
+            if lock and lock.Character then
+                local hum = lock.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then part = aimPart(lock.Character, Combat.Aim.HitPart) end
+            end
+            if not part then
+                lock, part = getBestTarget(Combat.Aim, maxR, aimCenter)
+                Combat.Aim._rageLock = lock
+            end
+            if not (lock and part) then return end
+            local tpos = predicted(lock, part, Combat.Aim.Predict)
+            if Combat.Aim.RageType == "Character Teleport" then
+                local myc = LocalPlayer.Character
+                local myroot = myc and (myc:FindFirstChild("HumanoidRootPart") or findTorso(myc))
+                if myroot then
+                    myroot.CFrame = CFrame.new(tpos + Vector3.new(0, Combat.Aim.RageYOffset, 0)) * myroot.CFrame.Rotation
+                end
+            else
+                cam.CFrame = CFrame.new(tpos) * cam.CFrame.Rotation
+            end
+            return
+        end
+        Combat.Aim._rageLock = nil
+
         local plr, part
         if Combat.Aim.Sticky and Combat.Aim._target then
             local t = Combat.Aim._target
@@ -4979,21 +5021,6 @@ local Combat = {
         end
         if not (plr and part) then return end
         local tpos = predicted(plr, part, Combat.Aim.Predict)
-
-        -- ragebot teleports override normal aim while active
-        if Combat.Aim.Rage then
-            if Combat.Aim.RageType == "Character Teleport" then
-                local myc = LocalPlayer.Character
-                local myroot = myc and (myc:FindFirstChild("HumanoidRootPart") or findTorso(myc))
-                if myroot then
-                    local dest = tpos + Vector3.new(0, Combat.Aim.RageYOffset, 0)
-                    myroot.CFrame = CFrame.new(dest) * myroot.CFrame.Rotation
-                end
-            else
-                cam.CFrame = CFrame.new(tpos) * cam.CFrame.Rotation
-            end
-            return
-        end
 
         -- sensitivity (base pull) + optional per-axis smoothness (higher = slower)
         local sens = math.clamp(Combat.Aim.Sensitivity, 0.01, 1)
@@ -5143,28 +5170,39 @@ local Combat = {
     -- snapline: origin from the context FOV (center/mouse, works with FOV off),
     -- pointing at whoever that context would target.
     local function drawSnaplines()
-        local cfg, ctx
-        if Combat.Aim.Snaplines then cfg, ctx = Combat.Aim, Combat.Aim.FOV
-        elseif Combat.Silent.Snaplines then cfg, ctx = Combat.Silent, Combat.Silent.FOV end
+        local cfg, ctx, part
+        if Combat.Aim.Snaplines then
+            cfg, ctx = Combat.Aim, Combat.Aim.FOV
+            -- focus on the person currently being targeted (locked/aimed)
+            local t = Combat.Aim._rageLock or Combat.Aim._target
+            if t and t.Character then part = aimPart(t.Character, cfg.HitPart) end
+        elseif Combat.Silent.Snaplines then
+            cfg, ctx = Combat.Silent, Combat.Silent.FOV
+            part = silentTarget
+        end
         if not cfg then snapLine.Visible = false; return end
         local cam = Workspace.CurrentCamera
         if not cam then snapLine.Visible = false; return end
         local origin = fovCenter(ctx)
-        local maxR = ctx.Enabled and ctx.Size or math.huge
-        local part
-        if cfg == Combat.Aim and Combat.Aim._target and Combat.Aim._target.Character then
-            part = aimPart(Combat.Aim._target.Character, cfg.HitPart)
+        if not part then
+            local maxR = ctx.Enabled and ctx.Size or math.huge
+            local _, p = getBestTarget(cfg, maxR, origin)
+            part = p
         end
-        if not part then local _, p = getBestTarget(cfg, maxR, origin); part = p end
         if not part then snapLine.Visible = false; return end
         local sp = cam:WorldToViewportPoint(part.Position)
         if sp.Z <= 0 then snapLine.Visible = false; return end
-        local delta = Vector2.new(sp.X, sp.Y) - origin
+        local ex, ey = sp.X, sp.Y
+        local dx, dy = ex - origin.X, ey - origin.Y
+        local dist = (part.Position - cam.CFrame.Position).Magnitude
+        local thick = featureThickness(dist)
         snapLine.Visible = true
-        snapLine.Position = UDim2.new(0, origin.X, 0, origin.Y)
-        snapLine.Size = UDim2.new(0, delta.Magnitude, 0, math.max(ctx.Thickness, 1))
-        snapLine.Rotation = math.deg(math.atan2(delta.Y, delta.X))
-        snapLine.BackgroundColor3 = ctx.Color
+        snapLine.Position = UDim2.new(0, (origin.X + ex) * 0.5, 0, (origin.Y + ey) * 0.5)
+        snapLine.Size = UDim2.new(0, math.sqrt(dx * dx + dy * dy), 0, thick)
+        snapLine.Rotation = math.deg(math.atan2(dy, dx))
+        snapLine.BackgroundColor3 = ESP.Tracer.Color
+        applyLineOutline(snapLine, ESP.Config.Outline, ESP.Boxes.OutlineColor, math.max(1, thick))
+        applyLineGradient(snapLine, ESP.Config.Gradient)
     end
 
     -- both FOV circles render independently of the aimbot/silent master toggles.
@@ -5250,7 +5288,7 @@ local Combat = {
     --== modules (arraylist + master toggles) ==--
     registerModule("aimbot", "Aimbot",
         function() Combat.Aim.Enabled = true end,
-        function() Combat.Aim.Enabled = false; aimHeld = false; Combat.Aim._target = nil end)
+        function() Combat.Aim.Enabled = false; aimHeld = false; Combat.Aim._target = nil; Combat.Aim._rageLock = nil end)
     registerModule("triggerbot", "Trigger Bot",
         function() Combat.Trigger.Enabled = true end,
         function() Combat.Trigger.Enabled = false; trigHeld = false end)
