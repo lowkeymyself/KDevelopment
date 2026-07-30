@@ -1,0 +1,20 @@
+[package]
+name = "koffee-helper"
+version = "0.1.1"
+edition = "2021"
+description = "OS-level input bridge for the Koffee suite (reads mouse buttons Roblox can't see)"
+
+[[bin]]
+name = "KoffeeHelper"
+path = "src/main.rs"
+
+[dependencies]
+tiny_http = "0.12"
+
+# lean release binary: strip + size-optimize + no unwinding machinery
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

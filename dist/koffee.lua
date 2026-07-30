@@ -1,9 +1,9 @@
--- koffee v0.0.33
+-- koffee v0.0.38
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.30"
+Koffee.Version = "0.0.38"
 
 --============================================================
 -- THEME
@@ -1161,6 +1161,27 @@ local function selectTab(name)
     end
 end
 
+-- v0.0.34: forward-declared shared upvalues. The config-system body + team/
+-- friend helpers live inside an IIFE further down so their ~20 locals get their
+-- OWN register budget (Luau's 200-local ceiling is per-function; the main chunk
+-- is already close, which is why Combat is an IIFE too). Only these handles are
+-- promoted to the main chunk so ESP / World / Combat can call them.
+local Shared = { IgnoreFriends = false }   -- Options flag, read by every target gate
+local isSameTeam, isFriend, registerConfig, rebuildConfigTabs
+
+-- v0.0.37: OS-level input from the Koffee Helper (Roblox can't see mouse 4/5).
+-- The poll loop at the bottom of the file fills XB1/XB2; binds can be the virtual
+-- strings "XButton1"/"XButton2" which the helper-driven Heartbeats resolve.
+local Helper = { Connected = false, XB1 = false, XB2 = false }
+local VIRTUAL_LABELS = { XButton1 = "xb1", XButton2 = "xb2" }
+-- display text for ANY bind: virtual string, Roblox EnumItem, or nil.
+local function keyLabel(bind)
+    if bind == nil then return nil end
+    if type(bind) == "string" then return VIRTUAL_LABELS[bind] or bind end
+    if typeof(bind) == "EnumItem" then return bind.Name end
+    return nil
+end
+
 local function addTab(name, buildFn)
     tabOrder = tabOrder + 1
     local button = new("TextButton", {
@@ -1247,7 +1268,34 @@ local function addTab(name, buildFn)
     end)
     button.MouseButton1Click:Connect(function() selectTab(name) end)
 
-    tabs[name] = { Button = button, Panel = panel }
+    -- v0.0.34: stash the build fn so the config system can re-run it against the
+    -- same panel (clears children first) to push loaded values into every widget.
+    tabs[name] = { Button = button, Panel = panel, Build = buildFn }
+end
+
+-- v0.0.34: rebuild the config-driven tabs after a config load so sliders /
+-- dropdowns / checkboxes / keybind pills re-read the freshly applied state.
+-- moduleCheckbox is the only Watchers subscriber, so clearing Watchers first
+-- keeps the subscriber count flat across reloads (they re-subscribe here).
+local function rebuildTabPanel(name)
+    local entry = tabs[name]
+    if not (entry and entry.Build) then return end
+    local p = entry.Panel
+    for _, c in ipairs(p:GetChildren()) do c:Destroy() end
+    new("UIListLayout", {
+        FillDirection = Enum.FillDirection.Vertical,
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = p,
+    })
+    new("UIPadding", { PaddingBottom = UDim.new(0, 12), Parent = p })
+    pcall(entry.Build, p)
+end
+rebuildConfigTabs = function()
+    for _, m in pairs(Modules) do m.Watchers = {} end
+    for _, n in ipairs({ "Visuals", "Combat", "World", "Options" }) do
+        rebuildTabPanel(n)
+    end
 end
 
 --============================================================
@@ -1474,7 +1522,9 @@ local Keybinds = {}     -- moduleId -> Enum.KeyCode
 local pendingRebind = nil    -- { moduleId, pill } while waiting for next key
 
 local function keybindPill(row, moduleId, initialKey)
-    if initialKey then Keybinds[moduleId] = initialKey end
+    -- v0.0.34: only seed the default when nothing is bound yet, so a config load
+    -- (or a tab rebuild) never clobbers the user's chosen / loaded keybind.
+    if initialKey and Keybinds[moduleId] == nil then Keybinds[moduleId] = initialKey end
     local currentKey = Keybinds[moduleId]
     local pill = new("TextButton", {
         Name = "KeybindPill",
@@ -1486,7 +1536,7 @@ local function keybindPill(row, moduleId, initialKey)
         BackgroundTransparency = 0.2,
         BorderSizePixel = 0,
         AutoButtonColor = false,
-        Text = currentKey and currentKey.Name or "-",
+        Text = keyLabel(currentKey) or "no keybind",
         FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Tiny,
         TextColor3 = Theme.Palette.TextMuted,
@@ -1514,8 +1564,7 @@ local function keybindPill(row, moduleId, initialKey)
         -- target. Without this, clicking pill A then pill B leaves pill A
         -- stuck showing "..." forever.
         if pendingRebind and pendingRebind.pill ~= pill then
-            local prev = Keybinds[pendingRebind.moduleId]
-            pendingRebind.pill.Text = prev and prev.Name or "-"
+            pendingRebind.pill.Text = keyLabel(Keybinds[pendingRebind.moduleId]) or "no keybind"
             tween(pendingRebind.pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
         end
         pill.Text = "..."
@@ -1531,7 +1580,7 @@ local function completeRebind(keyCode)
     local moduleId = pendingRebind.moduleId
     local pill = pendingRebind.pill
     Keybinds[moduleId] = keyCode
-    pill.Text = keyCode.Name
+    pill.Text = keyLabel(keyCode) or "?"
     -- growing pulse animation
     local origSize = pill.Size
     pill.Size = UDim2.new(0, origSize.X.Offset + 8, 0, origSize.Y.Offset + 4)
@@ -2603,6 +2652,237 @@ UserInputService.InputBegan:Connect(function(input)
 end)
 
 --============================================================
+-- SHARED STATE + CONFIG SYSTEM (v0.0.34)
+-- Wrapped in an IIFE so its ~20 locals get their own register budget (Luau's
+-- 200-local limit is per-function; the main chunk is already near it). Only the
+-- forward-declared upvalues (Shared/isSameTeam/isFriend/registerConfig/
+-- rebuildConfigTabs) + Koffee.Config escape to the main chunk.
+--   isSameTeam    : robust team check -- Team instance first, TeamColor/Neutral
+--                   fallback for games that never assign a Team object
+--   isFriend      : cached friendship lookup (IsFriendsWith yields, so resolve
+--                   async once per userId; render loops read the cache)
+--   ConfigRegistry: name -> live state table, walked by the config save/load
+--============================================================
+;(function()
+
+-- Team check that survives games which never set Player.Team. If either player
+-- carries a real Team object we trust it; otherwise we fall back to TeamColor
+-- (skipping the neutral/FFA case so nobody is falsely marked a teammate).
+function isSameTeam(plr, localPlr)
+    localPlr = localPlr or LocalPlayer
+    if not plr or plr == localPlr then return false end
+    local a, b = localPlr.Team, plr.Team
+    if a ~= nil or b ~= nil then return a == b end
+    if localPlr.Neutral or plr.Neutral then return false end
+    return localPlr.TeamColor == plr.TeamColor
+end
+
+-- IsFriendsWith is a yielding web call -- never run it inside a render loop.
+-- Resolve once per userId on a background thread; the loop reads the cache and
+-- treats "unknown yet" as not-a-friend until the lookup lands.
+local friendStatus  = {}   -- userId -> bool
+local friendPending = {}
+function isFriend(plr)
+    if not plr or plr == LocalPlayer then return false end
+    local uid = plr.UserId
+    if not uid or uid <= 0 then return false end
+    local cached = friendStatus[uid]
+    if cached ~= nil then return cached end
+    if not friendPending[uid] then
+        friendPending[uid] = true
+        task.spawn(function()
+            local ok, res = pcall(function() return LocalPlayer:IsFriendsWith(uid) end)
+            friendStatus[uid]  = (ok and res) or false
+            friendPending[uid] = nil
+        end)
+    end
+    return false
+end
+
+--== CONFIG SYSTEM -- save / load / auto-load per PlaceId. Subsystems register
+-- their live state tables; save serializes to a Lua literal (Color3 / EnumItem /
+-- Vector aware), load applies back IN PLACE so every live reference keeps
+-- working, then re-syncs modules + rebuilds the config-driven tabs.
+local ConfigRegistry = {}          -- name -> live table
+function registerConfig(name, tbl) ConfigRegistry[name] = tbl end
+
+local CFG_DIR = "Koffee/configs"
+
+-- executor file API, all guarded so a locked-down runtime degrades to no-op.
+local fileAPI = {
+    write   = writefile,
+    read    = readfile,
+    isfile  = isfile,
+    isfolder= isfolder,
+    makefolder = makefolder,
+    delfile = delfile,
+    listfiles = listfiles,
+}
+local function filesReady()
+    return fileAPI.write and fileAPI.read and fileAPI.isfile and fileAPI.listfiles
+end
+local function ensureDir()
+    if not (fileAPI.isfolder and fileAPI.makefolder) then return end
+    if not fileAPI.isfolder("Koffee")   then pcall(fileAPI.makefolder, "Koffee") end
+    if not fileAPI.isfolder(CFG_DIR)     then pcall(fileAPI.makefolder, CFG_DIR) end
+end
+
+-- === serialize ============================================================
+local encValue
+local function encTable(tbl)
+    local parts = {}
+    for k, v in pairs(tbl) do
+        -- skip private/runtime keys (_hooked, _target, connections handled below)
+        if not (type(k) == "string" and k:sub(1, 1) == "_") then
+            local ev = encValue(v)
+            if ev ~= nil then
+                local ek
+                if type(k) == "number" then ek = "[" .. k .. "]"
+                elseif type(k) == "string" then ek = "[" .. string.format("%q", k) .. "]"
+                end
+                if ek then parts[#parts + 1] = ek .. "=" .. ev end
+            end
+        end
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+encValue = function(v)
+    local t = typeof(v)
+    if t == "number" then
+        if v ~= v or v == math.huge or v == -math.huge then return "0" end
+        return tostring(v)
+    elseif t == "boolean" then return tostring(v)
+    elseif t == "string" then return string.format("%q", v)
+    elseif t == "Color3" then
+        return string.format("Color3.new(%.6f,%.6f,%.6f)", v.R, v.G, v.B)
+    elseif t == "EnumItem" then return tostring(v)          -- "Enum.KeyCode.E"
+    elseif t == "Vector2" then return string.format("Vector2.new(%.6f,%.6f)", v.X, v.Y)
+    elseif t == "Vector3" then return string.format("Vector3.new(%.6f,%.6f,%.6f)", v.X, v.Y, v.Z)
+    elseif t == "table" then return encTable(v)
+    end
+    return nil   -- functions / Instances / connections / threads -> dropped
+end
+
+local function snapshotAll()
+    local snap = { registry = {}, keybinds = {}, modules = {} }
+    for name, tbl in pairs(ConfigRegistry) do snap.registry[name] = tbl end
+    for id, key in pairs(Keybinds) do snap.keybinds[id] = key end
+    for id, m in pairs(Modules) do snap.modules[id] = m.Enabled and true or false end
+    return snap
+end
+
+-- === apply ================================================================
+local function applyInto(target, src)
+    for k, v in pairs(src) do
+        if type(v) == "table" and type(target[k]) == "table" then
+            applyInto(target[k], v)
+        else
+            target[k] = v
+        end
+    end
+end
+
+-- loadSnapshot applies a decoded config and then rebuilds the config-driven
+-- tabs (rebuildConfigTabs is a main-chunk upvalue set near addTab) so sliders /
+-- dropdowns / checkboxes / keybind pills re-read the freshly loaded state.
+local function loadSnapshot(data)
+    if type(data) ~= "table" then return false end
+    if data.registry then
+        for name, tbl in pairs(data.registry) do
+            local target = ConfigRegistry[name]
+            if target and type(tbl) == "table" then applyInto(target, tbl) end
+        end
+    end
+    if data.keybinds then
+        for k in pairs(Keybinds) do Keybinds[k] = nil end
+        for id, key in pairs(data.keybinds) do
+            -- accept Roblox EnumItems AND virtual XButton strings (v0.0.37)
+            if typeof(key) == "EnumItem" or key == "XButton1" or key == "XButton2" then
+                Keybinds[id] = key
+            end
+        end
+    end
+    if data.modules then
+        for id, state in pairs(data.modules) do
+            local m = Modules[id]
+            if m and (m.Enabled and true or false) ~= (state and true or false) then
+                toggleModule(id)
+            end
+        end
+    end
+    if rebuildConfigTabs then pcall(rebuildConfigTabs) end
+    return true
+end
+
+-- === disk ops =============================================================
+local ConfigIO = {}
+function ConfigIO.list()
+    local out = {}
+    if not filesReady() then return out end
+    ensureDir()
+    local ok, files = pcall(fileAPI.listfiles, CFG_DIR)
+    if not ok or type(files) ~= "table" then return out end
+    for _, path in ipairs(files) do
+        local name = tostring(path):match("([^/\\]+)%.koffee$")
+        if name then out[#out + 1] = name end
+    end
+    table.sort(out)
+    return out
+end
+function ConfigIO.save(name)
+    if not filesReady() then return false, "no file access" end
+    name = tostring(name):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then return false, "name required" end
+    ensureDir()
+    local ok, text = pcall(function() return "return " .. encTable(snapshotAll()) end)
+    if not ok then return false, "encode failed" end
+    local wok = pcall(fileAPI.write, CFG_DIR .. "/" .. name .. ".koffee", text)
+    if not wok then return false, "write failed" end
+    return true, name
+end
+function ConfigIO.load(name)
+    if not filesReady() then return false, "no file access" end
+    local path = CFG_DIR .. "/" .. name .. ".koffee"
+    if not fileAPI.isfile(path) then return false, "not found" end
+    local rok, text = pcall(fileAPI.read, path)
+    if not rok or type(text) ~= "string" then return false, "read failed" end
+    local ldr = loadstring or load
+    if not ldr then return false, "no loadstring" end
+    local fn = ldr(text)
+    if not fn then return false, "parse failed" end
+    local dok, data = pcall(fn)
+    if not dok then return false, "eval failed" end
+    return loadSnapshot(data), name
+end
+function ConfigIO.delete(name)
+    if not (filesReady() and fileAPI.delfile) then return false end
+    local path = CFG_DIR .. "/" .. name .. ".koffee"
+    if fileAPI.isfile(path) then return pcall(fileAPI.delfile, path) end
+    return false
+end
+-- per-place auto-load marker: Koffee/configs/_auto_<PlaceId>.txt holds a name
+local function autoPath() return CFG_DIR .. "/_auto_" .. tostring(game.PlaceId) .. ".txt" end
+function ConfigIO.getAuto()
+    if not filesReady() then return nil end
+    local p = autoPath()
+    if fileAPI.isfile(p) then
+        local ok, v = pcall(fileAPI.read, p)
+        if ok and type(v) == "string" and v ~= "" then return v end
+    end
+    return nil
+end
+function ConfigIO.setAuto(name)
+    if not filesReady() then return end
+    ensureDir()
+    if name and name ~= "" then pcall(fileAPI.write, autoPath(), name)
+    elseif fileAPI.delfile then pcall(fileAPI.delfile, autoPath()) end
+end
+
+Koffee.Config = ConfigIO
+
+end)()   -- end SHARED STATE + CONFIG SYSTEM IIFE
+
+--============================================================
 -- ESP MODULE (v0.0.10)
 -- Master toggle ("Enabled") just turns on the ESP framework + render loop.
 -- Nothing draws until a sub-feature (Box / Name / Indicators / Health /
@@ -2733,6 +3013,17 @@ local ESP = {
     UpdateConn = nil,
     BoxLayer = nil,
 }
+
+-- v0.0.34: expose ESP state to the config system.
+registerConfig("esp_config",     ESP.Config)
+registerConfig("esp_render",     ESP.Render)
+registerConfig("esp_boxes",      ESP.Boxes)
+registerConfig("esp_names",      ESP.Names)
+registerConfig("esp_indicators", ESP.Indicators)
+registerConfig("esp_health",     ESP.Health)
+registerConfig("esp_tracer",     ESP.Tracer)
+registerConfig("esp_colors",     ESP.Colors)
+registerConfig("shared",         Shared)
 
 -- v0.0.19: applyGlobalOutline removed. The arraylist accent line is NO LONGER
 -- gated by the Outline toggle. Outline is purely an ESP box thickness accent
@@ -3827,7 +4118,6 @@ local function updateESPRigs()
     local cam = Workspace.CurrentCamera
     if not cam then return end
     local camPos = cam.CFrame.Position
-    local localTeam = LocalPlayer.Team
     for plr, entry in pairs(ESP.Rigs) do
         local rig = entry.rig
         -- v0.0.15 hard life gate. Torso (HRP) replaces head as the anchor:
@@ -3854,8 +4144,10 @@ local function updateESPRigs()
         if plr == LocalPlayer and not ESP.Config.SelfESP then
             hideRigVisuals(rig); continue
         end
-        local sameTeam = plr.Team and localTeam and plr.Team == localTeam
-        if sameTeam and ESP.Config.TeamCheck then
+        -- v0.0.34: robust team detection (Team obj -> TeamColor/Neutral fallback)
+        -- + Options "Ignore Friends" gate, shared with the combat systems.
+        local same = isSameTeam(plr)
+        if (same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr)) then
             hideRigVisuals(rig); continue
         end
         local dist = (rig.torso.Position - camPos).Magnitude
@@ -3877,7 +4169,7 @@ local function updateESPRigs()
             hidden = hit ~= nil
         end
         local overrideColor = nil
-        if ESP.Config.TeamBasedColor and sameTeam then
+        if ESP.Config.TeamBasedColor and same then
             overrideColor = ESP.Colors.Team
         elseif ESP.Config.VisibleCheck then
             overrideColor = hidden and ESP.Colors.Hidden or ESP.Colors.Visible
@@ -4417,6 +4709,10 @@ local World = {
     Time       = { Saved = nil, Target = 14, Conn = nil },
 }
 
+-- v0.0.34: only the Clock Time target persists (Saved/Conn are runtime + skipped
+-- by the serializer). Fullbright/NoFog are pure toggles -> restored via modules.
+registerConfig("world_time", World.Time)
+
 registerModule("fullbright", "Fullbright",
     function()
         World.Fullbright.Saved = {
@@ -4537,6 +4833,11 @@ local Combat = {
         Priority      = "Crosshair",                      -- "Nearest" | "Crosshair"
         HitPart       = "Head",
         AimType       = "Camera",                         -- "Camera" | "Mouse"
+        -- v0.0.36: third-person mode moves the MOUSE onto the target instead of the
+        -- camera -- for games where the shot follows the cursor, not the camera
+        -- (Prison Life, Da Hood). Bind aimbot to a non-RMB key (e.g. XButton2) so
+        -- it doesn't fight the game's own RMB shift-lock; hold it to snap-aim.
+        ThirdPerson   = false,
         Distance      = 500,
         Sensitivity   = 0.4,
         TeamCheck     = true,
@@ -4569,7 +4870,9 @@ local Combat = {
     },
     Silent = {   -- fake-camera silent aim
         Enabled       = false,
-        ActivationKey = Enum.KeyCode.E,
+        -- v0.0.34: no activation key by default -- RequireLMB is the gate so silent
+        -- "just works" on click. Set a key via the pill to add a hold/toggle arm.
+        ActivationKey = nil,
         ActivationMode= "Hold",
         Priority      = "Crosshair",
         HitPart       = "Head",
@@ -4580,6 +4883,16 @@ local Combat = {
         HealthCheck   = false,
         Sticky        = false,
         RequireLMB    = true,
+        -- v0.0.35: AGGRESSIVE (default OFF) -- default silent only redirects the
+        -- Mouse's aim reads (Hit/Target/UnitRay), which is safe on every game. On =
+        -- ALSO hijack camera-ray methods + Workspace raycasts for cast-based guns.
+        -- This is what breaks cameras / real-game weapons, so it's opt-in.
+        Aggressive    = false,
+        -- v0.0.34: third-person games fire from the gun/character, not the camera,
+        -- so the fire ray's origin is offset and its direction need not align with
+        -- the camera LookVector. On = relax the ray distinguisher so those redirect
+        -- too (only matters with Aggressive on).
+        ThirdPerson   = false,
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         _hooked       = false,
@@ -4612,6 +4925,14 @@ local Combat = {
     -- overlap into a single ring ("can't see both"). The user can still match them.
     Combat.Silent.FOV.Size  = 140
     Combat.Silent.FOV.Color = Color3.fromRGB(130, 200, 255)
+
+    -- v0.0.34: expose combat state to the config system (FOV cfgs are nested in
+    -- Aim/Silent so they ride along). Underscore keys (_hooked/_target/_rageLock)
+    -- are skipped by the serializer.
+    registerConfig("combat_aim",     Combat.Aim)
+    registerConfig("combat_silent",  Combat.Silent)
+    registerConfig("combat_trigger", Combat.Trigger)
+    registerConfig("combat_misc",    Combat.Misc)
 
     --== math helpers ==--
     local function shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
@@ -4684,7 +5005,6 @@ local Combat = {
         if not cam then return nil end
         center = center or fovCenter()
         local camPos = cam.CFrame.Position
-        local localTeam = LocalPlayer.Team
         local best, bestPart, bestScore = nil, nil, math.huge
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
@@ -4692,9 +5012,11 @@ local Combat = {
                 local hum = char and char:FindFirstChildOfClass("Humanoid")
                 local alive = char and hum and hum.Health > 0
                 local hcOk = (not cfg.HealthCheck) or (char and healthOk(char, hum))
-                if alive and hcOk then
-                    local sameTeam = plr.Team and localTeam and plr.Team == localTeam
-                    if not (cfg.TeamCheck and sameTeam) then
+                -- v0.0.34: robust team check + Options "Ignore Friends" gate
+                local excluded = (cfg.TeamCheck and isSameTeam(plr))
+                              or (Shared.IgnoreFriends and isFriend(plr))
+                if alive and hcOk and not excluded then
+                    if true then
                         local part = aimPart(char, cfg.HitPart)
                         if part then
                             local worldDist = (part.Position - camPos).Magnitude
@@ -4779,9 +5101,12 @@ local Combat = {
     }, { lineGradient(), lineOutline() })
 
     --== activation state ==--
-    local aimHeld  = false
-    local trigHeld = false
-    local trigBusy = false
+    local aimHeld    = false
+    local silentHeld = false   -- v0.0.34: optional silent arm key (nil key = always armed)
+    local lmbDown    = false   -- v0.0.35: tracked LMB state (read inside the silent
+                               -- hooks; IsMouseButtonPressed is a namecall + illegal there)
+    local trigHeld   = false
+    local trigBusy   = false
     local silentTarget = nil   -- the part (for Mouse.Target)
     local silentPos    = nil   -- Vector3 redirect point (predicted; drives Hit/UnitRay)
 
@@ -4797,6 +5122,8 @@ local Combat = {
     end
     local MOUSE_SHORT = { MouseButton1 = "lmb", MouseButton2 = "rmb", MouseButton3 = "mmb" }
     local function inputName(bind)
+        -- v0.0.37: virtual helper binds (mouse 4/5) render as xb1/xb2
+        if type(bind) == "string" then return VIRTUAL_LABELS[bind] or bind end
         if typeof(bind) == "EnumItem" then
             if bind.EnumType == Enum.UserInputType then
                 return MOUSE_SHORT[bind.Name] or bind.Name
@@ -4931,23 +5258,44 @@ local Combat = {
         -- Each resolver returns (handled, value). handled=true short-circuits the
         -- game's real call; handled=false falls through to the original metamethod.
         local PASS_H, PASS_V = false, nil
+        -- v0.0.35: redirect only when actually armed. silentPos is now kept fresh
+        -- EVERY frame by the heartbeat (independent of LMB) so the redirect lands
+        -- the instant the weapon reads it -- fixes "Require Left-Click misses" (the
+        -- old code set silentPos reactively, one frame behind the click). The LMB
+        -- gate is applied HERE via a tracked flag -- never IsMouseButtonPressed,
+        -- which is a namecall and illegal inside these hooks.
+        local function isArmed()
+            if not silentPos then return false end
+            if Combat.Silent.RequireLMB and not lmbDown then return false end
+            return true
+        end
+        -- SAFE default: redirect ONLY the Mouse's own aim reads (Hit / Target /
+        -- UnitRay). These are what FE weapons read and NOTHING else in the engine
+        -- touches, so cameras, Popper occlusion, physics and other scripts stay
+        -- untouched -- this is why the default never breaks the game / camera.
         local function resolveIndex(self, key)
             if key ~= "Hit" and key ~= "Target" and key ~= "UnitRay" then return PASS_H, PASS_V end
             if not (typeof(self) == "Instance" and self:IsA("Mouse")) then return PASS_H, PASS_V end
+            if not isArmed() then return PASS_H, PASS_V end
             local pos, tgt = silentPos, silentTarget
-            if not pos then return PASS_H, PASS_V end
             if key == "Hit" then return true, CFrame.new(pos) end
             if key == "Target" then return true, tgt end
             local cam = Workspace.CurrentCamera
             if cam then return true, Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit) end
             return PASS_H, PASS_V
         end
+        -- AGGRESSIVE (opt-in, default OFF): ALSO redirect the camera-ray methods +
+        -- forward Workspace raycasts. This rewrites EVERY matching ray the game
+        -- casts (weapon validation, camera occlusion/Popper, physics), which is
+        -- what breaks cameras + real-game guns when left on universally -- so it is
+        -- gated behind the Aggressive toggle, for cast-based games only.
         local function resolveNamecall(self, method, args)
+            if not Combat.Silent.Aggressive then return PASS_H, PASS_V end
+            if not isArmed() then return PASS_H, PASS_V end
             local pos = silentPos
-            if not pos then return PASS_H, PASS_V end
             local cam = Workspace.CurrentCamera
             if not cam then return PASS_H, PASS_V end
-            -- Mouse camera-ray methods: always safe to redirect
+            -- Mouse camera-ray methods
             if method == "ViewportPointToRay" or method == "ScreenPointToRay" then
                 local o = cam.CFrame.Position
                 return true, Ray.new(o, (pos - o).Unit)
@@ -4962,7 +5310,7 @@ local Combat = {
                         local mag = dir.Magnitude
                         if mag > 20 then
                             local ok, dirU = pcall(function() return dir.Unit end)
-                            if ok and dirU:Dot(cam.CFrame.LookVector) > 0.5 then
+                            if ok and (Combat.Silent.ThirdPerson or dirU:Dot(cam.CFrame.LookVector) > 0.5) then
                                 args[2] = (pos - origin).Unit * mag
                                 return "call", args   -- forward to old with mutated args
                             end
@@ -4975,7 +5323,7 @@ local Combat = {
                         local mag = ray.Direction.Magnitude
                         if mag > 20 then
                             local ok, dirU = pcall(function() return ray.Direction.Unit end)
-                            if ok and dirU:Dot(cam.CFrame.LookVector) > 0.5 then
+                            if ok and (Combat.Silent.ThirdPerson or dirU:Dot(cam.CFrame.LookVector) > 0.5) then
                                 args[1] = Ray.new(ray.Origin, (pos - ray.Origin).Unit * mag)
                                 return "call", args
                             end
@@ -5103,7 +5451,19 @@ local Combat = {
             aY = math.clamp(sens / math.max(Combat.Aim.Smooth.Y, 0.01), 0, 1)
         end
 
-        if Combat.Aim.AimType == "Mouse" then
+        if Combat.Aim.ThirdPerson then
+            -- v0.0.36.1: drive the REAL mouse onto the target's screen point. Measured
+            -- live: WorldToViewportPoint INCLUDES the 58px GUI inset but PlayerMouse.X/Y
+            -- does NOT -- mixing them aimed a constant ~58px low (whole-body error at
+            -- range). GetMouseLocation() is inset-included, matching WorldToViewportPoint,
+            -- so the delta is 0 exactly on-target. Each frame nudges the cursor a fraction
+            -- (aX/aY) and converges. Works free-cursor AND shift-lock.
+            local sp = cam:WorldToViewportPoint(tpos)
+            if sp.Z > 0 and mousemoverel then
+                local ml = UserInputService:GetMouseLocation()
+                pcall(mousemoverel, (sp.X - ml.X) * aX, (sp.Y - ml.Y) * aY)
+            end
+        elseif Combat.Aim.AimType == "Mouse" then
             local sp = cam:WorldToViewportPoint(tpos)
             if sp.Z > 0 and mousemoverel then
                 pcall(mousemoverel, (sp.X - aimCenter.X) * aX, (sp.Y - aimCenter.Y) * aY)
@@ -5198,12 +5558,10 @@ local Combat = {
                     if fillCfg.Spin or cfg.Spin then rot = rot + spinDeg end
                     h.grad.Rotation = rot
                 end
-            elseif ESP.Config.Gradient then
-                h.circle.BackgroundColor3 = Color3.new(1, 1, 1)
-                h.circle.BackgroundTransparency = cfg.FillTransparency
-                applyLineGradient(h.circle, true)
-                if h.grad and (fillCfg.Spin or cfg.Spin) then h.grad.Rotation = spinDeg end
             else
+                -- v0.0.34: the FOV Fill is now FULLY decoupled from the Visuals
+                -- "Gradient" toggle. Without its own Custom Gradient enabled the
+                -- fill is a solid FillColor -- the ESP gradient never bleeds in.
                 if h.grad then h.grad.Enabled = false end
                 h.circle.BackgroundColor3 = cfg.FillColor
                 h.circle.BackgroundTransparency = cfg.FillTransparency
@@ -5240,8 +5598,10 @@ local Combat = {
         end
     end
 
-    -- snapline: origin from the context FOV (center/mouse, works with FOV off),
-    -- pointing at whoever that context would target.
+    -- snapline: v0.0.36.1 -- origin follows the mouse cursor. Uses GetMouseLocation()
+    -- (inset-included, like WorldToViewportPoint + the IgnoreGuiInset overlay) so the
+    -- line anchors exactly ON the cursor. The old PlayerMouse.X/Y source excluded the
+    -- 58px inset, which floated the origin ~58px above the cursor.
     local function drawSnaplines()
         local cfg, ctx, part
         if Combat.Aim.Snaplines then
@@ -5256,7 +5616,7 @@ local Combat = {
         if not cfg then snapLine.Visible = false; return end
         local cam = Workspace.CurrentCamera
         if not cam then snapLine.Visible = false; return end
-        local origin = fovCenter(ctx)
+        local origin = UserInputService:GetMouseLocation()
         if not part then
             local maxR = ctx.Enabled and ctx.Size or math.huge
             local _, p = getBestTarget(cfg, maxR, origin)
@@ -5285,28 +5645,76 @@ local Combat = {
         drawSnaplines()
     end)
 
-    -- triggerbot
+    -- triggerbot (v0.0.36 rewrite). The old version fired on screen-space proximity
+    -- to the crosshair (5px) -- pixel-tight and it never actually checked the crosshair
+    -- was ON an enemy (a wall in the way still counted). Now it raycasts from the camera
+    -- THROUGH the crosshair: it only fires if that ray's first hit is a live enemy
+    -- character (team / friend checks applied, occlusion handled for free since the ray
+    -- stops at the first wall). HitboxMul widens the sample into a small ring.
+    local trigParams = RaycastParams.new()
+    trigParams.FilterType = Enum.RaycastFilterType.Exclude
+    local function crosshairEnemy()
+        local cam = Workspace.CurrentCamera
+        if not cam then return nil end
+        local vp = cam.ViewportSize
+        local cx, cy = vp.X * 0.5, vp.Y * 0.5
+        trigParams.FilterDescendantsInstances = { LocalPlayer.Character }
+        local function castAt(px, py)
+            local ray = cam:ViewportPointToRay(px, py)
+            local res = Workspace:Raycast(ray.Origin, ray.Direction * 2000, trigParams)
+            if not (res and res.Instance) then return nil end
+            local model = res.Instance:FindFirstAncestorWhichIsA("Model")
+            local plr = model and Players:GetPlayerFromCharacter(model)
+            if not plr or plr == LocalPlayer then return nil end
+            local hum = model:FindFirstChildOfClass("Humanoid")
+            if not (hum and hum.Health > 0) then return nil end
+            if Combat.Trigger.TeamCheck and isSameTeam(plr) then return nil end
+            if Shared.IgnoreFriends and isFriend(plr) then return nil end
+            return plr
+        end
+        local hit = castAt(cx, cy)
+        if hit then return hit end
+        -- HitboxMul > 1: sample a small ring around the crosshair for forgiveness
+        local mul = math.max(Combat.Trigger.HitboxMul, 1)
+        if mul > 1 then
+            local r = 5 * (mul - 1)
+            for i = 0, 7 do
+                local a = (i / 8) * math.pi * 2
+                local p = castAt(cx + math.cos(a) * r, cy + math.sin(a) * r)
+                if p then return p end
+            end
+        end
+        return nil
+    end
     RunService.Heartbeat:Connect(function()
         if not Combat.Trigger.Enabled then return end
         if Combat.Trigger.UseKey and not trigHeld then return end
         if trigBusy then return end
-        local radius = 5 * math.max(Combat.Trigger.HitboxMul, 0.1)
-        local plr = getBestTarget(Combat.Trigger, radius)
-        if not plr then return end
+        if not crosshairEnemy() then return end
         trigBusy = true
         task.spawn(function()
             if Combat.Trigger.Delay > 0 then task.wait(Combat.Trigger.Delay / 1000) end
-            if Combat.Trigger.Enabled and getBestTarget(Combat.Trigger, radius) then clickMouse() end
+            -- re-confirm the crosshair is still on the enemy right before firing
+            if Combat.Trigger.Enabled and crosshairEnemy() then clickMouse() end
             if Combat.Trigger.Release > 0 then task.wait(Combat.Trigger.Release / 1000) end
             trigBusy = false
         end)
     end)
 
-    -- silent aim: refresh the redirect target every frame while active
+    -- silent aim: keep the redirect target FRESH every frame while active. v0.0.35:
+    -- the RequireLMB check is NO LONGER here -- silentPos is computed continuously
+    -- (whenever enabled + armed-by-key + a target is acquirable) so it's already
+    -- set the instant a weapon reads mouse.Hit. The LMB gate is applied at redirect
+    -- time inside the hook (isArmed), which kills the one-frame "RequireLMB misses".
     RunService.Heartbeat:Connect(function()
+        -- v0.0.36: authoritative LMB backfill -- if InputBegan's edge was ever missed
+        -- (input consumed / gpe ordering), the poll re-sets it so RequireLMB can't get
+        -- stuck "not held" while you're firing. Release still comes from InputEnded.
+        if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then lmbDown = true end
         if not Combat.Silent.Enabled then silentTarget = nil; silentPos = nil; return end
-        if Combat.Silent.RequireLMB
-        and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+        -- v0.0.34: if the user bound an arm key it must be held (per its mode);
+        -- with no key bound (default) this gate is skipped entirely.
+        if Combat.Silent.ActivationKey and not silentHeld then
             silentTarget = nil; silentPos = nil; return
         end
         local maxR = Combat.Silent.FOV.Enabled and Combat.Silent.FOV.Size or math.huge
@@ -5322,16 +5730,25 @@ local Combat = {
 
     --== input: rebind capture + activation ==--
     UserInputService.InputBegan:Connect(function(input, gpe)
+        -- v0.0.35: track LMB regardless of gpe so the silent redirect's RequireLMB
+        -- gate is accurate (this flag replaces IsMouseButtonPressed polling).
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then lmbDown = true end
         if pendingActivation then
             local it = input.UserInputType
+            -- v0.0.36: ESC CLEARS the bind (no activation key), not just cancels.
+            if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
+                pendingActivation.cfg.ActivationKey = nil
+                pendingActivation.refresh(); pendingActivation = nil; return
+            end
+            -- v0.0.36: accept ANY key + ANY button-like input (mouse 1/2/3 and
+            -- whatever else the runtime surfaces through InputBegan, e.g. XButton1/2
+            -- on executors that deliver them). Only movement/wheel/focus are ignored.
             local bind
-            if it == Enum.UserInputType.Keyboard then
-                if input.KeyCode == Enum.KeyCode.Escape then
-                    pendingActivation.refresh(); pendingActivation = nil; return
-                end
+            if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
                 bind = input.KeyCode
-            elseif it == Enum.UserInputType.MouseButton1 or it == Enum.UserInputType.MouseButton2
-                or it == Enum.UserInputType.MouseButton3 then
+            elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
+               and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
+               and it ~= Enum.UserInputType.TextInput and it ~= Enum.UserInputType.InputMethod then
                 bind = it
             end
             if bind then
@@ -5345,17 +5762,66 @@ local Combat = {
         if Combat.Aim.Enabled and inputMatches(input, Combat.Aim.ActivationKey) then
             if Combat.Aim.ActivationMode == "Toggle" then aimHeld = not aimHeld else aimHeld = true end
         end
+        if Combat.Silent.Enabled and Combat.Silent.ActivationKey
+        and inputMatches(input, Combat.Silent.ActivationKey) then
+            if Combat.Silent.ActivationMode == "Toggle" then silentHeld = not silentHeld else silentHeld = true end
+        end
         if Combat.Trigger.Enabled and inputMatches(input, Combat.Trigger.ActivationKey) then
             if Combat.Trigger.ActivationMode == "Toggle" then trigHeld = not trigHeld else trigHeld = true end
         end
     end)
     UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then lmbDown = false end
         if Combat.Aim.ActivationMode == "Hold" and inputMatches(input, Combat.Aim.ActivationKey) then
             aimHeld = false
+        end
+        if Combat.Silent.ActivationMode == "Hold" and Combat.Silent.ActivationKey
+        and inputMatches(input, Combat.Silent.ActivationKey) then
+            silentHeld = false
         end
         if Combat.Trigger.ActivationMode == "Hold" and inputMatches(input, Combat.Trigger.ActivationKey) then
             trigHeld = false
         end
+    end)
+
+    -- v0.0.37: VIRTUAL XBUTTON DRIVER. Roblox never fires InputBegan for mouse 4/5,
+    -- so binds set to "XButton1"/"XButton2" are driven here off the Koffee Helper's
+    -- polled state instead. Handles rebind capture (the helper sees the press Roblox
+    -- can't) + hold/toggle activation for aim / silent / trigger.
+    local pXB1, pXB2 = false, false
+    RunService.Heartbeat:Connect(function()
+        local xb1, xb2 = Helper.XB1, Helper.XB2
+        local e1, e2 = (xb1 and not pXB1), (xb2 and not pXB2)   -- press edges
+        local function down(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
+        local function edge(k) return (k == "XButton1" and e1) or (k == "XButton2" and e2) or false end
+
+        -- rebind capture: the activation pill is waiting -> bind the pressed XButton
+        if pendingActivation then
+            local k = (e2 and "XButton2") or (e1 and "XButton1") or nil
+            if k then
+                pendingActivation.cfg.ActivationKey = k
+                pendingActivation.refresh(); pendingActivation = nil
+            end
+        end
+
+        -- drive held-state for any context bound to a virtual XButton
+        if type(Combat.Aim.ActivationKey) == "string" then
+            if Combat.Aim.ActivationMode == "Toggle" then
+                if edge(Combat.Aim.ActivationKey) then aimHeld = not aimHeld end
+            else aimHeld = down(Combat.Aim.ActivationKey) end
+        end
+        if type(Combat.Silent.ActivationKey) == "string" then
+            if Combat.Silent.ActivationMode == "Toggle" then
+                if edge(Combat.Silent.ActivationKey) then silentHeld = not silentHeld end
+            else silentHeld = down(Combat.Silent.ActivationKey) end
+        end
+        if type(Combat.Trigger.ActivationKey) == "string" then
+            if Combat.Trigger.ActivationMode == "Toggle" then
+                if edge(Combat.Trigger.ActivationKey) then trigHeld = not trigHeld end
+            else trigHeld = down(Combat.Trigger.ActivationKey) end
+        end
+
+        pXB1, pXB2 = xb1, xb2
     end)
 
     --== modules (arraylist + master toggles) ==--
@@ -5550,6 +6016,9 @@ local Combat = {
         configCheckbox(L.Aimbot, "Visible Check", Combat.Aim.VisibleCheck, function(v) Combat.Aim.VisibleCheck = v end)
         configCheckbox(L.Aimbot, "Health Check", Combat.Aim.HealthCheck, function(v) Combat.Aim.HealthCheck = v end)
         configCheckbox(L.Aimbot, "Sticky Aim", Combat.Aim.Sticky, function(v) Combat.Aim.Sticky = v end)
+        -- v0.0.36: third-person cursor aim (move mouse, not camera). Bind aimbot to a
+        -- non-RMB key (e.g. XButton2) so it doesn't clash with the game's shift-lock.
+        configCheckbox(L.Aimbot, "Third Person", Combat.Aim.ThirdPerson, function(v) Combat.Aim.ThirdPerson = v end)
         slider(L.Aimbot, "Distance", 50, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end)
         slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
         dropdown(L.Aimbot, "Hit Part", HITPARTS, Combat.Aim.HitPart, function(v) Combat.Aim.HitPart = v end)
@@ -5602,6 +6071,11 @@ local Combat = {
         dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
+        -- v0.0.35: default silent redirects only mouse aim reads (safe everywhere).
+        -- Aggressive also hijacks camera-ray + raycast methods for cast-based guns
+        -- (may break cameras / other games). Third Person only matters with it on.
+        configCheckbox(R["Silent Aim"], "Aggressive Redirect", Combat.Silent.Aggressive, function(v) Combat.Silent.Aggressive = v end)
+        configCheckbox(R["Silent Aim"], "Third Person", Combat.Silent.ThirdPerson, function(v) Combat.Silent.ThirdPerson = v end)
         silentSnapCtrl = configCheckbox(R["Silent Aim"], "Snaplines", Combat.Silent.Snaplines, function(v)
             Combat.Silent.Snaplines = v
             if v then Combat.Aim.Snaplines = false; if aimSnapCtrl then aimSnapCtrl.setState(false) end end
@@ -5711,7 +6185,8 @@ addTab("Visuals", function(root)
     --------------------------------------------------------------- ESP
     local espPanel = panel(leftCol, "esp")
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
-    keybindPill(master.row, "esp", Enum.KeyCode.E)
+    -- v0.0.34: ESP ships with NO keybind by default (pill reads "no keybind").
+    keybindPill(master.row, "esp", nil)
     configCheckbox(espPanel, "Team Check", ESP.Config.TeamCheck, function(v) ESP.Config.TeamCheck = v end)
     local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
     attachDualSwatch(visRow.row, ESP.Colors.Visible, ESP.Colors.Hidden,
@@ -5880,8 +6355,135 @@ addTab("World", function(root)
 end)
 
 addTab("Character")
-addTab("Options")
-addTab("Configs")
+
+--============================================================
+-- OPTIONS TAB (v0.0.34)
+--============================================================
+addTab("Options", function(root)
+    local card = panel(root, "options")
+    -- Ignore Friends: friends are excluded from ESP + aimbot + silent + trigger.
+    configCheckbox(card, "Ignore Friends", Shared.IgnoreFriends, function(v)
+        Shared.IgnoreFriends = v
+    end)
+end)
+
+--============================================================
+-- CONFIGS TAB (v0.0.34) -- save / load / delete / auto-load per game
+--============================================================
+addTab("Configs", function(root)
+    local CIO = Koffee.Config
+
+    -- small pill button helper scoped to this tab
+    local function mkBtn(parent, text, width, onClick, accent)
+        local b = new("TextButton", {
+            Text = text, AutoButtonColor = false,
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = accent and Theme.Palette.Accent or Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, Size = UDim2.new(0, width, 0, 26),
+            ZIndex = 36, Parent = parent,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
+        b.MouseLeave:Connect(function()
+            tween(b, Theme.Animation.Fast, { TextColor3 = accent and Theme.Palette.Accent or Theme.Palette.TextMuted })
+        end)
+        b.MouseButton1Click:Connect(onClick)
+        return b
+    end
+
+    --== save card ==--
+    local saveCard = panel(root, "config manager")
+
+    local status = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 35, Parent = saveCard,
+    })
+    local function setStatus(msg, ok)
+        status.Text = msg
+        status.TextColor3 = ok and Theme.Palette.Success or Theme.Palette.Danger
+    end
+
+    local topRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, ZIndex = 35, Parent = saveCard,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local nameBox = new("TextBox", {
+        Text = "", PlaceholderText = "config name...", ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+        BorderSizePixel = 0, Size = UDim2.new(1, -150, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, ZIndex = 36, Parent = topRow,
+    }, { corner(5), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
+
+    -- forward-declared so the buttons can call the list refresher
+    local refreshList
+    mkBtn(topRow, "save", 66, function()
+        local ok, msg = CIO.save(nameBox.Text)
+        if ok then setStatus("saved: " .. tostring(msg), true); nameBox.Text = ""; refreshList()
+        else setStatus("save failed: " .. tostring(msg), false) end
+    end, true).LayoutOrder = 2
+    mkBtn(topRow, "refresh", 70, function() refreshList() end).LayoutOrder = 3
+
+    --== list card ==--
+    local listCard = panel(root, "saved configs")
+    local listWrap = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, ZIndex = 35, Parent = listCard,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+        Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local emptyLbl = new("TextLabel", {
+        Text = "no saved configs", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 20), TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 35, Parent = listCard,
+    })
+
+    refreshList = function()
+        for _, c in ipairs(listWrap:GetChildren()) do
+            if c:IsA("Frame") then c:Destroy() end
+        end
+        local names = CIO.list()
+        local auto = CIO.getAuto()
+        emptyLbl.Visible = (#names == 0)
+        for i, name in ipairs(names) do
+            local row = new("Frame", {
+                Name = "cfgrow", Size = UDim2.new(1, 0, 0, 30), LayoutOrder = i,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.35,
+                BorderSizePixel = 0, ZIndex = 35, Parent = listWrap,
+            }, { corner(5), new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 6) }),
+                new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+                    Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+                    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+                    SortOrder = Enum.SortOrder.LayoutOrder }) })
+            new("TextLabel", {
+                Text = name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+                Size = UDim2.new(1, -210, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 1, ZIndex = 36, Parent = row,
+            })
+            mkBtn(row, "load", 58, function()
+                local ok, msg = CIO.load(name)
+                if ok then setStatus("loaded: " .. tostring(name), true)
+                else setStatus("load failed: " .. tostring(msg), false) end
+            end, true).LayoutOrder = 2
+            mkBtn(row, (auto == name) and "auto*" or "auto", 58, function()
+                if CIO.getAuto() == name then CIO.setAuto(nil); setStatus("auto-load cleared", true)
+                else CIO.setAuto(name); setStatus("auto-load: " .. name, true) end
+                refreshList()
+            end, auto == name).LayoutOrder = 3
+            mkBtn(row, "del", 46, function()
+                CIO.delete(name); setStatus("deleted: " .. name, true); refreshList()
+            end).LayoutOrder = 4
+        end
+    end
+    refreshList()
+end)
+
 addTab("NPC")
 addTab("Teams")
 
@@ -5985,40 +6587,131 @@ window.GroupTransparency = 0
 window.Visible = true
 setBackgroundActive(true)
 
-UserInputService.InputBegan:Connect(function(input, processed)
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+-- v0.0.36: does this input fire a bind? Binds are EnumItems -- a KeyCode
+-- (keyboard) OR a UserInputType (mouse/other button).
+local function bindMatches(input, bind)
+    if typeof(bind) ~= "EnumItem" then return false end
+    if bind.EnumType == Enum.KeyCode then
+        return input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == bind
+    elseif bind.EnumType == Enum.UserInputType then
+        return input.UserInputType == bind
+    end
+    return false
+end
 
-    -- pending rebind captures ANY next key (bypasses processed check so users
-    -- can rebind even when a textbox has focus). Escape cancels.
+UserInputService.InputBegan:Connect(function(input, processed)
+    local it = input.UserInputType
+
+    -- pending rebind captures ANY key/button (bypasses processed so users can
+    -- rebind even with a textbox focused). v0.0.36: ESC CLEARS the bind; mouse
+    -- buttons (and whatever the runtime surfaces, e.g. XButton1/2) are accepted.
     if pendingRebind then
         local pill = pendingRebind.pill
-        if input.KeyCode == Enum.KeyCode.Escape then
-            local prev = Keybinds[pendingRebind.moduleId]
-            pill.Text = prev and prev.Name or "-"
+        if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
+            Keybinds[pendingRebind.moduleId] = nil
+            pill.Text = "no keybind"
             tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
             pendingRebind = nil
-        else
-            completeRebind(input.KeyCode)
+            return
         end
+        local bind
+        if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+            bind = input.KeyCode
+        elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
+           and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
+           and it ~= Enum.UserInputType.TextInput and it ~= Enum.UserInputType.InputMethod then
+            bind = it
+        end
+        if bind then completeRebind(bind) end
         return
     end
 
     if processed then return end
 
-    -- menu toggle
-    if input.KeyCode == Enum.KeyCode.Delete
-    or input.KeyCode == Enum.KeyCode.RightShift then
+    -- menu toggle (keyboard only)
+    if it == Enum.UserInputType.Keyboard
+    and (input.KeyCode == Enum.KeyCode.Delete or input.KeyCode == Enum.KeyCode.RightShift) then
         setWindowOpen(not windowOpen)
         return
     end
 
-    -- module bindings
+    -- module bindings (KeyCode or UserInputType)
     for id, key in pairs(Keybinds) do
-        if input.KeyCode == key then
+        if bindMatches(input, key) then
             toggleModule(id)
             return
         end
     end
+end)
+
+-- v0.0.37: MODULE-keybind virtual XButton driver (mirror of the combat one, for
+-- module keybind pills). Roblox can't fire mouse 4/5, so the helper drives rebind
+-- capture + module toggles for keybinds set to a virtual XButton.
+do
+    local pXB1, pXB2 = false, false
+    RunService.Heartbeat:Connect(function()
+        local xb1, xb2 = Helper.XB1, Helper.XB2
+        local e1, e2 = (xb1 and not pXB1), (xb2 and not pXB2)
+        if pendingRebind then
+            local k = (e2 and "XButton2") or (e1 and "XButton1") or nil
+            if k then
+                Keybinds[pendingRebind.moduleId] = k
+                pendingRebind.pill.Text = keyLabel(k)
+                tween(pendingRebind.pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+                pendingRebind = nil
+            end
+        elseif e1 or e2 then
+            for id, key in pairs(Keybinds) do
+                if (key == "XButton2" and e2) or (key == "XButton1" and e1) then
+                    toggleModule(id)
+                end
+            end
+        end
+        pXB1, pXB2 = xb1, xb2
+    end)
+end
+
+-- v0.0.37: poll the Koffee Helper for OS-level input (XButton1/2). It serves live
+-- button state over localhost; we cache it in `Helper` for the virtual-bind drivers.
+-- Degrades silently on a slow backoff when the helper isn't running.
+do
+    local HttpService = game:GetService("HttpService")
+    local reqFn = (syn and syn.request) or (http and http.request) or http_request or request
+    if reqFn then
+        task.spawn(function()
+            while true do
+                local ok, res = pcall(reqFn, { Url = "http://127.0.0.1:7912/", Method = "GET" })
+                local body = ok and res and res.Body
+                local data
+                if body then
+                    local dok, decoded = pcall(function() return HttpService:JSONDecode(body) end)
+                    if dok then data = decoded end
+                end
+                if type(data) == "table" then
+                    if not Helper.Connected then
+                        Helper.Connected = true
+                        print("[koffee] helper connected -- XButton1/2 available")
+                    end
+                    Helper.XB1 = data.xb1 and true or false
+                    Helper.XB2 = data.xb2 and true or false
+                    task.wait(0.03)
+                else
+                    if Helper.Connected then print("[koffee] helper disconnected") end
+                    Helper.Connected, Helper.XB1, Helper.XB2 = false, false, false
+                    task.wait(1)
+                end
+            end
+        end)
+    end
+end
+
+-- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
+-- pcall'd so a bad/locked config never blocks the UI from coming up.
+task.spawn(function()
+    local auto = Koffee.Config.getAuto()
+    if not auto then return end
+    task.wait(0.25)
+    pcall(function() Koffee.Config.load(auto) end)
 end)
 
 return Koffee
