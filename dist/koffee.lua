@@ -1,9 +1,9 @@
--- koffee v0.0.45
+-- koffee v0.0.46
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.45"
+Koffee.Version = "0.0.46"
 
 --============================================================
 -- THEME
@@ -1166,8 +1166,12 @@ end
 -- OWN register budget (Luau's 200-local ceiling is per-function; the main chunk
 -- is already close, which is why Combat is an IIFE too). Only these handles are
 -- promoted to the main chunk so ESP / World / Combat can call them.
-local Shared = { IgnoreFriends = false }   -- Options flag, read by every target gate
-local isSameTeam, isFriend, registerConfig, rebuildConfigTabs
+-- Options flag + Team Check config, read by every target gate.
+--   MyTeams      : set of Team NAMES the user marked as "my team" (allies -> skipped)
+--   AdvancedTeam : ignore the manual list, use the automatic isSameTeam heuristic
+--                  (FFA / TDM / single-Team games). Greys out the manual list.
+local Shared = { IgnoreFriends = false, AdvancedTeam = false, MyTeams = {} }
+local isSameTeam, isFriend, registerConfig, rebuildConfigTabs, isTeammate
 
 -- v0.0.37: OS-level input from the Koffee Helper (Roblox can't see mouse 4/5).
 -- The poll loop at the bottom of the file fills XB1/XB2; binds can be the virtual
@@ -2565,7 +2569,7 @@ local function rightClickSettings(row, title, buildFn)
             Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
             ZIndex = 211, Parent = popupFrame,
         })
-        local api = {}
+        local api = { frame = popupFrame }   -- v0.0.46: expose parent for custom content
         function api:slider(label, mn, mx, initial, precision, onChange)
             slider(popupFrame, label, mn, mx, initial, precision, onChange)
         end
@@ -2651,6 +2655,52 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
+-- v0.0.46: shared Team Check settings popup (right-click any Team Check box).
+-- Lists every Team in the game as an ally toggle (ticked = "my team" -> that team is
+-- skipped by Team Check). "Advanced" ignores the manual list and uses the automatic
+-- isSameTeam heuristic (FFA / TDM / single-Team games) -- and greys the list out.
+local function teamCheckSettings(api)
+    local frame = api.frame
+    local dimGroups = {}
+    local function refreshDim()
+        local t = Shared.AdvancedTeam and 0.62 or 0
+        for _, cg in ipairs(dimGroups) do cg.GroupTransparency = t end
+    end
+    api:toggle("Advanced", Shared.AdvancedTeam, function(v)
+        Shared.AdvancedTeam = v
+        refreshDim()
+    end)
+    local teams = {}
+    pcall(function() teams = game:GetService("Teams"):GetTeams() end)
+    if #teams == 0 then
+        new("TextLabel", {
+            Text = "no teams in this game -- use Advanced",
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
+            TextWrapped = true, ZIndex = 212, Parent = frame,
+        })
+    end
+    for _, team in ipairs(teams) do
+        local name = team.Name
+        -- CanvasGroup so GroupTransparency dims the whole row uniformly when greyed.
+        local cg = new("CanvasGroup", {
+            Size = UDim2.new(1, 0, 0, CHECKBOX_ROW_HEIGHT),
+            BackgroundTransparency = 1, GroupTransparency = 0,
+            BorderSizePixel = 0, ZIndex = 211, Parent = frame,
+        })
+        local ctrl = checkboxVisual(cg, name, Shared.MyTeams[name] == true)
+        ctrl.button.MouseButton1Click:Connect(function()
+            if Shared.AdvancedTeam then return end   -- greyed out: ignore clicks
+            local ns = not ctrl.getState()
+            ctrl.setState(ns)
+            Shared.MyTeams[name] = ns and true or nil
+        end)
+        dimGroups[#dimGroups + 1] = cg
+    end
+    refreshDim()
+end
+
 --============================================================
 -- SHARED STATE + CONFIG SYSTEM (v0.0.34)
 -- Wrapped in an IIFE so its ~20 locals get their own register budget (Luau's
@@ -2675,6 +2725,18 @@ function isSameTeam(plr, localPlr)
     if a ~= nil or b ~= nil then return a == b end
     if localPlr.Neutral or plr.Neutral then return false end
     return localPlr.TeamColor == plr.TeamColor
+end
+
+-- v0.0.46: the "is this player an ally to skip?" gate every Team Check reads.
+--   Advanced ON  -> automatic isSameTeam (robust for FFA / TDM / single-Team games).
+--   Advanced OFF -> manual: ally iff the player's Team name is in Shared.MyTeams (the
+--                   teams the user ticked in the right-click list). No teams ticked =
+--                   nobody is treated as an ally.
+function isTeammate(plr)
+    if not plr or plr == LocalPlayer then return false end
+    if Shared.AdvancedTeam then return isSameTeam(plr) end
+    local t = plr.Team
+    return t ~= nil and Shared.MyTeams[t.Name] == true
 end
 
 -- IsFriendsWith is a yielding web call -- never run it inside a render loop.
@@ -4144,9 +4206,9 @@ local function updateESPRigs()
         if plr == LocalPlayer and not ESP.Config.SelfESP then
             hideRigVisuals(rig); continue
         end
-        -- v0.0.34: robust team detection (Team obj -> TeamColor/Neutral fallback)
+        -- v0.0.46: team gate via isTeammate (manual team list or Advanced auto-detect)
         -- + Options "Ignore Friends" gate, shared with the combat systems.
-        local same = isSameTeam(plr)
+        local same = isTeammate(plr)
         if (same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr)) then
             hideRigVisuals(rig); continue
         end
@@ -5009,8 +5071,8 @@ local Combat = {
                 local hum = char and char:FindFirstChildOfClass("Humanoid")
                 local alive = char and hum and hum.Health > 0
                 local hcOk = (not cfg.HealthCheck) or (char and healthOk(char, hum))
-                -- v0.0.34: robust team check + Options "Ignore Friends" gate
-                local excluded = (cfg.TeamCheck and isSameTeam(plr))
+                -- v0.0.46: team check (manual list / Advanced) + "Ignore Friends" gate
+                local excluded = (cfg.TeamCheck and isTeammate(plr))
                               or (Shared.IgnoreFriends and isFriend(plr))
                 if alive and hcOk and not excluded then
                     if true then
@@ -5713,7 +5775,7 @@ local Combat = {
             if not plr or plr == LocalPlayer then return nil end
             local hum = model:FindFirstChildOfClass("Humanoid")
             if not (hum and hum.Health > 0) then return nil end
-            if Combat.Trigger.TeamCheck and isSameTeam(plr) then return nil end
+            if Combat.Trigger.TeamCheck and isTeammate(plr) then return nil end
             if Shared.IgnoreFriends and isFriend(plr) then return nil end
             return plr
         end
@@ -6073,7 +6135,7 @@ local Combat = {
         -- Aimbot
         local aimRow = moduleCheckbox(L.Aimbot, "Enabled", "aimbot")
         activationPill(aimRow.row, Combat.Aim)
-        configCheckbox(L.Aimbot, "Team Check", Combat.Aim.TeamCheck, function(v) Combat.Aim.TeamCheck = v end)
+        rightClickSettings(configCheckbox(L.Aimbot, "Team Check", Combat.Aim.TeamCheck, function(v) Combat.Aim.TeamCheck = v end).row, "team check", teamCheckSettings)
         configCheckbox(L.Aimbot, "Visible Check", Combat.Aim.VisibleCheck, function(v) Combat.Aim.VisibleCheck = v end)
         configCheckbox(L.Aimbot, "Health Check", Combat.Aim.HealthCheck, function(v) Combat.Aim.HealthCheck = v end)
         configCheckbox(L.Aimbot, "Sticky Aim", Combat.Aim.Sticky, function(v) Combat.Aim.Sticky = v end)
@@ -6123,7 +6185,7 @@ local Combat = {
         -- Silent Aim
         local sRow = moduleCheckbox(R["Silent Aim"], "Enabled", "silentaim")
         activationPill(sRow.row, Combat.Silent)
-        configCheckbox(R["Silent Aim"], "Team Check", Combat.Silent.TeamCheck, function(v) Combat.Silent.TeamCheck = v end)
+        rightClickSettings(configCheckbox(R["Silent Aim"], "Team Check", Combat.Silent.TeamCheck, function(v) Combat.Silent.TeamCheck = v end).row, "team check", teamCheckSettings)
         configCheckbox(R["Silent Aim"], "Visible Check", Combat.Silent.VisibleCheck, function(v) Combat.Silent.VisibleCheck = v end)
         configCheckbox(R["Silent Aim"], "Health Check", Combat.Silent.HealthCheck, function(v) Combat.Silent.HealthCheck = v end)
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
@@ -6155,7 +6217,7 @@ local Combat = {
         local tRow = moduleCheckbox(trigCard, "Enabled", "triggerbot")
         activationPill(tRow.row, Combat.Trigger)
         configCheckbox(trigCard, "Visible Check", Combat.Trigger.VisibleCheck, function(v) Combat.Trigger.VisibleCheck = v end)
-        configCheckbox(trigCard, "Team Check", Combat.Trigger.TeamCheck, function(v) Combat.Trigger.TeamCheck = v end)
+        rightClickSettings(configCheckbox(trigCard, "Team Check", Combat.Trigger.TeamCheck, function(v) Combat.Trigger.TeamCheck = v end).row, "team check", teamCheckSettings)
         configCheckbox(trigCard, "Use Key", Combat.Trigger.UseKey, function(v) Combat.Trigger.UseKey = v end)
         slider(trigCard, "Hitbox Mul", 1, 10, Combat.Trigger.HitboxMul, 2, function(v) Combat.Trigger.HitboxMul = v end)
         slider(trigCard, "Delay (ms)", 0, 500, Combat.Trigger.Delay, 0, function(v) Combat.Trigger.Delay = v end)
@@ -6248,7 +6310,7 @@ addTab("Visuals", function(root)
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
     -- v0.0.34: ESP ships with NO keybind by default (pill reads "no keybind").
     keybindPill(master.row, "esp", nil)
-    configCheckbox(espPanel, "Team Check", ESP.Config.TeamCheck, function(v) ESP.Config.TeamCheck = v end)
+    rightClickSettings(configCheckbox(espPanel, "Team Check", ESP.Config.TeamCheck, function(v) ESP.Config.TeamCheck = v end).row, "team check", teamCheckSettings)
     local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
     attachDualSwatch(visRow.row, ESP.Colors.Visible, ESP.Colors.Hidden,
         function(c) ESP.Colors.Visible = c end,
