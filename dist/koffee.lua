@@ -1,9 +1,9 @@
--- koffee v0.0.38
+-- koffee v0.0.42
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.38"
+Koffee.Version = "0.0.42"
 
 --============================================================
 -- THEME
@@ -4883,18 +4883,16 @@ local Combat = {
         HealthCheck   = false,
         Sticky        = false,
         RequireLMB    = true,
-        -- v0.0.35: AGGRESSIVE (default OFF) -- default silent only redirects the
-        -- Mouse's aim reads (Hit/Target/UnitRay), which is safe on every game. On =
-        -- ALSO hijack camera-ray methods + Workspace raycasts for cast-based guns.
-        -- This is what breaks cameras / real-game weapons, so it's opt-in.
-        Aggressive    = false,
-        -- v0.0.34: third-person games fire from the gun/character, not the camera,
-        -- so the fire ray's origin is offset and its direction need not align with
-        -- the camera LookVector. On = relax the ray distinguisher so those redirect
-        -- too (only matters with Aggressive on).
-        ThirdPerson   = false,
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
+        -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default -- fire-read is always
+        -- on. The ~90% of games that don't read mouse.Hit build their shot from
+        -- Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON
+        -- SCRIPT makes them, scoped by getcallingscript so the real camera (renderer/
+        -- Popper) is never touched and the view never moves. SpoofScope tunes the camera
+        -- spoof: "Auto (Learn)" auto-suppresses it once the game is seen aiming via
+        -- mouse.Hit (kills dash/ability collateral); "Caller-Class" always spoofs it.
+        SpoofScope    = "Auto (Learn)",
         _hooked       = false,
     },
     Misc = { Resolver = false },
@@ -5110,6 +5108,63 @@ local Combat = {
     local silentTarget = nil   -- the part (for Mouse.Target)
     local silentPos    = nil   -- Vector3 redirect point (predicted; drives Hit/UnitRay)
 
+    -- v0.0.39: fire-read resolver state + caller scoping. ONE local table to respect
+    -- the Combat chunk's ~200-local budget; the resolvers read it as an upvalue.
+    --   cam/camPos/screen : cached each frame so the __index hook never re-reads
+    --                       Camera.* (that would re-enter the hook / recurse).
+    --   mouse             : the PlayerMouse instance, for identity compares (no IsA).
+    --   fire/fireN        : learned weapon scripts + their fire tally (observation).
+    --   view/viewN        : learned CUSTOM camera controllers to EXCLUDE + read tally.
+    local SR = { cam = nil, camPos = nil, screen = nil, mouse = nil, pm = nil,
+                 usesMouse = false }
+    local getCS = getcallingscript   -- executor global; nil on runtimes without it
+    SR.own = getCS and getCS()       -- Koffee's own script: never spoof its OWN camera
+                                     -- reads (the aimbot loop) if silent is co-armed.
+    pcall(function() SR.mouse = LocalPlayer:GetMouse() end)
+    -- PlayerModule (the standard camera root) is resolved HERE + in the heartbeat --
+    -- both namecall-safe contexts. NEVER resolve it lazily inside a hook (FindFirstChild
+    -- is a namecall; a nested namecall inside the __namecall hook corrupts the pending
+    -- dispatch and breaks the weapon after one shot).
+    pcall(function()
+        local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+        SR.pm = ps and ps:FindFirstChild("PlayerModule")
+    end)
+    -- is `src` the camera system? standard camera = a PlayerModule descendant -- NEVER
+    -- spoofed, so the real view can't be rotated out from under the player.
+    -- CRITICAL: walks .Parent (property __index reads only) -- NO namecall -- so this
+    -- is safe to call from inside the __namecall hook.
+    function SR.isView(src)
+        if not src then return false end
+        local pm = SR.pm
+        if not pm then return false end
+        local a, n = src, 0
+        while a and n < 16 do
+            if a == pm then return true end
+            a = a.Parent
+            n = n + 1
+        end
+        return false
+    end
+    -- should THIS caller be handed the spoofed AIM DIRECTION (Camera.CFrame / cursor /
+    -- camera-rays)? mouse.Hit/Target/UnitRay are handled separately + ungated (only aim
+    -- code reads those). Camera spoof is the collateral-prone surface -- e.g. RIVALS'
+    -- dash reads Camera.CFrame, so spoofing it makes you dash at people.
+    --   Auto (Learn) : if the game has been seen reading mouse.Hit while armed, it aims
+    --                  via the mouse -> the camera spoof is pure collateral (dash) and is
+    --                  SUPPRESSED. Camera-forward games never read mouse.Hit, so they keep
+    --                  the camera spoof. Reliable -- keys off real behaviour, not scripts.
+    --   Caller-Class : always spoof camera for non-camera scripts (camera-forward games
+    --                  where Auto would wrongly suppress; dash collateral is accepted).
+    function SR.spoofAim(src)
+        if not src then return false end
+        if src == SR.own then return false end              -- never Koffee's own reads
+        if SR.isView(src) then return false end             -- never the camera system
+        if Combat.Silent.SpoofScope ~= "Caller-Class" and SR.usesMouse then
+            return false                                    -- Auto: mouse-based game -> no camera spoof
+        end
+        return true
+    end
+
     local function inputMatches(input, bind)
         if typeof(bind) == "EnumItem" then
             if bind.EnumType == Enum.KeyCode then
@@ -5274,61 +5329,63 @@ local Combat = {
         -- touches, so cameras, Popper occlusion, physics and other scripts stay
         -- untouched -- this is why the default never breaks the game / camera.
         local function resolveIndex(self, key)
-            if key ~= "Hit" and key ~= "Target" and key ~= "UnitRay" then return PASS_H, PASS_V end
-            if not (typeof(self) == "Instance" and self:IsA("Mouse")) then return PASS_H, PASS_V end
-            if not isArmed() then return PASS_H, PASS_V end
-            local pos, tgt = silentPos, silentTarget
-            if key == "Hit" then return true, CFrame.new(pos) end
-            if key == "Target" then return true, tgt end
-            local cam = Workspace.CurrentCamera
-            if cam then return true, Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit) end
+            -- (A) Mouse aim reads (Hit/Target/UnitRay) -- safe on every game, no caller
+            -- scoping needed (nothing but aim code reads these). v0.0.35 behaviour.
+            if (key == "Hit" or key == "Target" or key == "UnitRay")
+               and typeof(self) == "Instance" and self:IsA("Mouse") then
+                if not isArmed() then return PASS_H, PASS_V end
+                SR.usesMouse = true   -- game aims via the mouse -> suppress camera spoof (dash fix)
+                local pos, tgt = silentPos, silentTarget
+                if key == "Hit" then return true, CFrame.new(pos) end
+                if key == "Target" then return true, tgt end
+                local cam = Workspace.CurrentCamera
+                if cam then return true, Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit) end
+                return PASS_H, PASS_V
+            end
+            -- (B) v0.0.39 FIRE-READ: spoof the aim the instant the WEAPON SCRIPT reads
+            -- Camera.CFrame or the cursor -- scoped by getcallingscript so the real
+            -- camera the renderer/Popper reads is NEVER modified (view stays put). This
+            -- is what lands silent on server-validated shooters that ignore mouse.Hit.
+            -- Identity compares (self == SR.cam / SR.mouse) keep this off the hot path
+            -- and avoid an IsA namecall on every .CFrame read in the game.
+            if isArmed() then
+                if key == "CFrame" and self == SR.cam and SR.camPos and silentPos then
+                    -- NB: no read-rate "view learning" -- a camera-forward FPS weapon
+                    -- reads Camera.CFrame every frame too, so rate can't tell it from the
+                    -- camera controller. spoofAim scopes by PlayerModule (never the view)
+                    -- and, in Auto, to the learned weapon script (never dash/abilities).
+                    if SR.spoofAim(getCS and getCS()) then
+                        -- origin stays REAL (your gun); only the look-direction bends
+                        return true, CFrame.new(SR.camPos, silentPos)
+                    end
+                elseif (key == "X" or key == "Y") and self == SR.mouse and SR.screen then
+                    if SR.spoofAim(getCS and getCS()) then
+                        return true, (key == "X") and SR.screen.X or SR.screen.Y
+                    end
+                end
+            end
             return PASS_H, PASS_V
         end
-        -- AGGRESSIVE (opt-in, default OFF): ALSO redirect the camera-ray methods +
-        -- forward Workspace raycasts. This rewrites EVERY matching ray the game
-        -- casts (weapon validation, camera occlusion/Popper, physics), which is
-        -- what breaks cameras + real-game guns when left on universally -- so it is
-        -- gated behind the Aggressive toggle, for cast-based games only.
         local function resolveNamecall(self, method, args)
-            if not Combat.Silent.Aggressive then return PASS_H, PASS_V end
+            -- v0.0.39 fire-read universal path (always on -- "Forced Magic-Bullet").
+            -- CRITICAL: NOTHING in here may perform a Roblox namecall (a `:` method
+            -- call). getnamecallmethod reads one shared C state, so a nested namecall
+            -- while a real FireServer is dispatching corrupts it and bricks the weapon
+            -- after one shot (this was the "one bullet then the gun dies" bug). Only
+            -- global-fn calls, plain-table reads, property (__index) reads, equality
+            -- and constructors are used below -- no namecalls.
             if not isArmed() then return PASS_H, PASS_V end
-            local pos = silentPos
-            local cam = Workspace.CurrentCamera
-            if not cam then return PASS_H, PASS_V end
-            -- Mouse camera-ray methods
+            -- camera-ray / cursor methods the game uses to build its shot: origin stays
+            -- REAL (SR.camPos), direction bends to the target. spoofAim excludes the
+            -- camera system + suppresses on mouse-based games (dash fix). Namecall-free.
             if method == "ViewportPointToRay" or method == "ScreenPointToRay" then
-                local o = cam.CFrame.Position
-                return true, Ray.new(o, (pos - o).Unit)
-            end
-            -- Direct raycast on Workspace (Vector3 origin + Vector3 direction).
-            -- Redirect ONLY when this looks like a fire ray, not Popper collision.
-            -- Same distinguisher for the two deprecated variants that take a Ray.
-            if self == Workspace then
-                if method == "Raycast" then
-                    local origin, dir = args[1], args[2]
-                    if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
-                        local mag = dir.Magnitude
-                        if mag > 20 then
-                            local ok, dirU = pcall(function() return dir.Unit end)
-                            if ok and (Combat.Silent.ThirdPerson or dirU:Dot(cam.CFrame.LookVector) > 0.5) then
-                                args[2] = (pos - origin).Unit * mag
-                                return "call", args   -- forward to old with mutated args
-                            end
-                        end
-                    end
-                elseif method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist"
-                    or method == "FindPartOnRay" then
-                    local ray = args[1]
-                    if typeof(ray) == "Ray" then
-                        local mag = ray.Direction.Magnitude
-                        if mag > 20 then
-                            local ok, dirU = pcall(function() return ray.Direction.Unit end)
-                            if ok and (Combat.Silent.ThirdPerson or dirU:Dot(cam.CFrame.LookVector) > 0.5) then
-                                args[1] = Ray.new(ray.Origin, (pos - ray.Origin).Unit * mag)
-                                return "call", args
-                            end
-                        end
-                    end
+                if silentPos and SR.camPos and SR.spoofAim(getCS and getCS()) then
+                    local o = SR.camPos
+                    return true, Ray.new(o, (silentPos - o).Unit)
+                end
+            elseif method == "GetMouseLocation" then
+                if SR.screen and SR.spoofAim(getCS and getCS()) then
+                    return true, SR.screen
                 end
             end
             return PASS_H, PASS_V
@@ -5711,6 +5768,12 @@ local Combat = {
         -- (input consumed / gpe ordering), the poll re-sets it so RequireLMB can't get
         -- stuck "not held" while you're firing. Release still comes from InputEnded.
         if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then lmbDown = true end
+        -- v0.0.39: resolve PlayerModule here (namecall-safe) so isView never has to
+        -- FindFirstChild inside a hook (a nested namecall would brick the weapon).
+        if not SR.pm then
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            SR.pm = ps and ps:FindFirstChild("PlayerModule")
+        end
         if not Combat.Silent.Enabled then silentTarget = nil; silentPos = nil; return end
         -- v0.0.34: if the user bound an arm key it must be held (per its mode);
         -- with no key bound (default) this gate is skipped entirely.
@@ -5723,8 +5786,18 @@ local Combat = {
             silentTarget = part
             -- prediction shifts the redirect point for lead; the hooks read silentPos
             silentPos = predicted(plr, part, Combat.Silent.Predict)
+            -- v0.0.39: cache the real camera + target's screen point so the fire-read
+            -- resolvers never re-read Camera.* inside the __index hook (recursion).
+            local cam = Workspace.CurrentCamera
+            if cam then
+                SR.cam = cam
+                SR.camPos = cam.CFrame.Position
+                local sp = cam:WorldToViewportPoint(silentPos)
+                SR.screen = Vector2.new(sp.X, sp.Y)
+            end
         else
             silentTarget = nil; silentPos = nil
+            SR.camPos = nil; SR.screen = nil
         end
     end)
 
@@ -6071,11 +6144,13 @@ local Combat = {
         dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
-        -- v0.0.35: default silent redirects only mouse aim reads (safe everywhere).
-        -- Aggressive also hijacks camera-ray + raycast methods for cast-based guns
-        -- (may break cameras / other games). Third Person only matters with it on.
-        configCheckbox(R["Silent Aim"], "Aggressive Redirect", Combat.Silent.Aggressive, function(v) Combat.Silent.Aggressive = v end)
-        configCheckbox(R["Silent Aim"], "Third Person", Combat.Silent.ThirdPerson, function(v) Combat.Silent.ThirdPerson = v end)
+        -- v0.0.42: Forced Magic-Bullet is universal by default (fire-read always on).
+        -- Spoof Scope tunes the AIM-DIRECTION spoof (Camera.CFrame / cursor); mouse.Hit
+        -- is always spoofed regardless.
+        --   Auto (Learn) = auto-suppress the camera spoof once the game is seen aiming via
+        --                  mouse.Hit (kills dash collateral; camera-forward games keep it).
+        --   Caller-Class = always spoof the camera too (camera-forward games; dash bends).
+        dropdown(R["Silent Aim"], "Spoof Scope", { "Auto (Learn)", "Caller-Class" }, Combat.Silent.SpoofScope, function(v) Combat.Silent.SpoofScope = v end)
         silentSnapCtrl = configCheckbox(R["Silent Aim"], "Snaplines", Combat.Silent.Snaplines, function(v)
             Combat.Silent.Snaplines = v
             if v then Combat.Aim.Snaplines = false; if aimSnapCtrl then aimSnapCtrl.setState(false) end end
