@@ -1,9 +1,9 @@
--- koffee v0.0.43
+-- koffee v0.0.44
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.43"
+Koffee.Version = "0.0.44"
 
 --============================================================
 -- THEME
@@ -4889,9 +4889,9 @@ local Combat = {
         -- on. The ~90% of games that don't read mouse.Hit build their shot from
         -- Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON
         -- SCRIPT makes them, scoped by getcallingscript so the real camera (renderer/
-        -- Popper) is never touched and the view never moves. SpoofScope tunes the camera
-        -- spoof: "Auto (Learn)" auto-suppresses it once the game is seen aiming via
-        -- mouse.Hit (kills dash/ability collateral); "Caller-Class" always spoofs it.
+        -- Popper) is never touched and the view never moves. SpoofScope controls the
+        -- extra Camera.CFrame spoof: "Auto (Learn)" leaves it OFF (dash/ability that read
+        -- the camera behave normally); "Caller-Class" also spoofs it.
         SpoofScope    = "Auto (Learn)",
         _hooked       = false,
     },
@@ -5115,8 +5115,7 @@ local Combat = {
     --   mouse             : the PlayerMouse instance, for identity compares (no IsA).
     --   fire/fireN        : learned weapon scripts + their fire tally (observation).
     --   view/viewN        : learned CUSTOM camera controllers to EXCLUDE + read tally.
-    local SR = { cam = nil, camPos = nil, screen = nil, mouse = nil, pm = nil,
-                 usesMouse = false }
+    local SR = { cam = nil, camPos = nil, screen = nil, mouse = nil, pm = nil }
     local getCS = getcallingscript   -- executor global; nil on runtimes without it
     SR.own = getCS and getCS()       -- Koffee's own script: never spoof its OWN camera
                                      -- reads (the aimbot loop) if silent is co-armed.
@@ -5159,10 +5158,7 @@ local Combat = {
         if not src then return false end
         if src == SR.own then return false end              -- never Koffee's own reads
         if SR.isView(src) then return false end             -- never the camera system
-        if Combat.Silent.SpoofScope ~= "Caller-Class" and SR.usesMouse then
-            return false                                    -- Auto: mouse-based game -> no camera spoof
-        end
-        return true
+        return true                                         -- any non-camera script
     end
     -- v0.0.43: universal remote-arg rewrite. Some games (RIVALS-style hitscan) don't
     -- read the aim at fire time -- they raycast from the REAL screen-center and bake the
@@ -5413,7 +5409,6 @@ local Combat = {
             if (key == "Hit" or key == "Target" or key == "UnitRay")
                and typeof(self) == "Instance" and self:IsA("Mouse") then
                 if not isArmed() then return PASS_H, PASS_V end
-                SR.usesMouse = true   -- game aims via the mouse -> suppress camera spoof (dash fix)
                 local pos, tgt = silentPos, silentTarget
                 if key == "Hit" then return true, CFrame.new(pos) end
                 if key == "Target" then return true, tgt end
@@ -5428,11 +5423,12 @@ local Combat = {
             -- Identity compares (self == SR.cam / SR.mouse) keep this off the hot path
             -- and avoid an IsA namecall on every .CFrame read in the game.
             if isArmed() then
-                if key == "CFrame" and self == SR.cam and SR.camPos and silentPos then
-                    -- NB: no read-rate "view learning" -- a camera-forward FPS weapon
-                    -- reads Camera.CFrame every frame too, so rate can't tell it from the
-                    -- camera controller. spoofAim scopes by PlayerModule (never the view)
-                    -- and, in Auto, to the learned weapon script (never dash/abilities).
+                -- v0.0.44: Camera.CFrame spoof is CALLER-CLASS ONLY. In Auto it's off --
+                -- it only moves the cosmetic viewmodel and it's what bends abilities that
+                -- read the camera (RIVALS' dash -> "dash at people"). The real shot is
+                -- covered by mouse.Hit / camera-rays / the remote-arg rewrite instead.
+                if key == "CFrame" and self == SR.cam and SR.camPos and silentPos
+                   and Combat.Silent.SpoofScope == "Caller-Class" then
                     if SR.spoofAim(getCS and getCS()) then
                         -- origin stays REAL (your gun); only the look-direction bends
                         return true, CFrame.new(SR.camPos, silentPos)
@@ -6242,12 +6238,13 @@ local Combat = {
         dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
-        -- v0.0.42: Forced Magic-Bullet is universal by default (fire-read always on).
-        -- Spoof Scope tunes the AIM-DIRECTION spoof (Camera.CFrame / cursor); mouse.Hit
-        -- is always spoofed regardless.
-        --   Auto (Learn) = auto-suppress the camera spoof once the game is seen aiming via
-        --                  mouse.Hit (kills dash collateral; camera-forward games keep it).
-        --   Caller-Class = always spoof the camera too (camera-forward games; dash bends).
+        -- v0.0.44: Forced Magic-Bullet is universal by default (fire-read always on).
+        -- Silent always spoofs mouse.Hit + camera-rays and rewrites the outgoing shot
+        -- arg. Spoof Scope only controls the extra Camera.CFrame spoof:
+        --   Auto (Learn) = Camera.CFrame NOT spoofed -> abilities/dash that read the
+        --                  camera behave normally (no "dash at people"). Default.
+        --   Caller-Class = ALSO spoof Camera.CFrame (for a game whose gun reads it live);
+        --                  camera-reading dashes/abilities will bend with it.
         dropdown(R["Silent Aim"], "Spoof Scope", { "Auto (Learn)", "Caller-Class" }, Combat.Silent.SpoofScope, function(v) Combat.Silent.SpoofScope = v end)
         silentSnapCtrl = configCheckbox(R["Silent Aim"], "Snaplines", Combat.Silent.Snaplines, function(v)
             Combat.Silent.Snaplines = v
