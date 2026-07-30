@@ -1,9 +1,9 @@
--- koffee v0.0.42
+-- koffee v0.0.43
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.42"
+Koffee.Version = "0.0.43"
 
 --============================================================
 -- THEME
@@ -5164,6 +5164,85 @@ local Combat = {
         end
         return true
     end
+    -- v0.0.43: universal remote-arg rewrite. Some games (RIVALS-style hitscan) don't
+    -- read the aim at fire time -- they raycast from the REAL screen-center and bake the
+    -- result into the FireServer args (the camera spoof only moves the cosmetic
+    -- viewmodel). So we find the arg that points where the camera REALLY looks -- a FAR
+    -- hit-position down the real ray, an aim CFrame, or a hit-PART on a real enemy -- and
+    -- bend it to the target. We deliberately DON'T touch bare unit-direction vectors
+    -- (those alias movement -> the old "dash at people" collateral). Self-gating: if a
+    -- read-spoof already redirected the shot, the arg no longer points down the real
+    -- centre so nothing matches. namecall-free: typeof + Vector3/CFrame FIELD reads +
+    -- arithmetic + .Parent walk + plain-table lookups.
+    local AIM_DOT = 0.985
+    local function v3dot(a, b) return a.X * b.X + a.Y * b.Y + a.Z * b.Z end
+    local function v3len(a) return math.sqrt(a.X * a.X + a.Y * a.Y + a.Z * a.Z) end
+    local function enemyAncestor(inst)
+        local a, n = inst, 0
+        while a and n < 10 do
+            if SR.enemyChars and SR.enemyChars[a] then return true end
+            a = a.Parent; n = n + 1
+        end
+        return false
+    end
+    local function tryAimVal(v)
+        local t = typeof(v)
+        if t == "Vector3" then
+            local d = v - SR.camPos
+            local dl = v3len(d)
+            if dl > 12 and (v3dot(d, SR.camLook) / dl) > AIM_DOT then
+                return SR.tgtPos, true                      -- far hit-position on the real ray
+            end
+        elseif t == "CFrame" then
+            if v3dot(v.LookVector, SR.camLook) > AIM_DOT then
+                return CFrame.new(v.Position, SR.tgtPos), true
+            end
+        elseif t == "Instance" and SR.tgtPart then
+            if enemyAncestor(v) then
+                if v.ClassName == "Humanoid" and SR.tgtHum then return SR.tgtHum, true end
+                return SR.tgtPart, true                     -- hit-part on a real enemy
+            end
+        end
+        return v, false
+    end
+    function SR.rewriteAim(args)
+        if not (SR.camPos and SR.camLook and SR.tgtPos) then return false end
+        -- optional capture (getgenv().KoffeeAimDebug = true): logs each shot-remote's
+        -- arg shapes to getgenv().KoffeeAimLog so the real encoding can be inspected.
+        -- Off by default -> zero overhead. namecall-free (string/table/field ops only).
+        local g = getgenv and getgenv()
+        if g and g.KoffeeAimDebug then
+            local log = g.KoffeeAimLog
+            if type(log) ~= "table" then log = {}; g.KoffeeAimLog = log end
+            if #log < 24 then
+                local d = {}
+                for i = 1, args.n do
+                    local v = args[i]; local t = typeof(v)
+                    if t == "Vector3" then
+                        local w = v - SR.camPos; local wl = v3len(w)
+                        d[i] = "V3(dist="..string.format("%.0f", wl)..",dot="..(wl > 0.01 and string.format("%.2f", v3dot(w, SR.camLook) / wl) or "?")..")"
+                    elseif t == "CFrame" then d[i] = "CF(dot="..string.format("%.2f", v3dot(v.LookVector, SR.camLook))..")"
+                    elseif t == "Instance" then d[i] = "Inst:"..v.ClassName..(enemyAncestor(v) and "*ENEMY" or "")
+                    elseif t == "table" then d[i] = "table"
+                    else d[i] = t end
+                end
+                log[#log + 1] = table.concat(d, " | ")
+            end
+        end
+        local changed = false
+        for i = 1, args.n do
+            local nv, ch = tryAimVal(args[i])
+            if ch then
+                args[i] = nv; changed = true
+            elseif typeof(args[i]) == "table" then
+                for k, vv in pairs(args[i]) do
+                    local nv2, ch2 = tryAimVal(vv)
+                    if ch2 then args[i][k] = nv2; changed = true end
+                end
+            end
+        end
+        return changed
+    end
 
     local function inputMatches(input, bind)
         if typeof(bind) == "EnumItem" then
@@ -5375,6 +5454,14 @@ local Combat = {
             -- global-fn calls, plain-table reads, property (__index) reads, equality
             -- and constructors are used below -- no namecalls.
             if not isArmed() then return PASS_H, PASS_V end
+            -- v0.0.43 UNIVERSAL: rewrite a baked-in aim arg on the outgoing shot remote
+            -- (games that raycast from the real screen-center + send the hit). Self-gating
+            -- + namecall-free. Runs for every FireServer/InvokeServer while armed; only
+            -- forwards a mutated call when an aim-matching arg was actually found.
+            if method == "FireServer" or method == "InvokeServer" then
+                if SR.rewriteAim(args) then return "call", args end
+                return PASS_H, PASS_V
+            end
             -- camera-ray / cursor methods the game uses to build its shot: origin stays
             -- REAL (SR.camPos), direction bends to the target. spoofAim excludes the
             -- camera system + suppresses on mouse-based games (dash fix). Namecall-free.
@@ -5792,12 +5879,23 @@ local Combat = {
             if cam then
                 SR.cam = cam
                 SR.camPos = cam.CFrame.Position
+                SR.camLook = cam.CFrame.LookVector   -- REAL look (Koffee caller is excluded)
                 local sp = cam:WorldToViewportPoint(silentPos)
                 SR.screen = Vector2.new(sp.X, sp.Y)
             end
+            -- v0.0.43: target refs + enemy-character set for the remote-arg rewrite.
+            SR.tgtPart = part
+            SR.tgtPos  = part.Position
+            SR.tgtHum  = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+            local ec = {}
+            for _, p2 in ipairs(Players:GetPlayers()) do
+                if p2 ~= LocalPlayer and p2.Character then ec[p2.Character] = true end
+            end
+            SR.enemyChars = ec
         else
             silentTarget = nil; silentPos = nil
-            SR.camPos = nil; SR.screen = nil
+            SR.camPos = nil; SR.screen = nil; SR.camLook = nil
+            SR.tgtPart = nil; SR.tgtPos = nil; SR.tgtHum = nil; SR.enemyChars = nil
         end
     end)
 
