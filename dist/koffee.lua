@@ -1,25 +1,27 @@
--- koffee v0.0.47
+-- koffee v0.0.48
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.47"
+Koffee.Version = "0.0.48"
 
 --============================================================
 -- THEME
 --============================================================
 local Theme = {
+    -- v0.0.48 premium pass: deeper background for real contrast against the panels,
+    -- borders pulled up so card edges read crisp (not muddy), accent a touch brighter.
     Palette = {
-        Background    = Color3.fromRGB(20, 16, 14),
-        Panel         = Color3.fromRGB(30, 24, 21),
-        PanelElevated = Color3.fromRGB(42, 34, 30),
+        Background    = Color3.fromRGB(15, 12, 10),
+        Panel         = Color3.fromRGB(27, 22, 19),
+        PanelElevated = Color3.fromRGB(41, 33, 29),
         Pill          = Color3.fromRGB(50, 40, 34),
-        Border        = Color3.fromRGB(47, 38, 33),
-        BorderSubtle  = Color3.fromRGB(35, 28, 25),
-        Text          = Color3.fromRGB(240, 232, 220),
-        TextMuted     = Color3.fromRGB(138, 125, 112),
-        TextFaint     = Color3.fromRGB(90, 82, 74),
-        Accent        = Color3.fromRGB(212, 145, 90),
+        Border        = Color3.fromRGB(60, 49, 42),
+        BorderSubtle  = Color3.fromRGB(40, 32, 28),
+        Text          = Color3.fromRGB(242, 234, 223),
+        TextMuted     = Color3.fromRGB(142, 129, 116),
+        TextFaint     = Color3.fromRGB(94, 85, 77),
+        Accent        = Color3.fromRGB(217, 150, 95),
         Success       = Color3.fromRGB(127, 190, 143),
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
@@ -108,7 +110,8 @@ local Theme = {
         WindowHeight = 820,
         TabBarHeight = 40,
     },
-    Radius = { Small = 4, Medium = 6, Large = 8, XLarge = 12 },
+    -- v0.0.48: tighter radii read sharper / more premium than the previous soft-round set
+    Radius = { Small = 3, Medium = 5, Large = 7, XLarge = 10 },
     -- v0.0.10 bumped +2 for Nunito (it rendered small). v0.0.30: Proxima Soft Bold
     -- has a larger apparent size than Nunito at the same point size, so we pull the
     -- whole scale back down -2 to match the previous (Nunito) visual weight.
@@ -1317,8 +1320,19 @@ local function panel(parent, title)
         ZIndex = 33,
         Parent = parent,
     }, {
-        corner(Theme.Radius.XLarge),   -- v0.0.22: rounder feature boxes (per Matcha)
+        corner(Theme.Radius.XLarge),
         stroke(Theme.Palette.BorderSubtle),
+        -- v0.0.48: subtle top-lit gradient for depth. A UIGradient on a plain Frame
+        -- only tints THIS frame's own background fill (children render on top,
+        -- untouched -- unlike a CanvasGroup, which flattens + tints everything). The
+        -- ramp is grayscale so it just darkens the card's lower half ~10%, giving each
+        -- panel a soft light-from-above read instead of a flat slab.
+        new("UIGradient", {
+            Rotation = 90,
+            Color = ColorSequence.new(
+                Color3.fromRGB(255, 255, 255),
+                Color3.fromRGB(226, 226, 226)),
+        }),
         new("UIPadding", {
             PaddingTop    = UDim.new(0, 14),
             PaddingBottom = UDim.new(0, 14),
