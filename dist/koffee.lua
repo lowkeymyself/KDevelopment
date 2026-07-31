@@ -1,9 +1,9 @@
--- koffee v0.0.46
+-- koffee v0.0.47
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.46"
+Koffee.Version = "0.0.47"
 
 --============================================================
 -- THEME
@@ -2336,6 +2336,10 @@ local function dropdown(parent, label, options, initial, onChange)
         button = btn,
         setValue = function(v) valueLbl.Text = v end,
         close = function() closeList(true) end,
+        -- v0.0.47: full teardown -- the popup `list` lives on popupScreen (not a
+        -- child of wrap), so destroying the wrap alone leaks it. Callers that
+        -- rebuild a dropdown (e.g. the config manager's live selector) use this.
+        destroy = function() closeList(true); list:Destroy(); wrap:Destroy() end,
     }
 end
 
@@ -6496,115 +6500,156 @@ end)
 addTab("Configs", function(root)
     local CIO = Koffee.Config
 
-    -- small pill button helper scoped to this tab
+    -- v0.0.47: pill button whose resting colour can flip at runtime (the `auto`
+    -- button toggles accent/muted). Base colour is stored as an attribute so the
+    -- MouseLeave handler always restores the CURRENT base, not the creation-time one.
     local function mkBtn(parent, text, width, onClick, accent)
         local b = new("TextButton", {
             Text = text, AutoButtonColor = false,
             FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-            TextColor3 = accent and Theme.Palette.Accent or Theme.Palette.TextMuted,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0, Size = UDim2.new(0, width, 0, 26),
             ZIndex = 36, Parent = parent,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        b:SetAttribute("accentBase", accent and true or false)
+        local function base()
+            return b:GetAttribute("accentBase") and Theme.Palette.Accent or Theme.Palette.TextMuted
+        end
+        b.TextColor3 = base()
         b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
-        b.MouseLeave:Connect(function()
-            tween(b, Theme.Animation.Fast, { TextColor3 = accent and Theme.Palette.Accent or Theme.Palette.TextMuted })
-        end)
+        b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = base() }) end)
         b.MouseButton1Click:Connect(onClick)
         return b
     end
 
-    --== save card ==--
-    local saveCard = panel(root, "config manager")
+    --== manager card ==--
+    local card = panel(root, "config manager")
 
     local status = new("TextLabel", {
-        Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        Text = "select a config, or type a name to create one",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 35, Parent = saveCard,
+        TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 1, ZIndex = 35, Parent = card,
     })
     local function setStatus(msg, ok)
         status.Text = msg
         status.TextColor3 = ok and Theme.Palette.Success or Theme.Palette.Danger
     end
 
-    local topRow = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, ZIndex = 35, Parent = saveCard,
+    -- selected-config state. The dropdown is REBUILT from disk on any data change
+    -- (create / delete / refresh) so it always mirrors what's actually saved.
+    local selectedName, hasConfigs, currentDD = nil, false, nil
+    local rebuildManager   -- fwd decl
+
+    local ddHolder = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1,
+        LayoutOrder = 2, ZIndex = 35, Parent = card,
+    })
+
+    -- action row for the SELECTED config
+    local actionRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+        LayoutOrder = 3, ZIndex = 35, Parent = card,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+    -- new-config row
+    local newRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1,
+        LayoutOrder = 4, ZIndex = 35, Parent = card,
     }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
         Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
         SortOrder = Enum.SortOrder.LayoutOrder }) })
     local nameBox = new("TextBox", {
-        Text = "", PlaceholderText = "config name...", ClearTextOnFocus = false,
+        Text = "", PlaceholderText = "new config name...", ClearTextOnFocus = false,
         FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
         BorderSizePixel = 0, Size = UDim2.new(1, -150, 1, 0),
-        TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, ZIndex = 36, Parent = topRow,
+        TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, ZIndex = 36, Parent = newRow,
     }, { corner(5), stroke(Theme.Palette.BorderSubtle),
         new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
 
-    -- forward-declared so the buttons can call the list refresher
-    local refreshList
-    mkBtn(topRow, "save", 66, function()
-        local ok, msg = CIO.save(nameBox.Text)
-        if ok then setStatus("saved: " .. tostring(msg), true); nameBox.Text = ""; refreshList()
-        else setStatus("save failed: " .. tostring(msg), false) end
-    end, true).LayoutOrder = 2
-    mkBtn(topRow, "refresh", 70, function() refreshList() end).LayoutOrder = 3
-
-    --== list card ==--
-    local listCard = panel(root, "saved configs")
-    local listWrap = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1, ZIndex = 35, Parent = listCard,
-    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
-        Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
-    local emptyLbl = new("TextLabel", {
-        Text = "no saved configs", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-        TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 0, 20), TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 35, Parent = listCard,
-    })
-
-    refreshList = function()
-        for _, c in ipairs(listWrap:GetChildren()) do
-            if c:IsA("Frame") then c:Destroy() end
-        end
-        local names = CIO.list()
-        local auto = CIO.getAuto()
-        emptyLbl.Visible = (#names == 0)
-        for i, name in ipairs(names) do
-            local row = new("Frame", {
-                Name = "cfgrow", Size = UDim2.new(1, 0, 0, 30), LayoutOrder = i,
-                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.35,
-                BorderSizePixel = 0, ZIndex = 35, Parent = listWrap,
-            }, { corner(5), new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 6) }),
-                new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
-                    Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
-                    HorizontalAlignment = Enum.HorizontalAlignment.Right,
-                    SortOrder = Enum.SortOrder.LayoutOrder }) })
-            new("TextLabel", {
-                Text = name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
-                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
-                Size = UDim2.new(1, -210, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
-                TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 1, ZIndex = 36, Parent = row,
-            })
-            mkBtn(row, "load", 58, function()
-                local ok, msg = CIO.load(name)
-                if ok then setStatus("loaded: " .. tostring(name), true)
-                else setStatus("load failed: " .. tostring(msg), false) end
-            end, true).LayoutOrder = 2
-            mkBtn(row, (auto == name) and "auto*" or "auto", 58, function()
-                if CIO.getAuto() == name then CIO.setAuto(nil); setStatus("auto-load cleared", true)
-                else CIO.setAuto(name); setStatus("auto-load: " .. name, true) end
-                refreshList()
-            end, auto == name).LayoutOrder = 3
-            mkBtn(row, "del", 46, function()
-                CIO.delete(name); setStatus("deleted: " .. name, true); refreshList()
-            end).LayoutOrder = 4
-        end
+    -- the `auto` button reflects whether the selected config is the auto-load one
+    local autoBtn
+    local function refreshAutoLabel()
+        if not autoBtn then return end
+        local isAuto = selectedName ~= nil and CIO.getAuto() == selectedName
+        autoBtn.Text = isAuto and "auto*" or "auto"
+        autoBtn:SetAttribute("accentBase", isAuto)
+        autoBtn.TextColor3 = isAuto and Theme.Palette.Accent or Theme.Palette.TextMuted
     end
-    refreshList()
+
+    local function needSel()
+        if hasConfigs and selectedName then return true end
+        setStatus("no config selected", false)
+        return false
+    end
+
+    -- selected-config actions (read selectedName live)
+    mkBtn(actionRow, "load", 60, function()
+        if not needSel() then return end
+        local ok, msg = CIO.load(selectedName)
+        if ok then setStatus("loaded: " .. tostring(selectedName), true)
+        else setStatus("load failed: " .. tostring(msg), false) end
+    end, true).LayoutOrder = 1
+    mkBtn(actionRow, "overwrite", 90, function()
+        if not needSel() then return end
+        local ok, msg = CIO.save(selectedName)   -- same filename -> overwrites in place
+        if ok then setStatus("overwrote: " .. tostring(selectedName), true)
+        else setStatus("overwrite failed: " .. tostring(msg), false) end
+    end).LayoutOrder = 2
+    mkBtn(actionRow, "delete", 66, function()
+        if not needSel() then return end
+        local nm = selectedName
+        CIO.delete(nm)
+        selectedName = nil
+        rebuildManager()
+        setStatus("deleted: " .. nm, true)
+    end).LayoutOrder = 3
+    autoBtn = mkBtn(actionRow, "auto", 58, function()
+        if not needSel() then return end
+        if CIO.getAuto() == selectedName then CIO.setAuto(nil); setStatus("auto-load cleared", true)
+        else CIO.setAuto(selectedName); setStatus("auto-load: " .. selectedName, true) end
+        refreshAutoLabel()
+    end)
+    autoBtn.LayoutOrder = 4
+
+    -- new-config actions
+    mkBtn(newRow, "create", 66, function()
+        local ok, msg = CIO.save(nameBox.Text)
+        if ok then
+            selectedName = msg
+            nameBox.Text = ""
+            rebuildManager()
+            setStatus("created: " .. tostring(msg), true)
+        else setStatus("create failed: " .. tostring(msg), false) end
+    end, true).LayoutOrder = 2
+    mkBtn(newRow, "refresh", 66, function() rebuildManager(); setStatus("refreshed", true) end).LayoutOrder = 3
+
+    -- (re)build the selector from disk, keeping the current selection valid.
+    rebuildManager = function()
+        local names = CIO.list()
+        hasConfigs = (#names > 0)
+        if selectedName then
+            local found = false
+            for _, n in ipairs(names) do if n == selectedName then found = true; break end end
+            if not found then selectedName = nil end
+        end
+        if not selectedName and hasConfigs then selectedName = names[1] end
+
+        if currentDD then currentDD.destroy(); currentDD = nil end
+        local options = hasConfigs and names or { "no saved configs" }
+        currentDD = dropdown(ddHolder, "saved configs", options,
+            selectedName or "no saved configs", function(v)
+                if hasConfigs then selectedName = v; refreshAutoLabel() end
+            end)
+        refreshAutoLabel()
+    end
+
+    rebuildManager()
 end)
 
 addTab("NPC")
