@@ -1,9 +1,9 @@
--- koffee v0.0.48
+-- koffee v0.0.49
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.48"
+Koffee.Version = "0.0.49"
 
 --============================================================
 -- THEME
@@ -1300,7 +1300,7 @@ local function rebuildTabPanel(name)
 end
 rebuildConfigTabs = function()
     for _, m in pairs(Modules) do m.Watchers = {} end
-    for _, n in ipairs({ "Visuals", "Combat", "World", "Options" }) do
+    for _, n in ipairs({ "Visuals", "Combat", "World", "Character", "Options" }) do
         rebuildTabPanel(n)
     end
 end
@@ -4887,6 +4887,35 @@ registerModule("customtime", "Custom Time",
 )
 
 --============================================================
+-- MOVEMENT MODULES (v0.0.49)
+-- No Jump Cooldown / Infinite Jump. Both defeat client anti-jumps that throttle
+-- by watching Humanoid.Jump and forcing it false (Prison Life's AntiJump
+-- token-bucket, and most others share the shape). We never touch Humanoid.Jump --
+-- we drive the state machine via ChangeState(Jumping), so their
+-- GetPropertyChangedSignal("Jump") watcher never fires. Nothing to throttle.
+--   Infinite Jump   = jump on every request, air included (the superset).
+--   No Jump Cooldown = same bypass but grounded-only (kills the throttle, keeps gravity).
+-- One shared JumpRequest handler reads both module states -- OnEnable/OnDisable are
+-- no-ops because there's no per-enable setup; the handler is always live and returns
+-- immediately when both are off. JumpRequest is the universal jump signal (keyboard
+-- space / mobile button / gamepad) and the humanoid is re-resolved per press, so it
+-- is respawn-safe for free.
+--============================================================
+registerModule("nojumpcd", "No Jump Cooldown", function() end, function() end)
+registerModule("infjump",  "Infinite Jump",    function() end, function() end)
+
+UserInputService.JumpRequest:Connect(function()
+    local inf = Modules.infjump  and Modules.infjump.Enabled
+    local njc = Modules.nojumpcd and Modules.nojumpcd.Enabled
+    if not (inf or njc) then return end
+    local char = LocalPlayer.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if not inf and hum.FloorMaterial == Enum.Material.Air then return end
+    hum:ChangeState(Enum.HumanoidStateType.Jumping)
+end)
+
+--============================================================
 -- TABS: build panels
 --============================================================
 -- tab order (per he): combat visuals world character options configs npc teams
@@ -6495,7 +6524,11 @@ addTab("World", function(root)
     end)
 end)
 
-addTab("Character")
+addTab("Character", function(root)
+    local movement = panel(root, "movement")
+    moduleCheckbox(movement, "No Jump Cooldown", "nojumpcd")
+    moduleCheckbox(movement, "Infinite Jump",    "infjump")
+end)
 
 --============================================================
 -- OPTIONS TAB (v0.0.34)
