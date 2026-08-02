@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.68"
+Koffee.Version = "0.0.69"
 
 -- THEME
 local Theme = {
@@ -5854,6 +5854,9 @@ local Combat = {
     local silentHeld = false   -- v0.0.34: optional silent arm key (nil key = always armed)
     local lmbDown    = false   -- v0.0.35: tracked LMB state (read inside the silent
                                -- hooks; IsMouseButtonPressed is a namecall + illegal there)
+    local lmbClickAt = 0       -- v0.0.69: os.clock() of the last LMB press -> a short Pos Spoof
+                               -- fire-window, so a weapon that reads a frame or two AFTER the
+                               -- click (or fires multiple pellets) still gets the spoofed origin
     local trigHeld   = false
     local trigBusy   = false
     local silentTarget = nil   -- the part (for Mouse.Target)
@@ -6077,7 +6080,9 @@ local Combat = {
         -- Doing it every frame corrupted the viewmodel (FpsController reads Camera.CFrame for
         -- BOTH the arms/gun render AND the shot) -- that broke the aim entirely. Gated to the
         -- fire frame, the viewmodel is normal between shots and only the shot gets moved.
-        local function posFire() return posArmed() and lmbDown end
+        local function posFire()
+            return posArmed() and (lmbDown or (os.clock() - lmbClickAt) < 0.12)
+        end
         -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
         -- any wall between you and them), aimed AT the target -> the client raycast hits them
         -- with no wall in the way. Uses cached camPos (no Camera re-read inside the hook).
@@ -6630,7 +6635,7 @@ local Combat = {
     UserInputService.InputBegan:Connect(function(input, gpe)
         -- v0.0.35: track LMB regardless of gpe so the silent redirect's RequireLMB
         -- gate is accurate (this flag replaces IsMouseButtonPressed polling).
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then lmbDown = true end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then lmbDown = true; lmbClickAt = os.clock() end
         if pendingActivation then
             local it = input.UserInputType
             -- v0.0.36: ESC CLEARS the bind (no activation key), not just cancels.
@@ -6667,6 +6672,15 @@ local Combat = {
         if Combat.Trigger.Enabled and inputMatches(input, Combat.Trigger.ActivationKey) then
             if Combat.Trigger.ActivationMode == "Toggle" then trigHeld = not trigHeld else trigHeld = true end
         end
+    end)
+    -- v0.0.69: a SECOND click signal off the PlayerMouse. It fires in a different order than
+    -- UserInputService.InputBegan, so on games where the weapon's InputBegan runs before ours
+    -- this may set lmbDown earlier (helps single-shot pistols/snipers where the game processes
+    -- the click first). Not a full fix -- true pre-arming needs the external program.
+    pcall(function()
+        local m = LocalPlayer:GetMouse()
+        m.Button1Down:Connect(function() lmbDown = true; lmbClickAt = os.clock() end)
+        m.Button1Up:Connect(function() lmbDown = false end)
     end)
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then lmbDown = false end
