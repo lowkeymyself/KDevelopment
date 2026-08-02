@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.56"
+Koffee.Version = "0.0.57"
 
 -- THEME
 local Theme = {
@@ -5277,7 +5277,7 @@ registerModule("antifling", "Antifling", function() end, function() end)   -- no
 --     TORSO space, so both shoulders shift the same world direction (not mirrored).
 --   Character Material: force Material + Color on every BasePart; snapshot+restore.
 local Visual = {
-    Arms     = { X = 0, Y = 0, Z = 0 },
+    Arms     = { X = 0, Y = 0, Z = 0, RX = 0, RY = 0, RZ = 0 },
     Material = { Name = "Neon", Color = Color3.fromRGB(212, 145, 90) },
 }
 registerConfig("character_visual", Visual)
@@ -5294,7 +5294,8 @@ local function applyArms()
             if d:IsA("Motor6D") and SHOULDER[d.Name] then armState.joints[d] = d.C0 end
         end
     end
-    local off = CFrame.new(Visual.Arms.X, Visual.Arms.Y, Visual.Arms.Z)
+    local A = Visual.Arms
+    local off = CFrame.new(A.X, A.Y, A.Z) * CFrame.Angles(math.rad(A.RX), math.rad(A.RY), math.rad(A.RZ))
     for j, orig in pairs(armState.joints) do
         if j.Parent then j.C0 = off * orig end
     end
@@ -5423,6 +5424,9 @@ Koffee._characterTab = function(root)
     slider(vis, "Arm X", -50, 50, Visual.Arms.X, 1, function(v) Visual.Arms.X = v end)
     slider(vis, "Arm Y", -50, 50, Visual.Arms.Y, 1, function(v) Visual.Arms.Y = v end)
     slider(vis, "Arm Z", -50, 50, Visual.Arms.Z, 1, function(v) Visual.Arms.Z = v end)
+    slider(vis, "Arm Rot X", -180, 180, Visual.Arms.RX, 0, function(v) Visual.Arms.RX = v end)
+    slider(vis, "Arm Rot Y", -180, 180, Visual.Arms.RY, 0, function(v) Visual.Arms.RY = v end)
+    slider(vis, "Arm Rot Z", -180, 180, Visual.Arms.RZ, 0, function(v) Visual.Arms.RZ = v end)
 end
 
 end)()
