@@ -1,9 +1,9 @@
--- koffee v0.0.70
+-- koffee v0.0.71
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.70"
+Koffee.Version = "0.0.71"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -5971,8 +5971,7 @@ local Combat = {
         if not src then return false end
         if src == SR.own then return false end              -- never Koffee's own reads
         if SR.isView(src) then return false end             -- never the standard camera system
-        if SR.ctrl[src] then return false end               -- never a learned camera/position controller
-        return true                                         -- only pure-reader (shooting) code
+        return true                                         -- any non-camera script (see canSpoof for the controller gate)
     end
 
     local function inputMatches(input, bind)
@@ -6168,6 +6167,22 @@ local Combat = {
             d = d.Unit
             return silentPos - d * 3, d
         end
+        -- v0.0.71: the real controller answer. A script can BOTH drive the camera/root
+        -- (viewmodel render, every frame) AND read them to build its shot -- same script,
+        -- so we can't just exclude it (v0.0.70 did, and the shot lost the spoof too). The
+        -- only thing that separates a RENDER read from a FIRE read in one script is TIMING:
+        -- the fire read happens on/right-after the click. So a learned controller is spoofed
+        -- ONLY on the click frame (+120ms), never between shots -> view/viewmodel stay normal,
+        -- the shot still lands. A PURE-READER weapon script (separate from any camera writer)
+        -- has no view to protect, so it's spoofed freely per the normal gate (continuous when
+        -- Require Left-Click is off).
+        local function canSpoof(src)
+            if not SR.spoofAim(src) then return false end       -- Koffee / standard camera: never
+            if SR.ctrl[src] then                                -- same script also controls cam/root:
+                return lmbDown or (os.clock() - lmbClickAt) < 0.12   -- only on the click frame
+            end
+            return true                                         -- pure reader: free to spoof
+        end
         -- optional diagnostic: getgenv().KoffeePosDebug -> throttled log of what got spoofed
         -- for which calling script (confirms the weapon's reads are being caught).
         local lastDbg = 0
@@ -6210,7 +6225,7 @@ local Combat = {
                 --     looking at it, so a camera-origin gun raycasts into them through the wall
                 --     (WALLBANG). Only on the shot frame, so the viewmodel stays normal.
                 if key == "CFrame" and self == SR.cam and SR.camPos and silentPos then
-                    if SR.spoofAim(getCS and getCS()) then
+                    if canSpoof(getCS and getCS()) then
                         dbg("Camera.CFrame")
                         if posFire() then
                             local o, d = wallShot(); return true, CFrame.new(o, o + d)
@@ -6218,7 +6233,7 @@ local Combat = {
                         return true, CFrame.new(SR.camPos, silentPos)
                     end
                 elseif (key == "X" or key == "Y") and self == SR.mouse and SR.screen then
-                    if SR.spoofAim(getCS and getCS()) then
+                    if canSpoof(getCS and getCS()) then
                         return true, (key == "X") and SR.screen.X or SR.screen.Y
                     end
                 end
@@ -6233,12 +6248,12 @@ local Combat = {
                 local sp = SR.spoofParts
                 if sp and sp[self] then
                     if key == "Position" or key == "WorldPosition" then
-                        if SR.spoofAim(getCS and getCS()) then dbg("part.Position"); return true, silentPos end
+                        if canSpoof(getCS and getCS()) then dbg("part.Position"); return true, silentPos end
                     elseif key == "CFrame" or key == "WorldCFrame" then
-                        if SR.spoofAim(getCS and getCS()) then dbg("part.CFrame"); return true, CFrame.new(silentPos) end
+                        if canSpoof(getCS and getCS()) then dbg("part.CFrame"); return true, CFrame.new(silentPos) end
                     end
                 elseif self == SR.mouse and key == "Origin" then
-                    if SR.spoofAim(getCS and getCS()) then return true, CFrame.new(silentPos) end
+                    if canSpoof(getCS and getCS()) then return true, CFrame.new(silentPos) end
                 end
             end
             return PASS_H, PASS_V
@@ -6254,7 +6269,7 @@ local Combat = {
             -- v0.0.64 POS SPOOF: Character:GetPivot()/GetPrimaryPartCFrame -> target CFrame,
             -- BEFORE the LMB gate (Pos Spoof doesn't require left-click). Namecall-free.
             if method == "GetPivot" or method == "GetPrimaryPartCFrame" then
-                if posFire() and self == SR.char and SR.spoofAim(getCS and getCS()) then
+                if posFire() and self == SR.char and canSpoof(getCS and getCS()) then
                     return true, CFrame.new(silentPos)
                 end
                 return PASS_H, PASS_V
@@ -6264,12 +6279,12 @@ local Combat = {
             -- the target; on the Pos Spoof fire frame the ORIGIN moves in front of the target
             -- (wallbang), else real (SR.camPos). spoofAim excludes the camera + Koffee. Namecall-free.
             if method == "ViewportPointToRay" or method == "ScreenPointToRay" then
-                if silentPos and SR.camPos and SR.spoofAim(getCS and getCS()) then
+                if silentPos and SR.camPos and canSpoof(getCS and getCS()) then
                     if posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
                     return true, Ray.new(SR.camPos, (silentPos - SR.camPos).Unit)
                 end
             elseif method == "GetMouseLocation" then
-                if SR.screen and SR.spoofAim(getCS and getCS()) then
+                if SR.screen and canSpoof(getCS and getCS()) then
                     return true, SR.screen
                 end
             end
