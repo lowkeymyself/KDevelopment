@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.52"
+Koffee.Version = "0.0.53"
 
 -- THEME
 local Theme = {
@@ -6267,6 +6267,41 @@ local Combat = {
         end
     end)
 
+    -- v0.0.53: CFRAME DESYNC method. When Silent Method == "CFrame Desync", shove the
+    -- LOCAL character onto the locked target every physics step (the server replicates
+    -- you point-blank -> hits land at any range / through walls), then snap back to the
+    -- real CFrame before the next render so YOUR view + character never appear to move.
+    -- Set in Heartbeat (post-physics -> no fling; replicates on the network tick),
+    -- restore in RenderStepped (pre-render -> camera never sees the shove). Opt-in +
+    -- armed-only; runs alongside the read-spoof. Experimental: server-authoritative
+    -- games that re-validate the shooter position server-side will ignore it.
+    do
+        local realCF = nil
+        local function dArmed()
+            if Combat.Silent.Method ~= "CFrame Desync" then return false end
+            if not (Combat.Silent.Enabled and silentTarget and silentTarget.Parent) then return false end
+            if Combat.Silent.ActivationKey and not silentHeld then return false end
+            if Combat.Silent.RequireLMB and not lmbDown then return false end
+            return true
+        end
+        RunService.Heartbeat:Connect(function()
+            if not dArmed() then realCF = nil; return end
+            local c = LocalPlayer.Character
+            local hrp = c and c:FindFirstChild("HumanoidRootPart")
+            local tp = silentTarget
+            if not (hrp and tp and tp.Parent) then realCF = nil; return end
+            realCF = hrp.CFrame
+            hrp.CFrame = CFrame.new(tp.Position)   -- point-blank, upright, any distance
+        end)
+        RunService.RenderStepped:Connect(function()
+            if not realCF then return end
+            local c = LocalPlayer.Character
+            local hrp = c and c:FindFirstChild("HumanoidRootPart")
+            if hrp then hrp.CFrame = realCF end
+            realCF = nil
+        end)
+    end
+
     --== input: rebind capture + activation ==--
     UserInputService.InputBegan:Connect(function(input, gpe)
         -- v0.0.35: track LMB regardless of gpe so the silent redirect's RequireLMB
@@ -6607,7 +6642,7 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end)
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
-        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet" }, Combat.Silent.Method,
+        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "CFrame Desync" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
