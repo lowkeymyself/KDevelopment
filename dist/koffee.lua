@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.65"
+Koffee.Version = "0.0.66"
 
 -- THEME
 local Theme = {
@@ -5325,7 +5325,7 @@ local function applyMaterial()
     local c = char(); if not c then return end
     local mat, col = matEnum(), Visual.Material.Color
     for _, p in ipairs(c:GetDescendants()) do
-        if p:IsA("BasePart") then
+        if p:IsA("BasePart") and not p:GetAttribute("KFF") then   -- skip forcefield shells
             if not matSnap[p] then
                 matSnap[p] = { p.Material, p.Color, p:IsA("MeshPart") and p.TextureID or nil }
             end
@@ -5350,11 +5350,52 @@ local function restoreMaterial()
     matSnap = {}
 end
 
+-- v0.0.66: Static Forcefield -- a forcefield-material SHELL layered over the character (a
+-- "second material": the base Character Material stays underneath). Clones each visible
+-- part's shape, sets Material = ForceField, welds it on. Marked with the KFF attribute so
+-- Character Material skips it. The ForceField MATERIAL is the static hex shell, not the
+-- animated spawn-protection bubble.
+local ffShell, ffChar = {}, nil
+local function clearFF()
+    for _, shell in pairs(ffShell) do pcall(function() shell:Destroy() end) end
+    ffShell, ffChar = {}, nil
+end
+local function applyFF()
+    local c = char(); if not c then return end
+    if ffChar ~= c then clearFF(); ffChar = c end
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") and not ffShell[p] and not p:GetAttribute("KFF")
+           and p.Name ~= "HumanoidRootPart" and p.Transparency < 1 then
+            local ok, shell = pcall(function()
+                local s = p:Clone()
+                for _, ch in ipairs(s:GetChildren()) do
+                    if not (ch:IsA("SpecialMesh") or ch:IsA("DataModelMesh")) then ch:Destroy() end
+                end
+                s.Name = KID.name("ff")
+                s:SetAttribute("KFF", true)
+                s.Material = Enum.Material.ForceField
+                s.Color = Color3.fromRGB(120, 180, 255)
+                s.Transparency = 0; s.Reflectance = 0; s.CastShadow = false
+                s.CanCollide, s.CanQuery, s.CanTouch = false, false, false
+                s.Massless, s.Anchored = true, false
+                s.CFrame = p.CFrame
+                local w = Instance.new("WeldConstraint")
+                w.Part0, w.Part1 = p, s; w.Parent = s
+                KID.track(s); s.Parent = c
+                return s
+            end)
+            if ok and shell then ffShell[p] = shell end
+        end
+    end
+end
+
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
 registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
+registerModule("staticff",     "Static Forcefield", function() end, function() clearFF() end)
 RunService.RenderStepped:Connect(function()
     if Modules.armsoffset   and Modules.armsoffset.Enabled   then pcall(applyArms) end
     if Modules.charmaterial and Modules.charmaterial.Enabled then pcall(applyMaterial) end
+    if Modules.staticff     and Modules.staticff.Enabled     then pcall(applyFF) end
 end)
 
 -- curated material list (dropdown). Names resolve via Enum.Material[name].
@@ -5509,6 +5550,9 @@ Koffee._characterTab = function(root)
     vpf.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then openMaterialPreview() end
     end)
+
+    -- Static Forcefield: a second material -- forcefield-hex shell over the base material
+    moduleCheckbox(vis, "Static Forcefield", "staticff")
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
     moduleCheckbox(vis, "Arms Offset", "armsoffset")
