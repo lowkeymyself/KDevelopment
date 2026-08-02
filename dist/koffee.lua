@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.53"
+Koffee.Version = "0.0.54"
 
 -- THEME
 local Theme = {
@@ -5261,6 +5261,79 @@ reg("walkspeed", "WalkSpeed"); reg("teleportwalk", "Teleport Walk"); reg("fly", 
 reg("spinbot", "Spinbot"); reg("noclip", "Noclip"); reg("float", "Float"); reg("clicktp", "Click TP")
 registerModule("antifling", "Antifling", function() end, function() end)   -- no keybind: on = on
 
+-- VISUAL FEATURES (v0.0.54) -- plain toggles (no keybind), passive visual effects.
+--   Arms Offset: universal, animation-safe. Custom arms on the player's character
+--     (R6/R15 limbs, or custom meshes welded to them) all hang off the shoulder
+--     Motor6D chain, so offsetting the shoulder C0 shifts the whole arm + anything
+--     welded to it. Pre-multiplying by a pure-translation CFrame moves the offset in
+--     TORSO space, so both shoulders shift the same world direction (not mirrored).
+--   Character Material: force Material + Color on every BasePart; snapshot+restore.
+local Visual = {
+    Arms     = { X = 0, Y = 0, Z = 0 },
+    Material = { Name = "Neon", Color = Color3.fromRGB(212, 145, 90) },
+}
+registerConfig("character_visual", Visual)
+
+local SHOULDER = { ["Right Shoulder"] = true, ["Left Shoulder"] = true,
+                   ["RightShoulder"]  = true, ["LeftShoulder"]  = true }
+local armState = { char = nil, joints = nil }
+local function applyArms()
+    local c = char()
+    if not c then return end
+    if armState.char ~= c or not armState.joints then
+        armState.char = c; armState.joints = {}
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("Motor6D") and SHOULDER[d.Name] then armState.joints[d] = d.C0 end
+        end
+    end
+    local off = CFrame.new(Visual.Arms.X, Visual.Arms.Y, Visual.Arms.Z)
+    for j, orig in pairs(armState.joints) do
+        if j.Parent then j.C0 = off * orig end
+    end
+end
+local function restoreArms()
+    if armState.joints then
+        for j, orig in pairs(armState.joints) do
+            if j.Parent then pcall(function() j.C0 = orig end) end
+        end
+    end
+    armState.char = nil; armState.joints = nil
+end
+
+local matSnap = {}
+local function matEnum()
+    local ok, m = pcall(function() return Enum.Material[Visual.Material.Name] end)
+    return (ok and m) or Enum.Material.Plastic
+end
+local function applyMaterial()
+    local c = char(); if not c then return end
+    local mat, col = matEnum(), Visual.Material.Color
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") then
+            if not matSnap[p] then matSnap[p] = { p.Material, p.Color } end
+            p.Material = mat; p.Color = col
+        end
+    end
+end
+local function restoreMaterial()
+    for p, s in pairs(matSnap) do
+        if p and p.Parent then pcall(function() p.Material = s[1]; p.Color = s[2] end) end
+    end
+    matSnap = {}
+end
+
+registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
+registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
+RunService.RenderStepped:Connect(function()
+    if Modules.armsoffset   and Modules.armsoffset.Enabled   then pcall(applyArms) end
+    if Modules.charmaterial and Modules.charmaterial.Enabled then pcall(applyMaterial) end
+end)
+
+-- curated material list (dropdown). Names resolve via Enum.Material[name].
+local MATERIALS = { "Plastic", "SmoothPlastic", "Neon", "ForceField", "Glass", "Metal",
+    "DiamondPlate", "Foil", "Wood", "WoodPlanks", "Marble", "Granite", "Slate", "Concrete",
+    "Brick", "Cobblestone", "Ice", "Grass", "Sand", "Fabric", "Pebble", "CorrodedMetal" }
+
 --== tab builder (called by the Character addTab in normal tab order) ==--
 Koffee._characterTab = function(root)
     local mv = panel(root, "movement")
@@ -5285,6 +5358,44 @@ Koffee._characterTab = function(root)
     slider(mv, "Float Speed", 0, 200, Move.Float.Speed, 0, function(v) Move.Float.Speed = v end)
     feat("Click TP", "clicktp")
     moduleCheckbox(mv, "Antifling", "antifling")
+
+    -- visual box
+    local vis = panel(root, "visual")
+    local vpPart   -- viewport preview part (forward decl; swatch/dropdown closures set it)
+
+    -- Character Material: enable toggle + colour swatch on the row
+    local matCtrl = moduleCheckbox(vis, "Character Material", "charmaterial")
+    local swWrap = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 14, 0, 16), BackgroundTransparency = 1, ZIndex = 38, Parent = matCtrl.row })
+    colorSwatch(swWrap, Visual.Material.Color, 14, { onChange = function(cval)
+        Visual.Material.Color = cval
+        if vpPart then vpPart.Color = cval end
+    end })
+
+    -- material dropdown (left) + live viewport preview (right)
+    local matRow = new("Frame", { Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, ZIndex = 34, Parent = vis })
+    local ddHost = new("Frame", { Size = UDim2.new(1, -52, 1, 0), BackgroundTransparency = 1, ZIndex = 34, Parent = matRow })
+    dropdown(ddHost, "Material", MATERIALS, Visual.Material.Name, function(v)
+        Visual.Material.Name = v
+        if vpPart then vpPart.Material = matEnum() end
+    end)
+    local vpf = new("ViewportFrame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 22),
+        Size = UDim2.new(0, 44, 0, 26), BackgroundColor3 = Theme.Palette.PanelElevated,
+        BackgroundTransparency = 0.15, ZIndex = 35, Parent = matRow,
+        LightDirection = Vector3.new(-1, -1, -0.5), Ambient = Color3.fromRGB(150, 150, 150),
+        LightColor = Color3.new(1, 1, 1) }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+    vpPart = new("Part", { Size = Vector3.new(2, 2, 2), Anchored = true, CFrame = CFrame.new(),
+        Material = matEnum(), Color = Visual.Material.Color })
+    vpPart.Parent = vpf
+    local vpCam = new("Camera", { CFrame = CFrame.new(Vector3.new(2.2, 1.8, 2.2), Vector3.new(0, 0, 0)) })
+    vpCam.Parent = vpf
+    vpf.CurrentCamera = vpCam
+
+    -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
+    moduleCheckbox(vis, "Arms Offset", "armsoffset")
+    slider(vis, "Arm X", -50, 50, Visual.Arms.X, 1, function(v) Visual.Arms.X = v end)
+    slider(vis, "Arm Y", -50, 50, Visual.Arms.Y, 1, function(v) Visual.Arms.Y = v end)
+    slider(vis, "Arm Z", -50, 50, Visual.Arms.Z, 1, function(v) Visual.Arms.Z = v end)
 end
 
 end)()
