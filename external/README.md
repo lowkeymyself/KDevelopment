@@ -36,8 +36,14 @@ Driver + real-transport build happens in the Windows VM with WDK installed. Setu
 ## Status
 
 - [x] Scaffolding + Transport trait + mock transport (proof-of-life on host)
-- [ ] Kernel driver skeleton + IOCTL protocol
-- [ ] Real DriverTransport (Rust user side of the IOCTL)
-- [ ] KDMapper-based loader with a picked vulnerable driver
-- [ ] Roblox base-address / player-list read (first real memory op)
+- [x] `KoffeeTestTarget` dev target bin (safe VM read/write test target for the driver -- see `user/src/bin/testtarget.rs`)
+- [x] Kernel driver skeleton + IOCTL protocol (KfmFindModule stubbed; rest wired)
+- [ ] `KfmFindModule` PEB walk
+- [ ] Real `DriverTransport` (Rust user side of the IOCTL)
+- [ ] Driver build project (`driver.vcxproj`) + VM build docs
+- [ ] First live driver round-trip against `KoffeeTestTarget` in the VM
+- [ ] Loader (BYOVD manual mapper with a picked vulnerable signed driver)
+- [ ] First live read of a real target's module base
 - [ ] Feature port begins
+
+**Currently PAUSED** -- resuming as a dedicated kernel-driver push. Foundation (scaffold + test bin) is ready for the driver-build phase.
