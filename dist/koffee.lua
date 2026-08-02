@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.60"
+Koffee.Version = "0.0.61"
 
 -- THEME
 local Theme = {
@@ -6526,12 +6526,39 @@ local Combat = {
         -- in Potassium's settings + carries a BAN RISK (per Potassium's docs). While the
         -- RakNet hook is active the CFrame fallback below is fully suppressed.
         local rakActive = false
+        local function gv() return (getgenv and getgenv()) or {} end
+        -- scan a buffer for a float32 (x,y,z) triple matching pos within eps; return offset
+        local function findPos(buf, n, px, py, pz, eps)
+            for i = 0, n - 12 do
+                local okx, x = pcall(buffer.readf32, buf, i)
+                if okx and math.abs(x - px) < eps then
+                    local y = buffer.readf32(buf, i + 4)
+                    local z = buffer.readf32(buf, i + 8)
+                    if math.abs(y - py) < eps and math.abs(z - pz) < eps then return i end
+                end
+            end
+            return nil
+        end
+        local rakSeen, rakArmed = {}, {}   -- calibration aggregates (id -> stats)
         local function installRakDesync()
             if rakActive then return end
-            if type(raknet) ~= "table" or not raknet.add_send_hook then return end
+            local ok, err = pcall(function()
+                assert(type(raknet) == "table", "raknet global missing")
+                assert(raknet.add_send_hook, "raknet.add_send_hook missing")
+                assert(buffer and buffer.readf32, "buffer library missing")
+            end)
+            if not ok then print("[koffee] RakNet is not available: " .. tostring(err)); return end
             rakActive = true
-            print("[koffee] RakNet desync hook installed")
+            print("[koffee] RakNet is being used")
             raknet.add_send_hook(function(packet)
+                local g = gv()
+                local pid = packet.PacketId
+                -- KoffeeRakDump: log EVERY outgoing packet id/size (find the movement packet)
+                if g.KoffeeRakDump then
+                    local sz = packet.Size or 0
+                    local e = rakSeen[pid]; if not e then e = { c = 0, mn = 1e9, mx = 0 }; rakSeen[pid] = e end
+                    e.c = e.c + 1; if sz < e.mn then e.mn = sz end; if sz > e.mx then e.mx = sz end
+                end
                 if not dArmed() then return end
                 local c = LocalPlayer.Character
                 local hrp = c and c:FindFirstChild("HumanoidRootPart")
@@ -6539,25 +6566,39 @@ local Combat = {
                 if not (hrp and tp and tp.Parent) then return end
                 local buf = packet.AsBuffer
                 if not buf then return end
-                local ok, n = pcall(buffer.len, buf)
-                if not ok or n < 12 then return end
+                local okn, n = pcall(buffer.len, buf)
+                if not okn or n < 12 then return end
                 local rp, tpp = hrp.Position, tp.Position
-                for i = 0, n - 12 do
-                    local okx, x = pcall(buffer.readf32, buf, i)
-                    if okx and math.abs(x - rp.X) < 0.5 then
-                        local y = buffer.readf32(buf, i + 4)
-                        local z = buffer.readf32(buf, i + 8)
-                        if math.abs(y - rp.Y) < 0.5 and math.abs(z - rp.Z) < 0.5 then
-                            buffer.writef32(buf, i, tpp.X)
-                            buffer.writef32(buf, i + 4, tpp.Y)
-                            buffer.writef32(buf, i + 8, tpp.Z)
-                            pcall(function() packet:SetData(buf) end)
-                            if getgenv and getgenv().KoffeeRakDebug then
-                                print("[koffee][rak] rewrote pos in packet id=" .. tostring(packet.PacketId)
-                                    .. " size=" .. tostring(n) .. " off=" .. tostring(i))
-                            end
-                            return
-                        end
+                local off = findPos(buf, n, rp.X, rp.Y, rp.Z, 0.5)
+                if off then
+                    buffer.writef32(buf, off, tpp.X)
+                    buffer.writef32(buf, off + 4, tpp.Y)
+                    buffer.writef32(buf, off + 8, tpp.Z)
+                    pcall(function() packet:SetData(buf) end)
+                end
+                -- KoffeeRakDebug: while armed, aggregate which packets we saw + whether the
+                -- raw-float position was found (hit) or not (none -> quantized encoding)
+                if g.KoffeeRakDebug then
+                    local e = rakArmed[pid]; if not e then e = { c = 0, hit = 0, sz = n }; rakArmed[pid] = e end
+                    e.c = e.c + 1; if off then e.hit = e.hit + 1; e.off = off end
+                end
+            end)
+            -- 1s aggregate printer for the two calibration modes
+            task.spawn(function()
+                while rakActive do
+                    task.wait(1)
+                    local g = gv()
+                    if g.KoffeeRakDump and next(rakSeen) then
+                        local parts = {}
+                        for id, e in pairs(rakSeen) do parts[#parts + 1] = string.format("id%s x%d[%d-%d]", tostring(id), e.c, e.mn, e.mx) end
+                        print("[koffee][rak][dump] " .. table.concat(parts, "  "))
+                        rakSeen = {}
+                    end
+                    if g.KoffeeRakDebug and next(rakArmed) then
+                        local parts = {}
+                        for id, e in pairs(rakArmed) do parts[#parts + 1] = string.format("id%s size%d x%d hit%d%s", tostring(id), e.sz, e.c, e.hit, e.off and ("@" .. e.off) or "") end
+                        print("[koffee][rak][armed] " .. table.concat(parts, "  "))
+                        rakArmed = {}
                     end
                 end
             end)
