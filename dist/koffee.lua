@@ -1,9 +1,9 @@
--- koffee v0.0.72
+-- koffee v0.0.73
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.72"
+Koffee.Version = "0.0.73"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -776,15 +776,54 @@ local ROW_ENTER = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirectio
 -- v0.0.17: detail suffix is smaller (size 12 vs body 14) + wider spacing; RichText <font size='N'> drives the delta.
 local ARRAYLIST_MUTED_COLOR = "rgb(138,125,112)"   -- Theme.Palette.TextMuted
 local ARRAYLIST_DETAIL_SIZE = 12                    -- smaller than Body (14)
+local ARRAYLIST_ON_COLOR    = "rgb(217,150,95)"     -- Theme.Palette.Accent (the "on" tag)
+
+-- v0.0.73: the plain (tag-free) visible string -- base + detail + " on" when active.
+-- Drives BOTH the sort key (length + alpha) and equality checks. Spaces in the detail
+-- (e.g. ESP's "    box") are intentionally counted, so "ESP    box" sorts above "Health".
+local function arrayPlainText(mod)
+    local s = mod.DisplayName or mod.Id or "?"
+    local detail = mod.GetDetail and mod.GetDetail() or ""
+    if detail ~= "" then s = s .. detail end
+    if mod.IsActive and mod.IsActive() then s = s .. "  on" end
+    return s
+end
 
 local function buildArrayLabelText(mod)
     local base = mod.DisplayName or mod.Id or "?"
     local detail = mod.GetDetail and mod.GetDetail() or ""
+    local s = base
     if detail and detail ~= "" then
-        return string.format("%s<font size='%d' color='%s'>%s</font>",
-            base, ARRAYLIST_DETAIL_SIZE, ARRAYLIST_MUTED_COLOR, detail)
+        s = s .. string.format("<font size='%d' color='%s'>%s</font>",
+            ARRAYLIST_DETAIL_SIZE, ARRAYLIST_MUTED_COLOR, detail)
     end
-    return base
+    if mod.IsActive and mod.IsActive() then
+        s = s .. string.format("<font size='%d' color='%s'>  on</font>",
+            ARRAYLIST_DETAIL_SIZE, ARRAYLIST_ON_COLOR)
+    end
+    return s
+end
+
+-- v0.0.73: arraylist is sorted by visible-text LENGTH descending (longer feature names on
+-- top -- "Silent Aim" above "ESP"), tie-broken alphabetically ascending ("A" above "B",
+-- "ESP box" above "ESP tracer"). `shown` holds every live entry; resortArray reassigns
+-- LayoutOrder so the UIListLayout reflows.
+local shown = {}
+local function arrayLess(a, b)
+    local ta, tb = arrayPlainText(a), arrayPlainText(b)
+    if #ta ~= #tb then return #ta > #tb end   -- longer first
+    return ta < tb                            -- alphabetical A..Z
+end
+local function resortArray()
+    table.sort(shown, arrayLess)
+    for i, m in ipairs(shown) do
+        if m._wrapper then m._wrapper.LayoutOrder = i end
+    end
+end
+local function shownRemove(mod)
+    for i, m in ipairs(shown) do
+        if m == mod then table.remove(shown, i); return end
+    end
 end
 
 local function addToActiveArray(mod)
@@ -832,9 +871,15 @@ local function addToActiveArray(mod)
     mod._wrapper = wrapper
     mod._arrayLabel = label
 
+    -- v0.0.73: register in the sorted set + reflow (length-desc, alpha tie-break).
+    shownRemove(mod)
+    table.insert(shown, mod)
+    resortArray()
+
     -- v0.0.14: refresh the detail string lazily on Heartbeat (~0.2s throttle, no per-frame stringify).
+    -- v0.0.73: also covers the IsActive "on" tag, and re-sorts when the visible length changes.
     -- Disconnected in removeFromActiveArray.
-    if mod.GetDetail then
+    if mod.GetDetail or mod.IsActive then
         local accum = 0
         mod._detailConn = RunService.Heartbeat:Connect(function(dt)
             accum = accum + dt
@@ -844,6 +889,7 @@ local function addToActiveArray(mod)
             local newText = buildArrayLabelText(mod)
             if mod._arrayLabel.Text ~= newText then
                 mod._arrayLabel.Text = newText
+                resortArray()   -- length/content may have changed -> reflow
             end
         end)
     end
@@ -861,6 +907,8 @@ local function removeFromActiveArray(mod)
     -- If the destroy thread completes normally, mod._wrapper.Parent becomes
     -- nil and addToActiveArray's existence check skips the Destroy call.
     mod._arrayLabel = nil
+    shownRemove(mod)   -- v0.0.73: drop from the sorted set immediately so the rest reflow
+    resortArray()
     if mod._detailConn then
         mod._detailConn:Disconnect()
         mod._detailConn = nil
@@ -5321,7 +5369,11 @@ do
 end
 
 --== modules (checkbox = arm). OnDisable clears held so re-arming starts inactive. ==--
-local function reg(id, name) registerModule(id, name, function() end, function() held[id] = false end) end
+local function reg(id, name)
+    local m = registerModule(id, name, function() end, function() held[id] = false end)
+    m.IsActive = function() return held[id] == true end   -- v0.0.73: arraylist "on" once the keybind activates it
+    return m
+end
 reg("walkspeed", "WalkSpeed"); reg("teleportwalk", "Teleport Walk"); reg("fly", "Fly")
 reg("spinbot", "Spinbot"); reg("noclip", "Noclip"); reg("float", "Float"); reg("clicktp", "Click TP")
 registerModule("antifling", "Antifling", function() end, function() end)   -- no keybind: on = on
@@ -6892,6 +6944,11 @@ local Combat = {
     registerModule("silentaim", "Silent Aim",
         function() installSilentHooks(); Combat.Silent.Enabled = true end,
         function() Combat.Silent.Enabled = false; silentTarget = nil end)
+    -- v0.0.73: arraylist "on" indicator -- active = held by the activation key, OR (no key
+    -- bound) always-active while enabled. Mirrors each feature's real arm gate.
+    Modules.aimbot.IsActive     = function() return (not Combat.Aim.ActivationKey)    or aimHeld end
+    Modules.triggerbot.IsActive = function() return (not Combat.Trigger.ActivationKey) or trigHeld end
+    Modules.silentaim.IsActive  = function() return (not Combat.Silent.ActivationKey)  or silentHeld end
     -- FOV is an arraylist marker; the two per-context toggles (Aim.FOV / Silent.FOV)
     -- drive rendering. Detail shows "x2" when both circles are active.
     registerModule("fov", "FOV", function() end, function() end)
