@@ -8,6 +8,14 @@ description = "External Roblox suite -- kernel-driver-backed memory transport + 
 name = "KoffeeExternal"
 path = "src/main.rs"
 
+# Dev-only test target. Runs unprotected in the VM; the driver attaches to it
+# and exercises read/write against known-value memory regions. Zero AC, zero
+# code protection -- built for BSOD-safe integration testing before we ever
+# point the driver at Roblox.
+[[bin]]
+name = "KoffeeTestTarget"
+path = "src/bin/testtarget.rs"
+
 [dependencies]
 # windows-sys covers everything we need: process enumeration, DeviceIoControl, VirtualQueryEx, etc.
 # feature-gated so we only pull the exact API surfaces used (small binary).
