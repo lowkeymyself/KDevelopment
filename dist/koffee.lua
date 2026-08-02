@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.55"
+Koffee.Version = "0.0.56"
 
 -- THEME
 local Theme = {
@@ -2369,8 +2369,9 @@ end)
 
 -- SLIDER (thicker track, bigger knob, knob color contrasts fill)
 -- Value doubles as click-to-edit TextBox with a hover-pill background.
-local function slider(parent, label, min, max, initial, precision, onChange)
+local function slider(parent, label, min, max, initial, precision, onChange, opts)
     precision = precision or 0
+    opts = opts or {}   -- v0.0.56: opts.infinite -> value at max shows "Infinite", onChange gets math.huge
     local function round(v)
         local m = 10 ^ precision
         return math.floor(v * m + 0.5) / m
@@ -2396,7 +2397,7 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     })
     -- value = TextBox with pill-hover background (matcha spec)
     local valueBox = new("TextBox", {
-        Text = tostring(current),
+        Text = (opts.infinite and current >= max) and "Infinite" or tostring(current),
         PlaceholderText = "",
         FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Small,
@@ -2458,8 +2459,9 @@ local function slider(parent, label, min, max, initial, precision, onChange)
         else
             fill.Size = UDim2.new(pct, 0, 1, 0)
         end
-        valueBox.Text = tostring(current)
-        if onChange then onChange(current) end
+        local atMax = opts.infinite and current >= max
+        valueBox.Text = atMax and "Infinite" or tostring(current)
+        if onChange then onChange(atMax and math.huge or current) end
     end
     local function setFromInputX(inputX)
         local trackAbs = track.AbsolutePosition.X
@@ -2490,8 +2492,12 @@ local function slider(parent, label, min, max, initial, precision, onChange)
         end
     end)
     valueBox.FocusLost:Connect(function(enterPressed)
-        local n = tonumber(valueBox.Text)
-        if n then current = round(math.clamp(n, min, max)) end
+        if opts.infinite and valueBox.Text:lower():find("inf") then
+            current = max
+        else
+            local n = tonumber(valueBox.Text)
+            if n then current = round(math.clamp(n, min, max)) end
+        end
         applyValue(true)
     end)
     -- hover: bg pill lights up
@@ -2795,7 +2801,9 @@ end
 encValue = function(v)
     local t = typeof(v)
     if t == "number" then
-        if v ~= v or v == math.huge or v == -math.huge then return "0" end
+        if v ~= v then return "0" end                       -- NaN -> 0
+        if v == math.huge then return "math.huge" end        -- v0.0.56: "Infinite" sliders round-trip
+        if v == -math.huge then return "-math.huge" end
         return tostring(v)
     elseif t == "boolean" then return tostring(v)
     elseif t == "string" then return string.format("%q", v)
@@ -6723,7 +6731,7 @@ local Combat = {
         -- v0.0.36: third-person cursor aim (move mouse, not camera). Bind aimbot to a
         -- non-RMB key (e.g. XButton2) so it doesn't clash with the game's shift-lock.
         configCheckbox(L.Aimbot, "Third Person", Combat.Aim.ThirdPerson, function(v) Combat.Aim.ThirdPerson = v end)
-        slider(L.Aimbot, "Distance", 50, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end)
+        slider(L.Aimbot, "Distance", 50, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end, { infinite = true })
         slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
         dropdown(L.Aimbot, "Hit Part", HITPARTS, Combat.Aim.HitPart, function(v) Combat.Aim.HitPart = v end)
         dropdown(L.Aimbot, "Aim Type", { "Camera", "Mouse" }, Combat.Aim.AimType, function(v) Combat.Aim.AimType = v end)
@@ -6770,7 +6778,7 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Visible Check", Combat.Silent.VisibleCheck, function(v) Combat.Silent.VisibleCheck = v end)
         configCheckbox(R["Silent Aim"], "Health Check", Combat.Silent.HealthCheck, function(v) Combat.Silent.HealthCheck = v end)
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
-        slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end)
+        slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
         dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "CFrame Desync" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v end)
@@ -6941,7 +6949,7 @@ addTab("Visuals", function(root)
     dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
-        function(v) ESP.Config.RenderDistance = v end)
+        function(v) ESP.Config.RenderDistance = v end, { infinite = true })
     -- v0.0.22: global Feature-Interface thickness; v0.0.23: sub-1 down to 0.1.
     -- v0.0.28: Equal Size removed (broke distance-scaled features) -- pinned ON permanently.
     slider(espPanel, "Thickness", 0.1, 8, ESP.Render.Thickness, 1,
