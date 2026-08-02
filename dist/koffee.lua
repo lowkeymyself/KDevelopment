@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.58"
+Koffee.Version = "0.0.59"
 
 -- THEME
 local Theme = {
@@ -6524,7 +6524,11 @@ local Combat = {
             local tp = silentTarget
             if not (hrp and tp and tp.Parent) then realCF = nil; return end
             realCF = hrp.CFrame
-            hrp.CFrame = CFrame.new(tp.Position)   -- point-blank, upright, any distance
+            -- keep your REAL orientation (position-only shove) so the camera/character
+            -- don't visibly spin -- minimises the flicker. A truly invisible desync
+            -- (local part never moves, only the replicated position lies) needs a
+            -- RakNet movement-packet hook -- pending Potassium's docs.
+            hrp.CFrame = CFrame.new(tp.Position) * (realCF - realCF.Position)
         end)
         RunService.RenderStepped:Connect(function()
             if not realCF then return end
@@ -6875,9 +6879,23 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
+        local rlmbCtrl
         dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "CFrame Desync" }, Combat.Silent.Method,
-            function(v) Combat.Silent.Method = v end)
-        configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
+            function(v)
+                Combat.Silent.Method = v
+                -- v0.0.59: CFrame Desync REQUIRES the LMB gate (per He) -- force it on + lock.
+                if v == "CFrame Desync" then
+                    Combat.Silent.RequireLMB = true
+                    if rlmbCtrl then rlmbCtrl.setState(true) end
+                end
+            end)
+        rlmbCtrl = configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v)
+            if Combat.Silent.Method == "CFrame Desync" and not v then
+                rlmbCtrl.setState(true); Combat.Silent.RequireLMB = true; return   -- can't turn off under Desync
+            end
+            Combat.Silent.RequireLMB = v
+        end)
+        if Combat.Silent.Method == "CFrame Desync" then Combat.Silent.RequireLMB = true; rlmbCtrl.setState(true) end
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
         -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
         -- are never touched. Spoof Scope is the caller-identification strategy (both
