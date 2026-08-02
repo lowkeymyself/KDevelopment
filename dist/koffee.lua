@@ -1,9 +1,9 @@
--- koffee v0.0.71
+-- koffee v0.0.72
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.71"
+Koffee.Version = "0.0.72"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -5971,7 +5971,8 @@ local Combat = {
         if not src then return false end
         if src == SR.own then return false end              -- never Koffee's own reads
         if SR.isView(src) then return false end             -- never the standard camera system
-        return true                                         -- any non-camera script (see canSpoof for the controller gate)
+        if SR.ctrl[src] then return false end               -- never a learned camera/movement controller (keeps it SILENT)
+        return true                                         -- only pure-reader (shooting) code
     end
 
     local function inputMatches(input, bind)
@@ -6167,22 +6168,6 @@ local Combat = {
             d = d.Unit
             return silentPos - d * 3, d
         end
-        -- v0.0.71: the real controller answer. A script can BOTH drive the camera/root
-        -- (viewmodel render, every frame) AND read them to build its shot -- same script,
-        -- so we can't just exclude it (v0.0.70 did, and the shot lost the spoof too). The
-        -- only thing that separates a RENDER read from a FIRE read in one script is TIMING:
-        -- the fire read happens on/right-after the click. So a learned controller is spoofed
-        -- ONLY on the click frame (+120ms), never between shots -> view/viewmodel stay normal,
-        -- the shot still lands. A PURE-READER weapon script (separate from any camera writer)
-        -- has no view to protect, so it's spoofed freely per the normal gate (continuous when
-        -- Require Left-Click is off).
-        local function canSpoof(src)
-            if not SR.spoofAim(src) then return false end       -- Koffee / standard camera: never
-            if SR.ctrl[src] then                                -- same script also controls cam/root:
-                return lmbDown or (os.clock() - lmbClickAt) < 0.12   -- only on the click frame
-            end
-            return true                                         -- pure reader: free to spoof
-        end
         -- optional diagnostic: getgenv().KoffeePosDebug -> throttled log of what got spoofed
         -- for which calling script (confirms the weapon's reads are being caught).
         local lastDbg = 0
@@ -6225,7 +6210,7 @@ local Combat = {
                 --     looking at it, so a camera-origin gun raycasts into them through the wall
                 --     (WALLBANG). Only on the shot frame, so the viewmodel stays normal.
                 if key == "CFrame" and self == SR.cam and SR.camPos and silentPos then
-                    if canSpoof(getCS and getCS()) then
+                    if SR.spoofAim(getCS and getCS()) then
                         dbg("Camera.CFrame")
                         if posFire() then
                             local o, d = wallShot(); return true, CFrame.new(o, o + d)
@@ -6233,7 +6218,7 @@ local Combat = {
                         return true, CFrame.new(SR.camPos, silentPos)
                     end
                 elseif (key == "X" or key == "Y") and self == SR.mouse and SR.screen then
-                    if canSpoof(getCS and getCS()) then
+                    if SR.spoofAim(getCS and getCS()) then
                         return true, (key == "X") and SR.screen.X or SR.screen.Y
                     end
                 end
@@ -6248,12 +6233,12 @@ local Combat = {
                 local sp = SR.spoofParts
                 if sp and sp[self] then
                     if key == "Position" or key == "WorldPosition" then
-                        if canSpoof(getCS and getCS()) then dbg("part.Position"); return true, silentPos end
+                        if SR.spoofAim(getCS and getCS()) then dbg("part.Position"); return true, silentPos end
                     elseif key == "CFrame" or key == "WorldCFrame" then
-                        if canSpoof(getCS and getCS()) then dbg("part.CFrame"); return true, CFrame.new(silentPos) end
+                        if SR.spoofAim(getCS and getCS()) then dbg("part.CFrame"); return true, CFrame.new(silentPos) end
                     end
                 elseif self == SR.mouse and key == "Origin" then
-                    if canSpoof(getCS and getCS()) then return true, CFrame.new(silentPos) end
+                    if SR.spoofAim(getCS and getCS()) then return true, CFrame.new(silentPos) end
                 end
             end
             return PASS_H, PASS_V
@@ -6269,22 +6254,66 @@ local Combat = {
             -- v0.0.64 POS SPOOF: Character:GetPivot()/GetPrimaryPartCFrame -> target CFrame,
             -- BEFORE the LMB gate (Pos Spoof doesn't require left-click). Namecall-free.
             if method == "GetPivot" or method == "GetPrimaryPartCFrame" then
-                if posFire() and self == SR.char and canSpoof(getCS and getCS()) then
+                if posFire() and self == SR.char and SR.spoofAim(getCS and getCS()) then
                     return true, CFrame.new(silentPos)
                 end
                 return PASS_H, PASS_V
+            end
+            -- v0.0.72 SILENT FIRE-ARG REWRITE (the real "silent" path). A FireServer /
+            -- InvokeServer call happens ONLY on the shot -- never during a camera or movement
+            -- update -- so rewriting its arguments corrects the shot WITHOUT ever touching a
+            -- Camera/root READ. This is what lands on games with a custom camera or movement
+            -- handler, where read-spoofing those scripts would visibly lock the view / teleport
+            -- you (not silent). NOT scoped by getcallingscript: the remote call IS the shot no
+            -- matter who sends it, so it fires even when the caller is an excluded controller.
+            -- Namecall-free: typeof + datatype math only (.Position/.Magnitude/.Unit/CFrame.new).
+            if (method == "FireServer" or method == "InvokeServer") and silentPos
+               and (isArmed() or posArmed()) then
+                local myO  = SR.rootPos or SR.camPos     -- REAL origin (cached; never read here)
+                local wall = posArmed()                  -- Pos Spoof -> move origin in front of target
+                local wO, wD
+                if wall then wO, wD = wallShot() end
+                local changed = false
+                for i = 1, args.n do
+                    local a = args[i]
+                    local t = typeof(a)
+                    if t == "Vector3" then
+                        if myO and (a - myO).Magnitude < 6 then
+                            if wall then args[i] = wO; changed = true end          -- shot ORIGIN
+                        elseif a.Magnitude > 0.9 and a.Magnitude < 1.1 then
+                            local from = (wall and wO) or myO                       -- unit DIRECTION
+                            if from then args[i] = (silentPos - from).Unit; changed = true end
+                        else
+                            args[i] = silentPos; changed = true                    -- aim/hit POINT (mouse.Hit.Position style)
+                        end
+                    elseif t == "CFrame" then
+                        local p = a.Position
+                        if myO and (p - myO).Magnitude < 6 then
+                            local from = (wall and wO) or p                         -- origin CFrame (muzzle/camera)
+                            args[i] = CFrame.new(from, silentPos); changed = true
+                        else
+                            args[i] = CFrame.new(silentPos); changed = true        -- aim CFrame
+                        end
+                    end
+                end
+                if changed then
+                    if genv and genv.KoffeePosDebug then
+                        print("[koffee][fire] rewrote " .. method .. " args caller=" .. tostring(getCS and getCS()))
+                    end
+                    return "call", args
+                end
             end
             if not isArmed() then return PASS_H, PASS_V end
             -- camera-ray / cursor methods the game uses to build its shot. Direction bends to
             -- the target; on the Pos Spoof fire frame the ORIGIN moves in front of the target
             -- (wallbang), else real (SR.camPos). spoofAim excludes the camera + Koffee. Namecall-free.
             if method == "ViewportPointToRay" or method == "ScreenPointToRay" then
-                if silentPos and SR.camPos and canSpoof(getCS and getCS()) then
+                if silentPos and SR.camPos and SR.spoofAim(getCS and getCS()) then
                     if posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
                     return true, Ray.new(SR.camPos, (silentPos - SR.camPos).Unit)
                 end
             elseif method == "GetMouseLocation" then
-                if SR.screen and canSpoof(getCS and getCS()) then
+                if SR.screen and SR.spoofAim(getCS and getCS()) then
                     return true, SR.screen
                 end
             end
@@ -6736,9 +6765,14 @@ local Combat = {
                 end
             end
             SR.spoofParts = sp
+            -- v0.0.72: cache the REAL shot origin (root position) for the fire-arg rewrite,
+            -- so the namecall hook never reads an instance (that would re-enter __index +
+            -- return the spoofed value, breaking the "is this arg my origin?" comparison).
+            local root = ch and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Torso") or ch:FindFirstChild("UpperTorso"))
+            SR.rootPos = (root and root.Position) or SR.camPos
         else
             silentTarget = nil; silentPos = nil
-            SR.camPos = nil; SR.screen = nil
+            SR.camPos = nil; SR.screen = nil; SR.rootPos = nil
         end
     end)
 
