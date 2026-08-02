@@ -1,13 +1,11 @@
--- koffee v0.0.50
+-- koffee v0.0.51
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.50"
+Koffee.Version = "0.0.51"
 
---============================================================
 -- THEME
---============================================================
 local Theme = {
     -- v0.0.48 premium pass: deeper background for real contrast against the panels,
     -- borders pulled up so card edges read crisp (not muddy), accent a touch brighter.
@@ -26,20 +24,15 @@ local Theme = {
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
     },
-    -- v0.0.21 typography: match Matcha. Matcha's face is a soft rounded humanist
-    -- at a heavy-ish weight, kept small -- reads premium without the sharp,
-    -- "Roblox default" edge BuilderSans/Sarpanch had. Nunito is the closest
-    -- built-in family (same soft-round humanist DNA); baselined at SemiBold so it
-    -- never goes thin like the v0.0.5 Regular-weight attempt did. Bold for
-    -- emphasis + wordmark. Mono stays RobotoMono for keybind pills / numerals.
+    -- v0.0.21 typography: match Matcha (soft rounded humanist, heavy-ish). Nunito is the closest
+    -- built-in (same humanist DNA); SemiBold so it never goes thin like the v0.0.5 Regular attempt.
+    -- Bold for emphasis + wordmark. Mono stays RobotoMono for keybind pills / numerals.
     Fonts = (function()
         local MONO  = "rbxasset://fonts/families/RobotoMono.json"
-        -- v0.0.29: Matcha's ACTUAL face is Proxima Soft Bold. We host the .ttf on a
-        -- public repo and AUTO-DOWNLOAD it once (cached to the executor's workspace
-        -- folder), wrap it in a Roblox font-family JSON so getcustomasset can hand a
-        -- content id to Font.new. No manual file drop needed. Everything is pcall'd
-        -- with a Nunito (closest built-in) fallback, so a locked-down executor or a
-        -- failed download still renders -- the font is a nicety, never a hard dep.
+        -- v0.0.29: Matcha's ACTUAL face is Proxima Soft Bold. We auto-download the .ttf once
+        -- (cached to executor workspace), wrap it in a font-family JSON for getcustomasset.
+        -- Everything is pcall'd with a Nunito fallback -- locked-down executors still render.
+        -- Font is a nicety, never a hard dep.
         local FONT_URL  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProximaSoft-Bold.ttf"
         local FONT_FILE = "koffee_proximasoft.ttf"
         local FONT_JSON = "koffee_proximasoft.json"
@@ -133,9 +126,7 @@ local Theme = {
     },
 }
 
---============================================================
 -- SERVICES + UTIL
---============================================================
 local Players          = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService     = game:GetService("TweenService")
@@ -240,6 +231,42 @@ local function makeDraggable(handle, target)
     end)
 end
 
+-- SESSION IDENTITY: randomize every instance name + getgenv keys per session.
+-- Name-scanning ACs (game LocalScripts walking PlayerGui/Lighting/Workspace)
+-- never see a static "Koffee*" string. Cleanup is ref-based, not name-based.
+local KID = (function()
+    local genv = (getgenv and getgenv()) or {}
+    local BOOT = "\6_rt_fx_ctx"   -- stable across re-execs; looks like an engine field
+    local set   = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    local function rand(n)
+        local t = {}
+        for i = 1, n do local j = math.random(1, #set); t[i] = set:sub(j, j) end
+        return table.concat(t)
+    end
+    local ctx = genv[BOOT]
+    if ctx then
+        -- re-exec: destroy all tracked instances from the previous run
+        for _, inst in ipairs(ctx.instances or {}) do pcall(function() inst:Destroy() end) end
+        ctx.instances = {}
+    else
+        ctx = { instances = {}, names = {}, keys = {}, bind = rand(12) }
+        genv[BOOT] = ctx
+    end
+    -- obfuscated, session-stable repoint keys replace the static "Koffee*" getgenv names
+    ctx.keys.ri     = ctx.keys.ri     or ("_" .. rand(14))
+    ctx.keys.nc     = ctx.keys.nc     or ("_" .. rand(14))
+    ctx.keys.res    = ctx.keys.res    or ("_" .. rand(14))
+    ctx.keys.hooked = ctx.keys.hooked or ("_" .. rand(14))
+    return {
+        ctx   = ctx,
+        name  = function(k)
+            ctx.names[k] = ctx.names[k] or rand(math.random(9, 15))
+            return ctx.names[k]
+        end,
+        track = function(inst) table.insert(ctx.instances, inst); return inst end,
+    }
+end)()
+
 local function guiParent()
     if gethui then return gethui() end
     local ok = pcall(function() return CoreGui.Name end)
@@ -247,20 +274,8 @@ local function guiParent()
     return LocalPlayer:WaitForChild("PlayerGui")
 end
 
---============================================================
--- ROOT SCREEN
---============================================================
--- clean up stale koffee guis on re-execute
-for _, g in ipairs(guiParent():GetChildren()) do
-    if g.Name == "Koffee" then pcall(function() g:Destroy() end) end
-end
-for _, e in ipairs(Lighting:GetChildren()) do
-    if e.Name == "KoffeeBlur" then pcall(function() e:Destroy() end) end
-end
--- v0.0.15: purge stale BillboardGuis from previous script versions. Older
--- makeRig parented "KoffeeName" bb to the character's Head; a fresh load
--- without cleanup would leave those visible over players. New rigs don't
--- create these, but old sessions in the same game session might have.
+-- ROOT SCREEN (ref-tracked cleanup; no static "Koffee" names in the GUI tree)
+-- v0.0.15: also purge stale BillboardGuis from older builds ("KoffeeName" on Head).
 pcall(function()
     for _, plr in ipairs(Players:GetPlayers()) do
         local ch = plr.Character
@@ -268,42 +283,38 @@ pcall(function()
             local h = ch:FindFirstChild("Head")
             if h then
                 for _, kid in ipairs(h:GetChildren()) do
-                    if kid.Name == "KoffeeName" then pcall(function() kid:Destroy() end) end
+                    if kid.ClassName == "BillboardGui" and kid.Name:len() > 8 and not kid.Name:find("[%s%p]") then
+                        pcall(function() kid:Destroy() end)
+                    end
                 end
             end
         end
     end
 end)
 
-local screen = new("ScreenGui", {
-    Name = "Koffee",
+local screen = KID.track(new("ScreenGui", {
+    Name = KID.name("root"),
     ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
     IgnoreGuiInset = true,
-    DisplayOrder = 2000000000,
+    DisplayOrder = math.random(4000, 8000),
     Parent = guiParent(),
-})
+}))
 
 -- separate top-level ScreenGui for popups (dropdowns, color picker) so they
 -- render ABOVE the main window's CanvasGroup regardless of ZIndex quirks.
--- also isolates positioning math from any CG rendering side-effects.
-for _, g in ipairs(guiParent():GetChildren()) do
-    if g.Name == "KoffeePopups" then pcall(function() g:Destroy() end) end
-end
-local popupScreen = new("ScreenGui", {
-    Name = "KoffeePopups",
+local popupScreen = KID.track(new("ScreenGui", {
+    Name = KID.name("popups"),
     ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
     IgnoreGuiInset = true,
-    DisplayOrder = 2000000001,
+    DisplayOrder = screen.DisplayOrder + 1,
     Parent = guiParent(),
-})
+}))
 
---============================================================
 -- BACKGROUND: dim + blur + snow (activates when window is open)
---============================================================
 local dim = new("Frame", {
-    Name = "Dim",
+    Name = KID.name("dim"),
     Size = UDim2.new(1, 0, 1, 0),
     BackgroundColor3 = Color3.fromRGB(0, 0, 0),
     BackgroundTransparency = 1,
@@ -312,11 +323,11 @@ local dim = new("Frame", {
     Parent = screen,
 })
 
-local blur = new("BlurEffect", {
-    Name = "KoffeeBlur",
+local blur = KID.track(new("BlurEffect", {
+    Name = KID.name("blur"),
     Size = 0,
     Parent = Lighting,
-})
+}))
 
 -- snow (Frame-based so it respects gui ZIndex and stays *under* the window)
 local snowLayer = new("Frame", {
@@ -447,9 +458,7 @@ local function setBackgroundActive(active)
     })
 end
 
---============================================================
 -- HUD STRIP (TOP)
---============================================================
 local hud = new("Frame", {
     Name = "HUD",
     Size = UDim2.new(1, 0, 0, Theme.Sizes.HudHeight),
@@ -621,9 +630,7 @@ end
 -- via the pill next to each master toggle -- displaying them here would drift.
 hotkey("del", "menu")
 
---============================================================
 -- LIVE STATS
---============================================================
 local uptimeStart = os.time()
 local frameCount  = 0
 local lastSample  = tick()
@@ -650,9 +657,7 @@ task.spawn(function()
     end
 end)
 
---============================================================
 -- MODULE SYSTEM + ACTIVE-MODULES TYPEWRITER ARRAY
---============================================================
 -- markdown-blockquote-style module list:
 --   |  ESP
 --   |  Aimbot
@@ -710,10 +715,8 @@ local nextLayoutOrder = 0
 local ROW_HEIGHT = 20
 local ROW_ENTER = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
--- v0.0.14: arraylist label uses RichText. Base module name in Text color,
--- optional detail suffix (e.g. "box" / "box, name") in Muted color.
--- v0.0.17: detail suffix is now smaller (size 12 vs body 14) + wider spacing
--- from the base name per he. RichText <font size='N'> drives the size delta.
+-- v0.0.14: arraylist label uses RichText; base name in Text color, detail suffix (e.g. "box") in Muted.
+-- v0.0.17: detail suffix is smaller (size 12 vs body 14) + wider spacing; RichText <font size='N'> drives the delta.
 local ARRAYLIST_MUTED_COLOR = "rgb(138,125,112)"   -- Theme.Palette.TextMuted
 local ARRAYLIST_DETAIL_SIZE = 12                    -- smaller than Body (14)
 
@@ -772,8 +775,7 @@ local function addToActiveArray(mod)
     mod._wrapper = wrapper
     mod._arrayLabel = label
 
-    -- v0.0.14: if the module reports a detail string, refresh it lazily on
-    -- Heartbeat (throttled to ~0.2s so we're not stringifying every frame).
+    -- v0.0.14: refresh the detail string lazily on Heartbeat (~0.2s throttle, no per-frame stringify).
     -- Disconnected in removeFromActiveArray.
     if mod.GetDetail then
         local accum = 0
@@ -831,9 +833,7 @@ local function registerModule(id, displayName, onEnable, onDisable)
         Enabled = false,
         OnEnable = onEnable,
         OnDisable = onDisable,
-        Watchers = {},   -- v0.0.13: subscribers get notified after every state
-                         -- flip so keybind-driven toggles update the checkbox
-                         -- visual too. general pubsub -- any observer works.
+        Watchers = {},   -- v0.0.13: pubsub; notified on every toggle so keybind flips update checkbox visuals.
     }
     return Modules[id]
 end
@@ -888,9 +888,7 @@ local function toggleModule(id)
     end)
 end
 
---============================================================
 -- MAIN WINDOW
---============================================================
 -- CanvasGroup so GroupTransparency can fade every child in one shot
 -- (frame trees have no group opacity; per-child tweening every label +
 --  stroke + corner is a nightmare).
@@ -1164,15 +1162,13 @@ local function selectTab(name)
     end
 end
 
--- v0.0.34: forward-declared shared upvalues. The config-system body + team/
--- friend helpers live inside an IIFE further down so their ~20 locals get their
--- OWN register budget (Luau's 200-local ceiling is per-function; the main chunk
--- is already close, which is why Combat is an IIFE too). Only these handles are
--- promoted to the main chunk so ESP / World / Combat can call them.
--- Options flag + Team Check config, read by every target gate.
---   MyTeams      : set of Team NAMES the user marked as "my team" (allies -> skipped)
---   AdvancedTeam : ignore the manual list, use the automatic isSameTeam heuristic
---                  (FFA / TDM / single-Team games). Greys out the manual list.
+-- v0.0.34: forward-declared shared upvalues. Config + team/friend helpers live inside
+-- IIFEs so their locals get their OWN register budget (Luau's 200-local ceiling is
+-- per-function; main chunk is already close). Only these handles are promoted so
+-- ESP / World / Combat can call them.
+-- Options flag + Team Check config:
+--   MyTeams      : Team NAMES the user marked "my team" (allies -> skipped)
+--   AdvancedTeam : use automatic isSameTeam heuristic instead of manual list
 local Shared = { IgnoreFriends = false, AdvancedTeam = false, MyTeams = {} }
 local isSameTeam, isFriend, registerConfig, rebuildConfigTabs, isTeammate
 
@@ -1305,11 +1301,9 @@ rebuildConfigTabs = function()
     end
 end
 
---============================================================
 -- PANEL / CARD (grouped rounded container with optional title)
 -- Matcha groups related controls in cards inside tab content.
 -- Card auto-sizes vertically to fit its rows.
---============================================================
 local function panel(parent, title)
     local card = new("Frame", {
         Size = UDim2.new(1, 0, 0, 0),
@@ -1362,10 +1356,8 @@ local function panel(parent, title)
     return card
 end
 
---============================================================
 -- HOVER helper: adds a subtle background overlay that fades in/out
 -- when the target's TextButton child is hovered. Idempotent per row.
---============================================================
 local function attachHover(row, hoverBtn)
     local bg = new("Frame", {
         Name = "HoverBg",
@@ -1386,7 +1378,6 @@ local function attachHover(row, hoverBtn)
     end)
 end
 
---============================================================
 -- CHECKBOX (visual primitive shared by module + config variants)
 -- v0.0.12 semantics per he:
 --   OFF -> ON  = fill GROWS OUTWARD from middle (size 0 -> INNER, opaque throughout)
@@ -1394,7 +1385,6 @@ end
 --                fade tail so it doesn't pop out of existence
 -- Also cancels any in-flight tweens on each state change so rapid clicking can't
 -- stack animations and desync the visual from the actual state.
---============================================================
 local CHECKBOX_ROW_HEIGHT = 22
 local CHECKBOX_OUTER = 16
 local CHECKBOX_INNER = 12
@@ -1531,11 +1521,9 @@ local function configCheckbox(parent, label, initialOn, onChange)
     return ctrl
 end
 
---============================================================
 -- KEYBIND SYSTEM + KEYBIND PILL
 -- Keybinds table maps moduleId -> KeyCode. InputBegan at bottom of file
 -- reads it. Pill widget shows current key + click-to-rebind flow.
---============================================================
 local Keybinds = {}     -- moduleId -> Enum.KeyCode
 local pendingRebind = nil    -- { moduleId, pill } while waiting for next key
 
@@ -1606,11 +1594,9 @@ local function completeRebind(keyCode)
     pendingRebind = nil
 end
 
---============================================================
 -- COLOR PICKER (popup: SV area + hue slider + hex input)
 -- Parented to `screen` so it renders above the window CanvasGroup.
 -- Reused across all color swatches -- one picker instance, retargeted.
---============================================================
 local function parseHex(str)
     if not str then return nil end
     str = str:gsub("#", ""):gsub("%s", "")
@@ -1989,10 +1975,8 @@ local function closeColorPicker()
     ColorPicker.callback = nil
 end
 
---============================================================
 -- COLOR SWATCH: clickable, opens picker; also hover-shows a tooltip preview
 -- Optional { onChange = fn(newColor), getColor = fn() -> Color3 } table.
---============================================================
 local function colorSwatch(parent, initialColor, size, opts)
     opts = opts or {}
     size = size or 14
@@ -2102,13 +2086,11 @@ local function colorSwatch(parent, initialColor, size, opts)
     }
 end
 
---============================================================
 -- DROPDOWN (label above + button that opens popup list below)
 -- Popup is parented to `screen` (NOT the panel/window) so it renders
 -- above the CanvasGroup and isn't clipped by it. Positioned each open
 -- from the button's AbsolutePosition. Slide+fade animation. Chevron
 -- arrow built from two rotated 1px lines. Closes on outside click.
---============================================================
 local openDropdowns = {}  -- popup frames -> close-fn
 
 local function chevron(parent, sizePx)
@@ -2206,16 +2188,11 @@ local function dropdown(parent, label, options, initial, onChange)
     })
 
     local isOpen = false
-    local positionConn = nil     -- v0.0.12: RenderStepped lock so popup stays
-                                 -- glued below the button even if the button's
-                                 -- absolute position shifts (scroll, tab-switch,
-                                 -- window drag). This fixes "popup spawns in the
-                                 -- wrong place" bugs at their root -- we don't
-                                 -- calculate once at open, we calculate every frame.
-    -- v0.0.20: fully rule-based placement. Anchor the list's TOP-LEFT to the
-    -- button's bottom-left every frame, clamp X into the viewport, and flip the
-    -- list ABOVE the button when there isn't room below. No hardcoded offsets --
-    -- everything derives from the button's live rect + the viewport size.
+    -- v0.0.12: RenderStepped lock keeps popup glued below the button even when it shifts
+    -- (scroll, tab-switch, drag) -- calculate every frame, not once at open.
+    local positionConn = nil
+    -- v0.0.20: rule-based placement: anchor list TOP-LEFT to button bottom-left every
+    -- frame, clamp X to viewport, flip above when no room below. All from live rect.
     local GAP = 6
     local function placeBelow()
         local abs = btn.AbsolutePosition
@@ -2258,9 +2235,8 @@ local function dropdown(parent, label, options, initial, onChange)
                 if not isOpen then list.Visible = false end
             end)
         end
-        -- v0.0.17: option buttons stay at BackgroundTransparency = 1 always
-        -- (only hover brings them to 0.7). The old transparency tween here
-        -- was a no-op. Only the text labels need to fade out.
+        -- v0.0.17: option button bg stays at transparency 1 (hover drives it to 0.7).
+        -- Only the text labels need to fade out.
         for _, child in ipairs(list:GetChildren()) do
             if child:IsA("TextButton") then
                 for _, sub in ipairs(child:GetChildren()) do
@@ -2391,10 +2367,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
---============================================================
 -- SLIDER (thicker track, bigger knob, knob color contrasts fill)
 -- Value doubles as click-to-edit TextBox with a hover-pill background.
---============================================================
 local function slider(parent, label, min, max, initial, precision, onChange)
     precision = precision or 0
     local function round(v)
@@ -2541,12 +2515,10 @@ local function slider(parent, label, min, max, initial, precision, onChange)
     end)
 end
 
---============================================================
 -- RIGHT-CLICK SETTINGS POPUP (v0.0.25)
 -- Right-click a config row to open a small floating panel of extra controls
 -- (built by the caller via api:slider(...)). Lives in popupScreen like the
 -- dropdowns / colour picker, positioned inset-safe, closes on outside click.
---============================================================
 local openSettingsPopups = {}   -- frame -> close fn
 
 local function rightClickSettings(row, title, buildFn)
@@ -2673,10 +2645,8 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
--- v0.0.46: shared Team Check settings popup (right-click any Team Check box).
--- Lists every Team in the game as an ally toggle (ticked = "my team" -> that team is
--- skipped by Team Check). "Advanced" ignores the manual list and uses the automatic
--- isSameTeam heuristic (FFA / TDM / single-Team games) -- and greys the list out.
+-- v0.0.46: shared Team Check settings popup. Lists every Team as an ally toggle (ticked = skip in ESP/aim).
+-- "Advanced" ignores the manual list, uses the automatic isSameTeam heuristic, and greys the list out.
 local function teamCheckSettings(api)
     local frame = api.frame
     local dimGroups = {}
@@ -2719,7 +2689,6 @@ local function teamCheckSettings(api)
     refreshDim()
 end
 
---============================================================
 -- SHARED STATE + CONFIG SYSTEM (v0.0.34)
 -- Wrapped in an IIFE so its ~20 locals get their own register budget (Luau's
 -- 200-local limit is per-function; the main chunk is already near it). Only the
@@ -2730,7 +2699,6 @@ end
 --   isFriend      : cached friendship lookup (IsFriendsWith yields, so resolve
 --                   async once per userId; render loops read the cache)
 --   ConfigRegistry: name -> live state table, walked by the config save/load
---============================================================
 ;(function()
 
 -- Team check that survives games which never set Player.Team. If either player
@@ -2747,9 +2715,7 @@ end
 
 -- v0.0.46: the "is this player an ally to skip?" gate every Team Check reads.
 --   Advanced ON  -> automatic isSameTeam (robust for FFA / TDM / single-Team games).
---   Advanced OFF -> manual: ally iff the player's Team name is in Shared.MyTeams (the
---                   teams the user ticked in the right-click list). No teams ticked =
---                   nobody is treated as an ally.
+--   Advanced OFF -> manual: ally iff player's Team name is in Shared.MyTeams (right-click list).
 function isTeammate(plr)
     if not plr or plr == LocalPlayer then return false end
     if Shared.AdvancedTeam then return isSameTeam(plr) end
@@ -2979,7 +2945,6 @@ Koffee.Config = ConfigIO
 
 end)()   -- end SHARED STATE + CONFIG SYSTEM IIFE
 
---============================================================
 -- ESP MODULE (v0.0.10)
 -- Master toggle ("Enabled") just turns on the ESP framework + render loop.
 -- Nothing draws until a sub-feature (Box / Name / Indicators / Health /
@@ -2989,15 +2954,10 @@ end)()   -- end SHARED STATE + CONFIG SYSTEM IIFE
 --   Config (ESP-level toggles) -- shared across future widgets
 --   Boxes (Boxes widget config)
 --   Colors (color pool)
---============================================================
 local ESP = {
     Config = {
-        -- v0.0.15: text stuff (Names / Distance / their labels + BillboardGui)
-        -- lives in the future Names module. TextBackground is SHARED plumbing
-        -- for any future text-rendering module -- kept here as a bool because
-        -- multiple overlays (Names, Distance, Health) will read the same
-        -- preference. Currently no module renders text, so this is a stored
-        -- config value only.
+        -- TextBackground: shared bool for future text modules (Names/Distance/Health
+        -- all read the same preference). No module renders text yet; config-only.
         TextBackground = false,
         -- v0.0.28: Text Background is now tunable (right-click the toggle): colour,
         -- transparency, and padding around every ESP text tag.
@@ -3013,12 +2973,8 @@ local ESP = {
         TeamCheck      = false,
         VisibleCheck   = false,
         TeamBasedColor = false,      -- team color overrides box outline color on same-team
-        -- v0.0.17 Outline redesign: Outline is a thickness ACCENT, not a
-        -- gate. Box lines (2D stroke / cube edges) ALWAYS render when the
-        -- box is visible. Outline adds +1px thickness to all box lines.
-        -- v0.0.19: Glow removed (deferred to helper app for real C++ blur).
-        --   off: 1px | on: 2px
-        -- v0.0.19: Outline no longer controls the arraylist accent line.
+        -- v0.0.17: Outline is a thickness ACCENT (not a gate): +1px on all box lines when on.
+        -- v0.0.19: Glow removed; Outline no longer controls the arraylist accent line.
         Outline        = true,
         SelfESP        = false,
         TextGradient   = false,        -- v0.0.21: animated gradient on all ESP text
@@ -3122,11 +3078,9 @@ registerConfig("esp_tracer",     ESP.Tracer)
 registerConfig("esp_colors",     ESP.Colors)
 registerConfig("shared",         Shared)
 
--- v0.0.19: applyGlobalOutline removed. The arraylist accent line is NO LONGER
--- gated by the Outline toggle. Outline is purely an ESP box thickness accent
--- now. The arraylist accent line stays at its default transparency (0.15)
--- permanently. If a future module needs a global accent toggle, build a
--- dedicated "Accent Line" toggle instead of hijacking Outline.
+-- v0.0.19: applyGlobalOutline removed. Outline is purely a box thickness accent now;
+-- the arraylist accent line stays at its default transparency (0.15) permanently.
+-- Future accent needs: build a dedicated "Accent Line" toggle, don't hijack Outline.
 
 -- lazy: box layer created on first ESP enable
 local function ensureBoxLayer()
@@ -3191,14 +3145,11 @@ local MAX_FILL_ROWS = 40
 local FILL_ROW_STEP = 5
 
 local function makeFillRows(parent)
-    -- v0.0.22: strips live in a CanvasGroup so overlapping/adjacent strips are
-    -- flattened into ONE layer before transparency is applied -- this kills the
-    -- double-darkened horizontal seams the old translucent-strip stack produced.
-    -- Strips draw fully OPAQUE; the group carries the ~0.72 translucency.
-    -- v0.0.29: the group carries a KGrad so the cube fill can pick up the
-    -- Gradient toggle. A UIGradient on a CanvasGroup tints the flattened strip
-    -- image in one shot -- but only spans the group's OWN rect, so the render
-    -- code resizes the group to hug the fill AABB (see updateESPRigs).
+    -- v0.0.22: CanvasGroup flattens overlapping strips into ONE layer before transparency,
+    -- killing the double-darkened seams the old stack produced. Strips are opaque;
+    -- the group carries ~0.72 translucency.
+    -- v0.0.29: group carries a KGrad for the Gradient toggle. UIGradient on a
+    -- CanvasGroup spans only the group's rect, so render resizes it to the fill AABB.
     local group = new("CanvasGroup", {
         Name = "FillGroup",
         Size = UDim2.new(1, 0, 1, 0),
@@ -3523,10 +3474,8 @@ local function makeRig(plr, character)
     local pfp, nameLbl = makeNameStack(ESP.BoxLayer)
     local distLbl = makeTextTag(ESP.BoxLayer, 0, 13)   -- anchor top-center (sits below feet)
 
-    -- v0.0.14: BillboardGui + name/dist/textBg removed. Names / Distance /
-    -- Text Background are all becoming a dedicated overlay module ("Names")
-    -- with its own rig/subscription. Health same. ESP rig now contains only
-    -- box widget state -- clean split by concern.
+    -- v0.0.14: BillboardGui + name/dist/textBg moved to dedicated overlay modules.
+    -- ESP rig now contains only box widget state -- clean split by concern.
 
     return {
         character  = character,
@@ -3551,10 +3500,7 @@ local function makeRig(plr, character)
         pfp        = pfp,
         nameLbl    = nameLbl,
         distLbl    = distLbl,
-        -- v0.0.15: staticSize snapshot dropped. projectStatic uses fixed
-        -- world-space marker offsets (+3 up / -4 down) instead of the old
-        -- character:GetBoundingBox() snapshot -- distance / FOV drive size,
-        -- so no per-rig snapshot is meaningful.
+        -- v0.0.15: staticSize snapshot dropped; distance/FOV drive size, so no per-rig snapshot is meaningful.
         bodyParts  = collectBodyParts(character),   -- for CharacterOnly mode
         -- smoothing state (used when ImmediateMode = false)
         lastBoxPos  = nil,
@@ -3584,14 +3530,10 @@ local function cleanRig(rig)
     pcall(function() rig.distLbl:Destroy() end)
 end
 
--- v0.0.13 orphan-box fix:
---   Previous applyESP created a new rig on CharacterAdded but didn't clean
---   up the old one -- boxRoot/cubeEdges/halo/bb from the dead character stayed
---   parented to ESP.BoxLayer forever. That's the "boxes stick around after
---   enemy dies" bug and the "new round doesn't work" bug both.
---   Fix: clean the previous rig before making a new one, AND hook
---   CharacterRemoving so visuals disappear the frame the character despawns
---   instead of waiting for a stale render tick.
+-- v0.0.13 orphan-box fix: previous applyESP didn't clean the old rig on CharacterAdded, so
+-- boxRoot/cubeEdges/halo/bb from dead characters stayed in ESP.BoxLayer forever
+-- ("boxes stick after death", "new round doesn't work"). Fix: clean before creating, and hook
+-- CharacterRemoving so visuals disappear the frame the character despawns.
 local function applyESP(plr)
     if ESP.Rigs[plr] then return end
     local entry = { rig = nil, addedConn = nil, removingConn = nil }
@@ -3605,7 +3547,7 @@ local function applyESP(plr)
         end
         -- also purge any stale attachment left over from a prior session
         pcall(function()
-            local old = character:FindFirstChild("KoffeeESP")
+            local old = character:FindFirstChild(KID.name("esp_layer"))
             if old then old:Destroy() end
         end)
         local rig = makeRig(plr, character)
@@ -4794,12 +4736,10 @@ do
     end)
 end
 
---============================================================
 -- WORLD MODULES: fullbright, no fog, custom time
 -- Each module saves the original Lighting values on enable and restores on disable.
 -- v0.0.17: all three now install a Heartbeat that re-asserts values so
 -- server-side day/night cycles / dynamic weather can't override us.
---============================================================
 local World = {
     Fullbright = { Saved = nil, Conn = nil },
     NoFog      = { Saved = nil, Conn = nil },
@@ -4903,21 +4843,15 @@ registerModule("customtime", "Custom Time",
     end
 )
 
---============================================================
 -- MOVEMENT MODULES (v0.0.49)
--- No Jump Cooldown / Infinite Jump. Both defeat client anti-jumps that throttle
--- by watching Humanoid.Jump and forcing it false (Prison Life's AntiJump
--- token-bucket, and most others share the shape). We never touch Humanoid.Jump --
--- we drive the state machine via ChangeState(Jumping), so their
--- GetPropertyChangedSignal("Jump") watcher never fires. Nothing to throttle.
---   Infinite Jump   = jump on every request, air included (the superset).
---   No Jump Cooldown = same bypass but grounded-only (kills the throttle, keeps gravity).
--- One shared JumpRequest handler reads both module states -- OnEnable/OnDisable are
--- no-ops because there's no per-enable setup; the handler is always live and returns
--- immediately when both are off. JumpRequest is the universal jump signal (keyboard
--- space / mobile button / gamepad) and the humanoid is re-resolved per press, so it
--- is respawn-safe for free.
---============================================================
+-- No Jump Cooldown / Infinite Jump. Both bypass client anti-jumps that throttle via
+-- GetPropertyChangedSignal("Jump") -- we drive ChangeState(Jumping) instead, so their
+-- watcher never fires.
+--   Infinite Jump    = jump on every request, air included.
+--   No Jump Cooldown = same bypass, grounded-only (kills throttle, keeps gravity).
+-- One shared JumpRequest handler reads both states; OnEnable/OnDisable are no-ops.
+-- JumpRequest is universal (keyboard/mobile/gamepad); humanoid re-resolved per press
+-- for respawn-safety.
 registerModule("nojumpcd", "No Jump Cooldown", function() end, function() end)
 registerModule("infjump",  "Infinite Jump",    function() end, function() end)
 
@@ -4932,24 +4866,15 @@ UserInputService.JumpRequest:Connect(function()
     hum:ChangeState(Enum.HumanoidStateType.Jumping)
 end)
 
---============================================================
 -- TABS: build panels
---============================================================
 -- tab order (per he): combat visuals world character options configs npc teams
---============================================================
--- COMBAT TAB (v0.0.31) -- matcha-parity restructure
--- Two columns, each a sub-tab panel (pill switcher inside the card):
---   left : Aimbot / Prediction / Smoothness / FOV   + Misc(Resolver)
---   right: Silent Aim / Prediction / FOV            + Trigger Bot
--- Wrapped in its own scope so its locals don't count against the main
--- chunk's 200-local ceiling. Backends: shared targeting engine + camera
--- aimbot (Camera/Mouse), prediction, per-axis smoothness, ragebot teleports,
--- silent-aim hook (fake-camera fire-read redirect), triggerbot, FOV circle.
---============================================================
--- IIFE (not a bare do-block): Luau's 200-local limit is per FUNCTION and a
--- do-block shares the enclosing function's registers, so all of Combat's locals
--- were counting against the main chunk (-> "Out of local registers"). A function
--- scope gives this whole tab its own register budget.
+-- COMBAT TAB (v0.0.31): two-column card (pill switcher):
+--   left : Aimbot / Prediction / Smoothness / FOV + Misc(Resolver)
+--   right: Silent Aim / Prediction / FOV          + Trigger Bot
+-- Backends: shared targeting engine, camera/mouse aimbot, prediction, per-axis
+-- smoothness, ragebot teleports, silent-aim hook, triggerbot, FOV circle.
+-- IIFE (not do-block): Luau's 200-local limit is per FUNCTION; a do-block shares
+-- the main chunk's registers (-> "Out of local registers"). IIFE = own budget.
 ;(function()
 local Combat = {
     Aim = {
@@ -5211,14 +5136,14 @@ local Combat = {
             dots = dots,
         }
     end
-    local aimFov    = makeFov("KoffeeFOV_Aim")
-    local silentFov = makeFov("KoffeeFOV_Silent")
+    local aimFov    = makeFov(KID.name("fov_aim"))
+    local silentFov = makeFov(KID.name("fov_silent"))
 
     -- snaplines: one line from the FOV origin (mouse/center) to the targeted
     -- person. Uses the tracer backend (KGrad + KOutline, featureThickness, ESP
     -- tracer colour/gradient/outline). Only one context drives it (aim XOR silent).
     local snapLine = new("Frame", {
-        Name = "KoffeeSnapline", AnchorPoint = Vector2.new(0.5, 0.5),
+        Name = KID.name("snapline"), AnchorPoint = Vector2.new(0.5, 0.5),
         Size = UDim2.new(0, 0, 0, 1), BackgroundColor3 = Color3.new(1, 1, 1),
         BorderSizePixel = 0, Visible = false, ZIndex = 11, Parent = screen,
     }, { lineGradient(), lineOutline() })
@@ -5504,24 +5429,30 @@ local Combat = {
             end
             return PASS_H, PASS_V
         end
+        -- publish resolvers under obfuscated session-stable keys (no static "Koffee*" in getgenv)
+        local K = KID.ctx.keys
         if genv then
-            genv.KoffeeResolveIndex    = resolveIndex
-            genv.KoffeeResolveNamecall = resolveNamecall
-            -- back-compat: pre-v0.0.33 hook bodies read this single resolver
-            genv.KoffeeSilentResolve   = function() return silentPos, silentTarget end
+            genv[K.ri]  = resolveIndex
+            genv[K.nc]  = resolveNamecall
+            genv[K.res] = function() return silentPos, silentTarget end
         end
 
-        -- === HOOK BODY (installed once, forever; delegates to resolvers) ==========
-        if genv and genv.KoffeeSilentHooked then return end
-        if genv then genv.KoffeeSilentHooked = true end
+        -- HOOK BODY: installed once per session, forever. Delegates to the repointable
+        -- resolvers above so re-exec rewires behaviour without reinstalling the hook.
+        if genv and genv[K.hooked] then return end
+        if genv then genv[K.hooked] = true end
         pcall(function()
             local hookmm   = hookmetamethod
             local ncmethod = getnamecallmethod
             local wrap     = newcclosure or function(f) return f end
+            local ccaller  = checkcaller   -- true => called from our own executor thread
             if not hookmm then return end
             local oldIndex
             oldIndex = hookmm(game, "__index", wrap(function(self, key)
-                local r = genv and genv.KoffeeResolveIndex
+                -- our own reads are never spoofed; also defeats trap-callbacks that
+                -- run in our context and probe the hook behaviorally.
+                if ccaller and ccaller() then return oldIndex(self, key) end
+                local r = genv and genv[K.ri]
                 if r then
                     local ok, handled, value = pcall(r, self, key)
                     if ok and handled then return value end
@@ -5530,12 +5461,13 @@ local Combat = {
             end))
             local oldNc
             oldNc = hookmm(game, "__namecall", wrap(function(self, ...)
-                -- Capture method BEFORE anything else and NEVER do a nested namecall
-                -- in this hook -- getnamecallmethod reads one shared C state so a
-                -- nested namecall corrupts the pending dispatch (previously broke
-                -- Popper: "argument #1 expects a string, but Vector3 was passed").
+                -- Capture method BEFORE anything else. NEVER do a nested namecall here --
+                -- getnamecallmethod reads one shared C state; a nested namecall while a
+                -- real FireServer is dispatching corrupts it and bricks the weapon after
+                -- one shot ("one bullet then the gun dies" bug, fixed in v0.0.40).
                 local m = ncmethod and ncmethod() or ""
-                local r = genv and genv.KoffeeResolveNamecall
+                if ccaller and ccaller() then return oldNc(self, ...) end
+                local r = genv and genv[K.nc]
                 if r then
                     local args = table.pack(...)
                     local ok, handled, value = pcall(r, self, m, args)
@@ -5553,8 +5485,8 @@ local Combat = {
     -- aimbot: run AFTER the default camera update so our CFrame wins. cold-start
     -- safety: a prior run's binding survives re-exec and re-binding the same name
     -- throws -- unbind first so the loader can be re-run cleanly.
-    pcall(function() RunService:UnbindFromRenderStep("KoffeeAimbot") end)
-    RunService:BindToRenderStep("KoffeeAimbot", Enum.RenderPriority.Camera.Value + 1, function()
+    pcall(function() RunService:UnbindFromRenderStep(KID.ctx.bind) end)
+    RunService:BindToRenderStep(KID.ctx.bind, Enum.RenderPriority.Camera.Value + 1, function()
         if not (Combat.Aim.Enabled and aimHeld) then
             Combat.Aim._target = nil; Combat.Aim._rageLock = nil; return
         end
@@ -5644,14 +5576,11 @@ local Combat = {
         end
     end)
 
-    -- custom multi-point gradient. Colors/Alphas map LEFT-TO-RIGHT by index:
-    -- point 1 = swatch 1, point 2 = swatch 2, ... (no more 1st/last endpoint jump).
-    --
-    -- STATIC (moving off): a plain linear ramp c1..cn evenly spaced across 0..1.
-    -- MOVING (moving on): a seamless cyclic scroll -- the palette is treated as a
-    -- ring (cn wraps back to c1) and sampled at fixed screen positions offset by a
-    -- phase. Because position 0 and position 1 sample the same ring point, the loop
-    -- has no visible seam and never snaps back (fixes the "bounce" + stretch).
+    -- custom multi-point gradient: Colors/Alphas map LEFT-TO-RIGHT (swatch 1..n).
+    -- STATIC: plain linear ramp c1..cn evenly spaced across 0..1.
+    -- MOVING: seamless cyclic scroll -- palette is a ring (cn wraps to c1), sampled
+    -- at fixed screen positions offset by a phase. pos 0 + pos 1 sample the same
+    -- ring point, so no seam and no snap (fixes the "bounce" + stretch).
     local function ringSample(t, get, n)
         t = t % 1
         local seg = t * n
@@ -6425,10 +6354,8 @@ addTab("Visuals", function(root)
         function(v) ESP.Config.SizingType = v end)
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end)
-    -- v0.0.22: global Feature-Interface thickness + distance-invariance.
-    -- v0.0.23: supports sub-1 (down to 0.1) for hairline lines.
-    -- v0.0.28: Equal Size removed -- it broke distance-scaled features, so it's
-    -- pinned ON permanently (constant thickness). Thickness slider still applies.
+    -- v0.0.22: global Feature-Interface thickness; v0.0.23: sub-1 down to 0.1.
+    -- v0.0.28: Equal Size removed (broke distance-scaled features) -- pinned ON permanently.
     slider(espPanel, "Thickness", 0.1, 8, ESP.Render.Thickness, 1,
         function(v) ESP.Render.Thickness = v end)
 
@@ -6547,9 +6474,7 @@ addTab("Character", function(root)
     moduleCheckbox(movement, "Infinite Jump",    "infjump")
 end)
 
---============================================================
 -- OPTIONS TAB (v0.0.34)
---============================================================
 addTab("Options", function(root)
     local card = panel(root, "options")
     -- Ignore Friends: friends are excluded from ESP + aimbot + silent + trigger.
@@ -6558,9 +6483,7 @@ addTab("Options", function(root)
     end)
 end)
 
---============================================================
 -- CONFIGS TAB (v0.0.34) -- save / load / delete / auto-load per game
---============================================================
 addTab("Configs", function(root)
     local CIO = Koffee.Config
 
@@ -6745,9 +6668,7 @@ task.spawn(function()
     selectTab("Visuals")
 end)
 
---============================================================
 -- SESSION TOAST (BOTTOM-RIGHT)
---============================================================
 local toast = new("Frame", {
     Name = "SessionToast",
     AnchorPoint = Vector2.new(1, 1),
@@ -6793,11 +6714,9 @@ new("TextLabel", {
     Parent = toast,
 })
 
---============================================================
 -- WINDOW TOGGLE + BACKGROUND SYNC
 -- Delete key toggles. Everything (window + snow + dim + blur) fades
 -- with the same linear timing so they leave together, cleanly.
---============================================================
 local windowOpen = true
 
 local function setWindowOpen(open)
