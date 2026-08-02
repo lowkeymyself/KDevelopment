@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.64"
+Koffee.Version = "0.0.65"
 
 -- THEME
 local Theme = {
@@ -6068,14 +6068,21 @@ local Combat = {
                     end
                 end
             end
-            -- (C) v0.0.64 POS SPOOF: report YOUR root Position/CFrame as the target's, so the
-            -- game's own fire code builds the shot ORIGIN from inside the enemy (server hit
-            -- checks that raycast from the client-sent origin then land, any range / walls).
-            -- The real part never moves. Scoped by spoofAim (camera + Koffee excluded); no LMB.
-            if posArmed() and self == SR.hrp then
-                if key == "Position" then
-                    if SR.spoofAim(getCS and getCS()) then return true, silentPos end
-                elseif key == "CFrame" then
+            -- (C) v0.0.64/65 POS SPOOF: report YOUR character/tool part + attachment positions
+            -- as the target's, so the game's fire code builds the shot ORIGIN from inside the
+            -- enemy (wallbang -- the server ray starts inside them, no wall in the way, any
+            -- range). Broad set = all character descendants incl. the gun's muzzle parts /
+            -- attachments, so guns reading the tool position (not just HRP) land too. Real
+            -- parts never move. Scoped by spoofAim (camera + Koffee excluded); no LMB gate.
+            if posArmed() then
+                local sp = SR.spoofParts
+                if sp and sp[self] then
+                    if key == "Position" or key == "WorldPosition" then
+                        if SR.spoofAim(getCS and getCS()) then return true, silentPos end
+                    elseif key == "CFrame" or key == "WorldCFrame" then
+                        if SR.spoofAim(getCS and getCS()) then return true, CFrame.new(silentPos) end
+                    end
+                elseif self == SR.mouse and key == "Origin" then
                     if SR.spoofAim(getCS and getCS()) then return true, CFrame.new(silentPos) end
                 end
             end
@@ -6521,11 +6528,20 @@ local Combat = {
                 local sp = cam:WorldToViewportPoint(silentPos)
                 SR.screen = Vector2.new(sp.X, sp.Y)
             end
-            -- v0.0.64: cache the local root + character for Pos Spoof identity compares
-            -- (so the __index/__namecall hooks never namecall to resolve them).
+            -- v0.0.64/65: cache the character + a SET of every part/attachment whose position
+            -- reads Pos Spoof should fake (all character descendants incl. the equipped tool's
+            -- muzzle parts + attachments -- not just HRP, so guns that build their origin from
+            -- the gun/muzzle land too). Built here (namecall-safe) so the hooks only do a table
+            -- lookup, never a namecall.
             local ch = LocalPlayer.Character
             SR.char = ch
-            SR.hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+            local sp = {}
+            if ch then
+                for _, d in ipairs(ch:GetDescendants()) do
+                    if d:IsA("BasePart") or d:IsA("Attachment") or d:IsA("Bone") then sp[d] = true end
+                end
+            end
+            SR.spoofParts = sp
         else
             silentTarget = nil; silentPos = nil
             SR.camPos = nil; SR.screen = nil
