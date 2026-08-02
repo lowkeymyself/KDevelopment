@@ -1,9 +1,9 @@
--- koffee v0.0.74
+-- koffee v0.0.75
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.74"
+Koffee.Version = "0.0.75"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -6194,8 +6194,15 @@ local Combat = {
         -- Doing it every frame corrupted the viewmodel (FpsController reads Camera.CFrame for
         -- BOTH the arms/gun render AND the shot) -- that broke the aim entirely. Gated to the
         -- fire frame, the viewmodel is normal between shots and only the shot gets moved.
+        -- v0.0.75: RequireLMB OFF -> Pos Spoof fires continuously (matches silent aim's own
+        -- RequireLMB behaviour); RequireLMB ON -> gated to the click frame + 120ms window so
+        -- single-shot pistols/snipers that read one frame late still land. Fixes "pistols
+        -- don't wallbang unless you hold left click" on games where the weapon reads mouse.Hit
+        -- before our lmbDown flag flips.
         local function posFire()
-            return posArmed() and (lmbDown or (os.clock() - lmbClickAt) < 0.12)
+            if not posArmed() then return false end
+            if not Combat.Silent.RequireLMB then return true end
+            return lmbDown or (os.clock() - lmbClickAt) < 0.12
         end
         -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
         -- any wall between you and them), aimed AT the target -> the client raycast hits them
