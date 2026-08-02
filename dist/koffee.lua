@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.54"
+Koffee.Version = "0.0.55"
 
 -- THEME
 local Theme = {
@@ -5300,7 +5300,14 @@ local function restoreArms()
     armState.char = nil; armState.joints = nil
 end
 
-local matSnap = {}
+-- v0.0.55: Material was tinting (Color worked) but not changing Material because a
+-- BasePart's SurfaceAppearance (PBR texture) OVERRIDES Material visually, and a
+-- MeshPart.TextureID likewise masks it. Modern avatar bodies (and games that keep your
+-- real avatar meshes, e.g. Prison Life) have these -> forced Material never rendered.
+-- Fix: while active, PARK the SurfaceAppearance (unparent) + clear MeshPart.TextureID
+-- so the forced Material actually shows; restore both on disable.
+local matSnap = {}   -- part -> { Material, Color, TextureID|nil }
+local saSnap  = {}   -- SurfaceAppearance -> original parent (parked while active)
 local function matEnum()
     local ok, m = pcall(function() return Enum.Material[Visual.Material.Name] end)
     return (ok and m) or Enum.Material.Plastic
@@ -5310,14 +5317,26 @@ local function applyMaterial()
     local mat, col = matEnum(), Visual.Material.Color
     for _, p in ipairs(c:GetDescendants()) do
         if p:IsA("BasePart") then
-            if not matSnap[p] then matSnap[p] = { p.Material, p.Color } end
+            if not matSnap[p] then
+                matSnap[p] = { p.Material, p.Color, p:IsA("MeshPart") and p.TextureID or nil }
+            end
             p.Material = mat; p.Color = col
+            if p:IsA("MeshPart") and p.TextureID ~= "" then p.TextureID = "" end
+        elseif p:IsA("SurfaceAppearance") then
+            if not saSnap[p] and p.Parent then saSnap[p] = p.Parent; p.Parent = nil end
         end
     end
 end
 local function restoreMaterial()
+    for sa, par in pairs(saSnap) do
+        if sa and par and par.Parent then pcall(function() sa.Parent = par end) end
+    end
+    saSnap = {}
     for p, s in pairs(matSnap) do
-        if p and p.Parent then pcall(function() p.Material = s[1]; p.Color = s[2] end) end
+        if p and p.Parent then pcall(function()
+            p.Material = s[1]; p.Color = s[2]
+            if s[3] ~= nil and p:IsA("MeshPart") then p.TextureID = s[3] end
+        end) end
     end
     matSnap = {}
 end
