@@ -1,9 +1,65 @@
--- koffee v0.0.51
+-- koffee v0.0.70
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.69"
+Koffee.Version = "0.0.70"
+
+-- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
+-- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
+-- immediately. Fully guarded: if the runtime lacks any required global (getgc, hookfunction,
+-- setthreadidentity, getrenv) the whole block pcalls out and the suite loads normally.
+pcall(function()
+    if not (getgc and hookfunction and setthreadidentity and getrenv) then return end
+    local dbg = false          -- flip true to see what the AC tried to do
+    local held = {}            -- keep hook refs alive
+    local flagged, killer
+
+    setthreadidentity(2)
+    for _, v in getgc(true) do
+        if typeof(v) == "table" then
+            local det = rawget(v, "Detected")
+            local kil = rawget(v, "Kill")
+            if typeof(det) == "function" and not flagged then
+                flagged = det
+                pcall(function()
+                    hookfunction(flagged, function(method, info)
+                        if dbg and method ~= "_" then
+                            warn(("Adonis AntiCheat flagged\nMethod: %s\nInfo: %s"):format(tostring(method), tostring(info)))
+                        end
+                        return true
+                    end)
+                    table.insert(held, flagged)
+                end)
+            end
+            if rawget(v, "Variables") and rawget(v, "Process") and typeof(kil) == "function" and not killer then
+                killer = kil
+                pcall(function()
+                    hookfunction(killer, function(reason)
+                        if dbg then warn("adonis tried to kill (fb): " .. tostring(reason)) end
+                    end)
+                    table.insert(held, killer)
+                end)
+            end
+        end
+    end
+
+    -- defeat debug.info-based detection of the flagged-fn hook
+    pcall(function()
+        local realInfo = getrenv().debug.info
+        local wrapper  = newcclosure or function(f) return f end
+        local o; o = hookfunction(realInfo, wrapper(function(...)
+            local a = ...
+            if flagged and a == flagged then
+                if dbg then warn("zyn | adonis gone") end
+                return coroutine.yield(coroutine.running())
+            end
+            return o(...)
+        end))
+    end)
+
+    setthreadidentity(7)
+end)
 
 -- THEME
 local Theme = {
@@ -257,6 +313,7 @@ local KID = (function()
     ctx.keys.nc     = ctx.keys.nc     or ("_" .. rand(14))
     ctx.keys.res    = ctx.keys.res    or ("_" .. rand(14))
     ctx.keys.hooked = ctx.keys.hooked or ("_" .. rand(14))
+    ctx.keys.nx     = ctx.keys.nx     or ("_" .. rand(14))
     return {
         ctx   = ctx,
         name  = function(k)
@@ -5902,11 +5959,20 @@ local Combat = {
     -- camera-rays)? mouse.Hit/Target/UnitRay are handled separately + ungated (only aim
     -- code reads those). Excludes Koffee's own reads and the camera system (PlayerModule)
     -- so the real view / Popper are never touched.
+    -- v0.0.70: learned CONTROLLER set. Any non-Koffee script that WRITES Camera.CFrame
+    -- or the local root's CFrame/Position is a camera/position CONTROLLER (FpsController,
+    -- custom movement handlers, etc.) -- it must NEVER be handed the spoofed aim/position,
+    -- or the read-spoof rotates the real view / teleports you on games with custom handlers.
+    -- Populated by the __newindex writer-detector; only pure-READER (shooting) code is left
+    -- to be spoofed. Session-stable so re-exec keeps what it already learned.
+    SR.ctrl = (genv and genv[KID.ctx.keys.nx .. "_set"]) or {}
+    if genv then genv[KID.ctx.keys.nx .. "_set"] = SR.ctrl end
     function SR.spoofAim(src)
         if not src then return false end
         if src == SR.own then return false end              -- never Koffee's own reads
-        if SR.isView(src) then return false end             -- never the camera system
-        return true                                         -- any non-camera script
+        if SR.isView(src) then return false end             -- never the standard camera system
+        if SR.ctrl[src] then return false end               -- never a learned camera/position controller
+        return true                                         -- only pure-reader (shooting) code
     end
 
     local function inputMatches(input, bind)
@@ -6080,8 +6146,16 @@ local Combat = {
         -- Doing it every frame corrupted the viewmodel (FpsController reads Camera.CFrame for
         -- BOTH the arms/gun render AND the shot) -- that broke the aim entirely. Gated to the
         -- fire frame, the viewmodel is normal between shots and only the shot gets moved.
+        -- v0.0.70: when Require Left-Click is OFF, Pos Spoof fires continuously (his ask --
+        -- "just start shooting everyone"). This is only safe now because the __newindex
+        -- detector excludes camera/position CONTROLLERS from the spoof, so a continuous
+        -- origin-move no longer corrupts the viewmodel of a custom handler -- only the
+        -- game's shooting reads get the wallbang origin. With RequireLMB ON, still gated to
+        -- the fire frame (+120ms window) so single-shot weapons that read late still land.
         local function posFire()
-            return posArmed() and (lmbDown or (os.clock() - lmbClickAt) < 0.12)
+            if not posArmed() then return false end
+            if not Combat.Silent.RequireLMB then return true end
+            return lmbDown or (os.clock() - lmbClickAt) < 0.12
         end
         -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
         -- any wall between you and them), aimed AT the target -> the client raycast hits them
@@ -6201,11 +6275,25 @@ local Combat = {
             end
             return PASS_H, PASS_V
         end
+        -- v0.0.70 WRITER-DETECTOR: learn camera/position controllers so they're excluded
+        -- from the read-spoof (see SR.ctrl / SR.spoofAim). Fires on every property SET in
+        -- the game, so it stays as cheap as possible: two string compares, then an identity
+        -- check against the cached Camera / character-part set BEFORE ever calling getCS.
+        -- Never blocks the write (returns nothing -> the real __newindex proceeds).
+        local function resolveNewindex(self, key)
+            if key ~= "CFrame" and key ~= "Position" then return end
+            local isCam  = (self == SR.cam)
+            local isPart = (not isCam) and SR.spoofParts and SR.spoofParts[self]
+            if not (isCam or isPart) then return end
+            local src = getCS and getCS()
+            if src and src ~= SR.own then SR.ctrl[src] = true end
+        end
         -- publish resolvers under obfuscated session-stable keys (no static "Koffee*" in getgenv)
         local K = KID.ctx.keys
         if genv then
             genv[K.ri]  = resolveIndex
             genv[K.nc]  = resolveNamecall
+            genv[K.nx]  = resolveNewindex
             genv[K.res] = function() return silentPos, silentTarget end
         end
 
@@ -6249,6 +6337,15 @@ local Combat = {
                     end
                 end
                 return oldNc(self, ...)
+            end))
+            -- v0.0.70: __newindex writer-detector -- observe-only, never blocks the write.
+            local oldNx
+            oldNx = hookmm(game, "__newindex", wrap(function(self, key, value)
+                if not (ccaller and ccaller()) then      -- ignore our own writes (aimbot cam.CFrame)
+                    local r = genv and genv[K.nx]
+                    if r then pcall(r, self, key) end
+                end
+                return oldNx(self, key, value)
             end))
         end)
     end
