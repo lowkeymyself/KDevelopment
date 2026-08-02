@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.57"
+Koffee.Version = "0.0.58"
 
 -- THEME
 local Theme = {
@@ -5362,6 +5362,93 @@ local MATERIALS = { "Plastic", "SmoothPlastic", "Neon", "ForceField", "Glass", "
     "DiamondPlate", "Foil", "Wood", "WoodPlanks", "Marble", "Granite", "Slate", "Concrete",
     "Brick", "Cobblestone", "Ice", "Grass", "Sand", "Fabric", "Pebble", "CorrodedMetal" }
 
+-- v0.0.58: expandable material preview -- click the small preview to open a mac-styled
+-- (Koffee-coloured) floating window: drag the title bar to move, hold right-click on the
+-- viewport to orbit the model, click the red dot (or the window is single-instance) to
+-- close. Live-syncs to the current material + colour selection.
+local expandedWin = nil
+local function closeMaterialPreview()
+    if expandedWin then
+        for _, c in ipairs(expandedWin.conns) do pcall(function() c:Disconnect() end) end
+        pcall(function() expandedWin.frame:Destroy() end)
+        expandedWin = nil
+    end
+end
+local function openMaterialPreview()
+    closeMaterialPreview()
+    local W, H, BAR = 340, 380, 30
+    local frame = new("Frame", { Name = KID.name("m_prev"), Size = UDim2.new(0, W, 0, H),
+        Position = UDim2.new(0.5, -W / 2, 0.5, -H / 2), BackgroundColor3 = Theme.Palette.Panel,
+        BorderSizePixel = 0, ZIndex = 300 }, { corner(10), stroke(Theme.Palette.Border, 1) })
+    KID.track(frame); frame.Parent = popupScreen
+    -- mac title bar (rounded top; square the bottom edge so it seams into the body)
+    local bar = new("Frame", { Size = UDim2.new(1, 0, 0, BAR), BackgroundColor3 = Theme.Palette.PanelElevated,
+        BorderSizePixel = 0, ZIndex = 301, Parent = frame }, { corner(10) })
+    new("Frame", { Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, -12),
+        BackgroundColor3 = Theme.Palette.PanelElevated, BorderSizePixel = 0, ZIndex = 301, Parent = bar })
+    local dotColors = { Color3.fromRGB(232, 106, 92), Color3.fromRGB(230, 190, 110), Color3.fromRGB(127, 190, 143) }
+    for i = 1, 3 do
+        local d = new("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.new(0, 12, 0, 12),
+            Position = UDim2.new(0, 10 + (i - 1) * 18, 0.5, -6), BackgroundColor3 = dotColors[i],
+            BorderSizePixel = 0, ZIndex = 303, Parent = bar }, { pillCorner() })
+        if i == 1 then d.MouseButton1Click:Connect(closeMaterialPreview) end
+    end
+    new("TextLabel", { Text = "material", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 302, Parent = bar })
+    -- viewport body
+    local vp = new("ViewportFrame", { Position = UDim2.new(0, 0, 0, BAR), Size = UDim2.new(1, 0, 1, -BAR),
+        BackgroundColor3 = Theme.Palette.Background, ZIndex = 301, Parent = frame,
+        LightDirection = Vector3.new(-1, -1, -0.5), Ambient = Color3.fromRGB(140, 140, 140),
+        LightColor = Color3.new(1, 1, 1) }, { new("UICorner", { CornerRadius = UDim.new(0, 10) }) })
+    local part = new("Part", { Size = Vector3.new(4, 4, 4), Anchored = true, CFrame = CFrame.new(),
+        Material = matEnum(), Color = Visual.Material.Color })
+    part.Parent = vp
+    local vcam = new("Camera", {}); vcam.Parent = vp; vp.CurrentCamera = vcam
+    local yaw, pitch, dist = math.rad(30), math.rad(18), 10
+    local function updateCam()
+        local pos = (CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0) * CFrame.new(0, 0, dist)).Position
+        vcam.CFrame = CFrame.new(pos, Vector3.zero)
+    end
+    updateCam()
+    -- drag (title bar) + orbit (right-drag on viewport)
+    local dragging, dragStart, startPos = false, nil, nil
+    local rotating, rotStart = false, nil
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true; dragStart = input.Position; startPos = frame.Position
+        end
+    end)
+    vp.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton2 then
+            rotating = true; rotStart = input.Position
+        end
+    end)
+    expandedWin = { frame = frame, conns = {} }
+    table.insert(expandedWin.conns, UserInputService.InputChanged:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        if dragging and dragStart then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        elseif rotating and rotStart then
+            local delta = input.Position - rotStart
+            rotStart = input.Position
+            yaw = yaw - delta.X * 0.01
+            pitch = math.clamp(pitch - delta.Y * 0.01, -1.4, 1.4)
+            updateCam()
+        end
+    end))
+    table.insert(expandedWin.conns, UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+        if input.UserInputType == Enum.UserInputType.MouseButton2 then rotating = false end
+    end))
+    table.insert(expandedWin.conns, RunService.RenderStepped:Connect(function()
+        if not (expandedWin and expandedWin.frame.Parent) then return end
+        part.Material = matEnum(); part.Color = Visual.Material.Color
+    end))
+end
+
 --== tab builder (called by the Character addTab in normal tab order) ==--
 Koffee._characterTab = function(root)
     local mv = panel(root, "movement")
@@ -5418,6 +5505,10 @@ Koffee._characterTab = function(root)
     local vpCam = new("Camera", { CFrame = CFrame.new(Vector3.new(2.2, 1.8, 2.2), Vector3.new(0, 0, 0)) })
     vpCam.Parent = vpf
     vpf.CurrentCamera = vpCam
+    -- click the preview to expand into a draggable, rotatable window
+    vpf.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then openMaterialPreview() end
+    end)
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
     moduleCheckbox(vis, "Arms Offset", "armsoffset")
