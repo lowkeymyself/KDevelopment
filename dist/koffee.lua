@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.63"
+Koffee.Version = "0.0.64"
 
 -- THEME
 local Theme = {
@@ -5590,6 +5590,7 @@ local Combat = {
         HealthCheck   = false,
         Sticky        = false,
         RequireLMB    = true,
+        PosSpoof      = false,   -- v0.0.64: spoof your ROOT position reads -> shot origin inside the target
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default -- fire-read is always
@@ -6020,6 +6021,14 @@ local Combat = {
             if Combat.Silent.RequireLMB and not lmbDown then return false end
             return true
         end
+        -- v0.0.64 Pos Spoof arm gate: active whenever a target is acquired (NO RequireLMB --
+        -- "doesn't need left-click"). Only gated by the module + an optional activation key.
+        local function posArmed()
+            if not Combat.Silent.PosSpoof then return false end
+            if not (Combat.Silent.Enabled and silentPos and silentTarget) then return false end
+            if Combat.Silent.ActivationKey and not silentHeld then return false end
+            return true
+        end
         -- SAFE default: redirect ONLY the Mouse's own aim reads (Hit / Target /
         -- UnitRay). These are what FE weapons read and NOTHING else in the engine
         -- touches, so cameras, Popper occlusion, physics and other scripts stay
@@ -6059,6 +6068,17 @@ local Combat = {
                     end
                 end
             end
+            -- (C) v0.0.64 POS SPOOF: report YOUR root Position/CFrame as the target's, so the
+            -- game's own fire code builds the shot ORIGIN from inside the enemy (server hit
+            -- checks that raycast from the client-sent origin then land, any range / walls).
+            -- The real part never moves. Scoped by spoofAim (camera + Koffee excluded); no LMB.
+            if posArmed() and self == SR.hrp then
+                if key == "Position" then
+                    if SR.spoofAim(getCS and getCS()) then return true, silentPos end
+                elseif key == "CFrame" then
+                    if SR.spoofAim(getCS and getCS()) then return true, CFrame.new(silentPos) end
+                end
+            end
             return PASS_H, PASS_V
         end
         local function resolveNamecall(self, method, args)
@@ -6069,6 +6089,13 @@ local Combat = {
             -- after one shot (this was the "one bullet then the gun dies" bug). Only
             -- global-fn calls, plain-table reads, property (__index) reads, equality
             -- and constructors are used below -- no namecalls.
+            -- v0.0.64 POS SPOOF: Character:GetPivot()/GetPrimaryPartCFrame -> target CFrame,
+            -- BEFORE the LMB gate (Pos Spoof doesn't require left-click). Namecall-free.
+            if method == "GetPivot" or method == "GetPrimaryPartCFrame" then
+                if posArmed() and self == SR.char and SR.spoofAim(getCS and getCS()) then
+                    return true, CFrame.new(silentPos)
+                end
+            end
             if not isArmed() then return PASS_H, PASS_V end
             -- camera-ray / cursor methods the game uses to build its shot: origin stays
             -- REAL (SR.camPos), direction bends to the target. spoofAim excludes the
@@ -6494,6 +6521,11 @@ local Combat = {
                 local sp = cam:WorldToViewportPoint(silentPos)
                 SR.screen = Vector2.new(sp.X, sp.Y)
             end
+            -- v0.0.64: cache the local root + character for Pos Spoof identity compares
+            -- (so the __index/__namecall hooks never namecall to resolve them).
+            local ch = LocalPlayer.Character
+            SR.char = ch
+            SR.hrp = ch and ch:FindFirstChild("HumanoidRootPart")
         else
             silentTarget = nil; silentPos = nil
             SR.camPos = nil; SR.screen = nil
@@ -6844,6 +6876,7 @@ local Combat = {
         dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
+        configCheckbox(R["Silent Aim"], "Pos Spoof", Combat.Silent.PosSpoof, function(v) Combat.Silent.PosSpoof = v end)
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
         -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
         -- are never touched. Spoof Scope is the caller-identification strategy (both
