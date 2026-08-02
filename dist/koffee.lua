@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.62"
+Koffee.Version = "0.0.63"
 
 -- THEME
 local Theme = {
@@ -6500,147 +6500,6 @@ local Combat = {
         end
     end)
 
-    -- v0.0.53: CFRAME DESYNC method. When Silent Method == "CFrame Desync", shove the
-    -- LOCAL character onto the locked target every physics step (the server replicates
-    -- you point-blank -> hits land at any range / through walls), then snap back to the
-    -- real CFrame before the next render so YOUR view + character never appear to move.
-    -- Set in Heartbeat (post-physics -> no fling; replicates on the network tick),
-    -- restore in RenderStepped (pre-render -> camera never sees the shove). Opt-in +
-    -- armed-only; runs alongside the read-spoof. Experimental: server-authoritative
-    -- games that re-validate the shooter position server-side will ignore it.
-    do
-        local function dArmed()
-            if Combat.Silent.Method ~= "CFrame Desync" then return false end
-            if not (Combat.Silent.Enabled and silentTarget and silentTarget.Parent) then return false end
-            if Combat.Silent.ActivationKey and not silentHeld then return false end
-            if Combat.Silent.RequireLMB and not lmbDown then return false end
-            return true
-        end
-
-        -- v0.0.62: RakNet hook is INSTALLED ONLY while CFrame Desync is the selected silent
-        -- method and REMOVED otherwise (per He -- the always-on hook crashed the game within
-        -- seconds). Calibration (v0.0.61) proved id27 (~45-55B, the movement packet: fires
-        -- while walking, stops when still) carries the position but NOT as raw float32
-        -- (every armed packet = hit0 -> quantized). So the byte-scan REWRITE is disabled in
-        -- the normal path; the hook now only serves calibration logging (dump / hex / debug)
-        -- needed to decode id27's real format. BAN RISK per Potassium's docs.
-        local function findPos(buf, n, px, py, pz, eps)
-            for i = 0, n - 12 do
-                local okx, x = pcall(buffer.readf32, buf, i)
-                if okx and math.abs(x - px) < eps then
-                    local y = buffer.readf32(buf, i + 4)
-                    local z = buffer.readf32(buf, i + 8)
-                    if math.abs(y - py) < eps and math.abs(z - pz) < eps then return i end
-                end
-            end
-            return nil
-        end
-        local rakSeen, rakArmed, lastHex = {}, {}, 0
-        -- ONE stable hook fn (same ref for add + remove). Fast path = just getgenv + a few
-        -- boolean checks, so when no calibration flag is set it does effectively nothing.
-        local function rakHookFn(packet)
-            local G = getgenv and getgenv(); if not G then return end
-            local pid = packet.PacketId
-            if G.KoffeeRakDump then          -- aggregate every id + size range
-                local sz = packet.Size or 0
-                local e = rakSeen[pid]; if not e then e = { c = 0, mn = 1e9, mx = 0 }; rakSeen[pid] = e end
-                e.c = e.c + 1; if sz < e.mn then e.mn = sz end; if sz > e.mx then e.mx = sz end
-            end
-            if G.KoffeeRakHex and pid == G.KoffeeRakHex then   -- hex-dump a chosen id + live pos
-                local now = os.clock()
-                if now - lastHex > 0.4 then
-                    lastHex = now
-                    local buf = packet.AsBuffer
-                    local okn, n = pcall(buffer.len, buf)
-                    if okn and n then
-                        local hp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                        local p = hp and hp.Position or Vector3.zero
-                        local t = {}
-                        for i = 0, math.min(n, 96) - 1 do t[#t + 1] = string.format("%02X", buffer.readu8(buf, i)) end
-                        print(string.format("[koffee][rak][hex] id%s size%d pos(%.3f,%.3f,%.3f) %s",
-                            tostring(pid), n, p.X, p.Y, p.Z, table.concat(t, " ")))
-                    end
-                end
-            end
-            if G.KoffeeRakDebug and dArmed() then              -- armed raw-float hit report
-                local buf = packet.AsBuffer
-                local okn, n = pcall(buffer.len, buf)
-                local hp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                if okn and n and n >= 12 and hp then
-                    local rp = hp.Position
-                    local off = findPos(buf, n, rp.X, rp.Y, rp.Z, 0.5)
-                    local e = rakArmed[pid]; if not e then e = { c = 0, hit = 0, sz = n }; rakArmed[pid] = e end
-                    e.c = e.c + 1; if off then e.hit = e.hit + 1; e.off = off end
-                end
-            end
-        end
-        -- 1s aggregate printer (prints only when a calibration mode has produced data)
-        task.spawn(function()
-            while true do
-                task.wait(1)
-                if next(rakSeen) then
-                    local parts = {}
-                    for id, e in pairs(rakSeen) do parts[#parts + 1] = string.format("id%s x%d[%d-%d]", tostring(id), e.c, e.mn, e.mx) end
-                    print("[koffee][rak][dump] " .. table.concat(parts, "  ")); rakSeen = {}
-                end
-                if next(rakArmed) then
-                    local parts = {}
-                    for id, e in pairs(rakArmed) do parts[#parts + 1] = string.format("id%s size%d x%d hit%d%s", tostring(id), e.sz, e.c, e.hit, e.off and ("@" .. e.off) or "") end
-                    print("[koffee][rak][armed] " .. table.concat(parts, "  ")); rakArmed = {}
-                end
-            end
-        end)
-        -- install / remove the hook based on whether CFrame Desync is the active method.
-        -- Called from the silent module OnEnable/OnDisable + the Method dropdown onChange.
-        local rakInstalled, rakWarned = false, false
-        local function rakSync()
-            local want = Combat.Silent.Enabled and Combat.Silent.Method == "CFrame Desync"
-            if not want then
-                if rakInstalled then
-                    if type(raknet) == "table" and raknet.remove_send_hook then
-                        pcall(raknet.remove_send_hook, rakHookFn)
-                    end
-                    rakInstalled, rakWarned = false, false
-                    print("[koffee] RakNet hook removed")
-                end
-                return
-            end
-            if rakInstalled then return end
-            if type(raknet) ~= "table" or not raknet.add_send_hook or not (buffer and buffer.readf32) then
-                if not rakWarned then
-                    print("[koffee] RakNet is not available: raknet/add_send_hook/buffer missing")
-                    rakWarned = true
-                end
-                return
-            end
-            local ok, err = pcall(raknet.add_send_hook, rakHookFn)
-            if ok then rakInstalled = true; print("[koffee] RakNet is being used")
-            elseif not rakWarned then print("[koffee] RakNet is not available: " .. tostring(err)); rakWarned = true end
-        end
-        Combat.Silent._rakSync = rakSync
-
-        -- CFrame fallback = the current WORKING desync (visible teleport-and-restore). Runs
-        -- whenever CFrame Desync is armed. Kept ON even with the RakNet hook installed,
-        -- because the packet rewrite isn't functional yet (quantized position). Once id27's
-        -- format is decoded + rewritten in rakHookFn, this fallback gets suppressed.
-        local realCF = nil
-        RunService.Heartbeat:Connect(function()
-            if not dArmed() then realCF = nil; return end
-            local c = LocalPlayer.Character
-            local hrp = c and c:FindFirstChild("HumanoidRootPart")
-            local tp = silentTarget
-            if not (hrp and tp and tp.Parent) then realCF = nil; return end
-            realCF = hrp.CFrame
-            hrp.CFrame = CFrame.new(tp.Position) * (realCF - realCF.Position)
-        end)
-        RunService.RenderStepped:Connect(function()
-            if not realCF then return end
-            local c = LocalPlayer.Character
-            local hrp = c and c:FindFirstChild("HumanoidRootPart")
-            if hrp then hrp.CFrame = realCF end
-            realCF = nil
-        end)
-    end
 
     --== input: rebind capture + activation ==--
     UserInputService.InputBegan:Connect(function(input, gpe)
@@ -6746,10 +6605,8 @@ local Combat = {
         function() Combat.Trigger.Enabled = true end,
         function() Combat.Trigger.Enabled = false; trigHeld = false end)
     registerModule("silentaim", "Silent Aim",
-        function() installSilentHooks(); Combat.Silent.Enabled = true
-            if Combat.Silent._rakSync then Combat.Silent._rakSync() end end,
-        function() Combat.Silent.Enabled = false; silentTarget = nil
-            if Combat.Silent._rakSync then Combat.Silent._rakSync() end end)
+        function() installSilentHooks(); Combat.Silent.Enabled = true end,
+        function() Combat.Silent.Enabled = false; silentTarget = nil end)
     -- FOV is an arraylist marker; the two per-context toggles (Aim.FOV / Silent.FOV)
     -- drive rendering. Detail shows "x2" when both circles are active.
     registerModule("fov", "FOV", function() end, function() end)
@@ -6984,27 +6841,9 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
-        local rlmbCtrl
-        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "CFrame Desync" }, Combat.Silent.Method,
-            function(v)
-                Combat.Silent.Method = v
-                -- v0.0.59: CFrame Desync REQUIRES the LMB gate (per He) -- force it on + lock.
-                if v == "CFrame Desync" then
-                    Combat.Silent.RequireLMB = true
-                    if rlmbCtrl then rlmbCtrl.setState(true) end
-                    if type(raknet) ~= "table" or not raknet.add_send_hook then
-                        warn("[koffee] CFrame Desync: RakNet unavailable -- using the visible CFrame fallback. Enable RakNet in Potassium's settings for the true invisible desync.")
-                    end
-                end
-                if Combat.Silent._rakSync then Combat.Silent._rakSync() end   -- install/remove the hook
-            end)
-        rlmbCtrl = configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v)
-            if Combat.Silent.Method == "CFrame Desync" and not v then
-                rlmbCtrl.setState(true); Combat.Silent.RequireLMB = true; return   -- can't turn off under Desync
-            end
-            Combat.Silent.RequireLMB = v
-        end)
-        if Combat.Silent.Method == "CFrame Desync" then Combat.Silent.RequireLMB = true; rlmbCtrl.setState(true) end
+        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet" }, Combat.Silent.Method,
+            function(v) Combat.Silent.Method = v end)
+        configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
         -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
         -- are never touched. Spoof Scope is the caller-identification strategy (both
