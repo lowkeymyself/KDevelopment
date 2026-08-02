@@ -1,9 +1,9 @@
--- koffee v0.0.73
+-- koffee v0.0.74
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.73"
+Koffee.Version = "0.0.74"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -313,7 +313,6 @@ local KID = (function()
     ctx.keys.nc     = ctx.keys.nc     or ("_" .. rand(14))
     ctx.keys.res    = ctx.keys.res    or ("_" .. rand(14))
     ctx.keys.hooked = ctx.keys.hooked or ("_" .. rand(14))
-    ctx.keys.nx     = ctx.keys.nx     or ("_" .. rand(14))
     return {
         ctx   = ctx,
         name  = function(k)
@@ -6017,14 +6016,11 @@ local Combat = {
     -- or the read-spoof rotates the real view / teleports you on games with custom handlers.
     -- Populated by the __newindex writer-detector; only pure-READER (shooting) code is left
     -- to be spoofed. Session-stable so re-exec keeps what it already learned.
-    SR.ctrl = (genv and genv[KID.ctx.keys.nx .. "_set"]) or {}
-    if genv then genv[KID.ctx.keys.nx .. "_set"] = SR.ctrl end
     function SR.spoofAim(src)
         if not src then return false end
         if src == SR.own then return false end              -- never Koffee's own reads
-        if SR.isView(src) then return false end             -- never the standard camera system
-        if SR.ctrl[src] then return false end               -- never a learned camera/movement controller (keeps it SILENT)
-        return true                                         -- only pure-reader (shooting) code
+        if SR.isView(src) then return false end             -- never the camera system
+        return true                                         -- any non-camera script
     end
 
     local function inputMatches(input, bind)
@@ -6198,16 +6194,8 @@ local Combat = {
         -- Doing it every frame corrupted the viewmodel (FpsController reads Camera.CFrame for
         -- BOTH the arms/gun render AND the shot) -- that broke the aim entirely. Gated to the
         -- fire frame, the viewmodel is normal between shots and only the shot gets moved.
-        -- v0.0.70: when Require Left-Click is OFF, Pos Spoof fires continuously (his ask --
-        -- "just start shooting everyone"). This is only safe now because the __newindex
-        -- detector excludes camera/position CONTROLLERS from the spoof, so a continuous
-        -- origin-move no longer corrupts the viewmodel of a custom handler -- only the
-        -- game's shooting reads get the wallbang origin. With RequireLMB ON, still gated to
-        -- the fire frame (+120ms window) so single-shot weapons that read late still land.
         local function posFire()
-            if not posArmed() then return false end
-            if not Combat.Silent.RequireLMB then return true end
-            return lmbDown or (os.clock() - lmbClickAt) < 0.12
+            return posArmed() and (lmbDown or (os.clock() - lmbClickAt) < 0.12)
         end
         -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
         -- any wall between you and them), aimed AT the target -> the client raycast hits them
@@ -6311,50 +6299,6 @@ local Combat = {
                 end
                 return PASS_H, PASS_V
             end
-            -- v0.0.72 SILENT FIRE-ARG REWRITE (the real "silent" path). A FireServer /
-            -- InvokeServer call happens ONLY on the shot -- never during a camera or movement
-            -- update -- so rewriting its arguments corrects the shot WITHOUT ever touching a
-            -- Camera/root READ. This is what lands on games with a custom camera or movement
-            -- handler, where read-spoofing those scripts would visibly lock the view / teleport
-            -- you (not silent). NOT scoped by getcallingscript: the remote call IS the shot no
-            -- matter who sends it, so it fires even when the caller is an excluded controller.
-            -- Namecall-free: typeof + datatype math only (.Position/.Magnitude/.Unit/CFrame.new).
-            if (method == "FireServer" or method == "InvokeServer") and silentPos
-               and (isArmed() or posArmed()) then
-                local myO  = SR.rootPos or SR.camPos     -- REAL origin (cached; never read here)
-                local wall = posArmed()                  -- Pos Spoof -> move origin in front of target
-                local wO, wD
-                if wall then wO, wD = wallShot() end
-                local changed = false
-                for i = 1, args.n do
-                    local a = args[i]
-                    local t = typeof(a)
-                    if t == "Vector3" then
-                        if myO and (a - myO).Magnitude < 6 then
-                            if wall then args[i] = wO; changed = true end          -- shot ORIGIN
-                        elseif a.Magnitude > 0.9 and a.Magnitude < 1.1 then
-                            local from = (wall and wO) or myO                       -- unit DIRECTION
-                            if from then args[i] = (silentPos - from).Unit; changed = true end
-                        else
-                            args[i] = silentPos; changed = true                    -- aim/hit POINT (mouse.Hit.Position style)
-                        end
-                    elseif t == "CFrame" then
-                        local p = a.Position
-                        if myO and (p - myO).Magnitude < 6 then
-                            local from = (wall and wO) or p                         -- origin CFrame (muzzle/camera)
-                            args[i] = CFrame.new(from, silentPos); changed = true
-                        else
-                            args[i] = CFrame.new(silentPos); changed = true        -- aim CFrame
-                        end
-                    end
-                end
-                if changed then
-                    if genv and genv.KoffeePosDebug then
-                        print("[koffee][fire] rewrote " .. method .. " args caller=" .. tostring(getCS and getCS()))
-                    end
-                    return "call", args
-                end
-            end
             if not isArmed() then return PASS_H, PASS_V end
             -- camera-ray / cursor methods the game uses to build its shot. Direction bends to
             -- the target; on the Pos Spoof fire frame the ORIGIN moves in front of the target
@@ -6371,25 +6315,11 @@ local Combat = {
             end
             return PASS_H, PASS_V
         end
-        -- v0.0.70 WRITER-DETECTOR: learn camera/position controllers so they're excluded
-        -- from the read-spoof (see SR.ctrl / SR.spoofAim). Fires on every property SET in
-        -- the game, so it stays as cheap as possible: two string compares, then an identity
-        -- check against the cached Camera / character-part set BEFORE ever calling getCS.
-        -- Never blocks the write (returns nothing -> the real __newindex proceeds).
-        local function resolveNewindex(self, key)
-            if key ~= "CFrame" and key ~= "Position" then return end
-            local isCam  = (self == SR.cam)
-            local isPart = (not isCam) and SR.spoofParts and SR.spoofParts[self]
-            if not (isCam or isPart) then return end
-            local src = getCS and getCS()
-            if src and src ~= SR.own then SR.ctrl[src] = true end
-        end
         -- publish resolvers under obfuscated session-stable keys (no static "Koffee*" in getgenv)
         local K = KID.ctx.keys
         if genv then
             genv[K.ri]  = resolveIndex
             genv[K.nc]  = resolveNamecall
-            genv[K.nx]  = resolveNewindex
             genv[K.res] = function() return silentPos, silentTarget end
         end
 
@@ -6433,15 +6363,6 @@ local Combat = {
                     end
                 end
                 return oldNc(self, ...)
-            end))
-            -- v0.0.70: __newindex writer-detector -- observe-only, never blocks the write.
-            local oldNx
-            oldNx = hookmm(game, "__newindex", wrap(function(self, key, value)
-                if not (ccaller and ccaller()) then      -- ignore our own writes (aimbot cam.CFrame)
-                    local r = genv and genv[K.nx]
-                    if r then pcall(r, self, key) end
-                end
-                return oldNx(self, key, value)
             end))
         end)
     end
@@ -6817,14 +6738,9 @@ local Combat = {
                 end
             end
             SR.spoofParts = sp
-            -- v0.0.72: cache the REAL shot origin (root position) for the fire-arg rewrite,
-            -- so the namecall hook never reads an instance (that would re-enter __index +
-            -- return the spoofed value, breaking the "is this arg my origin?" comparison).
-            local root = ch and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Torso") or ch:FindFirstChild("UpperTorso"))
-            SR.rootPos = (root and root.Position) or SR.camPos
         else
             silentTarget = nil; silentPos = nil
-            SR.camPos = nil; SR.screen = nil; SR.rootPos = nil
+            SR.camPos = nil; SR.screen = nil
         end
     end)
 
