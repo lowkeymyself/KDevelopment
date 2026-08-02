@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.59"
+Koffee.Version = "0.0.60"
 
 -- THEME
 local Theme = {
@@ -6509,7 +6509,6 @@ local Combat = {
     -- armed-only; runs alongside the read-spoof. Experimental: server-authoritative
     -- games that re-validate the shooter position server-side will ignore it.
     do
-        local realCF = nil
         local function dArmed()
             if Combat.Silent.Method ~= "CFrame Desync" then return false end
             if not (Combat.Silent.Enabled and silentTarget and silentTarget.Parent) then return false end
@@ -6517,17 +6516,66 @@ local Combat = {
             if Combat.Silent.RequireLMB and not lmbDown then return false end
             return true
         end
+
+        -- v0.0.60: TRUE desync via RakNet (Potassium). Rewrite the OUTGOING movement
+        -- packet's position to the target so the SERVER sees you point-blank while the
+        -- LOCAL character never moves -- perfectly invisible, no teleport, no flicker.
+        -- The physics packet carries your root position as a float32 (x,y,z); we read the
+        -- real HRP position, scan the packet buffer for that triple, and overwrite it with
+        -- the target's. Layout-independent (no hardcoded offset). Requires RakNet ENABLED
+        -- in Potassium's settings + carries a BAN RISK (per Potassium's docs). While the
+        -- RakNet hook is active the CFrame fallback below is fully suppressed.
+        local rakActive = false
+        local function installRakDesync()
+            if rakActive then return end
+            if type(raknet) ~= "table" or not raknet.add_send_hook then return end
+            rakActive = true
+            print("[koffee] RakNet desync hook installed")
+            raknet.add_send_hook(function(packet)
+                if not dArmed() then return end
+                local c = LocalPlayer.Character
+                local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                local tp = silentTarget
+                if not (hrp and tp and tp.Parent) then return end
+                local buf = packet.AsBuffer
+                if not buf then return end
+                local ok, n = pcall(buffer.len, buf)
+                if not ok or n < 12 then return end
+                local rp, tpp = hrp.Position, tp.Position
+                for i = 0, n - 12 do
+                    local okx, x = pcall(buffer.readf32, buf, i)
+                    if okx and math.abs(x - rp.X) < 0.5 then
+                        local y = buffer.readf32(buf, i + 4)
+                        local z = buffer.readf32(buf, i + 8)
+                        if math.abs(y - rp.Y) < 0.5 and math.abs(z - rp.Z) < 0.5 then
+                            buffer.writef32(buf, i, tpp.X)
+                            buffer.writef32(buf, i + 4, tpp.Y)
+                            buffer.writef32(buf, i + 8, tpp.Z)
+                            pcall(function() packet:SetData(buf) end)
+                            if getgenv and getgenv().KoffeeRakDebug then
+                                print("[koffee][rak] rewrote pos in packet id=" .. tostring(packet.PacketId)
+                                    .. " size=" .. tostring(n) .. " off=" .. tostring(i))
+                            end
+                            return
+                        end
+                    end
+                end
+            end)
+        end
+        installRakDesync()   -- install at load if RakNet exists (inert until armed)
+
+        -- CFrame FALLBACK (only when RakNet is unavailable). Shoves the local part to the
+        -- target each Heartbeat + restores before render -- best-effort (visible-ish),
+        -- which is exactly why the RakNet path is preferred.
+        local realCF = nil
         RunService.Heartbeat:Connect(function()
+            if rakActive then realCF = nil; return end        -- RakNet handles it invisibly
             if not dArmed() then realCF = nil; return end
             local c = LocalPlayer.Character
             local hrp = c and c:FindFirstChild("HumanoidRootPart")
             local tp = silentTarget
             if not (hrp and tp and tp.Parent) then realCF = nil; return end
             realCF = hrp.CFrame
-            -- keep your REAL orientation (position-only shove) so the camera/character
-            -- don't visibly spin -- minimises the flicker. A truly invisible desync
-            -- (local part never moves, only the replicated position lies) needs a
-            -- RakNet movement-packet hook -- pending Potassium's docs.
             hrp.CFrame = CFrame.new(tp.Position) * (realCF - realCF.Position)
         end)
         RunService.RenderStepped:Connect(function()
@@ -6887,6 +6935,9 @@ local Combat = {
                 if v == "CFrame Desync" then
                     Combat.Silent.RequireLMB = true
                     if rlmbCtrl then rlmbCtrl.setState(true) end
+                    if type(raknet) ~= "table" or not raknet.add_send_hook then
+                        warn("[koffee] CFrame Desync: RakNet unavailable -- using the visible CFrame fallback. Enable RakNet in Potassium's settings for the true invisible desync.")
+                    end
                 end
             end)
         rlmbCtrl = configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v)
