@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.51"
+Koffee.Version = "0.0.52"
 
 -- THEME
 local Theme = {
@@ -4866,6 +4866,429 @@ UserInputService.JumpRequest:Connect(function()
     hum:ChangeState(Enum.HumanoidStateType.Jumping)
 end)
 
+-- MOVEMENT SUITE (v0.0.52)
+-- Character-tab movement features with a two-step activation model (per He): the
+-- checkbox ARMS a feature, a per-feature keybind ACTIVATES it (pill: left-click =
+-- rebind, right-click = Hold/Toggle). Enable, then hold/press the key to use.
+-- Antifling is the lone exception -- no key, on = on. Own IIFE for the ~200-local
+-- budget (same reason as Combat). Tab builder is published on Koffee._characterTab
+-- so the Character addTab (below, in normal tab order) can call it.
+;(function()
+
+local UIS = UserInputService
+local function char()   return LocalPlayer.Character end
+local function humOf()  local c = char(); return c and c:FindFirstChildOfClass("Humanoid") end
+local function rootOf()
+    local c = char(); if not c then return nil end
+    return c:FindFirstChild("HumanoidRootPart") or (humOf() and humOf().RootPart) or c.PrimaryPart
+end
+local function camCF() local cc = Workspace.CurrentCamera; return cc and cc.CFrame end
+
+-- persisted config. Key = EnumItem/string/nil, Mode = "Hold"|"Toggle", speeds numeric.
+local Move = {
+    WalkSpeed    = { Speed = 60,  Key = nil, Mode = "Hold"   },
+    TeleportWalk = { Speed = 80,  Key = nil, Mode = "Hold"   },
+    Fly          = { Speed = 120, Key = nil, Mode = "Toggle", Kind = "Default Fly" },
+    Spin         = { Speed = 600, Key = nil, Mode = "Toggle" },
+    Noclip       = {              Key = nil, Mode = "Toggle" },
+    Float        = { Speed = 50,  Key = nil, Mode = "Hold"   },
+    ClickTP      = {              Key = nil, Mode = "Toggle" },
+}
+registerConfig("movement", Move)
+
+-- id -> its config sub-table (activation pills + input matching)
+local CFG = {
+    walkspeed = Move.WalkSpeed, teleportwalk = Move.TeleportWalk, fly = Move.Fly,
+    spinbot = Move.Spin, noclip = Move.Noclip, float = Move.Float, clicktp = Move.ClickTP,
+}
+
+-- held[id] = keybind-driven "active" flag; a feature RUNS only when its module is
+-- Enabled (armed) AND held (activated).
+local held = {}
+local function isActive(id)
+    local m = Modules[id]
+    return (m and m.Enabled and held[id]) or false
+end
+
+local function matchBind(input, bind)
+    if typeof(bind) ~= "EnumItem" then return false end
+    if bind.EnumType == Enum.KeyCode then
+        return input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == bind
+    elseif bind.EnumType == Enum.UserInputType then
+        return input.UserInputType == bind
+    end
+    return false
+end
+
+--== movers (BodyVelocity/BodyGyro -- universal, KID-tracked for cleanup) ==--
+local st = {}
+local function makeBV(part, maxForce)
+    local bv = new("BodyVelocity", { Name = KID.name("m_bv"), MaxForce = maxForce, Velocity = Vector3.zero, P = 1250 })
+    KID.track(bv); bv.Parent = part; return bv
+end
+local function makeBG(part)
+    local bg = new("BodyGyro", { Name = KID.name("m_bg"), MaxTorque = Vector3.new(4e5, 4e5, 4e5), P = 3e4, D = 500 })
+    KID.track(bg); bg.Parent = part; return bg
+end
+local function killMover(s)
+    if not s then return end
+    if s.bv then pcall(function() s.bv:Destroy() end); s.bv = nil end
+    if s.bg then pcall(function() s.bg:Destroy() end); s.bg = nil end
+    s.part = nil
+end
+
+-- world-space fly/float direction from WASD + camera (+ vertical keys)
+local function moveVector(includeVertical)
+    local cf = camCF(); if not cf then return Vector3.zero end
+    local v = Vector3.zero
+    if UIS:IsKeyDown(Enum.KeyCode.W) then v = v + cf.LookVector end
+    if UIS:IsKeyDown(Enum.KeyCode.S) then v = v - cf.LookVector end
+    if UIS:IsKeyDown(Enum.KeyCode.D) then v = v + cf.RightVector end
+    if UIS:IsKeyDown(Enum.KeyCode.A) then v = v - cf.RightVector end
+    if includeVertical then
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then v = v + Vector3.new(0, 1, 0) end
+        if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.LeftShift) then
+            v = v - Vector3.new(0, 1, 0)
+        end
+    end
+    if v.Magnitude > 0 then v = v.Unit end
+    return v
+end
+
+--== per-feature on/off/step (driven by the edge loop below) ==--
+local FEAT = {}
+
+FEAT.walkspeed = {
+    on   = function() local h = humOf(); st.walkspeed = { orig = h and h.WalkSpeed or 16 } end,
+    off  = function() local h = humOf(); if h and st.walkspeed then pcall(function() h.WalkSpeed = st.walkspeed.orig end) end st.walkspeed = nil end,
+    step = function() local h = humOf(); if h then h.WalkSpeed = Move.WalkSpeed.Speed end end,
+}
+
+FEAT.teleportwalk = {
+    step = function(dt)
+        local h, r = humOf(), rootOf(); if not (h and r) then return end
+        local d = h.MoveDirection
+        if d.Magnitude > 0 then r.CFrame = r.CFrame + d * (Move.TeleportWalk.Speed * dt) end
+    end,
+}
+
+FEAT.fly = {
+    on  = function() st.fly = {} end,
+    off = function()
+        killMover(st.fly)
+        local h = humOf(); if h then h.PlatformStand = false end
+        local c = char(); local head = c and c:FindFirstChild("Head")
+        if head then head.Anchored = false end
+        st.fly = nil
+    end,
+    step = function(dt)
+        local s = st.fly; if not s then return end
+        local h, r = humOf(), rootOf(); if not (h and r) then killMover(s); return end
+        local kind, speed = Move.Fly.Kind, Move.Fly.Speed
+        local c = char(); local head = c and c:FindFirstChild("Head")
+        if kind == "CFrame Fly" then
+            killMover(s)
+            speed = math.min(speed, 1000)
+            if not head then return end
+            h.PlatformStand = true; head.Anchored = true
+            local v = moveVector(true)
+            if v.Magnitude > 0 then head.CFrame = head.CFrame + v * (speed * dt) end
+        else
+            if head and head.Anchored then head.Anchored = false end
+            local target = r
+            if kind == "Vehicle Fly" then
+                local seat = h.SeatPart
+                if seat then target = seat.AssemblyRootPart or seat end
+            end
+            if s.part ~= target or not (s.bv and s.bv.Parent) then
+                killMover(s); s.part = target
+                s.bv = makeBV(target, Vector3.new(9e9, 9e9, 9e9))
+                s.bg = makeBG(target)
+            end
+            h.PlatformStand = true
+            s.bv.Velocity = moveVector(true) * speed
+            local cf = camCF(); if cf and s.bg then s.bg.CFrame = cf end
+        end
+    end,
+}
+
+FEAT.spinbot = {
+    on   = function() st.spin = { a = 0 } end,
+    off  = function() st.spin = nil end,
+    step = function(dt)
+        local s, r = st.spin, rootOf(); if not (s and r) then return end
+        s.a = s.a + math.rad(Move.Spin.Speed) * dt
+        r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, s.a, 0)
+    end,
+}
+
+FEAT.float = {
+    on  = function() st.float = {} end,
+    off = function() killMover(st.float); st.float = nil end,
+    step = function()
+        local s, r = st.float, rootOf()
+        if not (s and r) then if s then killMover(s) end return end
+        if s.part ~= r or not (s.bv and s.bv.Parent) then
+            killMover(s); s.part = r
+            s.bv = makeBV(r, Vector3.new(0, 9e9, 0))   -- vertical only; XZ free to walk
+        end
+        local vy = 0
+        if UIS:IsKeyDown(Enum.KeyCode.E) then vy = Move.Float.Speed end
+        if UIS:IsKeyDown(Enum.KeyCode.Q) then vy = -Move.Float.Speed end
+        s.bv.Velocity = Vector3.new(0, vy, 0)
+    end,
+}
+
+-- edge + step driver (Heartbeat). pcall-guarded so one feature erroring can't kill it.
+local prev = {}
+RunService.Heartbeat:Connect(function(dt)
+    for id, f in pairs(FEAT) do
+        local a = isActive(id)
+        if a ~= prev[id] then
+            prev[id] = a
+            if a then if f.on then pcall(f.on) end else if f.off then pcall(f.off) end end
+        end
+        if a and f.step then pcall(f.step, dt) end
+    end
+end)
+
+--== click-TP ground indicator (Koffee-styled ring + crosshair on the mouse point) ==--
+local mouse = LocalPlayer:GetMouse()
+local tpInd = nil
+local function ensureIndicator()
+    if tpInd and tpInd.Parent then return tpInd end
+    local part = new("Part", { Name = KID.name("m_ind"), Anchored = true, CanCollide = false,
+        CanQuery = false, CanTouch = false, Transparency = 1, Size = Vector3.new(6, 0.1, 6),
+        Material = Enum.Material.SmoothPlastic })
+    local gui = new("SurfaceGui", { Name = "s", Face = Enum.NormalId.Top,
+        CanvasSize = Vector2.new(200, 200), LightInfluence = 0, AlwaysOnTop = false })
+    local ring = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, {
+        pillCorner(), new("UIStroke", { Color = Theme.Palette.Accent, Thickness = 4, Transparency = 0.1 }),
+    })
+    ring.Parent = gui
+    -- crosshair: two bars 90deg apart, centered
+    local barH = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.new(0.34, 0, 0, 3), BackgroundColor3 = Theme.Palette.Accent, BorderSizePixel = 0 }, { pillCorner() })
+    local barV = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.new(0, 3, 0.34, 0), BackgroundColor3 = Theme.Palette.Accent, BorderSizePixel = 0 }, { pillCorner() })
+    barH.Parent = gui; barV.Parent = gui
+    gui.Parent = part
+    KID.track(part); part.Parent = Workspace
+    tpInd = part
+    return part
+end
+RunService.RenderStepped:Connect(function()
+    if isActive("clicktp") then
+        local ind = ensureIndicator()
+        local g = ind:FindFirstChildWhichIsA("SurfaceGui")
+        local pos = mouse.Hit and mouse.Hit.Position
+        if pos then ind.CFrame = CFrame.new(pos + Vector3.new(0, 0.06, 0)); if g then g.Enabled = true end end
+    elseif tpInd then
+        local g = tpInd:FindFirstChildWhichIsA("SurfaceGui"); if g then g.Enabled = false end
+    end
+end)
+
+--== noclip + antifling (Stepped -- beats physics; noclip snapshots on first frame) ==--
+RunService.Stepped:Connect(function()
+    if isActive("noclip") then
+        local c = char()
+        if c then
+            if not st.noclip then
+                local snap = {}
+                for _, p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then snap[p] = p.CanCollide end end
+                st.noclip = snap
+            end
+            for _, p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then p.CanCollide = false end end
+        end
+    elseif st.noclip then
+        for p, cc in pairs(st.noclip) do if p and p.Parent then pcall(function() p.CanCollide = cc end) end end
+        st.noclip = nil
+    end
+    local af = Modules.antifling
+    if af and af.Enabled then
+        local r = rootOf()
+        if r then
+            if r.AssemblyAngularVelocity.Magnitude > 40 then r.AssemblyAngularVelocity = Vector3.zero end
+            local lv = r.AssemblyLinearVelocity
+            if lv.Magnitude > 500 then r.AssemblyLinearVelocity = lv.Unit * 60 end
+        end
+    end
+end)
+
+--== activation pill (left-click = rebind, right-click = Hold/Toggle) ==--
+local pendingBind = nil
+local activeChooser = nil
+local function closeChooser()
+    if activeChooser then
+        pcall(function() activeChooser.frame:Destroy() end)
+        if activeChooser.conn then activeChooser.conn:Disconnect() end
+        activeChooser = nil
+    end
+end
+local function openChooser(pill, cfg)
+    closeChooser()
+    local frame = new("Frame", { Name = KID.name("m_mode"), Size = UDim2.new(0, 120, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.Palette.Panel,
+        BackgroundTransparency = 0.02, BorderSizePixel = 0, ZIndex = 230 }, {
+        corner(6), stroke(Theme.Palette.Border, 1),
+        new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+            PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
+        new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+    })
+    frame.Parent = popupScreen
+    for _, mode in ipairs({ "Hold", "Toggle" }) do
+        local sel = cfg.Mode == mode
+        local opt = new("TextButton", { Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = sel and 0.2 or 1, AutoButtonColor = false, Text = mode:lower(),
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+            TextColor3 = sel and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 231 }, { corner(4) })
+        opt.Parent = frame
+        opt.MouseButton1Click:Connect(function() cfg.Mode = mode; closeChooser() end)
+    end
+    local abs, siz = pill.AbsolutePosition, pill.AbsoluteSize
+    local ox, oy = popupOffsetFor(frame, abs.X + siz.X - 120, abs.Y + siz.Y + 6)
+    frame.Position = UDim2.new(0, ox, 0, oy)
+    activeChooser = { frame = frame }
+    task.defer(function()
+        if not activeChooser then return end
+        activeChooser.conn = UserInputService.InputBegan:Connect(function(input)
+            local it = input.UserInputType
+            if it == Enum.UserInputType.MouseButton1 or it == Enum.UserInputType.MouseButton2
+            or it == Enum.UserInputType.Touch then
+                local mp = input.Position
+                local a, s = frame.AbsolutePosition, frame.AbsoluteSize
+                if not (mp.X >= a.X and mp.X <= a.X + s.X and mp.Y >= a.Y and mp.Y <= a.Y + s.Y) then closeChooser() end
+            end
+        end)
+    end)
+end
+local function clearPending()
+    if pendingBind then
+        pendingBind.refresh()
+        tween(pendingBind.pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+        pendingBind = nil
+    end
+end
+local function activationPill(row, cfg)
+    local pill = new("TextButton", { Name = KID.name("m_pill"), AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.new(0, 30, 0, 16), AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        AutoButtonColor = false, Text = keyLabel(cfg.Key) or "-", FontFace = Theme.Fonts.Mono,
+        TextSize = Theme.Text.Tiny, TextColor3 = Theme.Palette.TextMuted, ZIndex = 38 }, {
+        pillCorner(), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+    })
+    pill.Parent = row
+    local function refresh() pill.Text = keyLabel(cfg.Key) or "-" end
+    pill.MouseEnter:Connect(function() tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
+    pill.MouseLeave:Connect(function()
+        if not (pendingBind and pendingBind.pill == pill) then
+            tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+        end
+    end)
+    pill.MouseButton1Click:Connect(function()
+        if pendingBind and pendingBind.pill ~= pill then clearPending() end
+        pill.Text = "..."
+        tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
+        pendingBind = { pill = pill, cfg = cfg, refresh = refresh }
+    end)
+    pill.MouseButton2Click:Connect(function() openChooser(pill, cfg) end)
+    return pill
+end
+
+--== input: rebind capture + activation + click-TP teleport ==--
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if pendingBind then
+        local it = input.UserInputType
+        if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
+            pendingBind.cfg.Key = nil; clearPending(); return
+        end
+        local bind
+        if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then bind = input.KeyCode
+        elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
+           and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
+           and it ~= Enum.UserInputType.TextInput and it ~= Enum.UserInputType.InputMethod then bind = it end
+        if bind then pendingBind.cfg.Key = bind; clearPending() end
+        return
+    end
+    if gpe then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 and isActive("clicktp") then
+        local r = rootOf(); local pos = mouse.Hit and mouse.Hit.Position
+        if r and pos then r.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0)) end
+    end
+    for id, cfg in pairs(CFG) do
+        local m = Modules[id]
+        if m and m.Enabled and cfg.Key and matchBind(input, cfg.Key) then
+            if cfg.Mode == "Toggle" then held[id] = not held[id] else held[id] = true end
+        end
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    for id, cfg in pairs(CFG) do
+        if cfg.Mode == "Hold" and cfg.Key and matchBind(input, cfg.Key) then held[id] = false end
+    end
+end)
+
+-- virtual XButton driver (mirror of combat's; helper feeds mouse 4/5 state)
+do
+    local pXB1, pXB2 = false, false
+    RunService.Heartbeat:Connect(function()
+        local xb1, xb2 = Helper.XB1, Helper.XB2
+        local e1, e2 = (xb1 and not pXB1), (xb2 and not pXB2)
+        local function down(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
+        local function edge(k) return (k == "XButton1" and e1) or (k == "XButton2" and e2) or false end
+        if pendingBind then
+            local k = (e2 and "XButton2") or (e1 and "XButton1") or nil
+            if k then pendingBind.cfg.Key = k; clearPending() end
+        end
+        for id, cfg in pairs(CFG) do
+            if type(cfg.Key) == "string" then
+                local m = Modules[id]
+                if m and m.Enabled then
+                    if cfg.Mode == "Toggle" then if edge(cfg.Key) then held[id] = not held[id] end
+                    else held[id] = down(cfg.Key) end
+                end
+            end
+        end
+        pXB1, pXB2 = xb1, xb2
+    end)
+end
+
+--== modules (checkbox = arm). OnDisable clears held so re-arming starts inactive. ==--
+local function reg(id, name) registerModule(id, name, function() end, function() held[id] = false end) end
+reg("walkspeed", "WalkSpeed"); reg("teleportwalk", "Teleport Walk"); reg("fly", "Fly")
+reg("spinbot", "Spinbot"); reg("noclip", "Noclip"); reg("float", "Float"); reg("clicktp", "Click TP")
+registerModule("antifling", "Antifling", function() end, function() end)   -- no keybind: on = on
+
+--== tab builder (called by the Character addTab in normal tab order) ==--
+Koffee._characterTab = function(root)
+    local mv = panel(root, "movement")
+    moduleCheckbox(mv, "No Jump Cooldown", "nojumpcd")
+    moduleCheckbox(mv, "Infinite Jump",    "infjump")
+    local function feat(label, id)
+        local c = moduleCheckbox(mv, label, id)
+        activationPill(c.row, CFG[id])
+        return c
+    end
+    feat("WalkSpeed", "walkspeed")
+    slider(mv, "Speed", 0, 5000, Move.WalkSpeed.Speed, 0, function(v) Move.WalkSpeed.Speed = v end)
+    feat("Teleport Walk", "teleportwalk")
+    slider(mv, "TP Speed", 0, 500, Move.TeleportWalk.Speed, 0, function(v) Move.TeleportWalk.Speed = v end)
+    feat("Fly", "fly")
+    slider(mv, "Fly Speed", 0, 5000, Move.Fly.Speed, 0, function(v) Move.Fly.Speed = v end)
+    dropdown(mv, "Fly Mode", { "Default Fly", "Vehicle Fly", "CFrame Fly" }, Move.Fly.Kind, function(v) Move.Fly.Kind = v end)
+    feat("Spinbot", "spinbot")
+    slider(mv, "Spin Speed", 0, 1000, Move.Spin.Speed, 0, function(v) Move.Spin.Speed = v end)
+    feat("Noclip", "noclip")
+    feat("Float", "float")
+    slider(mv, "Float Speed", 0, 200, Move.Float.Speed, 0, function(v) Move.Float.Speed = v end)
+    feat("Click TP", "clicktp")
+    moduleCheckbox(mv, "Antifling", "antifling")
+end
+
+end)()
+
 -- TABS: build panels
 -- tab order (per he): combat visuals world character options configs npc teams
 -- COMBAT TAB (v0.0.31): two-column card (pill switcher):
@@ -6468,11 +6891,7 @@ addTab("World", function(root)
     end)
 end)
 
-addTab("Character", function(root)
-    local movement = panel(root, "movement")
-    moduleCheckbox(movement, "No Jump Cooldown", "nojumpcd")
-    moduleCheckbox(movement, "Infinite Jump",    "infjump")
-end)
+addTab("Character", function(root) Koffee._characterTab(root) end)
 
 -- OPTIONS TAB (v0.0.34)
 addTab("Options", function(root)
