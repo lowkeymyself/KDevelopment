@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.66"
+Koffee.Version = "0.0.67"
 
 -- THEME
 local Theme = {
@@ -6073,6 +6073,18 @@ local Combat = {
             if Combat.Silent.ActivationKey and not silentHeld then return false end
             return true
         end
+        -- direction spoofs fire when EITHER armed (LMB path) OR Pos Spoof (no LMB).
+        local function anyArmed() return isArmed() or posArmed() end
+        -- optional diagnostic: getgenv().KoffeePosDebug -> throttled log of what got spoofed
+        -- for which calling script (confirms the weapon's reads are being caught).
+        local lastDbg = 0
+        local function dbg(what)
+            if not (genv and genv.KoffeePosDebug) then return end
+            local now = os.clock()
+            if now - lastDbg < 0.5 then return end
+            lastDbg = now
+            print("[koffee][pos] spoofed " .. what .. " caller=" .. tostring(getCS and getCS()))
+        end
         -- SAFE default: redirect ONLY the Mouse's own aim reads (Hit / Target /
         -- UnitRay). These are what FE weapons read and NOTHING else in the engine
         -- touches, so cameras, Popper occlusion, physics and other scripts stay
@@ -6082,12 +6094,18 @@ local Combat = {
             -- scoping needed (nothing but aim code reads these). v0.0.35 behaviour.
             if (key == "Hit" or key == "Target" or key == "UnitRay")
                and typeof(self) == "Instance" and self:IsA("Mouse") then
-                if not isArmed() then return PASS_H, PASS_V end
+                if not anyArmed() then return PASS_H, PASS_V end
                 local pos, tgt = silentPos, silentTarget
                 if key == "Hit" then return true, CFrame.new(pos) end
                 if key == "Target" then return true, tgt end
-                local cam = Workspace.CurrentCamera
-                if cam then return true, Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit) end
+                -- UnitRay: Pos Spoof -> origin INSIDE the target (wallbang); else real cam origin.
+                local origin = (posArmed() and pos) or SR.camPos
+                if origin then
+                    local d = pos - origin
+                    if d.Magnitude < 1e-3 then d = pos - (SR.camPos or origin) end
+                    if d.Magnitude < 1e-3 then d = Vector3.new(0, 0, -1) end
+                    return true, Ray.new(origin, d.Unit)
+                end
                 return PASS_H, PASS_V
             end
             -- (B) v0.0.39 FIRE-READ: spoof the aim the instant the WEAPON SCRIPT reads
@@ -6096,14 +6114,17 @@ local Combat = {
             -- is what lands silent on server-validated shooters that ignore mouse.Hit.
             -- Identity compares (self == SR.cam / SR.mouse) keep this off the hot path
             -- and avoid an IsA namecall on every .CFrame read in the game.
-            if isArmed() then
-                -- Camera.CFrame spoof: origin stays REAL, look-direction bends to target.
-                -- Scoped by spoofAim (never the camera system) so the real view / Popper
-                -- stay untouched. This is what lands silent on crosshair FPS that build the
-                -- shot from the camera. Trade-off: a game ability that reads the camera
-                -- while you're armed bends with it (rare -- RIVALS' dash is one such case).
+            if anyArmed() then
+                -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
+                --   default (Forced MB): origin stays REAL, look-direction bends to target.
+                --   Pos Spoof ON: origin moves INSIDE the target too, so a camera-origin gun
+                --     fires from within them (WALLBANG) -- this was the missing wallbang piece.
                 if key == "CFrame" and self == SR.cam and SR.camPos and silentPos then
                     if SR.spoofAim(getCS and getCS()) then
+                        dbg("Camera.CFrame")
+                        if posArmed() then
+                            return true, CFrame.new(silentPos, silentPos + (silentPos - SR.camPos))
+                        end
                         return true, CFrame.new(SR.camPos, silentPos)
                     end
                 elseif (key == "X" or key == "Y") and self == SR.mouse and SR.screen then
@@ -6122,9 +6143,9 @@ local Combat = {
                 local sp = SR.spoofParts
                 if sp and sp[self] then
                     if key == "Position" or key == "WorldPosition" then
-                        if SR.spoofAim(getCS and getCS()) then return true, silentPos end
+                        if SR.spoofAim(getCS and getCS()) then dbg("part.Position"); return true, silentPos end
                     elseif key == "CFrame" or key == "WorldCFrame" then
-                        if SR.spoofAim(getCS and getCS()) then return true, CFrame.new(silentPos) end
+                        if SR.spoofAim(getCS and getCS()) then dbg("part.CFrame"); return true, CFrame.new(silentPos) end
                     end
                 elseif self == SR.mouse and key == "Origin" then
                     if SR.spoofAim(getCS and getCS()) then return true, CFrame.new(silentPos) end
@@ -6146,15 +6167,19 @@ local Combat = {
                 if posArmed() and self == SR.char and SR.spoofAim(getCS and getCS()) then
                     return true, CFrame.new(silentPos)
                 end
+                return PASS_H, PASS_V
             end
-            if not isArmed() then return PASS_H, PASS_V end
-            -- camera-ray / cursor methods the game uses to build its shot: origin stays
-            -- REAL (SR.camPos), direction bends to the target. spoofAim excludes the
-            -- camera system + Koffee's own reads. Namecall-free.
+            if not anyArmed() then return PASS_H, PASS_V end
+            -- camera-ray / cursor methods the game uses to build its shot. Direction bends to
+            -- the target; ORIGIN moves inside the target under Pos Spoof (wallbang), else real
+            -- (SR.camPos). spoofAim excludes the camera system + Koffee. Namecall-free.
             if method == "ViewportPointToRay" or method == "ScreenPointToRay" then
                 if silentPos and SR.camPos and SR.spoofAim(getCS and getCS()) then
-                    local o = SR.camPos
-                    return true, Ray.new(o, (silentPos - o).Unit)
+                    local o = (posArmed() and silentPos) or SR.camPos
+                    local d = silentPos - o
+                    if d.Magnitude < 1e-3 then d = silentPos - SR.camPos end
+                    if d.Magnitude < 1e-3 then d = Vector3.new(0, 0, -1) end
+                    return true, Ray.new(o, d.Unit)
                 end
             elseif method == "GetMouseLocation" then
                 if SR.screen and SR.spoofAim(getCS and getCS()) then
