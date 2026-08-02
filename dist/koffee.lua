@@ -1,9 +1,9 @@
--- koffee v0.0.49
+-- koffee v0.0.50
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.49"
+Koffee.Version = "0.0.50"
 
 --============================================================
 -- THEME
@@ -2852,9 +2852,22 @@ local function snapshotAll()
 end
 
 -- === apply ================================================================
+-- v0.0.50: SET-shaped tables must be REPLACED, not deep-merged. `MyTeams` is a
+-- name-set where unticking a team does `MyTeams[name] = nil` -- an absent key IS
+-- the "not my team" value. Deep-merging can only ADD keys, so loading a config
+-- left every previously-ticked team behind and the player kept being treated as
+-- an ally. (Flagged as a caveat when MyTeams shipped in v0.0.46.) Cleared IN
+-- PLACE rather than reassigned so live references to the table keep working --
+-- the same reason the whole loader applies in place.
+-- Deep-merge stays the default: every other registered table is a fixed schema
+-- where a missing key means "this config predates the field", not "unset it".
+local REPLACE_TABLES = { MyTeams = true }
 local function applyInto(target, src)
     for k, v in pairs(src) do
         if type(v) == "table" and type(target[k]) == "table" then
+            if REPLACE_TABLES[k] then
+                for old in pairs(target[k]) do target[k][old] = nil end
+            end
             applyInto(target[k], v)
         else
             target[k] = v
@@ -2932,7 +2945,11 @@ function ConfigIO.load(name)
     if not fn then return false, "parse failed" end
     local dok, data = pcall(fn)
     if not dok then return false, "eval failed" end
-    return loadSnapshot(data), name
+    -- v0.0.50 fix: `return loadSnapshot(data), name` handed the CONFIG NAME back as
+    -- the second return on failure, so the UI printed "load failed: <name>" instead
+    -- of a reason. Split the two paths so the error slot always carries an error.
+    if not loadSnapshot(data) then return false, "bad config data" end
+    return true, name
 end
 function ConfigIO.delete(name)
     if not (filesReady() and fileAPI.delfile) then return false end
@@ -6651,10 +6668,18 @@ addTab("Configs", function(root)
     mkBtn(actionRow, "delete", 66, function()
         if not needSel() then return end
         local nm = selectedName
-        CIO.delete(nm)
+        -- v0.0.50 fix (two bugs):
+        --   1. CIO.delete's return was discarded -- a failed/unavailable delfile
+        --      still reported "deleted", and the name stayed on disk.
+        --   2. deleting the auto-load config left the _auto_<PlaceId> marker
+        --      pointing at a file that no longer exists, so auto-load silently
+        --      did nothing every session with no way to notice from the UI.
+        local ok = CIO.delete(nm)
+        if ok and CIO.getAuto() == nm then CIO.setAuto(nil) end
         selectedName = nil
         rebuildManager()
-        setStatus("deleted: " .. nm, true)
+        if ok then setStatus("deleted: " .. nm, true)
+        else setStatus("delete failed: " .. nm, false) end
     end).LayoutOrder = 3
     autoBtn = mkBtn(actionRow, "auto", 58, function()
         if not needSel() then return end
