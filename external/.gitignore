@@ -1,0 +1,14 @@
+# Rust
+user/target/
+user/Cargo.lock
+
+# WDK / VS driver builds
+driver/x64/
+driver/Debug/
+driver/Release/
+driver/*.vcxproj.user
+driver/*.suo
+driver/.vs/
+driver/**/*.pdb
+driver/**/*.obj
+driver/**/*.sys
