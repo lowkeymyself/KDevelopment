@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.67"
+Koffee.Version = "0.0.68"
 
 -- THEME
 local Theme = {
@@ -6073,8 +6073,22 @@ local Combat = {
             if Combat.Silent.ActivationKey and not silentHeld then return false end
             return true
         end
-        -- direction spoofs fire when EITHER armed (LMB path) OR Pos Spoof (no LMB).
-        local function anyArmed() return isArmed() or posArmed() end
+        -- v0.0.68: Pos Spoof only manipulates the ORIGIN during the actual shot (LMB frame).
+        -- Doing it every frame corrupted the viewmodel (FpsController reads Camera.CFrame for
+        -- BOTH the arms/gun render AND the shot) -- that broke the aim entirely. Gated to the
+        -- fire frame, the viewmodel is normal between shots and only the shot gets moved.
+        local function posFire() return posArmed() and lmbDown end
+        -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
+        -- any wall between you and them), aimed AT the target -> the client raycast hits them
+        -- with no wall in the way. Uses cached camPos (no Camera re-read inside the hook).
+        local function wallShot()
+            local cp = SR.camPos
+            if not cp then return silentPos, Vector3.new(0, 0, -1) end
+            local d = silentPos - cp
+            if d.Magnitude < 1e-3 then return silentPos, Vector3.new(0, 0, -1) end
+            d = d.Unit
+            return silentPos - d * 3, d
+        end
         -- optional diagnostic: getgenv().KoffeePosDebug -> throttled log of what got spoofed
         -- for which calling script (confirms the weapon's reads are being caught).
         local lastDbg = 0
@@ -6094,18 +6108,14 @@ local Combat = {
             -- scoping needed (nothing but aim code reads these). v0.0.35 behaviour.
             if (key == "Hit" or key == "Target" or key == "UnitRay")
                and typeof(self) == "Instance" and self:IsA("Mouse") then
-                if not anyArmed() then return PASS_H, PASS_V end
+                if not isArmed() then return PASS_H, PASS_V end
                 local pos, tgt = silentPos, silentTarget
                 if key == "Hit" then return true, CFrame.new(pos) end
                 if key == "Target" then return true, tgt end
-                -- UnitRay: Pos Spoof -> origin INSIDE the target (wallbang); else real cam origin.
-                local origin = (posArmed() and pos) or SR.camPos
-                if origin then
-                    local d = pos - origin
-                    if d.Magnitude < 1e-3 then d = pos - (SR.camPos or origin) end
-                    if d.Magnitude < 1e-3 then d = Vector3.new(0, 0, -1) end
-                    return true, Ray.new(origin, d.Unit)
-                end
+                -- UnitRay: Pos Spoof (fire frame) -> origin in front of the target (wallbang);
+                -- else the real camera origin (direction to target).
+                if posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
+                if SR.camPos then return true, Ray.new(SR.camPos, (pos - SR.camPos).Unit) end
                 return PASS_H, PASS_V
             end
             -- (B) v0.0.39 FIRE-READ: spoof the aim the instant the WEAPON SCRIPT reads
@@ -6114,16 +6124,17 @@ local Combat = {
             -- is what lands silent on server-validated shooters that ignore mouse.Hit.
             -- Identity compares (self == SR.cam / SR.mouse) keep this off the hot path
             -- and avoid an IsA namecall on every .CFrame read in the game.
-            if anyArmed() then
+            if isArmed() then
                 -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
                 --   default (Forced MB): origin stays REAL, look-direction bends to target.
-                --   Pos Spoof ON: origin moves INSIDE the target too, so a camera-origin gun
-                --     fires from within them (WALLBANG) -- this was the missing wallbang piece.
+                --   Pos Spoof + fire frame: camera moves to 3 studs in FRONT of the target,
+                --     looking at it, so a camera-origin gun raycasts into them through the wall
+                --     (WALLBANG). Only on the shot frame, so the viewmodel stays normal.
                 if key == "CFrame" and self == SR.cam and SR.camPos and silentPos then
                     if SR.spoofAim(getCS and getCS()) then
                         dbg("Camera.CFrame")
-                        if posArmed() then
-                            return true, CFrame.new(silentPos, silentPos + (silentPos - SR.camPos))
+                        if posFire() then
+                            local o, d = wallShot(); return true, CFrame.new(o, o + d)
                         end
                         return true, CFrame.new(SR.camPos, silentPos)
                     end
@@ -6139,7 +6150,7 @@ local Combat = {
             -- range). Broad set = all character descendants incl. the gun's muzzle parts /
             -- attachments, so guns reading the tool position (not just HRP) land too. Real
             -- parts never move. Scoped by spoofAim (camera + Koffee excluded); no LMB gate.
-            if posArmed() then
+            if posFire() then
                 local sp = SR.spoofParts
                 if sp and sp[self] then
                     if key == "Position" or key == "WorldPosition" then
@@ -6164,22 +6175,19 @@ local Combat = {
             -- v0.0.64 POS SPOOF: Character:GetPivot()/GetPrimaryPartCFrame -> target CFrame,
             -- BEFORE the LMB gate (Pos Spoof doesn't require left-click). Namecall-free.
             if method == "GetPivot" or method == "GetPrimaryPartCFrame" then
-                if posArmed() and self == SR.char and SR.spoofAim(getCS and getCS()) then
+                if posFire() and self == SR.char and SR.spoofAim(getCS and getCS()) then
                     return true, CFrame.new(silentPos)
                 end
                 return PASS_H, PASS_V
             end
-            if not anyArmed() then return PASS_H, PASS_V end
+            if not isArmed() then return PASS_H, PASS_V end
             -- camera-ray / cursor methods the game uses to build its shot. Direction bends to
-            -- the target; ORIGIN moves inside the target under Pos Spoof (wallbang), else real
-            -- (SR.camPos). spoofAim excludes the camera system + Koffee. Namecall-free.
+            -- the target; on the Pos Spoof fire frame the ORIGIN moves in front of the target
+            -- (wallbang), else real (SR.camPos). spoofAim excludes the camera + Koffee. Namecall-free.
             if method == "ViewportPointToRay" or method == "ScreenPointToRay" then
                 if silentPos and SR.camPos and SR.spoofAim(getCS and getCS()) then
-                    local o = (posArmed() and silentPos) or SR.camPos
-                    local d = silentPos - o
-                    if d.Magnitude < 1e-3 then d = silentPos - SR.camPos end
-                    if d.Magnitude < 1e-3 then d = Vector3.new(0, 0, -1) end
-                    return true, Ray.new(o, d.Unit)
+                    if posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
+                    return true, Ray.new(SR.camPos, (silentPos - SR.camPos).Unit)
                 end
             elseif method == "GetMouseLocation" then
                 if SR.screen and SR.spoofAim(getCS and getCS()) then
