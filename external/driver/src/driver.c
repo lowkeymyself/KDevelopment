@@ -398,7 +398,7 @@ NTSTATUS DriverEntry(_In_opt_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRING Re
         UNICODE_STRING globalSym;
         RtlInitUnicodeString(&globalSym, L"\\GLOBAL??\\KoffeeMem");
         symSt = IoCreateSymbolicLink(&globalSym, &devName);
-        DbgPrint("[KoffeeMem] fallback \GLOBAL?? symlink: 0x%X\n", symSt);
+        DbgPrint("[KoffeeMem] fallback \\GLOBAL?? symlink: 0x%X\n", symSt);
     } else {
         DbgPrint("[KoffeeMem] symlink: 0x%X\n", symSt);
     }
