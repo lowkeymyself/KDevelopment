@@ -25,12 +25,12 @@
     <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
     <RootNamespace>KoffeeMem</RootNamespace>
-    <!-- Pin to a specific SDK/WDK version. "10.0" alone picks "latest installed",
-         which on machines with the 26100/28000 dev-channel kits selects a version
-         whose km/ (kernel-mode) headers weren't dropped -> ntddk.h missing. 22621
-         is Win 11 22H2 GA and ships a full km/ tree with VS 2022 support.
-         Override with -p:WindowsTargetPlatformVersion=10.0.xxxxx.0 if needed. -->
-    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)'==''">10.0.22621.0</WindowsTargetPlatformVersion>
+    <!-- Pin the SDK/WDK version so we don't get a partial kit that's missing
+         km/ headers. On a machine with the current VS 2026 + WDK 26100/28000
+         pair, 28000 is the one shipping km/ntddk.h. Older 22621 SDK folder
+         may exist without its km/ tree (SDK installed, WDK never did).
+         Override with -p:WindowsTargetPlatformVersion=10.0.xxxxx.0 to retarget. -->
+    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)'==''">10.0.28000.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
