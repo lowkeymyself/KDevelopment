@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <!-- KoffeeMem -- WDM kernel driver.
-       Requires: Windows Driver Kit (WDK) 10.0.22621+ and VS 2022 with the
-       "Desktop development with C++" workload. Open in Visual Studio 2022 OR
-       build from a `Developer Command Prompt` with:
+  <!-- KoffeeMem : WDM kernel driver.
+       Requires the Windows Driver Kit (WDK) 10.0.22621+ and VS 2022 with the
+       "Desktop development with C++" workload. Open in Visual Studio 2022 or
+       build from a Developer Command Prompt with:
          msbuild KoffeeMem.vcxproj /p:Configuration=Debug /p:Platform=x64
-       Output: `x64\Debug\KoffeeMem\KoffeeMem.sys`
+       Output: x64\Debug\KoffeeMem\KoffeeMem.sys
   -->
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
