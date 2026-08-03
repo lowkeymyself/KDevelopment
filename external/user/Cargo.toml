@@ -16,6 +16,13 @@ path = "src/main.rs"
 name = "KoffeeTestTarget"
 path = "src/bin/testtarget.rs"
 
+[features]
+# Default = mock transport (host dev, no driver, no admin). Build with
+# `--features real-driver` in the VM once the driver is loaded to point the
+# same feature code at real kernel-driver IOCTLs.
+default = []
+real-driver = []
+
 [dependencies]
 # windows-sys covers everything we need: process enumeration, DeviceIoControl, VirtualQueryEx, etc.
 # feature-gated so we only pull the exact API surfaces used (small binary).

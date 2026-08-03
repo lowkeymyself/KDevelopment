@@ -38,12 +38,12 @@ Driver + real-transport build happens in the Windows VM with WDK installed. Setu
 - [x] Scaffolding + Transport trait + mock transport (proof-of-life on host)
 - [x] `KoffeeTestTarget` dev target bin (safe VM read/write test target for the driver -- see `user/src/bin/testtarget.rs`)
 - [x] Kernel driver skeleton + IOCTL protocol (KfmFindModule stubbed; rest wired)
-- [ ] `KfmFindModule` PEB walk
-- [ ] Real `DriverTransport` (Rust user side of the IOCTL)
+- [x] `KfmFindModule` PEB walk (`PsGetProcessPeb` + `InLoadOrderModuleList`, case-insensitive `BaseDllName` match, SEH-wrapped, capped at 4096 modules to survive a corrupted list)
+- [x] Real `DriverTransport` (Rust): `CreateFileA("\\\\.\\KoffeeMem")` + `DeviceIoControl` for ATTACH/READ/WRITE/MODULE_BASE, `Drop` closes the handle. `Cargo.toml` gains a `real-driver` feature flag (default = mock).
 - [ ] Driver build project (`driver.vcxproj`) + VM build docs
 - [ ] First live driver round-trip against `KoffeeTestTarget` in the VM
 - [ ] Loader (BYOVD manual mapper with a picked vulnerable signed driver)
 - [ ] First live read of a real target's module base
 - [ ] Feature port begins
 
-**Currently PAUSED** -- resuming as a dedicated kernel-driver push. Foundation (scaffold + test bin) is ready for the driver-build phase.
+**Currently in progress** -- driver + Rust IOCTL layer both stand up on their own build gates (Rust `cargo check` clean for both `default` and `--features real-driver`; driver still needs a WDK build in the VM). Next: the `driver.vcxproj` + VM build recipe, then the first live round-trip against `KoffeeTestTarget`.

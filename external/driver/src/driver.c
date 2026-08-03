@@ -26,6 +26,51 @@ DRIVER_DISPATCH  KfmDeviceControl;
 
 // PsLookupProcessByProcessId is declared in ntddk.h.
 
+// PsGetProcessPeb isn't in the public WDK headers -- prototype it ourselves so
+// the linker resolves it out of ntoskrnl.exe. Works from Vista onward.
+NTKERNELAPI PVOID NTAPI PsGetProcessPeb(_In_ PEPROCESS Process);
+
+// Minimal LDR structures for the PEB walk. Layout is stable across NT versions
+// for the fields we actually touch (In*ModuleList links, DllBase, SizeOfImage,
+// BaseDllName). We only read; no packing hazards.
+typedef struct _KFM_PEB_LDR_DATA {
+    ULONG  Length;
+    UCHAR  Initialized;
+    PVOID  SsHandle;
+    LIST_ENTRY InLoadOrderModuleList;
+    LIST_ENTRY InMemoryOrderModuleList;
+    LIST_ENTRY InInitializationOrderModuleList;
+} KFM_PEB_LDR_DATA, *PKFM_PEB_LDR_DATA;
+
+typedef struct _KFM_PEB {
+    UCHAR  InheritedAddressSpace;
+    UCHAR  ReadImageFileExecOptions;
+    UCHAR  BeingDebugged;
+    UCHAR  BitField;
+    PVOID  Mutant;
+    PVOID  ImageBaseAddress;
+    PKFM_PEB_LDR_DATA Ldr;
+    // ... more fields; we only need Ldr.
+} KFM_PEB, *PKFM_PEB;
+
+typedef struct _KFM_UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} KFM_UNICODE_STRING, *PKFM_UNICODE_STRING;
+
+typedef struct _KFM_LDR_DATA_TABLE_ENTRY {
+    LIST_ENTRY InLoadOrderLinks;
+    LIST_ENTRY InMemoryOrderLinks;
+    LIST_ENTRY InInitializationOrderLinks;
+    PVOID      DllBase;
+    PVOID      EntryPoint;
+    ULONG      SizeOfImage;
+    KFM_UNICODE_STRING FullDllName;
+    KFM_UNICODE_STRING BaseDllName;
+    // ... more fields.
+} KFM_LDR_DATA_TABLE_ENTRY, *PKFM_LDR_DATA_TABLE_ENTRY;
+
 // -- device names ---------------------------------------------------------
 
 #define KFM_DEVICE_NAME  L"\\Device\\KoffeeMem"
@@ -80,22 +125,65 @@ static NTSTATUS KfmCopy(_In_ HANDLE Pid, _In_ ULONG_PTR TargetAddr, _Inout_ PVOI
     return st;
 }
 
+// Case-insensitive ASCII vs UNICODE compare. We only ever compare against the
+// last path component (BaseDllName in the LDR entry), so no path splitting.
+// Returns TRUE when the two strings are equal, casefolded ASCII-A..Z only
+// (module names on Windows are all ASCII in practice).
+static BOOLEAN KfmEqIA(_In_ PCSTR Ascii, _In_ PCWCH Wide, _In_ SIZE_T WideChars) {
+    SIZE_T i;
+    for (i = 0; i < WideChars; i++) {
+        UCHAR a = (UCHAR)Ascii[i];
+        WCHAR w = Wide[i];
+        if (a == 0) return FALSE;                          // ASCII ran out early
+        if (w > 0x7F) return FALSE;                        // non-ASCII in module name
+        if (a >= 'a' && a <= 'z') a = (UCHAR)(a - 32);     // fold
+        if (w >= L'a' && w <= L'z') w = (WCHAR)(w - 32);
+        if ((WCHAR)a != w) return FALSE;
+    }
+    return (Ascii[i] == 0);                                // ASCII exhausted too = match
+}
+
 // PEB walk (target's LDR module list) -> return base + size for the named
-// module. Case-insensitive ASCII match on the last-path-component; PEB's
-// FullDllName is a UNICODE_STRING, so we compare with a small ASCII->WCHAR
-// upcase. Only called from inside the attach block, so PEB pointers are valid.
+// module. Case-insensitive ASCII match against BaseDllName. MUST be called from
+// inside a KeStackAttachProcess block (PEB pointers are target-VA and only
+// valid while we own that address space). SEH-wrapped: a torn PEB from an
+// exiting process becomes STATUS_ACCESS_VIOLATION instead of a bug-check.
 static NTSTATUS KfmFindModule(_In_ PEPROCESS Proc, _In_ PCSTR Name,
                               _Out_ PULONG64 Base, _Out_ PULONG64 Size)
 {
-    UNREFERENCED_PARAMETER(Proc);
-    UNREFERENCED_PARAMETER(Name);
-    // TODO: implement PEB walk. Two known-good approaches:
-    //   1. PsGetProcessPeb(Proc) then walk PEB->Ldr->InLoadOrderModuleList.
-    //   2. ZwQueryVirtualMemory(MemoryMappedFilenameInformation) per region.
-    // #1 is smaller + purpose-built; #2 is a fallback if PEB is stripped.
     *Base = 0;
     *Size = 0;
-    return STATUS_NOT_IMPLEMENTED;
+
+    PKFM_PEB peb = (PKFM_PEB)PsGetProcessPeb(Proc);
+    if (!peb) return STATUS_NOT_FOUND;
+
+    NTSTATUS st = STATUS_NOT_FOUND;
+    __try {
+        PKFM_PEB_LDR_DATA ldr = peb->Ldr;
+        if (!ldr) __leave;
+
+        // Cap the walk so a corrupted list can't spin us forever. 4096 loaded
+        // modules is well above any real process (Roblox loads ~200).
+        PLIST_ENTRY head = &ldr->InLoadOrderModuleList;
+        PLIST_ENTRY cur  = head->Flink;
+        for (ULONG i = 0; i < 4096 && cur && cur != head; i++) {
+            PKFM_LDR_DATA_TABLE_ENTRY e = CONTAINING_RECORD(
+                cur, KFM_LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+
+            SIZE_T wideChars = (SIZE_T)(e->BaseDllName.Length / sizeof(WCHAR));
+            if (e->BaseDllName.Buffer && wideChars > 0
+                && KfmEqIA(Name, e->BaseDllName.Buffer, wideChars)) {
+                *Base = (ULONG64)(ULONG_PTR)e->DllBase;
+                *Size = (ULONG64)e->SizeOfImage;
+                st    = STATUS_SUCCESS;
+                __leave;
+            }
+            cur = cur->Flink;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        st = GetExceptionCode();
+    }
+    return st;
 }
 
 // -- dispatch: create / close --------------------------------------------
