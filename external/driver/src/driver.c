@@ -14,6 +14,10 @@
 // there's exactly one: RobloxPlayerBeta.exe.
 //
 
+// ntifs.h is a superset of ntddk.h and is where the cross-process attach APIs
+// (PsLookupProcessByProcessId, KeStackAttachProcess, KAPC_STATE) actually live
+// in modern WDK headers -- ntddk.h alone won't declare them, gives C4013.
+#include <ntifs.h>
 #include <ntddk.h>
 #include "ioctl.h"
 
