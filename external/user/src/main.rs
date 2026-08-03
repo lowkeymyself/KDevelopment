@@ -36,15 +36,24 @@ fn main() -> ExitCode {
     println!("koffee-external v{} -- {}", env!("CARGO_PKG_VERSION"),
         if cfg!(feature = "real-driver") { "real driver" } else { "mock transport (dev)" });
 
-    // 1. locate roblox.
-    let pid = match proc::find_process(ROBLOX_EXE) {
+    // Target selection order:
+    //   1. CLI arg 1 (`KoffeeExternal.exe SomeTarget.exe`) -- first driver-testing use case
+    //      is `KoffeeTestTarget.exe`, so we need to point at anything.
+    //   2. `KOFFEE_TARGET_EXE` env var -- convenient for running under a shell / debugger.
+    //   3. default = RobloxPlayerBeta.exe (prod path).
+    let target_exe: String = std::env::args().nth(1)
+        .or_else(|| std::env::var("KOFFEE_TARGET_EXE").ok())
+        .unwrap_or_else(|| ROBLOX_EXE.to_string());
+
+    // 1. locate the target process.
+    let pid = match proc::find_process(&target_exe) {
         Some(p) => p,
         None => {
-            eprintln!("[!] {} not found -- launch roblox first.", ROBLOX_EXE);
+            eprintln!("[!] {} not found -- launch it first.", target_exe);
             return ExitCode::from(2);
         }
     };
-    println!("[+] found {} pid = {}", ROBLOX_EXE, pid);
+    println!("[+] found {} pid = {}", target_exe, pid);
 
     // 2. open the transport.
     let mut t = match ChosenTransport::open(pid) {
@@ -58,14 +67,14 @@ fn main() -> ExitCode {
 
     // 3. main-module base. this is the first real memory-adjacent op; if it
     //    works, the transport works.
-    let base = match t.module_base(pid, ROBLOX_EXE) {
+    let base = match t.module_base(pid, &target_exe) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("[!] module_base failed: {}", e);
             return ExitCode::from(4);
         }
     };
-    println!("[+] {} base = 0x{:X}", ROBLOX_EXE, base);
+    println!("[+] {} base = 0x{:X}", target_exe, base);
 
     // 4. proof-of-life read: dump 16 bytes at the module base (should start
     //    with 'MZ' -- PE header). NOTHING to do with Deleter2 yet -- this is

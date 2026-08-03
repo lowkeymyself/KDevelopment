@@ -40,7 +40,8 @@ Driver + real-transport build happens in the Windows VM with WDK installed. Setu
 - [x] Kernel driver skeleton + IOCTL protocol (KfmFindModule stubbed; rest wired)
 - [x] `KfmFindModule` PEB walk (`PsGetProcessPeb` + `InLoadOrderModuleList`, case-insensitive `BaseDllName` match, SEH-wrapped, capped at 4096 modules to survive a corrupted list)
 - [x] Real `DriverTransport` (Rust): `CreateFileA("\\\\.\\KoffeeMem")` + `DeviceIoControl` for ATTACH/READ/WRITE/MODULE_BASE, `Drop` closes the handle. `Cargo.toml` gains a `real-driver` feature flag (default = mock).
-- [ ] Driver build project (`driver.vcxproj`) + VM build docs
+- [x] Driver build project (`KoffeeMem.vcxproj`/`.sln`, WDM x64 Debug/Release) + full VM runbook (`driver/README.md`)
+- [x] `KoffeeExternal` bin accepts a target-exe arg / `KOFFEE_TARGET_EXE` env var so the first live round-trip can point at `KoffeeTestTarget.exe` before touching Roblox
 - [ ] First live driver round-trip against `KoffeeTestTarget` in the VM
 - [ ] Loader (BYOVD manual mapper with a picked vulnerable signed driver)
 - [ ] First live read of a real target's module base
