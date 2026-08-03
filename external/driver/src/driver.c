@@ -241,8 +241,13 @@ NTSTATUS KfmDeviceControl(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
             if (!ctx->targetPid) { st = STATUS_INVALID_HANDLE; break; }
             PKFM_READ_IN in = (PKFM_READ_IN)buf;
             if (in->size == 0 || in->size > outLen) { st = STATUS_BUFFER_TOO_SMALL; break; }
-            st = KfmCopy(ctx->targetPid, (ULONG_PTR)in->addr, buf, in->size, 0);
-            if (NT_SUCCESS(st)) info = in->size;
+            // Stash size + addr BEFORE calling KfmCopy -- KfmCopy overwrites buf
+            // (the SystemBuffer) with the target's memory, clobbering the KFM_READ_IN
+            // fields at those offsets. Reading in->size after the copy gives garbage.
+            ULONG      rdSize = in->size;
+            ULONG_PTR  rdAddr = (ULONG_PTR)in->addr;
+            st = KfmCopy(ctx->targetPid, rdAddr, buf, rdSize, 0);
+            if (NT_SUCCESS(st)) info = rdSize;
             break;
         }
         case IOCTL_KFM_WRITE: {
