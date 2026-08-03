@@ -374,8 +374,29 @@ NTSTATUS DriverEntry(_In_opt_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRING Re
     UNICODE_STRING drvName;
     RtlInitUnicodeString(&drvName, L"\\Driver\\KoffeeMem");
     NTSTATUS st = IoCreateDriver(&drvName, &KfmMappedInit);
-    if (!NT_SUCCESS(st)) {
+    if (!NT_SUCCESS(st) && st != STATUS_OBJECT_NAME_COLLISION) {
         DbgPrint("[KoffeeMem] IoCreateDriver failed 0x%X\n", st);
+        return st;
     }
-    return st;
+
+    // Belt-and-suspenders: IoCreateSymbolicLink inside KfmMappedInit may fail
+    // when called from the IoCreateDriver init callback context on Win11
+    // (restricted \GLOBAL?? write access from certain thread contexts).
+    // Re-attempt the symlink from DriverEntry which runs in a more permissive
+    // context. STATUS_OBJECT_NAME_COLLISION means it already exists -- fine.
+    UNICODE_STRING devName, symName;
+    RtlInitUnicodeString(&devName, KFM_DEVICE_NAME);
+    RtlInitUnicodeString(&symName, KFM_SYMLINK_NAME);
+    NTSTATUS symSt = IoCreateSymbolicLink(&symName, &devName);
+    if (!NT_SUCCESS(symSt) && symSt != STATUS_OBJECT_NAME_COLLISION) {
+        // \?? failed -- try the explicit \GLOBAL?? prefix.
+        UNICODE_STRING globalSym;
+        RtlInitUnicodeString(&globalSym, L"\\GLOBAL??\\KoffeeMem");
+        symSt = IoCreateSymbolicLink(&globalSym, &devName);
+        DbgPrint("[KoffeeMem] fallback \GLOBAL?? symlink: 0x%X\n", symSt);
+    } else {
+        DbgPrint("[KoffeeMem] symlink: 0x%X\n", symSt);
+    }
+
+    return STATUS_SUCCESS;
 }

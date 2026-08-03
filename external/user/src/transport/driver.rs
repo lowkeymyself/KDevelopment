@@ -24,7 +24,8 @@ use std::io;
 use std::ptr;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileA, DefineDosDeviceW, DDD_RAW_TARGET_PATH,
+    FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
@@ -83,6 +84,17 @@ impl Drop for DriverTransport {
 
 impl Transport for DriverTransport {
     fn open(pid: u32) -> io::Result<Self> {
+        // If the kernel driver's IoCreateSymbolicLink failed from within the
+        // IoCreateDriver init callback (known Win11 context restriction), the
+        // device object exists at \Device\KoffeeMem but \\.\KoffeeMem won't
+        // resolve. DefineDosDeviceW creates a session-local mapping that makes
+        // CreateFileA("\\.\KoffeeMem") work regardless of the kernel symlink.
+        // DDD_RAW_TARGET_PATH(1): treat target as raw NT path, no conversion.
+        // Ignore failure (e.g., name already exists / insufficient rights).
+        let dev_name_w: Vec<u16> = "KoffeeMem\0".encode_utf16().collect();
+        let tgt_path_w: Vec<u16> = "\\Device\\KoffeeMem\0".encode_utf16().collect();
+        unsafe { DefineDosDeviceW(DDD_RAW_TARGET_PATH, dev_name_w.as_ptr(), tgt_path_w.as_ptr()) };
+
         let handle = unsafe {
             CreateFileA(
                 DEVICE_PATH.as_ptr(),
