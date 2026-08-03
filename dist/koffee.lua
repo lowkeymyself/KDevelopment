@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.75"
+Koffee.Version = "0.0.76"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -863,6 +863,13 @@ local function addToActiveArray(mod)
         ZIndex = 18,
         Parent = wrapper,
     })
+    -- v0.0.76: per-label UIStroke driven by ESP.Config.Outline (wired below, once
+    -- ESP exists). Contextual so it hugs the glyphs (Border would box the label rect).
+    -- Starts disabled -- the outline heartbeat flips it on if Outline is on.
+    local arrStroke = textStroke(Color3.new(0, 0, 0), 1)
+    arrStroke.Name = "KArrayStroke"
+    arrStroke.Enabled = false
+    arrStroke.Parent = label
     tween(label, ROW_ENTER, {
         Position = UDim2.new(0, 0, 0, 0),
         TextTransparency = 0,
@@ -3194,6 +3201,26 @@ registerConfig("shared",         Shared)
 -- the arraylist accent line stays at its default transparency (0.15) permanently.
 -- Future accent needs: build a dedicated "Accent Line" toggle, don't hijack Outline.
 
+-- v0.0.76: Outline now ALSO drives an outline around every arraylist label. Each
+-- label carries a KArrayStroke (added in addToActiveArray, disabled by default);
+-- this heartbeat toggles + tints it live off ESP.Config.Outline + ESP.Boxes.OutlineColor.
+-- Kept here (after ESP is defined) so the upvalue resolves cleanly -- addToActiveArray
+-- sits above ESP in the file and can't reference it directly.
+RunService.Heartbeat:Connect(function()
+    local on = ESP.Config.Outline == true
+    local col = ESP.Boxes.OutlineColor
+    for _, m in ipairs(shown) do
+        local lbl = m._arrayLabel
+        if lbl and lbl.Parent then
+            local s = lbl:FindFirstChild("KArrayStroke")
+            if s then
+                if s.Enabled ~= on then s.Enabled = on end
+                if s.Color ~= col then s.Color = col end
+            end
+        end
+    end
+end)
+
 -- lazy: box layer created on first ESP enable
 local function ensureBoxLayer()
     if ESP.BoxLayer and ESP.BoxLayer.Parent then return ESP.BoxLayer end
@@ -4710,7 +4737,11 @@ local function updateESPRigs()
                     hbLeft = tcp.X - math.abs(trp.X - tcp.X)
                 end
             end
-            local barW, gap = 3, 7
+            -- v0.0.76: bar gets THICKER at range so it stays legible far away.
+            -- 3px at point-blank, 10px capped past ~350 studs. `dist` was set earlier
+            -- in the update loop (torso -> camPos).
+            local barW = math.clamp(3 + dist * 0.02, 3, 10)
+            local gap = 7
             rig.healthBg.Position = UDim2.new(0, hbLeft - gap - barW, 0, hbTop)
             rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(hbBot - hbTop, 1))
             rig.healthBg.Visible = true
@@ -5327,7 +5358,29 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 and isActive("clicktp") then
         local r = rootOf(); local pos = mouse.Hit and mouse.Hit.Position
-        if r and pos then r.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0)) end
+        if r and pos then
+            -- v0.0.76: match the floor's rotation, not just its position -- so you can TP
+            -- onto a ramp/wall and stand tangent to the surface. Fresh raycast for the
+            -- normal (mouse.Hit's CFrame doesn't carry the surface normal on all runtimes).
+            local ur = mouse.UnitRay
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Exclude
+            rp.FilterDescendantsInstances = { char(), tpInd }
+            local hit = ur and Workspace:Raycast(ur.Origin, ur.Direction * 5000, rp)
+            local up = (hit and hit.Normal) or Vector3.new(0, 1, 0)
+            -- project current facing onto the surface tangent plane so we don't flip
+            -- when the floor is upside-down; degenerate case falls back to right-vec.
+            local curLook = r.CFrame.LookVector
+            local look = curLook - up * curLook:Dot(up)
+            if look.Magnitude < 0.01 then
+                local rv = r.CFrame.RightVector
+                look = rv - up * rv:Dot(up)
+            end
+            if look.Magnitude < 0.01 then look = Vector3.new(0, 0, -1) end
+            look = look.Unit
+            local origin = pos + up * 3
+            r.CFrame = CFrame.lookAt(origin, origin + look, up)
+        end
     end
     for id, cfg in pairs(CFG) do
         local m = Modules[id]
@@ -5393,10 +5446,20 @@ registerConfig("character_visual", Visual)
 local SHOULDER = { ["Right Shoulder"] = true, ["Left Shoulder"] = true,
                    ["RightShoulder"]  = true, ["LeftShoulder"]  = true }
 local armState = { char = nil, joints = nil }
+-- v0.0.76: force re-cache on every respawn so the offset reapplies after death.
+-- CharacterAdded fires before the shoulders exist on the new rig, so we ALSO
+-- rebuild whenever the joints table is empty on a tick where the module is on
+-- (the shoulders show up a few frames later; the render loop keeps retrying).
+LocalPlayer.CharacterAdded:Connect(function()
+    armState.char = nil
+    armState.joints = nil
+end)
 local function applyArms()
     local c = char()
     if not c then return end
-    if armState.char ~= c or not armState.joints then
+    -- Re-cache when: (a) character swapped (respawn), (b) no cache yet, or
+    -- (c) the cache is empty (respawn tick fired before shoulders loaded).
+    if armState.char ~= c or not armState.joints or next(armState.joints) == nil then
         armState.char = c; armState.joints = {}
         for _, d in ipairs(c:GetDescendants()) do
             if d:IsA("Motor6D") and SHOULDER[d.Name] then armState.joints[d] = d.C0 end
@@ -5497,13 +5560,41 @@ local function applyFF()
     end
 end
 
+-- v0.0.76: Body Removal -- makes every character body part invisible (and their
+-- Decals/Textures, for classic R6 face + Shirt/Pants graphics). Snapshots the
+-- original Transparency per instance so disable restores exactly what was there
+-- (including intentionally-hidden parts). Skips the forcefield shell (KFF) so
+-- Static Forcefield stays visible on top, and skips HumanoidRootPart (already
+-- invisible). Respawn-safe: new-character parts fresh-snapshot on their first tick.
+local bodySnap = {}
+local function applyBodyRemoval()
+    local c = char(); if not c then return end
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") and not p:GetAttribute("KFF") and p.Name ~= "HumanoidRootPart" then
+            if bodySnap[p] == nil then bodySnap[p] = p.Transparency end
+            if p.Transparency ~= 1 then p.Transparency = 1 end
+        elseif p:IsA("Decal") or p:IsA("Texture") then
+            if bodySnap[p] == nil then bodySnap[p] = p.Transparency end
+            if p.Transparency ~= 1 then p.Transparency = 1 end
+        end
+    end
+end
+local function restoreBodyRemoval()
+    for p, t in pairs(bodySnap) do
+        if p and p.Parent then pcall(function() p.Transparency = t end) end
+    end
+    bodySnap = {}
+end
+
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
 registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
 registerModule("staticff",     "Static Forcefield", function() end, function() clearFF() end)
+registerModule("bodyremoval",  "Body Removal",      function() end, function() restoreBodyRemoval() end)
 RunService.RenderStepped:Connect(function()
     if Modules.armsoffset   and Modules.armsoffset.Enabled   then pcall(applyArms) end
     if Modules.charmaterial and Modules.charmaterial.Enabled then pcall(applyMaterial) end
     if Modules.staticff     and Modules.staticff.Enabled     then pcall(applyFF) end
+    if Modules.bodyremoval  and Modules.bodyremoval.Enabled  then pcall(applyBodyRemoval) end
 end)
 
 -- curated material list (dropdown). Names resolve via Enum.Material[name].
@@ -5661,6 +5752,9 @@ Koffee._characterTab = function(root)
 
     -- Static Forcefield: a second material -- forcefield-hex shell over the base material
     moduleCheckbox(vis, "Static Forcefield", "staticff")
+
+    -- v0.0.76: Body Removal -- makes every character part invisible while enabled
+    moduleCheckbox(vis, "Body Removal", "bodyremoval")
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
     moduleCheckbox(vis, "Arms Offset", "armsoffset")
@@ -6679,16 +6773,31 @@ local Combat = {
         end
         return nil
     end
+    -- v0.0.76: triggerbot now also fires off the silent-aim target. Visible Check
+    -- is the mode switch:
+    --   ON  -> "true triggerbot" (crosshair must actually raycast onto a live enemy;
+    --          occlusion-safe, so walls block).
+    --   OFF -> also fires whenever silent aim has a target (in its FOV or nearest),
+    --          which is the right mode for Pos Spoof / wallbang: the shot will land
+    --          via the silent hooks even though the crosshair points at nothing.
+    -- silentTarget/silentPos are set by the silent Heartbeat further down.
+    local function triggerShouldFire()
+        if Combat.Trigger.VisibleCheck then
+            return crosshairEnemy() ~= nil
+        end
+        if silentTarget and silentTarget.Parent and Combat.Silent.Enabled then return true end
+        return crosshairEnemy() ~= nil
+    end
     RunService.Heartbeat:Connect(function()
         if not Combat.Trigger.Enabled then return end
         if Combat.Trigger.UseKey and not trigHeld then return end
         if trigBusy then return end
-        if not crosshairEnemy() then return end
+        if not triggerShouldFire() then return end
         trigBusy = true
         task.spawn(function()
             if Combat.Trigger.Delay > 0 then task.wait(Combat.Trigger.Delay / 1000) end
-            -- re-confirm the crosshair is still on the enemy right before firing
-            if Combat.Trigger.Enabled and crosshairEnemy() then clickMouse() end
+            -- re-confirm right before firing (silent target might have died / crosshair moved)
+            if Combat.Trigger.Enabled and triggerShouldFire() then clickMouse() end
             if Combat.Trigger.Release > 0 then task.wait(Combat.Trigger.Release / 1000) end
             trigBusy = false
         end)
