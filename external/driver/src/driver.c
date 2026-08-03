@@ -304,7 +304,10 @@ VOID KfmUnload(_In_ PDRIVER_OBJECT Driver) {
 
 // -- entry ----------------------------------------------------------------
 
-NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT Driver, _In_ PUNICODE_STRING RegPath) {
+// Real init body -- runs against a REAL DriverObject (either the one Windows
+// hands us on `sc start`, or one we synthesized via IoCreateDriver under
+// KDMapper). Same code path for both load modes so behaviour is identical.
+static NTSTATUS KfmRealEntry(_In_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRING RegPath) {
     UNREFERENCED_PARAMETER(RegPath);
 
     UNICODE_STRING devName, symName;
@@ -331,4 +334,44 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT Driver, _In_ PUNICODE_STRING RegPath) {
 
     DbgPrint("[KoffeeMem] loaded, device = %wZ\n", &devName);
     return STATUS_SUCCESS;
+}
+
+// IoCreateDriver isn't in the public WDK headers -- prototype it out of
+// ntoskrnl. Used by the KDMapper path to synthesize a proper DriverObject
+// (KDMapper calls DriverEntry(NULL, NULL) after mapping our PE, and the
+// standard `IoCreateDevice` requires a non-NULL DriverObject).
+NTSTATUS IoCreateDriver(_In_opt_ PUNICODE_STRING DriverName,
+                        _In_     PDRIVER_INITIALIZE InitializationFunction);
+
+// Init callback for the IoCreateDriver path -- the kernel invokes this with
+// the freshly-allocated DriverObject as if we were a normal boot driver.
+static NTSTATUS NTAPI KfmMappedInit(_In_ PDRIVER_OBJECT Driver, _In_ PUNICODE_STRING RegPath) {
+    return KfmRealEntry(Driver, RegPath);
+}
+
+// DUAL-MODE ENTRY.
+//   sc create/start   -> Windows calls us with (Driver != NULL, RegPath).
+//                         Use them directly.
+//   KDMapper (BYOVD)  -> mapper calls us with (NULL, NULL) after copying the
+//                         PE into non-paged pool. We synthesize our own
+//                         DriverObject via IoCreateDriver so IoCreateDevice
+//                         has something to hang the device off. Note: under
+//                         KDMapper the DriverObject is real + registered
+//                         with the IoManager, but there's no service entry;
+//                         the driver stays loaded until reboot (no `sc stop`).
+NTSTATUS DriverEntry(_In_opt_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRING RegPath) {
+    if (Driver != NULL) {
+        // Normal `sc start` path -- proceed as usual.
+        return KfmRealEntry(Driver, RegPath);
+    }
+    // KDMapper path -- allocate our own DriverObject. The IoManager fills it
+    // in and hands it to KfmMappedInit; that then runs the exact same
+    // init body as the sc-start path.
+    UNICODE_STRING drvName;
+    RtlInitUnicodeString(&drvName, L"\\Driver\\KoffeeMem");
+    NTSTATUS st = IoCreateDriver(&drvName, &KfmMappedInit);
+    if (!NT_SUCCESS(st)) {
+        DbgPrint("[KoffeeMem] IoCreateDriver failed 0x%X\n", st);
+    }
+    return st;
 }

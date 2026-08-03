@@ -46,30 +46,51 @@ dir /s /b KoffeeMem.sys
 
 If you get `error MSB4019: The imported project "...WindowsKernelModeDriver10.0..."`: the WDK's VS integration isn't installed. Re-run the WDK installer and tick the extension option.
 
-## Load (in VM)
+## Load (in VM) -- KDMapper (recommended)
 
-The driver is unsigned during dev. Fastest path is test-signing mode:
+Same tool as the prod path -- no test-signing, no watermark, no `sc create`, no service entry left behind. `DriverEntry` is dual-mode: called with `NULL` under KDMapper it synthesizes its own DriverObject via `IoCreateDriver`, so the KDMapper and `sc start` paths hit the exact same init body.
+
+**One-time: get kdmapper.exe.**
+
+Build from source (small C++ project):
+
+```cmd
+git clone https://github.com/TheCruZ/kdmapper.git C:\kdmapper
+:: open C:\kdmapper\kdmapper.sln in VS 2022, Release|x64, Build
+:: output at C:\kdmapper\x64\Release\kdmapper.exe
+```
+
+Or drop a prebuilt `kdmapper.exe` in `C:\kdmapper\` if you have one.
+
+**Load the driver (admin cmd, every session):**
+
+```cmd
+C:\kdmapper\x64\Release\kdmapper.exe C:\Koffee\external\driver\x64\Debug\KoffeeMem\KoffeeMem.sys
+```
+
+Expected: `[+] Success` (or similar); no BSOD; DebugView (Sysinternals, run as admin, **Capture → Capture Kernel** on) shows `[KoffeeMem] loaded, device = \Device\KoffeeMem`.
+
+Under the hood: kdmapper loads Intel's `iqvw64e.sys` (a currently-safe signed driver with a known kernel-write primitive), uses it to allocate non-paged pool + copy our `KoffeeMem.sys` into it + fix imports/relocs + call our `DriverEntry`, then unloads `iqvw64e.sys`. Our driver stays resident until reboot.
+
+**Unload:** no `sc stop` under KDMapper. Reboot the VM (or roll back to the snapshot) to unload. This is fine -- the VM boots fast; snapshot after `clean-install` and roll back for a fresh state.
+
+## Alternative: `sc create` (test-signing mode)
+
+Only if KDMapper is unavailable. Cost: reboot required to enable test-signing, "Test Mode" watermark on desktop.
 
 ```cmd
 bcdedit /set testsigning on
 shutdown /r /t 0
-```
 
-After reboot, in an **admin** cmd:
-
-```cmd
-sc create KoffeeMem type= kernel binPath= C:\path\to\KoffeeMem.sys
+:: after reboot:
+sc create KoffeeMem type= kernel binPath= C:\Koffee\external\driver\x64\Debug\KoffeeMem\KoffeeMem.sys
 sc start KoffeeMem
 sc query KoffeeMem
 ```
 
-`sc query` should show `STATE : 4 RUNNING`. If load fails with error 577 the .sys isn't test-signed (should be auto-done by the WDK build) -- run `signtool sign /a /v /s TrustedPublisher /n WDKTestCert KoffeeMem.sys` from an elevated Developer Command Prompt to sign with the auto-generated WDK test cert.
+If `sc start` errors 577, sign the .sys: `signtool sign /a /v /s TrustedPublisher /n WDKTestCert KoffeeMem.sys` from an elevated Developer Command Prompt.
 
-To unload for a rebuild: `sc stop KoffeeMem && sc delete KoffeeMem`.
-
-`DbgPrint` output on load ("KoffeeMem loaded, device = ...") shows in [DebugView](https://learn.microsoft.com/sysinternals/downloads/debugview) run as **admin with "Capture Kernel" enabled** (Capture menu).
-
-The prod path is **KDMapper (BYOVD)** -- manual-mapped via a vulnerable signed driver, no test-signing needed on the target machine. Not used during dev; wired later.
+To unload: `sc stop KoffeeMem && sc delete KoffeeMem`.
 
 ## First round-trip: `KoffeeTestTarget`
 
