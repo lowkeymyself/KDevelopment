@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.76"
+Koffee.Version = "0.0.77"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -5837,6 +5837,14 @@ local Combat = {
         Sticky        = false,
         RequireLMB    = true,
         PosSpoof      = false,   -- v0.0.64: spoof your ROOT position reads -> shot origin inside the target
+        -- v0.0.77 WALLBANG RAYCAST: intercept the game's raycast at hit-detection time so
+        -- the RETURN says "you hit the enemy" regardless of walls. FindPartOnRay* variants
+        -- get a fabricated tuple; workspace:Raycast gets a filter-swap (params.Include = {tgtChar})
+        -- + direction rewrite to force a real RaycastResult on the target's own part. Gated by
+        -- a fire-ray discriminator (magnitude + distance-from-camera) so Popper / physics /
+        -- camera hover rays are left alone. Universal wallbang on raycast-based FE FPS games
+        -- (Phantom Forces, Arsenal, Aimblox, etc.) -- the class Pos Spoof doesn't cover.
+        WallbangRaycast = false,
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default -- fire-read is always
@@ -6384,6 +6392,27 @@ local Combat = {
             end
             return PASS_H, PASS_V
         end
+        -- v0.0.77 WALLBANG RAYCAST: arm gate + fire-ray discriminator.
+        -- Arm gate mirrors isArmed but is checkbox-gated so users can leave silent aim
+        -- pure and add wallbang independently.
+        local function wallRayArmed()
+            if not Combat.Silent.WallbangRaycast then return false end
+            if not (Combat.Silent.Enabled and silentPos and silentTarget and SR.tgtChar) then return false end
+            if Combat.Silent.ActivationKey and not silentHeld then return false end
+            if Combat.Silent.RequireLMB and not (lmbDown or (os.clock() - lmbClickAt) < 0.12) then return false end
+            return true
+        end
+        -- Fire-ray shape check -- fire rays are LONG (>100 studs) and originate away from the
+        -- camera (>2 studs from cam pos). Popper/occlusion probes are short and camera-origin,
+        -- physics probes are usually short. This is what previously made "Aggressive Redirect"
+        -- (v0.0.36-40) break cameras -- the fix is a shape gate, not a scope exclusion.
+        -- Vector3 .Magnitude / arithmetic are datatype reads, not namecalls -- safe here.
+        local function isFireRay(origin, dir)
+            if not (SR.camPos and dir and origin) then return false end
+            if dir.Magnitude < 100 then return false end
+            if (origin - SR.camPos).Magnitude < 2 then return false end
+            return true
+        end
         local function resolveNamecall(self, method, args)
             -- v0.0.39 fire-read universal path (always on -- "Forced Magic-Bullet").
             -- CRITICAL: NOTHING in here may perform a Roblox namecall (a `:` method
@@ -6397,6 +6426,46 @@ local Combat = {
             if method == "GetPivot" or method == "GetPrimaryPartCFrame" then
                 if posFire() and self == SR.char and SR.spoofAim(getCS and getCS()) then
                     return true, CFrame.new(silentPos)
+                end
+                return PASS_H, PASS_V
+            end
+            -- v0.0.77 WALLBANG RAYCAST: intercept the game's fire raycast at hit-detection
+            -- time. Deprecated FindPartOnRay* variants (which Phantom Forces + most FE FPS
+            -- still call) get a FABRICATED tuple pointing at the target's part -- server
+            -- receives the target as hit, wall or not. Modern workspace:Raycast gets a
+            -- FILTER-SWAP (params.Include = {tgtChar}) + direction rewrite -- the real
+            -- raycast now ignores every part except the target and hits their body through
+            -- the wall, returning a genuine RaycastResult. Namecall-free (only property
+            -- reads, arithmetic, table access + constructors -- no `:` calls).
+            if method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList"
+               or method == "FindPartOnRayWithWhitelist" or method == "findPartOnRay" then
+                if wallRayArmed() and self == Workspace and args[1] then
+                    local ray = args[1]
+                    if typeof(ray) == "Ray" and isFireRay(ray.Origin, ray.Direction) then
+                        if SR.spoofAim(getCS and getCS()) then
+                            return "return", table.pack(silentTarget, silentPos, Vector3.new(0, 1, 0), Enum.Material.Plastic)
+                        end
+                    end
+                end
+                return PASS_H, PASS_V
+            elseif method == "Raycast" then
+                if wallRayArmed() and self == Workspace and args[1] and args[2] then
+                    local origin, dir = args[1], args[2]
+                    if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" and isFireRay(origin, dir) then
+                        if SR.spoofAim(getCS and getCS()) then
+                            -- direction rewrite: keep original magnitude, aim at target.
+                            args[2] = (silentPos - origin).Unit * dir.Magnitude
+                            -- filter-swap: build fresh params (Include-only, target character).
+                            -- If the game passed no params we still create one; else we swap.
+                            -- RaycastParams.new + property writes are __newindex (not namecalls) -> safe.
+                            local rp = RaycastParams.new()
+                            rp.FilterType = Enum.RaycastFilterType.Include
+                            rp.FilterDescendantsInstances = { SR.tgtChar }
+                            rp.IgnoreWater = true
+                            args[3] = rp
+                            return "call", args
+                        end
+                    end
                 end
                 return PASS_H, PASS_V
             end
@@ -6461,6 +6530,10 @@ local Combat = {
                     if ok then
                         if handled == true then return value end
                         if handled == "call" then return oldNc(self, table.unpack(value, 1, args.n)) end
+                        -- v0.0.77: "return" sentinel = fabricated tuple return (packed table).
+                        -- Used by Wallbang Raycast's FindPartOnRay* branch to hand back
+                        -- (hitPart, hitPos, normal, material) without calling the original.
+                        if handled == "return" then return table.unpack(value, 1, value.n or #value) end
                     end
                 end
                 return oldNc(self, ...)
@@ -6836,10 +6909,18 @@ local Combat = {
             local cam = Workspace.CurrentCamera
             if cam then
                 SR.cam = cam
-                SR.camPos = cam.CFrame.Position
+                local cf = cam.CFrame
+                SR.camPos = cf.Position
+                -- v0.0.77: real look direction cached for the Wallbang Raycast fire-ray discriminator
+                -- (the hooks compare a ray's direction against this to tell fire rays from Popper/physics).
+                SR.camLook = cf.LookVector
                 local sp = cam:WorldToViewportPoint(silentPos)
                 SR.screen = Vector2.new(sp.X, sp.Y)
             end
+            -- v0.0.77: cache the target's character model for Wallbang Raycast's filter-swap
+            -- (workspace:Raycast params get RaycastFilterType.Include + {SR.tgtChar} so the ray
+            -- passes through everything except the target -> real RaycastResult, hits their part).
+            SR.tgtChar = silentTarget and silentTarget.Parent or nil
             -- v0.0.64/65: cache the character + a SET of every part/attachment whose position
             -- reads Pos Spoof should fake (all character descendants incl. the equipped tool's
             -- muzzle parts + attachments -- not just HRP, so guns that build their origin from
@@ -6857,6 +6938,7 @@ local Combat = {
         else
             silentTarget = nil; silentPos = nil
             SR.camPos = nil; SR.screen = nil
+            SR.camLook = nil; SR.tgtChar = nil
         end
     end)
 
@@ -7219,6 +7301,11 @@ local Combat = {
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
         configCheckbox(R["Silent Aim"], "Pos Spoof", Combat.Silent.PosSpoof, function(v) Combat.Silent.PosSpoof = v end)
+        -- v0.0.77: universal wallbang via raycast hit-detection intercept. Complements
+        -- Forced Magic-Bullet -- covers the raycast-based FE FPS class (Phantom Forces,
+        -- Arsenal, Aimblox) that mouse.Hit / camera spoofing doesn't reach. Fire-ray
+        -- shape gate excludes Popper / physics / hover so cameras stay clean.
+        configCheckbox(R["Silent Aim"], "Wallbang Raycast", Combat.Silent.WallbangRaycast, function(v) Combat.Silent.WallbangRaycast = v end)
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
         -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
         -- are never touched. Spoof Scope is the caller-identification strategy (both
