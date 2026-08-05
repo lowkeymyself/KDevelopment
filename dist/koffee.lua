@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.77"
+Koffee.Version = "0.0.78"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -6441,9 +6441,19 @@ local Combat = {
                or method == "FindPartOnRayWithWhitelist" or method == "findPartOnRay" then
                 if wallRayArmed() and self == Workspace and args[1] then
                     local ray = args[1]
-                    if typeof(ray) == "Ray" and isFireRay(ray.Origin, ray.Direction) then
-                        if SR.spoofAim(getCS and getCS()) then
-                            return "return", table.pack(silentTarget, silentPos, Vector3.new(0, 1, 0), Enum.Material.Plastic)
+                    if typeof(ray) == "Ray" then
+                        local ok = isFireRay(ray.Origin, ray.Direction)
+                        if ok then
+                            if SR.spoofAim(getCS and getCS()) then
+                                dbg("wallbang " .. method)
+                                return "return", table.pack(silentTarget, silentPos, Vector3.new(0, 1, 0), Enum.Material.Plastic)
+                            else
+                                dbg("wallbang SCOPE-BLOCK " .. method)
+                            end
+                        else
+                            -- v0.0.78 debug: log when a fire-ray-shaped candidate is REJECTED so we can
+                            -- tune the discriminator per game. mag = ray direction length.
+                            dbg("wallbang REJECT " .. method .. " mag=" .. tostring(ray.Direction.Magnitude))
                         end
                     end
                 end
@@ -6451,19 +6461,29 @@ local Combat = {
             elseif method == "Raycast" then
                 if wallRayArmed() and self == Workspace and args[1] and args[2] then
                     local origin, dir = args[1], args[2]
-                    if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" and isFireRay(origin, dir) then
-                        if SR.spoofAim(getCS and getCS()) then
-                            -- direction rewrite: keep original magnitude, aim at target.
-                            args[2] = (silentPos - origin).Unit * dir.Magnitude
-                            -- filter-swap: build fresh params (Include-only, target character).
-                            -- If the game passed no params we still create one; else we swap.
-                            -- RaycastParams.new + property writes are __newindex (not namecalls) -> safe.
-                            local rp = RaycastParams.new()
-                            rp.FilterType = Enum.RaycastFilterType.Include
-                            rp.FilterDescendantsInstances = { SR.tgtChar }
-                            rp.IgnoreWater = true
-                            args[3] = rp
-                            return "call", args
+                    if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
+                        local ok = isFireRay(origin, dir)
+                        if ok then
+                            if SR.spoofAim(getCS and getCS()) then
+                                dbg("wallbang Raycast")
+                                -- direction rewrite: keep original magnitude, aim at target.
+                                args[2] = (silentPos - origin).Unit * dir.Magnitude
+                                -- filter-swap: build fresh params (Include-only, target character).
+                                -- If the game passed no params we still create one; else we swap.
+                                -- RaycastParams.new + property writes are __newindex (not namecalls) -> safe.
+                                local rp = RaycastParams.new()
+                                rp.FilterType = Enum.RaycastFilterType.Include
+                                rp.FilterDescendantsInstances = { SR.tgtChar }
+                                rp.IgnoreWater = true
+                                args[3] = rp
+                                return "call", args
+                            else
+                                dbg("wallbang SCOPE-BLOCK Raycast")
+                            end
+                        else
+                            -- v0.0.78 debug: log rejections. dCam = origin-to-cam distance.
+                            local dCam = SR.camPos and (origin - SR.camPos).Magnitude or -1
+                            dbg("wallbang REJECT Raycast mag=" .. tostring(dir.Magnitude) .. " dCam=" .. tostring(dCam))
                         end
                     end
                 end
@@ -6846,20 +6866,61 @@ local Combat = {
         end
         return nil
     end
-    -- v0.0.76: triggerbot now also fires off the silent-aim target. Visible Check
-    -- is the mode switch:
-    --   ON  -> "true triggerbot" (crosshair must actually raycast onto a live enemy;
-    --          occlusion-safe, so walls block).
-    --   OFF -> also fires whenever silent aim has a target (in its FOV or nearest),
-    --          which is the right mode for Pos Spoof / wallbang: the shot will land
-    --          via the silent hooks even though the crosshair points at nothing.
-    -- silentTarget/silentPos are set by the silent Heartbeat further down.
+    -- v0.0.78: through-walls crosshair check. Iterates players, projects their key
+    -- parts (Head/Torso/HRP variants for R6+R15) to screen space via WorldToViewportPoint,
+    -- fires if any lands within HitboxMul*5 pixels of the crosshair -- NO occlusion
+    -- raycast, so walls between camera and enemy don't block. This is the "trigger
+    -- whenever someone goes in the crosshair even through a wall" mode Jack asked for.
+    local TRIG_PARTS = { "Head", "UpperTorso", "Torso", "HumanoidRootPart", "LowerTorso" }
+    local function crosshairEnemyNoOcclusion()
+        local cam = Workspace.CurrentCamera
+        if not cam then return nil end
+        local vp = cam.ViewportSize
+        local cx, cy = vp.X * 0.5, vp.Y * 0.5
+        local mul = math.max(Combat.Trigger.HitboxMul, 1)
+        local r = 5 * mul
+        local r2 = r * r
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local char = plr.Character
+                if char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0
+                       and not (Combat.Trigger.TeamCheck and isTeammate(plr))
+                       and not (Shared.IgnoreFriends and isFriend(plr)) then
+                        for _, name in ipairs(TRIG_PARTS) do
+                            local part = char:FindFirstChild(name)
+                            if part then
+                                local sp = cam:WorldToViewportPoint(part.Position)
+                                if sp.Z > 0 then
+                                    local dx, dy = sp.X - cx, sp.Y - cy
+                                    if (dx * dx + dy * dy) <= r2 then return plr end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+    -- v0.0.78 triggerbot fire decision. Two independent conditions:
+    --   * Silent-aim link (regardless of Visible Check): fires whenever silent has a
+    --     target locked. Silent is an explicit opt-in -- if it's armed, the user wants
+    --     trigger to help. Needed for Pos Spoof / Wallbang Raycast (crosshair points
+    --     at nothing, shot lands via silent hooks).
+    --   * Crosshair mode gated by Visible Check:
+    --       ON  -> normal triggerbot: occlusion-safe raycast, wall between camera and
+    --              enemy BLOCKS the trigger. Pure "shoot when you can actually see them".
+    --       OFF -> through-walls: enemy visually near the crosshair fires (screen-space
+    --              distance check, no occlusion). Combined with Wallbang Raycast this
+    --              is the "shoot through walls at anyone I look near" mode.
     local function triggerShouldFire()
+        if silentTarget and silentTarget.Parent and Combat.Silent.Enabled then return true end
         if Combat.Trigger.VisibleCheck then
             return crosshairEnemy() ~= nil
         end
-        if silentTarget and silentTarget.Parent and Combat.Silent.Enabled then return true end
-        return crosshairEnemy() ~= nil
+        return crosshairEnemyNoOcclusion() ~= nil
     end
     RunService.Heartbeat:Connect(function()
         if not Combat.Trigger.Enabled then return end
