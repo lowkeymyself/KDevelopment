@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.88"
+Koffee.Version = "0.0.89"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -5928,21 +5928,22 @@ local Combat = {
     HitSounds = {
         Hit = {
             Enabled  = false,
-            Preset   = "Hitmarker",
-            CustomId = 0,       -- 0 = use preset's asset id
+            Preset   = "hit",
+            CustomId = 0,       -- 0 = use preset (local mp3 via getcustomasset)
             Volume   = 1.0,
             Pitch    = 1.0,
             Cooldown = 50,      -- ms
         },
         Kill = {
             Enabled  = false,
-            Preset   = "Bell",
+            Preset   = "bell",
             CustomId = 0,
             Volume   = 1.0,
             Pitch    = 1.0,
             Cooldown = 200,
         },
         MouseRadius = 80,       -- pixels, mouse-tracked target lock radius
+        Overlap     = true,     -- v0.0.89: true = each play overlaps previous; false = stop previous then play
     },
 }
 
@@ -6435,16 +6436,20 @@ local Combat = {
         -- (not under PlayerModule -> not caught by isView / spoofAim). Continuous
         -- spoof was making those controllers read the fake CFrame every frame ->
         -- write it back into the real Camera -> view stuck.
-        -- v0.0.86: reverted v0.0.81 fire-frame gate. Was breaking RequireLMB OFF
-        -- (which should be TRULY continuous but became fire-frame-only, so users had
-        -- to click to fire silent even with RequireLMB off -> effectively no OFF mode).
-        -- Back to isArmed semantics: RequireLMB ON -> only when LMB held, RequireLMB
-        -- OFF -> continuous. Trade-off: on games with a custom camera controller not
-        -- under PlayerModule, RequireLMB OFF can freeze the view (the controller reads
-        -- our spoofed Camera.CFrame every frame). User works around by turning
-        -- RequireLMB ON on those games.
+        -- v0.0.89 Camera.CFrame spoof gate. Continuous spoof (v0.0.86 = isArmed) was
+        -- causing hard crashes on some games -- the game's custom camera controller
+        -- reads our spoofed CFrame every frame, does math on it, and either freezes
+        -- or hits an engine assertion. Fix: Camera.CFrame is fire-frame gated
+        -- (RequireLMB ON = LMB held; RequireLMB OFF = 120ms window post-press).
+        -- Mouse.X/Y and Mouse.Hit stay CONTINUOUS via isArmed (v0.0.86 behavior for
+        -- those -- they're only read by aim code, not per-frame by camera controllers,
+        -- so no crash / freeze from continuous mouse-read spoof).
         local function camFire()
-            return isArmed()
+            if not silentPos then return false end
+            if not Combat.Silent.RequireLMB then
+                return lmbDown or (os.clock() - lmbClickAt) < 0.12
+            end
+            return lmbDown
         end
         -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
         -- any wall between you and them), aimed AT the target -> the client raycast hits them
@@ -6498,6 +6503,13 @@ local Combat = {
             -- continuous camera spoof made the controller read the fake CFrame every
             -- frame). Fire-frame gate = camera reads land the spoof only around the shot,
             -- controller reads real Camera between shots -> view stays free.
+            -- v0.0.89 SPLIT GATES: Camera.CFrame uses camFire (fire-frame gate) to
+            -- avoid crashing on custom-cam-controller games where continuous read
+            -- of a spoofed Camera.CFrame corrupts the controller's math each frame.
+            -- Mouse.X/Y uses isArmed (continuous) -- mouse coords are only read by
+            -- aim/cursor code, never per-frame by camera controllers, so continuous
+            -- spoof is safe there and preserves RequireLMB OFF continuous silent aim
+            -- on all mouse-based games.
             if camFire() then
                 -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
                 --   default (Forced MB): origin stays REAL, look-direction bends to target.
@@ -6506,13 +6518,21 @@ local Combat = {
                 --     (WALLBANG). Only on the shot frame, so the viewmodel stays normal.
                 if key == "CFrame" and self == SR.cam and SR.camPos and silentPos then
                     if SR.spoofAim(getCS and getCS()) then
-                        dbg("Camera.CFrame")
-                        if posFire() then
-                            local o, d = wallShot(); return true, CFrame.new(o, o + d)
+                        -- crash-safety: skip spoof if SR.camPos and silentPos coincide
+                        -- (CFrame.new(pos, look) with pos == look produces NaN orientation
+                        -- which can crash renderers / game scripts consuming the result).
+                        if (silentPos - SR.camPos).Magnitude > 1e-3 then
+                            dbg("Camera.CFrame")
+                            if posFire() then
+                                local o, d = wallShot(); return true, CFrame.new(o, o + d)
+                            end
+                            return true, CFrame.new(SR.camPos, silentPos)
                         end
-                        return true, CFrame.new(SR.camPos, silentPos)
                     end
-                elseif (key == "X" or key == "Y") and self == SR.mouse and SR.screen then
+                end
+            end
+            if isArmed() then
+                if (key == "X" or key == "Y") and self == SR.mouse and SR.screen then
                     if SR.spoofAim(getCS and getCS()) then
                         return true, (key == "X") and SR.screen.X or SR.screen.Y
                     end
@@ -7039,14 +7059,15 @@ local Combat = {
     -- attribution, works with or without any combat feature active.
     -- Cooldown (per type) enforced via a last-played timestamp so auto-fire hits
     -- don't buzz. Suppressed while the Koffee window is open (no ear fatigue in-UI).
+    -- v0.0.89 sound presets = local mp3 filenames in <exec_workspace>/Koffee/sounds/.
+    -- Loaded via getcustomasset per-play. If getcustomasset is unavailable OR the
+    -- file's missing, sound silently no-ops. CustomId > 0 overrides preset (uses
+    -- rbxassetid://). List mirrors what ships in the Koffee/sounds folder --
+    -- filenames without .mp3 extension.
     local SND_PRESETS = {
-        -- Placeholders -- Jack has his own MP3 list, these get swapped for the real IDs
-        Hitmarker = 5820205808,
-        Tick      = 6042053912,
-        Pop       = 6042053912,
-        Bell      = 131961136,
-        Ding      = 3487630164,
-        Cash      = 131886985,
+        "12", "agpa2", "basshit", "bell", "blizzard", "bubble", "chockpro",
+        "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
+        "minecraft orb", "neverlose", "rust", "skeet",
     }
     local SoundService = game:GetService("SoundService")
     local hitSnd = Instance.new("Sound"); hitSnd.Name = "KHitSnd"; hitSnd.Parent = SoundService
@@ -7055,14 +7076,27 @@ local Combat = {
     local function windowIsOpen()
         return window and window.GroupTransparency < 1
     end
+    local function resolveSoundId(cfg)
+        if cfg.CustomId and cfg.CustomId > 0 then
+            return "rbxassetid://" .. tostring(cfg.CustomId)
+        end
+        if cfg.Preset and cfg.Preset ~= "" and getcustomasset then
+            local ok, id = pcall(getcustomasset, "Koffee/sounds/" .. cfg.Preset .. ".mp3")
+            if ok and type(id) == "string" and #id > 0 then return id end
+        end
+        return nil
+    end
     local function playSound(snd, cfg, lastRef)
         if not cfg.Enabled then return lastRef end
         if windowIsOpen() then return lastRef end
         local now = os.clock()
         if (now - lastRef) * 1000 < cfg.Cooldown then return lastRef end
-        local id = (cfg.CustomId and cfg.CustomId > 0) and cfg.CustomId or (SND_PRESETS[cfg.Preset] or 0)
-        if id <= 0 then return lastRef end
-        snd.SoundId       = "rbxassetid://" .. tostring(id)
+        local id = resolveSoundId(cfg)
+        if not id then return lastRef end
+        -- v0.0.89 Overlap Sounds: OFF = stop previous instance first so the new
+        -- play replaces mid-air (no layered echo). ON = plain replay (overlaps).
+        if not Combat.HitSounds.Overlap then pcall(function() snd:Stop() end) end
+        snd.SoundId       = id
         snd.Volume        = cfg.Volume
         snd.PlaybackSpeed = cfg.Pitch
         snd.TimePosition  = 0
@@ -7566,7 +7600,13 @@ local Combat = {
         -- v0.0.88 Sounds panel. Hit + Kill each have Enabled, Preset dropdown,
         -- Custom Sound Id (0 = use preset), Volume, Pitch, Cooldown. Also a
         -- shared Mouse Radius slider that tunes the mouse-target lock threshold.
-        local SND_PRESETS_LIST = { "Hitmarker", "Tick", "Pop", "Bell", "Ding", "Cash" }
+        -- v0.0.89: preset list = filenames from <exec>/Koffee/sounds/*.mp3.
+        -- Loader ships these files (or user copies once). See getcustomasset resolver.
+        local SND_PRESETS_LIST = {
+            "12", "agpa2", "basshit", "bell", "blizzard", "bubble", "chockpro",
+            "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
+            "minecraft orb", "neverlose", "rust", "skeet",
+        }
         local soundCard = panel(leftCol, "Sounds")
         configCheckbox(soundCard, "Hit Sound", Combat.HitSounds.Hit.Enabled, function(v) Combat.HitSounds.Hit.Enabled = v end)
         dropdown(soundCard, "Hit Preset", SND_PRESETS_LIST, Combat.HitSounds.Hit.Preset, function(v) Combat.HitSounds.Hit.Preset = v end)
@@ -7580,6 +7620,7 @@ local Combat = {
         slider(soundCard, "Kill Volume",    0, 5,           Combat.HitSounds.Kill.Volume,   2, function(v) Combat.HitSounds.Kill.Volume   = v end)
         slider(soundCard, "Kill Pitch",     0.5, 2,         Combat.HitSounds.Kill.Pitch,    2, function(v) Combat.HitSounds.Kill.Pitch    = v end)
         slider(soundCard, "Kill Cooldown",  0, 1000,        Combat.HitSounds.Kill.Cooldown, 0, function(v) Combat.HitSounds.Kill.Cooldown = math.floor(v) end)
+        configCheckbox(soundCard, "Overlap Sounds", Combat.HitSounds.Overlap, function(v) Combat.HitSounds.Overlap = v end)
         slider(soundCard, "Mouse Radius (px)", 20, 300, Combat.HitSounds.MouseRadius, 0, function(v) Combat.HitSounds.MouseRadius = math.floor(v) end)
 
         --== RIGHT COLUMN ==--
