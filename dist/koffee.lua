@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.78"
+Koffee.Version = "0.0.79"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -6236,7 +6236,21 @@ local Combat = {
     end
 
     --== firing / silent hooks (executor globals guarded -- degrade cleanly) ==--
+    -- v0.0.79: prefer VirtualInputManager per v0.0.35 finding -- on Potassium (and
+    -- some other executors) mouse1click/mouse1press don't flip IsMouseButtonPressed
+    -- and don't fire the game's InputBegan handler, so the game's weapon never sees
+    -- a click. VIM's SendMouseButtonEvent DOES fire InputBegan reliably. Fall back
+    -- to mouse1click / mouse1press+release only if VIM isn't available.
+    local VIM = nil
+    pcall(function() VIM = game:GetService("VirtualInputManager") end)
     local function clickMouse()
+        if VIM then
+            pcall(function()
+                VIM:SendMouseButtonEvent(0, 0, 0, true,  game, 0)
+                VIM:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+            end)
+            return
+        end
         if mouse1click then pcall(mouse1click)
         elseif mouse1press and mouse1release then
             pcall(mouse1press); task.wait(); pcall(mouse1release)
@@ -7113,9 +7127,22 @@ local Combat = {
     registerModule("aimbot", "Aimbot",
         function() Combat.Aim.Enabled = true end,
         function() Combat.Aim.Enabled = false; aimHeld = false; Combat.Aim._target = nil; Combat.Aim._rageLock = nil end)
+    -- v0.0.79: diagnostic prints on trigger enable/disable so we can see WHO is
+    -- toggling it if the checkbox "immediately turns off" -- caller stack tells us
+    -- if it's the click, a config load, a keybind, or something else.
     registerModule("triggerbot", "Trigger Bot",
-        function() Combat.Trigger.Enabled = true end,
-        function() Combat.Trigger.Enabled = false; trigHeld = false end)
+        function()
+            Combat.Trigger.Enabled = true
+            if getgenv and getgenv().KoffeeTrigDebug then
+                print("[koffee][trig] ENABLE @ " .. tostring(os.clock()) .. "  stack=" .. tostring(debug.traceback and debug.traceback("", 2) or "?"))
+            end
+        end,
+        function()
+            Combat.Trigger.Enabled = false; trigHeld = false
+            if getgenv and getgenv().KoffeeTrigDebug then
+                print("[koffee][trig] DISABLE @ " .. tostring(os.clock()) .. "  stack=" .. tostring(debug.traceback and debug.traceback("", 2) or "?"))
+            end
+        end)
     registerModule("silentaim", "Silent Aim",
         function() installSilentHooks(); Combat.Silent.Enabled = true end,
         function() Combat.Silent.Enabled = false; silentTarget = nil end)
