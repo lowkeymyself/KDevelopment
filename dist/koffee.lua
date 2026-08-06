@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.94"
+Koffee.Version = "0.0.95"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
 -- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
@@ -900,6 +900,10 @@ local function addToActiveArray(mod)
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
+        -- v0.0.95 arraylist gradient hook: UIGradient child fed by the ESP Text
+        -- Gradient system (below the addToActiveArray block). Disabled by default;
+        -- the sync heartbeat flips it on + updates Color/Rotation/Offset per frame
+        -- when ESP.Config.TextGradient is true.
         Size = UDim2.new(1, 0, 1, 0),
         Position = UDim2.new(0, -10, 0, 0),  -- start slightly to the left, slide in right
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -914,6 +918,11 @@ local function addToActiveArray(mod)
     arrStroke.Name = "KArrayStroke"
     arrStroke.Enabled = false
     arrStroke.Parent = label
+    -- v0.0.95: UIGradient for text-gradient-on-arraylist. Disabled by default;
+    -- flipped on + refreshed per frame by the sync heartbeat when
+    -- ESP.Config.TextGradient is true (wired after ESP config exists).
+    local arrGrad = new("UIGradient", { Enabled = false, Parent = label })
+    arrGrad.Name = "KArrayGrad"
     tween(label, ROW_ENTER, {
         Position = UDim2.new(0, 0, 0, 0),
         TextTransparency = 0,
@@ -3265,6 +3274,17 @@ registerConfig("shared",         Shared)
 RunService.Heartbeat:Connect(function()
     local on = ESP.Config.Outline == true
     local col = ESP.Boxes.OutlineColor
+    -- v0.0.95: text gradient sync -- same loop for the KArrayGrad UIGradient.
+    -- When ESP.Config.TextGradient is on, we apply the same gradient sequence
+    -- ESP text labels use (textGradSeq with GradientColorA/B, Rotation, Spacing,
+    -- animated offset) so arraylist reads exactly like the ESP text.
+    local gradOn = ESP.Config.TextGradient == true
+    local gSeq, gRot, gOff
+    if gradOn then
+        gSeq = textGradSeq(ESP.Config.GradientColorA, ESP.Config.GradientColorB, ESP.Config.GradientSpacing)
+        gRot = ESP.Config.GradientRotation
+        gOff = gradOffset()
+    end
     for _, m in ipairs(shown) do
         local lbl = m._arrayLabel
         if lbl and lbl.Parent then
@@ -3272,6 +3292,15 @@ RunService.Heartbeat:Connect(function()
             if s then
                 if s.Enabled ~= on then s.Enabled = on end
                 if s.Color ~= col then s.Color = col end
+            end
+            local g = lbl:FindFirstChild("KArrayGrad")
+            if g then
+                if g.Enabled ~= gradOn then g.Enabled = gradOn end
+                if gradOn then
+                    g.Color    = gSeq
+                    g.Rotation = gRot
+                    g.Offset   = gOff
+                end
             end
         end
     end
@@ -8209,6 +8238,103 @@ addTab("Options", function(root)
     configCheckbox(card, "Ignore Friends", Shared.IgnoreFriends, function(v)
         Shared.IgnoreFriends = v
     end)
+
+    -- v0.0.95 UNLOAD KOFFEE. Confirm popup then a clean tear-down: disables
+    -- every module (their OnDisable fires so state restores), destroys the UI
+    -- + toast + hud + background (blur/dim/snow), destroys sound instances,
+    -- restores camera + mouse, unbinds our RenderStep binds, and flips a
+    -- global unloaded flag so any residual loops early-return.
+    local function unloadKoffee()
+        -- 1. flip every enabled module OFF so their OnDisable cleanup runs
+        for id, m in pairs(Modules) do
+            if m.Enabled then pcall(toggleModule, id) end
+        end
+        -- 2. explicit combat state reset (silent hook stays installed for the
+        -- session -- can't un-hookmetamethod -- but its body early-returns on
+        -- Combat.Silent.Enabled = false, so it becomes a no-op).
+        Combat.Silent.Enabled  = false
+        Combat.Aim.Enabled     = false
+        Combat.Trigger.Enabled = false
+        -- 3. unbind our RenderStep bindings
+        pcall(function() RunService:UnbindFromRenderStep(KID.ctx.bind) end)
+        pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
+        pcall(function() RunService:UnbindFromRenderStep("KThirdPerson") end)
+        -- 4. destroy every UI surface we own
+        pcall(function() screen:Destroy() end)
+        pcall(function() popupScreen:Destroy() end)
+        pcall(function() blur:Destroy() end)
+        -- 5. destroy any sound instances we created
+        pcall(function() hitSnd:Destroy() end)
+        pcall(function() killSnd:Destroy() end)
+        -- 6. restore camera + mouse to game defaults
+        pcall(function()
+            local cam = Workspace.CurrentCamera
+            if cam then cam.CameraType = Enum.CameraType.Custom end
+        end)
+        UserInputService.MouseBehavior    = Enum.MouseBehavior.Default
+        UserInputService.MouseIconEnabled = true
+        -- 7. global unloaded flag -- surviving Heartbeat/RenderStep connections
+        -- read this and early-return.
+        if getgenv then getgenv().KoffeeUnloaded = true end
+        Koffee._unloaded = true
+    end
+    -- confirm popup: centered on popupScreen so it survives the window fade
+    -- + can be seen even if the user closes the menu underneath.
+    local function showUnloadConfirm()
+        local pS = popupScreen
+        if not (pS and pS.Parent) then return end
+        local dim = new("Frame", {
+            Name = "KUnloadDim",
+            Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0),
+            BackgroundTransparency = 0.55, BorderSizePixel = 0,
+            ZIndex = 100, Parent = pS,
+        })
+        local box = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0, 320, 0, 148),
+            BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0,
+            ZIndex = 101, Parent = dim,
+        }, { corner(Theme.Radius.Medium), stroke(Theme.Palette.BorderSubtle) })
+        new("TextLabel", {
+            Text = "unload koffee?", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 102, Parent = box,
+        })
+        new("TextLabel", {
+            Text = "every feature disables, the ui is removed. re-run the loader to bring koffee back.",
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 16, 0, 36), Size = UDim2.new(1, -32, 0, 44),
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+            TextWrapped = true, ZIndex = 102, Parent = box,
+        })
+        local cancel = new("TextButton", {
+            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -108, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 102, Parent = box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        local confirm = new("TextButton", {
+            Text = "unload", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.Danger or Color3.fromRGB(220, 90, 90),
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 102, Parent = box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        cancel.MouseButton1Click:Connect(function() dim:Destroy() end)
+        confirm.MouseButton1Click:Connect(function() dim:Destroy(); pcall(unloadKoffee) end)
+    end
+    local unloadBtn = new("TextButton", {
+        Text = "unload koffee", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+        AutoButtonColor = false, TextColor3 = Theme.Palette.Danger or Color3.fromRGB(220, 90, 90),
+        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+        BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 30), ZIndex = 36, Parent = card,
+    }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+    unloadBtn.MouseButton1Click:Connect(showUnloadConfirm)
 end)
 
 -- CONFIGS TAB (v0.0.34) -- save / load / delete / auto-load per game
@@ -8397,10 +8523,13 @@ task.spawn(function()
 end)
 
 -- SESSION TOAST (BOTTOM-RIGHT)
+-- v0.0.95: toast is wider + sub-text wraps + auto-sizes vertically so the
+-- warning line doesn't spill outside the panel background.
 local toast = new("Frame", {
     Name = "SessionToast",
     AnchorPoint = Vector2.new(1, 1),
-    Size = UDim2.new(0, 260, 0, 46),
+    Size = UDim2.new(0, 300, 0, 46),
+    AutomaticSize = Enum.AutomaticSize.Y,
     Position = UDim2.new(1, -12, 1, -12),
     BackgroundColor3 = Theme.Palette.Panel,
     BackgroundTransparency = 0.1,
@@ -8414,6 +8543,7 @@ local toast = new("Frame", {
         PaddingLeft = UDim.new(0, 12),
         PaddingRight = UDim.new(0, 12),
         PaddingTop = UDim.new(0, 8),
+        PaddingBottom = UDim.new(0, 8),
     }),
 })
 
@@ -8437,6 +8567,9 @@ new("TextLabel", {
     BackgroundTransparency = 1,
     Position = UDim2.new(0, 0, 0, 16),
     Size = UDim2.new(1, 0, 0, 14),
+    AutomaticSize = Enum.AutomaticSize.Y,
+    TextWrapped = true,
+    TextYAlignment = Enum.TextYAlignment.Top,
     TextXAlignment = Enum.TextXAlignment.Left,
     ZIndex = 21,
     Parent = toast,
@@ -8447,6 +8580,9 @@ new("TextLabel", {
 -- with the same linear timing so they leave together, cleanly.
 local windowOpen = true
 
+-- v0.0.95: track pre-open mouse state so we can restore what the game (or 3rd
+-- Person, or shift-lock, etc.) was doing after the user closes the menu.
+local _preMenuMouseBehavior, _preMenuMouseIcon = nil, nil
 local function setWindowOpen(open)
     if windowOpen == open then return end
     windowOpen = open
@@ -8454,6 +8590,13 @@ local function setWindowOpen(open)
         window.Visible = true
         window.GroupTransparency = 1
         tween(window, Theme.Animation.WindowFade, { GroupTransparency = 0 })
+        -- v0.0.95: force the cursor UNLOCKED + visible while the menu is up so
+        -- the user can click Koffee widgets without having to open the Roblox
+        -- menu (Esc) first. Restore whatever the game/3rd-Person had set on close.
+        _preMenuMouseBehavior = UserInputService.MouseBehavior
+        _preMenuMouseIcon     = UserInputService.MouseIconEnabled
+        UserInputService.MouseBehavior   = Enum.MouseBehavior.Default
+        UserInputService.MouseIconEnabled = true
     else
         -- v0.0.22: popups live in a SEPARATE ScreenGui, so the window's fade
         -- doesn't touch them. Dismiss any open color picker + dropdowns on close
@@ -8465,6 +8608,14 @@ local function setWindowOpen(open)
         task.delay(0.2, function()
             if not windowOpen then window.Visible = false end
         end)
+        -- restore prior mouse state (3rd Person etc. re-locks on its own next
+        -- frame if it's still enabled; otherwise game gets whatever it had)
+        if _preMenuMouseBehavior then
+            UserInputService.MouseBehavior = _preMenuMouseBehavior
+        end
+        if _preMenuMouseIcon ~= nil then
+            UserInputService.MouseIconEnabled = _preMenuMouseIcon
+        end
     end
     setBackgroundActive(open)
 end
