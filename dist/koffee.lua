@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.92"
+Koffee.Version = "0.0.93"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
 -- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
@@ -5993,6 +5993,11 @@ local Combat = {
         -- delay before health drops) + multiple in-flight shots (each captured
         -- target has its own timestamp).
         AttrWindow  = 2.0,
+        -- v0.0.93 pre-click damage window (ms). Bypasses the left-click delay
+        -- problem -- if the target took damage in the last BeforeClick ms BEFORE
+        -- Koffee registered the LMB press, we still fire the sound on that press.
+        -- Slider 1..500. Handles input lag / roundtrip / game processing gaps.
+        BeforeClick = 100,
     },
 }
 
@@ -7223,19 +7228,50 @@ local Combat = {
             if now - at > window then SR.recentTargets[c] = nil end
         end
     end
-    -- per-player Health watcher. Tracks lastHealth per player, fires sound on drop
-    -- IF the player's Character == SR.mouseTgt at the moment the drop hits.
+    -- v0.0.93 MULTI-SOURCE HP WATCHER + damage-time buffer for pre-click attribution.
+    -- Some games don't use standard Humanoid.Health for their real HP system --
+    -- they store it in a NumberValue child ("Health"/"HP"), a character/humanoid
+    -- attribute, or both. We scan for all known HP sources on character setup and
+    -- watch each. ANY decrement is a hit event, dedup'd per-char (50ms cooldown so
+    -- one damage tick that ripples through multiple sources fires ONE sound).
+    -- SR.recentDamage[char] = last-drop timestamp. Used by the LMB press-edge
+    -- handler to see if the target took damage in the last BeforeClick ms --
+    -- bypasses the "you clicked but Koffee's input registered late" delay.
+    SR.recentDamage = {}
     local plrHP = {}
+    local HP_NUMBERVALUE_NAMES = { "Health", "HP", "Hp", "hp", "CurrentHealth", "health" }
+    local HP_ATTRIBUTE_NAMES   = { "Health", "HP", "Hp", "hp", "CurrentHealth" }
     local function untrackHP(plr)
         local st = plrHP[plr]; if not st then return end
         for _, c in ipairs(st.conns) do pcall(function() c:Disconnect() end) end
+        SR.recentDamage[plr.Character] = nil
         plrHP[plr] = nil
+    end
+    local function onHpDropped(char, dropped, nowZero)
+        -- dedup: ignore if last hit event for this char was <50ms ago (multi-source ripple)
+        local last = SR.recentDamage[char]
+        local now = os.clock()
+        if last and (now - last) < 0.05 then return end
+        SR.recentDamage[char] = now
+
+        -- normal attribution path (v0.0.92): check recentTargets + AttrWindow
+        local at = SR.recentTargets[char]
+        if at and (now - at) <= Combat.HitSounds.AttrWindow then
+            SR.recentTargets[char] = nil
+            if nowZero then lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
+            else lastHitAt = playSound(hitSnd, Combat.HitSounds.Hit, lastHitAt) end
+        end
     end
     local function bindHumanoid(plr, char)
         local st = plrHP[plr]; if not st then return end
         for i = #st.conns, 2, -1 do
             pcall(function() st.conns[i]:Disconnect() end); st.conns[i] = nil
         end
+        st.lastHealth = 100    -- Humanoid.Health baseline; may be unused if the game uses another source
+        st.altValues  = {}     -- [Instance] = last-observed .Value for NumberValue sources
+        st.altAttrs   = {}     -- [name] = last-observed attribute value
+
+        -- 1. Standard Humanoid.Health
         local hum = char:FindFirstChildOfClass("Humanoid")
         if not hum then
             task.spawn(function()
@@ -7248,26 +7284,56 @@ local Combat = {
         table.insert(st.conns, hum:GetPropertyChangedSignal("Health"):Connect(function()
             local nh, old = hum.Health, st.lastHealth
             st.lastHealth = nh
-            if nh >= old then return end
-            -- v0.0.92: check the recent-targets set with attribution window instead
-            -- of the single-frame SR.mouseTgt. Damage that lands AFTER LMB release
-            -- (snipers, laggy games) still attributes if you aimed at this enemy
-            -- within AttrWindow seconds. Consume the entry so a single shot's
-            -- damage doesn't double-fire if the game applies it in multiple ticks.
-            local at = SR.recentTargets[char]
-            if not at then return end
-            if os.clock() - at > Combat.HitSounds.AttrWindow then
-                SR.recentTargets[char] = nil
-                return
-            end
-            SR.recentTargets[char] = nil   -- consume
-            if nh <= 0 then lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
-            else lastHitAt = playSound(hitSnd, Combat.HitSounds.Hit, lastHitAt) end
+            if nh < old then onHpDropped(char, old - nh, nh <= 0) end
         end))
+
+        -- 2. NumberValue / IntValue children named Health/HP/etc. (recursive scan)
+        for _, name in ipairs(HP_NUMBERVALUE_NAMES) do
+            local nv = char:FindFirstChild(name, true)
+            if nv and (nv:IsA("NumberValue") or nv:IsA("IntValue")) then
+                st.altValues[nv] = nv.Value
+                table.insert(st.conns, nv:GetPropertyChangedSignal("Value"):Connect(function()
+                    local newV = nv.Value
+                    local oldV = st.altValues[nv] or newV
+                    st.altValues[nv] = newV
+                    if newV < oldV then onHpDropped(char, oldV - newV, newV <= 0) end
+                end))
+            end
+        end
+
+        -- 3. Character attributes named Health/HP/etc.
+        for _, name in ipairs(HP_ATTRIBUTE_NAMES) do
+            local v = char:GetAttribute(name)
+            if type(v) == "number" then
+                st.altAttrs[name] = v
+                table.insert(st.conns, char:GetAttributeChangedSignal(name):Connect(function()
+                    local newV = char:GetAttribute(name)
+                    if type(newV) ~= "number" then return end
+                    local oldV = st.altAttrs[name] or newV
+                    st.altAttrs[name] = newV
+                    if newV < oldV then onHpDropped(char, oldV - newV, newV <= 0) end
+                end))
+            end
+        end
+
+        -- 4. Humanoid attributes named Health/HP/etc.
+        for _, name in ipairs(HP_ATTRIBUTE_NAMES) do
+            local v = hum:GetAttribute(name)
+            if type(v) == "number" then
+                st.altAttrs["hum_" .. name] = v
+                table.insert(st.conns, hum:GetAttributeChangedSignal(name):Connect(function()
+                    local newV = hum:GetAttribute(name)
+                    if type(newV) ~= "number" then return end
+                    local oldV = st.altAttrs["hum_" .. name] or newV
+                    st.altAttrs["hum_" .. name] = newV
+                    if newV < oldV then onHpDropped(char, oldV - newV, newV <= 0) end
+                end))
+            end
+        end
     end
     local function trackHP(plr)
         if plr == LocalPlayer or plrHP[plr] then return end
-        plrHP[plr] = { lastHealth = 100, conns = {} }
+        plrHP[plr] = { lastHealth = 100, conns = {}, altValues = {}, altAttrs = {} }
         table.insert(plrHP[plr].conns, plr.CharacterAdded:Connect(function(char) bindHumanoid(plr, char) end))
         if plr.Character then bindHumanoid(plr, plr.Character) end
     end
@@ -7345,6 +7411,25 @@ local Combat = {
             -- on the next Heartbeat -- catches sub-frame LMB taps (fast snipers)
             -- where the button's released before another Heartbeat can sample.
             if markMouseTarget then pcall(markMouseTarget) end
+            -- v0.0.93 PRE-CLICK check: if the current mouse target has dropped
+            -- Health in the last BeforeClick ms (bypasses the "your click
+            -- registered after the game's own damage tick" delay), fire the
+            -- sound on THIS press even though the drop already happened.
+            if sampleMouseEnemy and playSound then
+                local char = sampleMouseEnemy()
+                if char and SR.recentDamage and SR.recentDamage[char] then
+                    local ago = os.clock() - SR.recentDamage[char]
+                    if ago <= (Combat.HitSounds.BeforeClick / 1000) then
+                        SR.recentDamage[char] = nil   -- consume so heartbeat handler doesn't double-fire
+                        local hum = char:FindFirstChildOfClass("Humanoid")
+                        if hum and hum.Health <= 0 then
+                            lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
+                        else
+                            lastHitAt = playSound(hitSnd, Combat.HitSounds.Hit, lastHitAt)
+                        end
+                    end
+                end
+            end
         end
         if pendingActivation then
             local it = input.UserInputType
@@ -7720,6 +7805,7 @@ local Combat = {
         slider(soundCard, "Kill Cooldown",  0, 1000,        Combat.HitSounds.Kill.Cooldown, 0, function(v) Combat.HitSounds.Kill.Cooldown = math.floor(v) end)
         configCheckbox(soundCard, "Overlap Sounds", Combat.HitSounds.Overlap, function(v) Combat.HitSounds.Overlap = v end)
         slider(soundCard, "Attr Window (s)", 0.5, 5, Combat.HitSounds.AttrWindow, 2, function(v) Combat.HitSounds.AttrWindow = v end)
+        slider(soundCard, "Before Click (ms)", 1, 500, Combat.HitSounds.BeforeClick, 0, function(v) Combat.HitSounds.BeforeClick = math.floor(v) end)
 
         --== RIGHT COLUMN ==--
         local rightCard = panel(rightCol)
