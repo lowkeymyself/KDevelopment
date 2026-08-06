@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.90"
+Koffee.Version = "0.0.91"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
 -- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
@@ -5986,8 +5986,7 @@ local Combat = {
             Pitch    = 1.0,
             Cooldown = 200,
         },
-        MouseRadius = 80,       -- pixels, mouse-tracked target lock radius
-        Overlap     = true,     -- v0.0.89: true = each play overlaps previous; false = stop previous then play
+        Overlap     = true,     -- v0.0.89: true = clone-per-play (real overlap); false = stop previous then play
     },
 }
 
@@ -7137,14 +7136,28 @@ local Combat = {
         if (now - lastRef) * 1000 < cfg.Cooldown then return lastRef end
         local id = resolveSoundId(cfg)
         if not id then return lastRef end
-        -- v0.0.89 Overlap Sounds: OFF = stop previous instance first so the new
-        -- play replaces mid-air (no layered echo). ON = plain replay (overlaps).
-        if not Combat.HitSounds.Overlap then pcall(function() snd:Stop() end) end
-        snd.SoundId       = id
-        snd.Volume        = cfg.Volume
-        snd.PlaybackSpeed = cfg.Pitch
-        snd.TimePosition  = 0
-        pcall(function() snd:Play() end)
+        -- v0.0.91 REAL Overlap. v0.0.89's `:Play()` on the same Sound didn't
+        -- overlap -- Roblox restarts the sound from TimePosition instead of layering.
+        -- Overlap ON now clones the Sound per play (parallel playback stacks),
+        -- Ended:Once cleans the clone up. Overlap OFF stops+replays the shared
+        -- instance (single-track, no layering).
+        if Combat.HitSounds.Overlap then
+            local clone = snd:Clone()
+            clone.SoundId       = id
+            clone.Volume        = cfg.Volume
+            clone.PlaybackSpeed = cfg.Pitch
+            clone.TimePosition  = 0
+            clone.Parent        = SoundService
+            pcall(function() clone:Play() end)
+            clone.Ended:Once(function() clone:Destroy() end)
+        else
+            pcall(function() snd:Stop() end)
+            snd.SoundId       = id
+            snd.Volume        = cfg.Volume
+            snd.PlaybackSpeed = cfg.Pitch
+            snd.TimePosition  = 0
+            pcall(function() snd:Play() end)
+        end
         return now
     end
     -- mouse-target tracker: per-Heartbeat sweep of all enemies, pick the one whose
@@ -7152,15 +7165,17 @@ local Combat = {
     -- Only runs while LMB is held (accurate attribution for both single-shot AND
     -- auto weapons -- per-shot in bursts each contributes its own held-LMB frame).
     SR.mouseTgt = nil
+    -- v0.0.91: no radius filter -- target = closest enemy in front of camera to the
+    -- mouse cursor, always (per He: "infinite" FOV for hit/kill sound attribution).
+    -- Still requires the enemy to be in front of camera (sp.Z > 0) so off-screen /
+    -- behind-camera enemies aren't attributed.
     local function updateMouseTarget()
         SR.mouseTgt = nil
         if not lmbDown then return end
         local cam = Workspace.CurrentCamera
         if not cam then return end
-        local ml = UserInputService:GetMouseLocation()   -- inset-included
+        local ml = UserInputService:GetMouseLocation()
         local mx, my = ml.X, ml.Y
-        local radius = Combat.HitSounds.MouseRadius
-        local r2 = radius * radius
         local best, bestD = nil, math.huge
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
@@ -7177,7 +7192,7 @@ local Combat = {
                             if sp.Z > 0 then
                                 local dx, dy = sp.X - mx, sp.Y - my
                                 local d = dx * dx + dy * dy
-                                if d < r2 and d < bestD then best, bestD = plr, d end
+                                if d < bestD then best, bestD = plr, d end
                             end
                         end
                     end
@@ -7665,7 +7680,6 @@ local Combat = {
         slider(soundCard, "Kill Pitch",     0.5, 2,         Combat.HitSounds.Kill.Pitch,    2, function(v) Combat.HitSounds.Kill.Pitch    = v end)
         slider(soundCard, "Kill Cooldown",  0, 1000,        Combat.HitSounds.Kill.Cooldown, 0, function(v) Combat.HitSounds.Kill.Cooldown = math.floor(v) end)
         configCheckbox(soundCard, "Overlap Sounds", Combat.HitSounds.Overlap, function(v) Combat.HitSounds.Overlap = v end)
-        slider(soundCard, "Mouse Radius (px)", 20, 300, Combat.HitSounds.MouseRadius, 0, function(v) Combat.HitSounds.MouseRadius = math.floor(v) end)
 
         --== RIGHT COLUMN ==--
         local rightCard = panel(rightCol)
