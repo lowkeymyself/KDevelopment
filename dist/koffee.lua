@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.82"
+Koffee.Version = "0.0.83"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -5839,23 +5839,6 @@ local Combat = {
         Sticky        = false,
         RequireLMB    = true,
         PosSpoof      = false,   -- v0.0.64: spoof your ROOT position reads -> shot origin inside the target
-        -- v0.0.82 LEARNED FIRE-ARG REWRITE: for camera-baked-arg games (Gun Grounds
-        -- FFA, RIVALS, similar) where Forced MB spoofs direction but the shot origin
-        -- stays real -> no wallbang. Wallbang Raycast (v0.0.77, ripped) couldn't help
-        -- because these games don't call workspace:Raycast at fire time; they bake a
-        -- Vector3/CFrame hit into FireServer args from a Camera.CFrame read. We LEARN
-        -- which arg slot on which remote carries the aim (over a few real shots) then
-        -- rewrite that specific slot to silentPos going forward. Universal in
-        -- MECHANISM, per-game in application. Persists per PlaceId so future joins
-        -- work with zero warmup. Opt-in: user starts a learn session, then arms.
-        LearnedFire   = {
-            Enabled       = false,   -- rewrite active
-            Learning      = false,   -- currently collecting samples
-            SamplesNeeded = 3,       -- min shots for correlation
-            -- Learned patterns per PlaceId (only serialized field).
-            --   [placeId] = { remote = <fullName string>, argIndex = N, argType = "Vector3"|"CFrame"|"Instance" }
-            Learned       = {},
-        },
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default -- fire-read is always
@@ -6134,122 +6117,6 @@ local Combat = {
         if src == SR.own then return false end              -- never Koffee's own reads
         if SR.isView(src) then return false end             -- never the camera system
         return true                                         -- any non-camera script
-    end
-
-    -- v0.0.82 LEARNED FIRE-ARG REWRITE state + helpers.
-    -- The learn loop records N samples of (remote, args, targetPos) during natural
-    -- shots, then correlates to find which arg slot's value tracks the target's
-    -- position within tolerance. The hook only RECORDS samples (namecall-safe); the
-    -- silent Heartbeat picks up SR.learnReady + runs the correlation + resolves the
-    -- learned remote instance from its FullName (all namecall-safe context).
-    SR.placeId       = tostring(game.PlaceId)
-    SR.learnSamples  = {}       -- transient: fresh per learn session
-    SR.learnReady    = false    -- hook -> Heartbeat handoff flag
-    SR.learnedRemote = nil      -- resolved RemoteEvent/Function instance (transient)
-    SR.learnedArg    = 0        -- arg slot index to rewrite
-    SR.learnedType   = ""       -- "Vector3" | "CFrame" | "Instance"
-
-    -- Walk `game` via property __index only (no namecalls -- safe from any context).
-    -- fullName format: "Path.To.Remote" split by "." starting from game's children.
-    local function resolveRemote(fullName)
-        if type(fullName) ~= "string" or fullName == "" then return nil end
-        local cur = game
-        for name in string.gmatch(fullName, "[^%.]+") do
-            if not cur then return nil end
-            local ok, child = pcall(function() return cur:FindFirstChild(name) end)
-            if not ok or not child then return nil end
-            cur = child
-        end
-        return cur
-    end
-
-    -- Build a remote's FullName by walking .Parent (property __index only, no namecall).
-    -- Called from the silent Heartbeat when finalizing a learn session -- namecall-safe.
-    local function remoteFullName(inst)
-        if not inst then return "" end
-        local parts, a, n = {}, inst, 0
-        while a and a ~= game and n < 32 do
-            table.insert(parts, 1, a.Name)
-            a = a.Parent
-            n = n + 1
-        end
-        return table.concat(parts, ".")
-    end
-
-    -- Correlate collected samples. Returns { remote = <Instance>, argIndex, argType }
-    -- or nil if no slot passes confidence thresholds. Groups samples by remote first
-    -- (some games have multiple fire remotes across weapons -- pick the one with the
-    -- most samples). Scores each arg slot by how tightly its value tracks the sample's
-    -- target position across shots.
-    local function correlate(samples)
-        if not samples or #samples < 2 then return nil end
-        -- group by remote
-        local groups = {}
-        for _, s in ipairs(samples) do
-            local g = groups[s.remote]
-            if not g then g = {}; groups[s.remote] = g end
-            table.insert(g, s)
-        end
-        -- pick the group with the most samples
-        local bestRemote, bestGroup, bestN = nil, nil, 0
-        for r, g in pairs(groups) do
-            if #g > bestN then bestRemote, bestGroup, bestN = r, g, #g end
-        end
-        if not bestGroup or bestN < 2 then return nil end
-        -- for each arg slot, compute avg distance between arg value and target pos
-        local minSlots = math.huge
-        for _, s in ipairs(bestGroup) do
-            if s.args.n < minSlots then minSlots = s.args.n end
-        end
-        if minSlots < 1 then return nil end
-        local bestSlot, bestScore, bestType = 0, math.huge, ""
-        for i = 1, minSlots do
-            local totDist, ok, ty = 0, true, nil
-            local hits, dists = 0, {}
-            for _, s in ipairs(bestGroup) do
-                local a = s.args[i]
-                local d
-                if typeof(a) == "Vector3" then
-                    ty = ty or "Vector3"
-                    if ty ~= "Vector3" then ok = false; break end
-                    d = (a - s.targetPos).Magnitude
-                elseif typeof(a) == "CFrame" then
-                    ty = ty or "CFrame"
-                    if ty ~= "CFrame" then ok = false; break end
-                    d = (a.Position - s.targetPos).Magnitude
-                elseif typeof(a) == "Instance" then
-                    ty = ty or "Instance"
-                    if ty ~= "Instance" then ok = false; break end
-                    -- Instance match: descendant of target character = 0, else huge
-                    local ancestor, n = a, 0
-                    local match = false
-                    while ancestor and n < 8 do
-                        if ancestor == s.targetChar then match = true; break end
-                        ancestor = ancestor.Parent
-                        n = n + 1
-                    end
-                    d = match and 0 or 999
-                else
-                    ok = false; break
-                end
-                totDist = totDist + d
-                if d < 5 then hits = hits + 1 end
-                table.insert(dists, d)
-            end
-            if ok and #dists > 0 then
-                local avg = totDist / #dists
-                -- score: lower avgDist = better; require majority within 5 studs for Vector3/CFrame
-                if ty == "Instance" then
-                    if hits == #dists and avg < bestScore then
-                        bestSlot, bestScore, bestType = i, avg, ty
-                    end
-                elseif hits >= math.ceil(#dists * 0.66) and avg < 5 and avg < bestScore then
-                    bestSlot, bestScore, bestType = i, avg, ty
-                end
-            end
-        end
-        if bestSlot == 0 then return nil end
-        return { remote = bestRemote, argIndex = bestSlot, argType = bestType }
     end
 
     local function inputMatches(input, bind)
@@ -6602,47 +6469,6 @@ local Combat = {
             -- class (Phantom Forces, Arsenal, Aimblox) can be re-added later as a per-game
             -- module (see PINNED plan in the vault note) once we have a game where it
             -- actually lands + a less-detectable implementation.
-            --
-            -- v0.0.82 LEARNED FIRE-ARG REWRITE: for the camera-baked-arg class (Gun Grounds
-            -- FFA, RIVALS, similar) where the weapon reads Camera.CFrame + bakes a hit
-            -- position into FireServer args. We either RECORD a sample (learn mode) or
-            -- REWRITE the learned arg slot (armed mode). Both are gated on the remote
-            -- being a RemoteEvent/RemoteFunction and the method being Fire/InvokeServer.
-            -- Namecall-free: only property reads, table ops, constructors.
-            if method == "FireServer" or method == "InvokeServer" then
-                local lf = Combat.Silent.LearnedFire
-                if lf.Learning and silentPos and silentTarget then
-                    -- record: args are already table.pack'd by the hook body (args.n = count)
-                    local snap = { n = args.n }
-                    for i = 1, args.n do snap[i] = args[i] end
-                    table.insert(SR.learnSamples, {
-                        remote     = self,
-                        args       = snap,
-                        targetPart = silentTarget,
-                        targetChar = silentTarget.Parent,
-                        targetPos  = silentPos,
-                    })
-                    if #SR.learnSamples >= (lf.SamplesNeeded or 3) then
-                        SR.learnReady = true   -- Heartbeat picks it up next frame
-                    end
-                    -- pass through unchanged so the real shot still lands + user sees a hit
-                elseif lf.Enabled and SR.learnedRemote and self == SR.learnedRemote
-                       and silentPos and silentTarget and SR.learnedArg > 0
-                       and SR.learnedArg <= args.n then
-                    local ty = SR.learnedType
-                    if ty == "Vector3" then
-                        args[SR.learnedArg] = silentPos
-                        return "call", args
-                    elseif ty == "CFrame" then
-                        args[SR.learnedArg] = CFrame.new(silentPos)
-                        return "call", args
-                    elseif ty == "Instance" then
-                        args[SR.learnedArg] = silentTarget
-                        return "call", args
-                    end
-                end
-                return PASS_H, PASS_V
-            end
             if not isArmed() then return PASS_H, PASS_V end
             -- camera-ray / cursor methods the game uses to build its shot. Direction bends to
             -- the target; on the Pos Spoof fire frame the ORIGIN moves in front of the target
@@ -7143,48 +6969,6 @@ local Combat = {
             silentTarget = nil; silentPos = nil
             SR.camPos = nil; SR.screen = nil
         end
-
-        -- v0.0.82 LEARNED FIRE-ARG REWRITE: process learn readiness + resolve learned
-        -- remote from its persisted FullName. Both are namecall-safe operations (walk
-        -- .Parent chain / FindFirstChild) and MUST happen outside the __namecall hook.
-        local lf = Combat.Silent.LearnedFire
-        if SR.learnReady then
-            SR.learnReady = false
-            local result = correlate(SR.learnSamples)
-            if result then
-                local fullName = remoteFullName(result.remote)
-                lf.Learned[SR.placeId] = {
-                    remote   = fullName,
-                    argIndex = result.argIndex,
-                    argType  = result.argType,
-                }
-                SR.learnedRemote = result.remote
-                SR.learnedArg    = result.argIndex
-                SR.learnedType   = result.argType
-                lf.Learning = false
-                lf.Enabled  = true
-                print("[koffee][learn] fire-arg learned: " .. fullName
-                      .. " arg#" .. tostring(result.argIndex)
-                      .. " (" .. tostring(result.argType) .. ") -- wallbang armed")
-            else
-                lf.Learning = false
-                print("[koffee][learn] couldn't correlate a fire arg from "
-                      .. tostring(#SR.learnSamples) .. " samples")
-            end
-            SR.learnSamples = {}
-        end
-        -- Resolve learned remote from FullName on first use / after config load.
-        if lf.Enabled and not SR.learnedRemote then
-            local pat = lf.Learned[SR.placeId]
-            if pat and pat.remote then
-                local inst = resolveRemote(pat.remote)
-                if inst then
-                    SR.learnedRemote = inst
-                    SR.learnedArg    = pat.argIndex or 0
-                    SR.learnedType   = pat.argType or ""
-                end
-            end
-        end
     end)
 
 
@@ -7559,28 +7343,6 @@ local Combat = {
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
         configCheckbox(R["Silent Aim"], "Pos Spoof", Combat.Silent.PosSpoof, function(v) Combat.Silent.PosSpoof = v end)
-        -- v0.0.82 LEARNED FIRE-ARG REWRITE UI. "Learn Fire Args" starts a session that
-        -- records N real shots then correlates which arg slot on the FireServer call
-        -- carries the aim; once learned, "Learned Wallbang" toggles the rewrite on.
-        -- Per PlaceId -- future joins auto-restore + arm the wallbang for this game.
-        configCheckbox(R["Silent Aim"], "Learned Wallbang", Combat.Silent.LearnedFire.Enabled, function(v)
-            Combat.Silent.LearnedFire.Enabled = v
-            if v and not Combat.Silent.LearnedFire.Learned[SR.placeId] then
-                print("[koffee][learn] no pattern for this game yet -- run 'Learn Fire Args' first")
-            end
-        end)
-        configCheckbox(R["Silent Aim"], "Learn Fire Args", false, function(v)
-            if v then
-                SR.learnSamples = {}
-                Combat.Silent.LearnedFire.Learning = true
-                print("[koffee][learn] session started -- fire " .. tostring(Combat.Silent.LearnedFire.SamplesNeeded)
-                      .. " shots at an enemy while aiming normally. results print here when done.")
-            else
-                Combat.Silent.LearnedFire.Learning = false
-                SR.learnSamples = {}
-                print("[koffee][learn] cancelled")
-            end
-        end)
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
         -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
         -- are never touched. Spoof Scope is the caller-identification strategy (both
