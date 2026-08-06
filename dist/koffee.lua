@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.86"
+Koffee.Version = "0.0.87"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -5034,7 +5034,7 @@ local Move = {
     WalkSpeed    = { Speed = 60,  Key = nil, Mode = "Hold"   },
     TeleportWalk = { Speed = 80,  Key = nil, Mode = "Hold"   },
     Fly          = { Speed = 120, Key = nil, Mode = "Toggle", Kind = "Default Fly" },
-    Spin         = { Speed = 600, Key = nil, Mode = "Toggle" },
+    Spin         = { Speed = 600, Key = nil, Mode = "Toggle", BypassCameraLock = false },
     Noclip       = {              Key = nil, Mode = "Toggle" },
     Float        = { Speed = 50,  Key = nil, Mode = "Hold"   },
     ClickTP      = {              Key = nil, Mode = "Toggle" },
@@ -5157,13 +5157,78 @@ FEAT.fly = {
     end,
 }
 
+-- v0.0.87 Spinbot rewrite.
+-- Two paths, selected by Move.Spin.BypassCameraLock (runtime-switchable).
+--   DEFAULT (Bypass OFF): rewrite HRP.CFrame each frame. Writes now go through a
+--     RenderStep bind at priority Character+1 (301) so games that hard-set
+--     HumanoidRootPart.CFrame from their character controller each frame (camera-
+--     lock games) don't beat us -- we always win the last write of the frame.
+--   BYPASS (Bypass ON): rotate the root Motor6D joint (HRP -> Torso/LowerTorso).
+--     Character body visually spins relative to HRP; HRP orientation is untouched
+--     so camera-lock games see stable HRP + your aim/movement stay locked to
+--     wherever you're looking. Movement direction unaffected.
+-- Original RootJoint.C0 snapshotted on first apply + restored on disable / mode
+-- flip.
+local function findRootJoint(char)
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    for _, c in ipairs(hrp:GetChildren()) do
+        if c:IsA("Motor6D") then return c end
+    end
+    return nil
+end
 FEAT.spinbot = {
-    on   = function() st.spin = { a = 0 } end,
-    off  = function() st.spin = nil end,
+    on = function() st.spin = { a = 0, joint = nil, origC0 = nil, boundRS = false } end,
+    off = function()
+        local s = st.spin
+        if not s then return end
+        if s.joint and s.origC0 then
+            pcall(function() s.joint.C0 = s.origC0 end)
+        end
+        if s.boundRS then
+            pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
+        end
+        st.spin = nil
+    end,
     step = function(dt)
-        local s, r = st.spin, rootOf(); if not (s and r) then return end
+        local s = st.spin; if not s then return end
         s.a = s.a + math.rad(Move.Spin.Speed) * dt
-        r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, s.a, 0)
+        if Move.Spin.BypassCameraLock then
+            -- unbind HRP writer if we were in default mode last frame
+            if s.boundRS then
+                pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
+                s.boundRS = false
+            end
+            local char = LocalPlayer.Character
+            local j = s.joint
+            if not (j and j.Parent) then
+                j = findRootJoint(char)
+                if not j then return end
+                s.joint = j
+                s.origC0 = j.C0
+            end
+            j.C0 = s.origC0 * CFrame.Angles(0, s.a, 0)
+        else
+            -- restore joint if we were in bypass mode last frame
+            if s.joint and s.origC0 then
+                pcall(function() s.joint.C0 = s.origC0 end)
+                s.joint = nil; s.origC0 = nil
+            end
+            -- bind HRP writer AFTER the character controller so camera-lock games don't beat us
+            if not s.boundRS then
+                pcall(function()
+                    RunService:BindToRenderStep("KSpinbot",
+                        Enum.RenderPriority.Character.Value + 1, function()
+                            local sp = st.spin; if not sp then return end
+                            if Move.Spin.BypassCameraLock then return end
+                            local r = rootOf(); if not r then return end
+                            r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
+                        end)
+                end)
+                s.boundRS = true
+            end
+        end
     end,
 }
 
@@ -5710,6 +5775,7 @@ Koffee._characterTab = function(root)
     dropdown(mv, "Fly Mode", { "Default Fly", "Vehicle Fly", "CFrame Fly" }, Move.Fly.Kind, function(v) Move.Fly.Kind = v end)
     feat("Spinbot", "spinbot")
     slider(mv, "Spin Speed", 0, 1000, Move.Spin.Speed, 0, function(v) Move.Spin.Speed = v end)
+    configCheckbox(mv, "Bypass Camera Lock", Move.Spin.BypassCameraLock, function(v) Move.Spin.BypassCameraLock = v end)
     feat("Noclip", "noclip")
     feat("Float", "float")
     slider(mv, "Float Speed", 0, 200, Move.Float.Speed, 0, function(v) Move.Float.Speed = v end)
