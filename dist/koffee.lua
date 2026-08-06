@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.91"
+Koffee.Version = "0.0.92"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
 -- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
@@ -5987,6 +5987,12 @@ local Combat = {
             Cooldown = 200,
         },
         Overlap     = true,     -- v0.0.89: true = clone-per-play (real overlap); false = stop previous then play
+        -- v0.0.92 attribution window (seconds) -- after aiming at an enemy (LMB
+        -- press edge OR any Heartbeat while LMB held), that enemy stays valid as
+        -- YOUR target for this long. Handles snipers (fast tap, 200ms+ damage
+        -- delay before health drops) + multiple in-flight shots (each captured
+        -- target has its own timestamp).
+        AttrWindow  = 2.0,
     },
 }
 
@@ -7165,15 +7171,19 @@ local Combat = {
     -- Only runs while LMB is held (accurate attribution for both single-shot AND
     -- auto weapons -- per-shot in bursts each contributes its own held-LMB frame).
     SR.mouseTgt = nil
-    -- v0.0.91: no radius filter -- target = closest enemy in front of camera to the
-    -- mouse cursor, always (per He: "infinite" FOV for hit/kill sound attribution).
-    -- Still requires the enemy to be in front of camera (sp.Z > 0) so off-screen /
-    -- behind-camera enemies aren't attributed.
-    local function updateMouseTarget()
-        SR.mouseTgt = nil
-        if not lmbDown then return end
+    -- v0.0.92 mouse-target lock. Replaces single SR.mouseTgt with a SET of recently-
+    -- aimed-at enemies (SR.recentTargets[char] = timestamp). Any Health drop on a
+    -- char in the set within AttrWindow seconds counts as YOUR hit. Fixes sniper
+    -- case: fast-tap LMB, damage lands 200ms later after `lmbDown` already flipped
+    -- back to false. Also handles multiple in-flight shots in FFA (each captured
+    -- target ages independently).
+    -- Sampling: `sampleMouseEnemy()` finds closest enemy to cursor in front of camera
+    -- (no radius filter -- v0.0.91). Called on Heartbeat while LMB held (auto-fire)
+    -- + on LMB press edge (guaranteed sample at press moment even for sub-frame taps).
+    SR.recentTargets = {}
+    local function sampleMouseEnemy()
         local cam = Workspace.CurrentCamera
-        if not cam then return end
+        if not cam then return nil end
         local ml = UserInputService:GetMouseLocation()
         local mx, my = ml.X, ml.Y
         local best, bestD = nil, math.huge
@@ -7192,14 +7202,26 @@ local Combat = {
                             if sp.Z > 0 then
                                 local dx, dy = sp.X - mx, sp.Y - my
                                 local d = dx * dx + dy * dy
-                                if d < bestD then best, bestD = plr, d end
+                                if d < bestD then best, bestD = char, d end
                             end
                         end
                     end
                 end
             end
         end
-        SR.mouseTgt = best and best.Character or nil
+        return best
+    end
+    local function markMouseTarget()
+        local char = sampleMouseEnemy()
+        if char then SR.recentTargets[char] = os.clock() end
+    end
+    local function updateMouseTarget()
+        if lmbDown then markMouseTarget() end
+        -- cleanup stale entries so the table doesn't grow forever
+        local now, window = os.clock(), Combat.HitSounds.AttrWindow
+        for c, at in pairs(SR.recentTargets) do
+            if now - at > window then SR.recentTargets[c] = nil end
+        end
     end
     -- per-player Health watcher. Tracks lastHealth per player, fires sound on drop
     -- IF the player's Character == SR.mouseTgt at the moment the drop hits.
@@ -7227,7 +7249,18 @@ local Combat = {
             local nh, old = hum.Health, st.lastHealth
             st.lastHealth = nh
             if nh >= old then return end
-            if char ~= SR.mouseTgt then return end   -- not YOUR mouse target
+            -- v0.0.92: check the recent-targets set with attribution window instead
+            -- of the single-frame SR.mouseTgt. Damage that lands AFTER LMB release
+            -- (snipers, laggy games) still attributes if you aimed at this enemy
+            -- within AttrWindow seconds. Consume the entry so a single shot's
+            -- damage doesn't double-fire if the game applies it in multiple ticks.
+            local at = SR.recentTargets[char]
+            if not at then return end
+            if os.clock() - at > Combat.HitSounds.AttrWindow then
+                SR.recentTargets[char] = nil
+                return
+            end
+            SR.recentTargets[char] = nil   -- consume
             if nh <= 0 then lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
             else lastHitAt = playSound(hitSnd, Combat.HitSounds.Hit, lastHitAt) end
         end))
@@ -7306,7 +7339,13 @@ local Combat = {
     UserInputService.InputBegan:Connect(function(input, gpe)
         -- v0.0.35: track LMB regardless of gpe so the silent redirect's RequireLMB
         -- gate is accurate (this flag replaces IsMouseButtonPressed polling).
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then lmbDown = true; lmbClickAt = os.clock() end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            lmbDown = true; lmbClickAt = os.clock()
+            -- v0.0.92 sample the mouse target IMMEDIATELY on press edge, not just
+            -- on the next Heartbeat -- catches sub-frame LMB taps (fast snipers)
+            -- where the button's released before another Heartbeat can sample.
+            if markMouseTarget then pcall(markMouseTarget) end
+        end
         if pendingActivation then
             local it = input.UserInputType
             -- v0.0.36: ESC CLEARS the bind (no activation key), not just cancels.
@@ -7680,6 +7719,7 @@ local Combat = {
         slider(soundCard, "Kill Pitch",     0.5, 2,         Combat.HitSounds.Kill.Pitch,    2, function(v) Combat.HitSounds.Kill.Pitch    = v end)
         slider(soundCard, "Kill Cooldown",  0, 1000,        Combat.HitSounds.Kill.Cooldown, 0, function(v) Combat.HitSounds.Kill.Cooldown = math.floor(v) end)
         configCheckbox(soundCard, "Overlap Sounds", Combat.HitSounds.Overlap, function(v) Combat.HitSounds.Overlap = v end)
+        slider(soundCard, "Attr Window (s)", 0.5, 5, Combat.HitSounds.AttrWindow, 2, function(v) Combat.HitSounds.AttrWindow = v end)
 
         --== RIGHT COLUMN ==--
         local rightCard = panel(rightCol)
