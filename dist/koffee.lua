@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.85"
+Koffee.Version = "0.0.86"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -6341,17 +6341,16 @@ local Combat = {
         -- (not under PlayerModule -> not caught by isView / spoofAim). Continuous
         -- spoof was making those controllers read the fake CFrame every frame ->
         -- write it back into the real Camera -> view stuck.
-        -- Fire-frame gate: RequireLMB ON -> spoof only while LMB held (unchanged).
-        -- RequireLMB OFF -> 120ms window after each press (was continuous). Between
-        -- shots the camera controller reads the REAL camera and works normally.
-        -- Trade-off: RequireLMB OFF + auto-fire on custom-cam games -> still leaks
-        -- (LMB held continuously). User can turn RequireLMB ON for auto weapons.
+        -- v0.0.86: reverted v0.0.81 fire-frame gate. Was breaking RequireLMB OFF
+        -- (which should be TRULY continuous but became fire-frame-only, so users had
+        -- to click to fire silent even with RequireLMB off -> effectively no OFF mode).
+        -- Back to isArmed semantics: RequireLMB ON -> only when LMB held, RequireLMB
+        -- OFF -> continuous. Trade-off: on games with a custom camera controller not
+        -- under PlayerModule, RequireLMB OFF can freeze the view (the controller reads
+        -- our spoofed Camera.CFrame every frame). User works around by turning
+        -- RequireLMB ON on those games.
         local function camFire()
-            if not silentPos then return false end
-            if not Combat.Silent.RequireLMB then
-                return lmbDown or (os.clock() - lmbClickAt) < 0.12
-            end
-            return lmbDown
+            return isArmed()
         end
         -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
         -- any wall between you and them), aimed AT the target -> the client raycast hits them
@@ -6603,7 +6602,13 @@ local Combat = {
         local tpos = predicted(plr, part, Combat.Aim.Predict)
 
         -- sensitivity (base pull) + optional per-axis smoothness (higher = slower)
-        local sens = math.clamp(Combat.Aim.Sensitivity, 0.01, 1)
+        -- v0.0.86 sensitivity curve reshape. Was linear 0.01..1 -- 0.08 was already
+        -- fast because 8% per frame converges to target in a few frames. Now sens^1.5
+        -- pushes the low end down without touching the max: 1.0 -> 1.0 (perfect lock),
+        -- 0.5 -> 0.354 (moderate), 0.08 -> 0.023 (smooth pull), 0.01 -> 0.001 (glacial).
+        -- Endpoints preserved so users' existing feel at max/near-max is unchanged.
+        local rawSens = math.clamp(Combat.Aim.Sensitivity, 0.01, 1)
+        local sens = rawSens * math.sqrt(rawSens)   -- sens^1.5
         local aX, aY = sens, sens
         if Combat.Aim.Smooth.Enabled then
             aX = math.clamp(sens / math.max(Combat.Aim.Smooth.X, 0.01), 0, 1)
@@ -6880,22 +6885,40 @@ local Combat = {
         end
         return nil
     end
-    -- v0.0.78 triggerbot fire decision. Two independent conditions:
-    --   * Silent-aim link (regardless of Visible Check): fires whenever silent has a
-    --     target locked. Silent is an explicit opt-in -- if it's armed, the user wants
-    --     trigger to help. Needed for Pos Spoof / Wallbang Raycast (crosshair points
-    --     at nothing, shot lands via silent hooks).
-    --   * Crosshair mode gated by Visible Check:
-    --       ON  -> normal triggerbot: occlusion-safe raycast, wall between camera and
-    --              enemy BLOCKS the trigger. Pure "shoot when you can actually see them".
-    --       OFF -> through-walls: enemy visually near the crosshair fires (screen-space
-    --              distance check, no occlusion). Combined with Wallbang Raycast this
-    --              is the "shoot through walls at anyone I look near" mode.
+    -- v0.0.86: silent-link now respects Visible Check. Was firing regardless (v0.0.78)
+    -- so with Visible Check ON + Silent Aim armed, trigger fired even when the silent
+    -- target was behind a wall -- broke the "visible only" expectation. Now Visible
+    -- Check gates BOTH the crosshair path AND the silent-link path.
+    --   Visible Check ON  -> only fires if target has line-of-sight (raycast from
+    --                        camera to silent target passes; crosshair enemy raycast passes)
+    --   Visible Check OFF -> through-walls trigger (silent target OR nearest enemy in
+    --                        screen-space crosshair area)
+    -- silentHasLOS = camera-to-target raycast that ignores our character. If no wall
+    -- between camera and target, it's visible.
+    local trigLOSParams = RaycastParams.new()
+    trigLOSParams.FilterType = Enum.RaycastFilterType.Exclude
+    local function silentHasLOS()
+        if not (silentTarget and silentTarget.Parent) then return false end
+        local cam = Workspace.CurrentCamera
+        if not cam then return false end
+        local origin = cam.CFrame.Position
+        local target = silentTarget.Position
+        trigLOSParams.FilterDescendantsInstances = {
+            LocalPlayer.Character, silentTarget.Parent
+        }
+        local res = Workspace:Raycast(origin, target - origin, trigLOSParams)
+        return res == nil   -- nil = ray reached target unobstructed
+    end
     local function triggerShouldFire()
-        if silentTarget and silentTarget.Parent and Combat.Silent.Enabled then return true end
         if Combat.Trigger.VisibleCheck then
+            -- silent link only fires when target is actually visible
+            if silentTarget and silentTarget.Parent and Combat.Silent.Enabled and silentHasLOS() then
+                return true
+            end
             return crosshairEnemy() ~= nil
         end
+        -- through-walls mode: any locked silent target fires
+        if silentTarget and silentTarget.Parent and Combat.Silent.Enabled then return true end
         return crosshairEnemyNoOcclusion() ~= nil
     end
     RunService.Heartbeat:Connect(function()
