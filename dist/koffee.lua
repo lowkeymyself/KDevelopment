@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.83"
+Koffee.Version = "0.0.84"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -5851,6 +5851,17 @@ local Combat = {
         _hooked       = false,
     },
     Misc = { Resolver = false },
+    -- v0.0.84 HIT / KILL SOUNDS. Universal: listens for enemy Humanoid.Health drops
+    -- and plays a sound if the damage is attributable to YOU (locked silent target,
+    -- locked aim target, or LMB fired recently + enemy in a tight crosshair area).
+    -- FFA-safe via the target-lock check; auto-gun-safe because attribution is on
+    -- damage events, not click edges (each bullet in an auto burst that lands ->
+    -- one damage event -> one sound).
+    HitSounds = {
+        Hit  = { Enabled = false, SoundId = 5820205808, Volume = 1.0 },
+        Kill = { Enabled = false, SoundId = 131961136,  Volume = 1.0 },
+        Window = 0.5,   -- seconds after LMB press where a hit still counts as yours
+    },
 }
 
     -- one FOV config per context (aimbot + silent). Both can be active at once;
@@ -5886,6 +5897,7 @@ local Combat = {
     registerConfig("combat_silent",  Combat.Silent)
     registerConfig("combat_trigger", Combat.Trigger)
     registerConfig("combat_misc",    Combat.Misc)
+    registerConfig("combat_sounds",  Combat.HitSounds)
 
     --== math helpers ==--
     local function shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
@@ -6913,6 +6925,90 @@ local Combat = {
         end)
     end)
 
+    -- v0.0.84 HIT / KILL SOUND ENGINE. Universal by mechanism: per-player Humanoid.
+    -- Health watcher fires on every drop; we attribute the damage to YOU (or not) via
+    -- three signals in priority order:
+    --   1. player == YOUR locked silent-aim target (silent's target is your target)
+    --   2. player == YOUR locked aim-bot target (aimbot's target is your target)
+    --   3. LMB fired recently (Window seconds) AND player is inside a tight crosshair
+    --      area (150px radius from screen center) -- covers un-locked kills from a
+    --      normal aimed shot
+    -- FFA-safe: (1)+(2) already say "the enemy I locked took damage" -> almost
+    -- certainly mine; (3) requires you fired + they're near your reticle.
+    -- Auto-gun-safe: attribution is on damage EVENTS, not click edges -- each landed
+    -- bullet = one damage event = one sound, regardless of held vs clicked.
+    local SoundService = game:GetService("SoundService")
+    local hitSnd = Instance.new("Sound"); hitSnd.Name = "KHitSnd"; hitSnd.Parent = SoundService
+    local killSnd = Instance.new("Sound"); killSnd.Name = "KKillSnd"; killSnd.Parent = SoundService
+    local function playSound(snd, cfg)
+        if not cfg.Enabled then return end
+        snd.SoundId = "rbxassetid://" .. tostring(cfg.SoundId)
+        snd.Volume  = cfg.Volume
+        snd.TimePosition = 0
+        pcall(function() snd:Play() end)
+    end
+    local function isMyHit(plr)
+        -- silent-aim locked on this player -> yours
+        if Combat.Silent.Enabled and silentTarget and silentTarget.Parent == plr.Character then
+            return true
+        end
+        -- aimbot locked on this player -> yours
+        if Combat.Aim.Enabled and aimHeld and Combat.Aim._target == plr then return true end
+        -- LMB recent + player in tight crosshair area -> probably yours
+        local now = os.clock()
+        if lmbDown or (now - lmbClickAt) < Combat.HitSounds.Window then
+            local cam = Workspace.CurrentCamera
+            local char = plr.Character
+            local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"))
+            if cam and hrp then
+                local sp = cam:WorldToViewportPoint(hrp.Position)
+                if sp.Z > 0 then
+                    local vp = cam.ViewportSize
+                    local dx, dy = sp.X - vp.X * 0.5, sp.Y - vp.Y * 0.5
+                    if (dx * dx + dy * dy) < 150 * 150 then return true end
+                end
+            end
+        end
+        return false
+    end
+    local plrState = {}
+    local function untrackHealth(plr)
+        local st = plrState[plr]; if not st then return end
+        for _, c in ipairs(st.conns) do pcall(function() c:Disconnect() end) end
+        plrState[plr] = nil
+    end
+    local function bindHumanoid(plr, char)
+        local st = plrState[plr]; if not st then return end
+        for i = #st.conns, 2, -1 do   -- keep [1] = CharacterAdded connection
+            pcall(function() st.conns[i]:Disconnect() end); st.conns[i] = nil
+        end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then
+            task.spawn(function() hum = char:WaitForChild("Humanoid", 5)
+                if hum and plrState[plr] then bindHumanoid(plr, char) end
+            end)
+            return
+        end
+        st.lastHealth = hum.Health
+        table.insert(st.conns, hum:GetPropertyChangedSignal("Health"):Connect(function()
+            local nh, old = hum.Health, st.lastHealth
+            st.lastHealth = nh
+            if nh >= old then return end        -- health went up / same -> not a hit
+            if not isMyHit(plr) then return end -- not attributable to us
+            if nh <= 0 then playSound(killSnd, Combat.HitSounds.Kill)
+            else playSound(hitSnd, Combat.HitSounds.Hit) end
+        end))
+    end
+    local function trackHealth(plr)
+        if plr == LocalPlayer or plrState[plr] then return end
+        plrState[plr] = { lastHealth = 100, conns = {} }
+        table.insert(plrState[plr].conns, plr.CharacterAdded:Connect(function(char) bindHumanoid(plr, char) end))
+        if plr.Character then bindHumanoid(plr, plr.Character) end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do trackHealth(plr) end
+    Players.PlayerAdded:Connect(trackHealth)
+    Players.PlayerRemoving:Connect(untrackHealth)
+
     -- silent aim: keep the redirect target FRESH every frame while active. v0.0.35:
     -- the RequireLMB check is NO LONGER here -- silentPos is computed continuously
     -- (whenever enabled + armed-by-key + a target is acquirable) so it's already
@@ -7325,6 +7421,17 @@ local Combat = {
         -- Misc
         local miscCard = panel(leftCol, "Misc")
         configCheckbox(miscCard, "Resolver", Combat.Misc.Resolver, function(v) Combat.Misc.Resolver = v end)
+
+        -- v0.0.84 Hit / Kill Sounds panel. Both are universal (Humanoid.Health listener
+        -- with attribution to your locked target / recent fire + tight crosshair area).
+        local soundCard = panel(leftCol, "Sounds")
+        configCheckbox(soundCard, "Hit Sound",  Combat.HitSounds.Hit.Enabled,  function(v) Combat.HitSounds.Hit.Enabled  = v end)
+        slider(soundCard, "Hit Sound ID",    0, 9999999999, Combat.HitSounds.Hit.SoundId,  0, function(v) Combat.HitSounds.Hit.SoundId  = math.floor(v) end)
+        slider(soundCard, "Hit Volume",      0, 5,           Combat.HitSounds.Hit.Volume,   2, function(v) Combat.HitSounds.Hit.Volume   = v end)
+        configCheckbox(soundCard, "Kill Sound", Combat.HitSounds.Kill.Enabled, function(v) Combat.HitSounds.Kill.Enabled = v end)
+        slider(soundCard, "Kill Sound ID",   0, 9999999999, Combat.HitSounds.Kill.SoundId, 0, function(v) Combat.HitSounds.Kill.SoundId = math.floor(v) end)
+        slider(soundCard, "Kill Volume",     0, 5,           Combat.HitSounds.Kill.Volume,  2, function(v) Combat.HitSounds.Kill.Volume  = v end)
+        slider(soundCard, "Attr Window (s)", 0.1, 2,         Combat.HitSounds.Window,       2, function(v) Combat.HitSounds.Window       = v end)
 
         --== RIGHT COLUMN ==--
         local rightCard = panel(rightCol)
