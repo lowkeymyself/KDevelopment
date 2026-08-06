@@ -34,6 +34,12 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_IO",
     "Win32_Storage_FileSystem",
     "Win32_Security",
+    # loader needs: registry ops, VirtualAlloc, GetProcAddress
+    "Win32_System_Registry",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    # RAM-range enumeration (SMBIOS Type 19)
+    "Win32_System_SystemInformation",
 ] }
 
 # lean release binary: strip + size-optimize + no unwinding machinery

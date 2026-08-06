@@ -93,8 +93,10 @@ impl Transport for DriverTransport {
         // Ignore failure (e.g., name already exists / insufficient rights).
         let dev_name_w: Vec<u16> = "KoffeeMem\0".encode_utf16().collect();
         let tgt_path_w: Vec<u16> = "\\Device\\KoffeeMem\0".encode_utf16().collect();
+        println!("[dbg] transport::open: calling DefineDosDeviceW");
         unsafe { DefineDosDeviceW(DDD_RAW_TARGET_PATH, dev_name_w.as_ptr(), tgt_path_w.as_ptr()) };
 
+        println!("[dbg] transport::open: calling CreateFileA on device");
         let handle = unsafe {
             CreateFileA(
                 DEVICE_PATH.as_ptr(),
@@ -117,11 +119,13 @@ impl Transport for DriverTransport {
                 ),
             ));
         }
+        println!("[dbg] transport::open: CreateFileA OK, handle={:?}", handle);
 
         let this = DriverTransport { pid, handle };
 
         // Bind the driver-side per-handle context to this PID. Every future
         // read/write IOCTL implicitly targets it -- no per-call PID plumbing.
+        println!("[dbg] transport::open: sending IOCTL_KFM_ATTACH for pid={}", pid);
         let attach = ioctl::KfmAttachIn { pid };
         let input = unsafe {
             std::slice::from_raw_parts(
@@ -130,6 +134,7 @@ impl Transport for DriverTransport {
             )
         };
         this.ioctl(ioctl::IOCTL_KFM_ATTACH, input, &mut [])?;
+        println!("[dbg] transport::open: ATTACH OK");
         Ok(this)
     }
 

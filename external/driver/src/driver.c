@@ -226,7 +226,9 @@ NTSTATUS KfmDeviceControl(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
     NTSTATUS  st   = STATUS_INVALID_DEVICE_REQUEST;
     ULONG_PTR info = 0;
 
-    if (!ctx) return KfmCompleteIrp(Irp, STATUS_INVALID_HANDLE, 0);
+    if (!ctx) {
+        return KfmCompleteIrp(Irp, STATUS_INVALID_HANDLE, 0);
+    }
 
     switch (code) {
         case IOCTL_KFM_ATTACH: {
@@ -327,12 +329,9 @@ static NTSTATUS KfmRealEntry(_In_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRIN
     NTSTATUS st = IoCreateDevice(Driver, 0, &devName, FILE_DEVICE_UNKNOWN, 0, FALSE, &devObj);
     if (!NT_SUCCESS(st)) return st;
 
-    st = IoCreateSymbolicLink(&symName, &devName);
-    if (!NT_SUCCESS(st)) {
-        IoDeleteDevice(devObj);
-        return st;
-    }
-
+    // Set up dispatch routines and complete device initialization regardless of
+    // whether the symbolic link succeeds -- on the KDMapper path the symlink is
+    // created from user mode via DefineDosDeviceW instead.
     Driver->MajorFunction[IRP_MJ_CREATE]         = KfmCreateClose;
     Driver->MajorFunction[IRP_MJ_CLOSE]          = KfmCreateClose;
     Driver->MajorFunction[IRP_MJ_DEVICE_CONTROL] = KfmDeviceControl;
@@ -341,16 +340,34 @@ static NTSTATUS KfmRealEntry(_In_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRIN
     devObj->Flags |= DO_BUFFERED_IO;
     devObj->Flags &= ~DO_DEVICE_INITIALIZING;
 
-    DbgPrint("[KoffeeMem] loaded, device = %wZ\n", &devName);
+    // Attempt kernel symlink -- succeeds on normal `sc start`, may fail on
+    // KDMapper path due to session-namespace restrictions; that is non-fatal.
+    st = IoCreateSymbolicLink(&symName, &devName);
+    // Non-fatal if symlink fails (session namespace restriction on BYOVD path);
+    // caller creates a DOS-device alias via DefineDosDeviceW.
+    UNREFERENCED_PARAMETER(st);
     return STATUS_SUCCESS;
 }
 
 // IoCreateDriver isn't in the public WDK headers -- prototype it out of
-// ntoskrnl. Used by the KDMapper path to synthesize a proper DriverObject
-// (KDMapper calls DriverEntry(NULL, NULL) after mapping our PE, and the
-// standard `IoCreateDevice` requires a non-NULL DriverObject).
+// ntoskrnl. Used by the BYOVD path to synthesize a proper DriverObject.
+// (standard IoCreateDevice requires a non-NULL DriverObject).
 NTSTATUS IoCreateDriver(_In_opt_ PUNICODE_STRING DriverName,
                         _In_     PDRIVER_INITIALIZE InitializationFunction);
+
+// ExQueueWorkItem / ExInitializeWorkItem -- deprecated but still exported by
+// ntoskrnl.exe on Win10/11.  Queues a work item to a system worker thread at
+// PASSIVE_LEVEL -- the ONLY safe way to call IoCreateDriver when we are in the
+// NtAddAtom SYSCALL-redirect context (PsCreateSystemThread and IoCreateDriver
+// both deadlock in that context; ExQueueWorkItem just inserts into a lock-
+// protected list and signals a semaphore, which is safe everywhere).
+typedef VOID (*PWORKER_THREAD_ROUTINE)(PVOID Parameter);
+
+// ExQueueWorkItem is declared in wdm.h on older SDKs but hidden behind
+// POOL_NX_OPTIN guards on modern ones -- forward-declare it directly.
+NTKERNELAPI VOID NTAPI ExQueueWorkItem(
+    _Inout_ struct _WORK_QUEUE_ITEM *WorkItem,
+    _In_    WORK_QUEUE_TYPE          QueueType);
 
 // Init callback for the IoCreateDriver path -- the kernel invokes this with
 // the freshly-allocated DriverObject as if we were a normal boot driver.
@@ -358,50 +375,45 @@ static NTSTATUS NTAPI KfmMappedInit(_In_ PDRIVER_OBJECT Driver, _In_ PUNICODE_ST
     return KfmRealEntry(Driver, RegPath);
 }
 
+// Work-item callback for the BYOVD path.
+// Runs on a system worker thread (PASSIVE_LEVEL, system process context)
+// where IoCreateDriver is safe.  Frees the work item allocation when done.
+static VOID NTAPI KfmByovdWorker(_In_ PVOID Context) {
+    UNICODE_STRING drvName;
+    RtlInitUnicodeString(&drvName, L"\\Driver\\KoffeeMem");
+    NTSTATUS st = IoCreateDriver(&drvName, KfmMappedInit);
+    UNREFERENCED_PARAMETER(st);
+    ExFreePool(Context);   // Context == the WORK_QUEUE_ITEM we allocated
+}
+
 // DUAL-MODE ENTRY.
 //   sc create/start   -> Windows calls us with (Driver != NULL, RegPath).
 //                         Use them directly.
-//   KDMapper (BYOVD)  -> mapper calls us with (NULL, NULL) after copying the
-//                         PE into non-paged pool. We synthesize our own
-//                         DriverObject via IoCreateDriver so IoCreateDevice
-//                         has something to hang the device off. Note: under
-//                         KDMapper the DriverObject is real + registered
-//                         with the IoManager, but there's no service entry;
-//                         the driver stays loaded until reboot (no `sc stop`).
+//   BYOVD (kdmapper)  -> mapper calls us with (NULL, NULL) after copying the
+//                         PE into non-paged pool.
+//
+// Why ExQueueWorkItem instead of PsCreateSystemThread or IoCreateDriver:
+//   PsCreateSystemThread -- hangs when called from NtAddAtom SYSCALL redirect.
+//   IoCreateDriver       -- hangs (acquires driver-database lock that is not
+//                           re-entrant from SYSCALL-redirect thread context).
+//   ExQueueWorkItem      -- just appends to a spinlock-protected list and
+//                           signals a semaphore; safe at any IRQL <= DISPATCH_LEVEL.
+//                           The callback runs on a real system worker thread where
+//                           IoCreateDriver works normally.
 NTSTATUS DriverEntry(_In_opt_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRING RegPath) {
     if (Driver != NULL) {
-        // Normal `sc start` path -- proceed as usual.
+        // Normal sc-start path -- DriverObject and RegPath are both valid.
         return KfmRealEntry(Driver, RegPath);
     }
-    // KDMapper path -- allocate our own DriverObject. The IoManager fills it
-    // in and hands it to KfmMappedInit; that then runs the exact same
-    // init body as the sc-start path.
-    UNICODE_STRING drvName;
-    RtlInitUnicodeString(&drvName, L"\\Driver\\KoffeeMem");
-    NTSTATUS st = IoCreateDriver(&drvName, &KfmMappedInit);
-    if (!NT_SUCCESS(st) && st != STATUS_OBJECT_NAME_COLLISION) {
-        DbgPrint("[KoffeeMem] IoCreateDriver failed 0x%X\n", st);
-        return st;
-    }
 
-    // Belt-and-suspenders: IoCreateSymbolicLink inside KfmMappedInit may fail
-    // when called from the IoCreateDriver init callback context on Win11
-    // (restricted \GLOBAL?? write access from certain thread contexts).
-    // Re-attempt the symlink from DriverEntry which runs in a more permissive
-    // context. STATUS_OBJECT_NAME_COLLISION means it already exists -- fine.
-    UNICODE_STRING devName, symName;
-    RtlInitUnicodeString(&devName, KFM_DEVICE_NAME);
-    RtlInitUnicodeString(&symName, KFM_SYMLINK_NAME);
-    NTSTATUS symSt = IoCreateSymbolicLink(&symName, &devName);
-    if (!NT_SUCCESS(symSt) && symSt != STATUS_OBJECT_NAME_COLLISION) {
-        // \?? failed -- try the explicit \GLOBAL?? prefix.
-        UNICODE_STRING globalSym;
-        RtlInitUnicodeString(&globalSym, L"\\GLOBAL??\\KoffeeMem");
-        symSt = IoCreateSymbolicLink(&globalSym, &devName);
-        DbgPrint("[KoffeeMem] fallback \\GLOBAL?? symlink: 0x%X\n", symSt);
-    } else {
-        DbgPrint("[KoffeeMem] symlink: 0x%X\n", symSt);
-    }
+    // BYOVD path: allocate a work item and queue it.
+    // The work item memory lives in NonPagedPool and remains valid until
+    // KfmByovdWorker frees it -- independent of iqvw64e.sys unload timing.
+    PWORK_QUEUE_ITEM item = (PWORK_QUEUE_ITEM)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(WORK_QUEUE_ITEM), 'wfKK');
+    if (item == NULL) return STATUS_INSUFFICIENT_RESOURCES;
 
+    ExInitializeWorkItem(item, KfmByovdWorker, item);
+    ExQueueWorkItem(item, DelayedWorkQueue);
     return STATUS_SUCCESS;
 }

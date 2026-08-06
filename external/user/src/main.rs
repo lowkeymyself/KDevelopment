@@ -15,6 +15,7 @@
 //! reaches feature code.
 
 mod ioctl;
+mod loader;
 mod proc;
 mod transport;
 
@@ -36,6 +37,43 @@ fn main() -> ExitCode {
     println!("koffee-external v{} -- {}", env!("CARGO_PKG_VERSION"),
         if cfg!(feature = "real-driver") { "real driver" } else { "mock transport (dev)" });
 
+    // Diagnostic probe: print the SMBIOS-derived physical RAM map and exit.
+    // Runs BEFORE any driver work, so it is safe on a machine where the
+    // primitive driver would blue-screen.  `KoffeeExternal.exe --ram-dump`.
+    if std::env::args().any(|a| a == "--ram-dump") {
+        let ranges = loader::ram::ranges();
+        println!("[ram] {} ranges:", ranges.len());
+        for r in ranges {
+            println!("[ram]   0x{:012X} .. 0x{:012X}  ({} MB)",
+                r.start, r.start + r.len, (r.len >> 20));
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if std::env::args().any(|a| a == "--kernel-ram-dump") {
+        let out = std::env::args()
+            .find(|a| a.starts_with("--out="))
+            .map(|a| a.trim_start_matches("--out=").to_string())
+            .unwrap_or_else(|| "kram.txt".to_string());
+        match loader::ram::dump_kernel_ranges(&out) {
+            Ok(()) => println!("[kr] kernel mem map -> {}", out),
+            Err(e) => eprintln!("[kr] dump failed: {}", e),
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if std::env::args().any(|a| a == "--smbios-dump") {
+        let out = std::env::args()
+            .find(|a| a.starts_with("--out="))
+            .map(|a| a.trim_start_matches("--out=").to_string())
+            .unwrap_or_else(|| "smbios.bin".to_string());
+        match loader::ram::dump_raw(&out) {
+            Ok(()) => println!("[smbios] raw stream -> {}", out),
+            Err(e) => eprintln!("[smbios] dump failed: {}", e),
+        }
+        return ExitCode::SUCCESS;
+    }
+
     // Target selection order:
     //   1. CLI arg 1 (`KoffeeExternal.exe SomeTarget.exe`) -- first driver-testing use case
     //      is `KoffeeTestTarget.exe`, so we need to point at anything.
@@ -44,6 +82,17 @@ fn main() -> ExitCode {
     let target_exe: String = std::env::args().nth(1)
         .or_else(|| std::env::var("KOFFEE_TARGET_EXE").ok())
         .unwrap_or_else(|| ROBLOX_EXE.to_string());
+
+    // 0. Ensure KoffeeMem.sys is in the kernel.
+    //    On first run: full BYOVD sequence (drop iqvw64e.sys → NtLoadDriver →
+    //    map KoffeeMem.sys into pool → call DriverEntry → unload iqvw).
+    //    On subsequent runs: device already accessible → instant no-op.
+    #[cfg(feature = "real-driver")]
+    if let Err(e) = loader::ensure_loaded() {
+        eprintln!("[!] loader failed: {}", e);
+        eprintln!("[!] check: Memory Integrity off? VulnerableDriverBlocklistEnable=0? Running as admin?");
+        return ExitCode::from(1);
+    }
 
     // 1. locate the target process.
     let pid = match proc::find_process(&target_exe) {
