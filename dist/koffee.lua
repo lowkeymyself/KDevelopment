@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.93"
+Koffee.Version = "0.0.94"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
 -- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
@@ -1333,10 +1333,22 @@ local isSameTeam, isFriend, registerConfig, rebuildConfigTabs, isTeammate
 local Helper = { Connected = false, XB1 = false, XB2 = false }
 local VIRTUAL_LABELS = { XButton1 = "xb1", XButton2 = "xb2" }
 -- display text for ANY bind: virtual string, Roblox EnumItem, or nil.
+-- v0.0.94: short-name modifier map for combo pill display ("LeftShift" -> "Shift").
+local MOD_SHORT = {
+    LeftShift = "Shift", RightShift = "Shift",
+    LeftControl = "Ctrl", RightControl = "Ctrl",
+    LeftAlt = "Alt",   RightAlt = "Alt",
+}
 local function keyLabel(bind)
     if bind == nil then return nil end
     if type(bind) == "string" then return VIRTUAL_LABELS[bind] or bind end
     if typeof(bind) == "EnumItem" then return bind.Name end
+    -- v0.0.94 combo bind: { mod = KeyCode, key = KeyCode } -> "Shift+C"
+    if type(bind) == "table" and bind.mod and bind.key then
+        local m = (typeof(bind.mod) == "EnumItem") and (MOD_SHORT[bind.mod.Name] or bind.mod.Name) or tostring(bind.mod)
+        local k = (typeof(bind.key) == "EnumItem") and bind.key.Name or tostring(bind.key)
+        return m .. "+" .. k
+    end
     return nil
 end
 
@@ -5697,10 +5709,88 @@ local function restoreBodyRemoval()
     bodySnap = {}
 end
 
+-- v0.0.94 THIRD PERSON. Universal over-the-shoulder shift-lock camera. Ported
+-- from He's message.txt reference + fixes:
+--   1. LTM=0 (character-visible-forcing) now lives INSIDE the enabled check so
+--      character stays hidden per game rules when toggled off (source script
+--      always forced visible -> character shown before enabling).
+--   2. Camera write on RenderStep at Camera.Value priority (200) -- BEFORE the
+--      aimbot bind at Camera.Value+1 (201) -- so aimbot's aim adjustment wins
+--      when armed and 3rd-person write wins when aimbot isn't touching camera.
+--      Fixes "breaks aimbot" report.
+--   3. Only writes HRP.CFrame while enabled (source script did this
+--      unconditionally too via the always-on LTM loop -- same fix as #1).
+--   4. Camera restored to Custom + MouseBehavior to Default on disable.
+-- Config knobs (sensitivity, zoom min/max, shoulder offset) exposed via a
+-- right-click on the module row + defaults known-good (matches source).
+local TP = {
+    Enabled     = false,
+    Sensitivity = 0.25,
+    Zoom        = 7.5,
+    MinZoom     = 2,
+    MaxZoom     = 25,
+    ShoulderX   = 1.75,
+    ShoulderY   = 0.5,
+    _rotX       = 0,
+    _rotY       = 0,
+    _origCam    = nil,   -- Camera.CameraType before enable
+    _origMB     = nil,   -- MouseBehavior before enable
+}
+local function tpOnEnable()
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    TP._origCam = cam.CameraType
+    TP._origMB  = UserInputService.MouseBehavior
+    local rx, ry = cam.CFrame:ToEulerAnglesYXZ()
+    TP._rotX, TP._rotY = rx, ry
+    cam.CameraType = Enum.CameraType.Scriptable
+    UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+end
+local function tpOnDisable()
+    local cam = Workspace.CurrentCamera
+    if cam then cam.CameraType = TP._origCam or Enum.CameraType.Custom end
+    UserInputService.MouseBehavior = TP._origMB or Enum.MouseBehavior.Default
+end
+UserInputService.InputChanged:Connect(function(input, gpe)
+    if not (Modules.thirdperson and Modules.thirdperson.Enabled) then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        TP._rotY = TP._rotY - math.rad(input.Delta.X * TP.Sensitivity)
+        TP._rotX = math.clamp(TP._rotX - math.rad(input.Delta.Y * TP.Sensitivity), -math.rad(80), math.rad(80))
+    elseif input.UserInputType == Enum.UserInputType.MouseWheel then
+        TP.Zoom = math.clamp(TP.Zoom - input.Position.Z * 0.75, TP.MinZoom, TP.MaxZoom)
+    end
+end)
+-- v0.0.94: bind at Camera priority (200) -- aimbot binds at Camera+1 (201) so
+-- aimbot's write wins WHEN aimbot is aiming, ours wins otherwise. cleaner than
+-- Heartbeat/RenderStepped competition.
+pcall(function() RunService:UnbindFromRenderStep("KThirdPerson") end)
+RunService:BindToRenderStep("KThirdPerson", Enum.RenderPriority.Camera.Value, function()
+    if not (Modules.thirdperson and Modules.thirdperson.Enabled) then return end
+    local char = LocalPlayer.Character; if not char then return end
+    local hrp  = char:FindFirstChild("HumanoidRootPart")
+    local head = char:FindFirstChild("Head")
+    if not (hrp and head) then return end
+    -- LTM=0 ONLY while enabled (source script bug: this ran always -> character
+    -- was forced visible even with the feature off).
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then part.LocalTransparencyModifier = 0 end
+    end
+    local cam = Workspace.CurrentCamera; if not cam then return end
+    cam.CameraType = Enum.CameraType.Scriptable
+    UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+    hrp.CFrame = CFrame.new(hrp.Position) * CFrame.Angles(0, TP._rotY, 0)
+    local headPos = head.Position
+    local rotation = CFrame.Angles(0, TP._rotY, 0) * CFrame.Angles(TP._rotX, 0, 0)
+    local shoulder = Vector3.new(TP.ShoulderX, TP.ShoulderY, 0)
+    local tp = headPos + (rotation * shoulder) + (rotation * Vector3.new(0, 0, TP.Zoom))
+    cam.CFrame = CFrame.new(tp, headPos + (rotation * shoulder))
+end)
+
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
 registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
 registerModule("staticff",     "Static Forcefield", function() end, function() clearFF() end)
 registerModule("bodyremoval",  "Body Removal",      function() end, function() restoreBodyRemoval() end)
+registerModule("thirdperson",  "3rd Person",        function() tpOnEnable() end, function() tpOnDisable() end)
 RunService.RenderStepped:Connect(function()
     if Modules.armsoffset   and Modules.armsoffset.Enabled   then pcall(applyArms) end
     if Modules.charmaterial and Modules.charmaterial.Enabled then pcall(applyMaterial) end
@@ -5867,6 +5957,11 @@ Koffee._characterTab = function(root)
 
     -- v0.0.76: Body Removal -- makes every character part invisible while enabled
     moduleCheckbox(vis, "Body Removal", "bodyremoval")
+
+    -- v0.0.94 3rd Person: toggle + keybind pill (combo-aware -- accepts Shift+C etc.).
+    -- No default keybind so it doesn't conflict with anything the user has bound.
+    local tpRow = moduleCheckbox(vis, "3rd Person", "thirdperson")
+    keybindPill(tpRow.row, "thirdperson", nil)
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
     moduleCheckbox(vis, "Arms Offset", "armsoffset")
@@ -8382,6 +8477,13 @@ setBackgroundActive(true)
 -- v0.0.36: does this input fire a bind? Binds are EnumItems -- a KeyCode
 -- (keyboard) OR a UserInputType (mouse/other button).
 local function bindMatches(input, bind)
+    -- v0.0.94 combo bind: { mod = KeyCode, key = KeyCode } -- fires only when
+    -- the target key is pressed AND the modifier is currently held.
+    if type(bind) == "table" and bind.mod and bind.key then
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return false end
+        if input.KeyCode ~= bind.key then return false end
+        return UserInputService:IsKeyDown(bind.mod)
+    end
     if typeof(bind) ~= "EnumItem" then return false end
     if bind.EnumType == Enum.KeyCode then
         return input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == bind
@@ -8406,9 +8508,30 @@ UserInputService.InputBegan:Connect(function(input, processed)
             pendingRebind = nil
             return
         end
+        -- v0.0.94: pressing JUST a modifier alone (Shift/Ctrl/Alt without another key)
+        -- doesn't complete the rebind -- user needs to press the actual key while
+        -- holding the modifier. Otherwise the modifier itself gets bound as the key.
+        if it == Enum.UserInputType.Keyboard then
+            local kc = input.KeyCode
+            if kc == Enum.KeyCode.LeftShift  or kc == Enum.KeyCode.RightShift
+            or kc == Enum.KeyCode.LeftControl or kc == Enum.KeyCode.RightControl
+            or kc == Enum.KeyCode.LeftAlt    or kc == Enum.KeyCode.RightAlt then
+                return   -- wait for a real key
+            end
+        end
         local bind
         if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
-            bind = input.KeyCode
+            -- v0.0.94: capture combo if any modifier is currently held.
+            local heldMod
+            if     UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)   then heldMod = Enum.KeyCode.LeftShift
+            elseif UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then heldMod = Enum.KeyCode.LeftControl
+            elseif UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt)     then heldMod = Enum.KeyCode.LeftAlt
+            elseif UserInputService:IsKeyDown(Enum.KeyCode.RightShift)  then heldMod = Enum.KeyCode.RightShift
+            elseif UserInputService:IsKeyDown(Enum.KeyCode.RightControl)then heldMod = Enum.KeyCode.RightControl
+            elseif UserInputService:IsKeyDown(Enum.KeyCode.RightAlt)    then heldMod = Enum.KeyCode.RightAlt
+            end
+            if heldMod then bind = { mod = heldMod, key = input.KeyCode }
+            else bind = input.KeyCode end
         elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
            and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
            and it ~= Enum.UserInputType.TextInput and it ~= Enum.UserInputType.InputMethod then
