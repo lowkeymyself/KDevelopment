@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.87"
+Koffee.Version = "0.0.88"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -5917,6 +5917,33 @@ local Combat = {
         _hooked       = false,
     },
     Misc = { Resolver = false },
+    -- v0.0.88 HIT / KILL SOUNDS. Detection: universal Humanoid.Health drop watcher
+    -- (A) per player. Attribution: "invisible target lock" -- each frame while LMB
+    -- held, the enemy CLOSEST to the mouse cursor (screen-space, within MouseRadius
+    -- pixels) is designated your current mouse target; when THAT enemy's Health
+    -- drops, it's YOUR hit. Independent of silent aim / aimbot lock state.
+    -- Presets = a small named-sound registry, Custom Id > 0 overrides. Cooldown
+    -- between plays (per-type) so rapid auto-fire hits don't stack into a buzz.
+    -- Suppresses when the Koffee window is open (per Jack -- no ear fatigue in-UI).
+    HitSounds = {
+        Hit = {
+            Enabled  = false,
+            Preset   = "Hitmarker",
+            CustomId = 0,       -- 0 = use preset's asset id
+            Volume   = 1.0,
+            Pitch    = 1.0,
+            Cooldown = 50,      -- ms
+        },
+        Kill = {
+            Enabled  = false,
+            Preset   = "Bell",
+            CustomId = 0,
+            Volume   = 1.0,
+            Pitch    = 1.0,
+            Cooldown = 200,
+        },
+        MouseRadius = 80,       -- pixels, mouse-tracked target lock radius
+    },
 }
 
     -- one FOV config per context (aimbot + silent). Both can be active at once;
@@ -5952,6 +5979,7 @@ local Combat = {
     registerConfig("combat_silent",  Combat.Silent)
     registerConfig("combat_trigger", Combat.Trigger)
     registerConfig("combat_misc",    Combat.Misc)
+    registerConfig("combat_sounds",  Combat.HitSounds)
 
     --== math helpers ==--
     local function shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
@@ -7002,6 +7030,126 @@ local Combat = {
         end)
     end)
 
+    -- v0.0.88 HIT / KILL SOUND ENGINE.
+    -- Mechanism: universal Humanoid.Health drop watcher per player. Attribution:
+    -- INVISIBLE MOUSE TARGET LOCK -- each frame while LMB held, whoever is closest
+    -- to the mouse cursor in screen-space (within MouseRadius) becomes SR.mouseTgt.
+    -- When THAT enemy's Humanoid.Health drops, we play the hit sound (kill sound
+    -- if Health hit 0). Independent of silent aim / aimbot lock -- pure mouse-based
+    -- attribution, works with or without any combat feature active.
+    -- Cooldown (per type) enforced via a last-played timestamp so auto-fire hits
+    -- don't buzz. Suppressed while the Koffee window is open (no ear fatigue in-UI).
+    local SND_PRESETS = {
+        -- Placeholders -- Jack has his own MP3 list, these get swapped for the real IDs
+        Hitmarker = 5820205808,
+        Tick      = 6042053912,
+        Pop       = 6042053912,
+        Bell      = 131961136,
+        Ding      = 3487630164,
+        Cash      = 131886985,
+    }
+    local SoundService = game:GetService("SoundService")
+    local hitSnd = Instance.new("Sound"); hitSnd.Name = "KHitSnd"; hitSnd.Parent = SoundService
+    local killSnd = Instance.new("Sound"); killSnd.Name = "KKillSnd"; killSnd.Parent = SoundService
+    local lastHitAt, lastKillAt = 0, 0
+    local function windowIsOpen()
+        return window and window.GroupTransparency < 1
+    end
+    local function playSound(snd, cfg, lastRef)
+        if not cfg.Enabled then return lastRef end
+        if windowIsOpen() then return lastRef end
+        local now = os.clock()
+        if (now - lastRef) * 1000 < cfg.Cooldown then return lastRef end
+        local id = (cfg.CustomId and cfg.CustomId > 0) and cfg.CustomId or (SND_PRESETS[cfg.Preset] or 0)
+        if id <= 0 then return lastRef end
+        snd.SoundId       = "rbxassetid://" .. tostring(id)
+        snd.Volume        = cfg.Volume
+        snd.PlaybackSpeed = cfg.Pitch
+        snd.TimePosition  = 0
+        pcall(function() snd:Play() end)
+        return now
+    end
+    -- mouse-target tracker: per-Heartbeat sweep of all enemies, pick the one whose
+    -- screen point is closest to the mouse cursor within MouseRadius pixels.
+    -- Only runs while LMB is held (accurate attribution for both single-shot AND
+    -- auto weapons -- per-shot in bursts each contributes its own held-LMB frame).
+    SR.mouseTgt = nil
+    local function updateMouseTarget()
+        SR.mouseTgt = nil
+        if not lmbDown then return end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        local ml = UserInputService:GetMouseLocation()   -- inset-included
+        local mx, my = ml.X, ml.Y
+        local radius = Combat.HitSounds.MouseRadius
+        local r2 = radius * radius
+        local best, bestD = nil, math.huge
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local char = plr.Character
+                if char and not (Shared.IgnoreFriends and isFriend(plr)) then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        local part = char:FindFirstChild("Head")
+                                  or char:FindFirstChild("HumanoidRootPart")
+                                  or char:FindFirstChild("UpperTorso")
+                                  or char:FindFirstChild("Torso")
+                        if part then
+                            local sp = cam:WorldToViewportPoint(part.Position)
+                            if sp.Z > 0 then
+                                local dx, dy = sp.X - mx, sp.Y - my
+                                local d = dx * dx + dy * dy
+                                if d < r2 and d < bestD then best, bestD = plr, d end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        SR.mouseTgt = best and best.Character or nil
+    end
+    -- per-player Health watcher. Tracks lastHealth per player, fires sound on drop
+    -- IF the player's Character == SR.mouseTgt at the moment the drop hits.
+    local plrHP = {}
+    local function untrackHP(plr)
+        local st = plrHP[plr]; if not st then return end
+        for _, c in ipairs(st.conns) do pcall(function() c:Disconnect() end) end
+        plrHP[plr] = nil
+    end
+    local function bindHumanoid(plr, char)
+        local st = plrHP[plr]; if not st then return end
+        for i = #st.conns, 2, -1 do
+            pcall(function() st.conns[i]:Disconnect() end); st.conns[i] = nil
+        end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then
+            task.spawn(function()
+                hum = char:WaitForChild("Humanoid", 5)
+                if hum and plrHP[plr] then bindHumanoid(plr, char) end
+            end)
+            return
+        end
+        st.lastHealth = hum.Health
+        table.insert(st.conns, hum:GetPropertyChangedSignal("Health"):Connect(function()
+            local nh, old = hum.Health, st.lastHealth
+            st.lastHealth = nh
+            if nh >= old then return end
+            if char ~= SR.mouseTgt then return end   -- not YOUR mouse target
+            if nh <= 0 then lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
+            else lastHitAt = playSound(hitSnd, Combat.HitSounds.Hit, lastHitAt) end
+        end))
+    end
+    local function trackHP(plr)
+        if plr == LocalPlayer or plrHP[plr] then return end
+        plrHP[plr] = { lastHealth = 100, conns = {} }
+        table.insert(plrHP[plr].conns, plr.CharacterAdded:Connect(function(char) bindHumanoid(plr, char) end))
+        if plr.Character then bindHumanoid(plr, plr.Character) end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do trackHP(plr) end
+    Players.PlayerAdded:Connect(trackHP)
+    Players.PlayerRemoving:Connect(untrackHP)
+    RunService.Heartbeat:Connect(updateMouseTarget)
+
     -- silent aim: keep the redirect target FRESH every frame while active. v0.0.35:
     -- the RequireLMB check is NO LONGER here -- silentPos is computed continuously
     -- (whenever enabled + armed-by-key + a target is acquirable) so it's already
@@ -7414,6 +7562,25 @@ local Combat = {
         -- Misc
         local miscCard = panel(leftCol, "Misc")
         configCheckbox(miscCard, "Resolver", Combat.Misc.Resolver, function(v) Combat.Misc.Resolver = v end)
+
+        -- v0.0.88 Sounds panel. Hit + Kill each have Enabled, Preset dropdown,
+        -- Custom Sound Id (0 = use preset), Volume, Pitch, Cooldown. Also a
+        -- shared Mouse Radius slider that tunes the mouse-target lock threshold.
+        local SND_PRESETS_LIST = { "Hitmarker", "Tick", "Pop", "Bell", "Ding", "Cash" }
+        local soundCard = panel(leftCol, "Sounds")
+        configCheckbox(soundCard, "Hit Sound", Combat.HitSounds.Hit.Enabled, function(v) Combat.HitSounds.Hit.Enabled = v end)
+        dropdown(soundCard, "Hit Preset", SND_PRESETS_LIST, Combat.HitSounds.Hit.Preset, function(v) Combat.HitSounds.Hit.Preset = v end)
+        slider(soundCard, "Hit Custom Id", 0, 9999999999, Combat.HitSounds.Hit.CustomId, 0, function(v) Combat.HitSounds.Hit.CustomId = math.floor(v) end)
+        slider(soundCard, "Hit Volume",    0, 5,           Combat.HitSounds.Hit.Volume,   2, function(v) Combat.HitSounds.Hit.Volume   = v end)
+        slider(soundCard, "Hit Pitch",     0.5, 2,         Combat.HitSounds.Hit.Pitch,    2, function(v) Combat.HitSounds.Hit.Pitch    = v end)
+        slider(soundCard, "Hit Cooldown",  0, 1000,        Combat.HitSounds.Hit.Cooldown, 0, function(v) Combat.HitSounds.Hit.Cooldown = math.floor(v) end)
+        configCheckbox(soundCard, "Kill Sound", Combat.HitSounds.Kill.Enabled, function(v) Combat.HitSounds.Kill.Enabled = v end)
+        dropdown(soundCard, "Kill Preset", SND_PRESETS_LIST, Combat.HitSounds.Kill.Preset, function(v) Combat.HitSounds.Kill.Preset = v end)
+        slider(soundCard, "Kill Custom Id", 0, 9999999999, Combat.HitSounds.Kill.CustomId, 0, function(v) Combat.HitSounds.Kill.CustomId = math.floor(v) end)
+        slider(soundCard, "Kill Volume",    0, 5,           Combat.HitSounds.Kill.Volume,   2, function(v) Combat.HitSounds.Kill.Volume   = v end)
+        slider(soundCard, "Kill Pitch",     0.5, 2,         Combat.HitSounds.Kill.Pitch,    2, function(v) Combat.HitSounds.Kill.Pitch    = v end)
+        slider(soundCard, "Kill Cooldown",  0, 1000,        Combat.HitSounds.Kill.Cooldown, 0, function(v) Combat.HitSounds.Kill.Cooldown = math.floor(v) end)
+        slider(soundCard, "Mouse Radius (px)", 20, 300, Combat.HitSounds.MouseRadius, 0, function(v) Combat.HitSounds.MouseRadius = math.floor(v) end)
 
         --== RIGHT COLUMN ==--
         local rightCard = panel(rightCol)
