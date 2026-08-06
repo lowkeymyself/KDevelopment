@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.79"
+Koffee.Version = "0.0.80"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
@@ -6243,7 +6243,29 @@ local Combat = {
     -- to mouse1click / mouse1press+release only if VIM isn't available.
     local VIM = nil
     pcall(function() VIM = game:GetService("VirtualInputManager") end)
+    -- v0.0.80: mouse-over-Koffee gate -- CRITICAL SILENT+TRIGGER BUG FIX.
+    -- Symptom (v0.0.78/79): with Silent Aim on, triggerbot couldn't be toggled.
+    -- The user clicked the trigger checkbox -> Enabled=true -> silent had a target
+    -- -> triggerShouldFire returned true -> clickMouse fired MB1 via VIM -> that
+    -- synthesized MouseButton1 event was delivered to whatever GUI was under the
+    -- cursor, which was STILL THE TRIGGER CHECKBOX. Re-clicking the checkbox
+    -- toggled it back off. Fix: suppress clickMouse when the cursor is over the
+    -- Koffee window (the only place our clickable UI lives). When the window is
+    -- closed (GroupTransparency == 1), always fire. GetMouseLocation is inset-
+    -- included; the window sits on an IgnoreGuiInset ScreenGui so AbsolutePosition
+    -- is inset-excluded -- subtract GuiService:GetGuiInset() to compare.
+    local GuiService = game:GetService("GuiService")
+    local function mouseOverKoffee()
+        if not (window and window.GroupTransparency < 1) then return false end
+        local mp = UserInputService:GetMouseLocation()
+        local inset = GuiService:GetGuiInset()
+        local mx, my = mp.X - inset.X, mp.Y - inset.Y
+        local wp, ws = window.AbsolutePosition, window.AbsoluteSize
+        return mx >= wp.X and mx <= wp.X + ws.X
+           and my >= wp.Y and my <= wp.Y + ws.Y
+    end
     local function clickMouse()
+        if mouseOverKoffee() then return end
         if VIM then
             pcall(function()
                 VIM:SendMouseButtonEvent(0, 0, 0, true,  game, 0)
