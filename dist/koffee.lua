@@ -3,7 +3,51 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.89"
+Koffee.Version = "0.0.90"
+
+-- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
+-- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
+-- gets them without a PAT -- just game:HttpGet. On load, task.spawn'd background
+-- job checks each expected mp3, downloads missing ones into
+-- <exec_workspace>/Koffee/sounds/<name>.mp3. Silent no-op if the exec lacks
+-- writefile/isfile/makefolder or if a download fails (sound just doesn't play).
+-- Koffee._soundsReady flips true when the sweep finishes so the future loading
+-- screen can wait on it before hiding.
+Koffee._soundsReady = false
+task.spawn(function()
+    local SOUNDS = {
+        "12", "agpa2", "basshit", "bell", "blizzard", "bubble", "chockpro",
+        "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
+        "minecraft orb", "neverlose", "rust", "skeet",
+    }
+    local BASE = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/sounds/"
+    if not (writefile and isfile and makefolder and isfolder) then
+        Koffee._soundsReady = true
+        return
+    end
+    if not isfolder("Koffee") then pcall(makefolder, "Koffee") end
+    if not isfolder("Koffee/sounds") then pcall(makefolder, "Koffee/sounds") end
+    for _, name in ipairs(SOUNDS) do
+        local path = "Koffee/sounds/" .. name .. ".mp3"
+        if not isfile(path) then
+            -- URL-encode spaces (e.g. "minecraft orb")
+            local urlName = string.gsub(name, " ", "%%20")
+            local body
+            -- prefer runtime request (headers work if we ever move to private assets);
+            -- fall back to plain HttpGet which works fine on this public repo.
+            if request then
+                local ok, res = pcall(request, { Url = BASE .. urlName .. ".mp3", Method = "GET" })
+                if ok and res and res.StatusCode == 200 then body = res.Body end
+            end
+            if not body then
+                local ok, res = pcall(function() return game:HttpGet(BASE .. urlName .. ".mp3") end)
+                if ok and type(res) == "string" and #res > 0 then body = res end
+            end
+            if body then pcall(writefile, path, body) end
+        end
+    end
+    Koffee._soundsReady = true
+end)
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
 -- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
