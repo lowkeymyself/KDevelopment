@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.98"
+Koffee.Version = "0.0.99"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
 -- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
@@ -550,6 +550,45 @@ do
             end
         end
         Theme.applyFei()
+    end
+
+    -- expose the loader so the Main-Interface mirror can reuse the same catalog.
+    function Theme.loadFeiFont(name) return loadFeiFont(name) end
+
+    -- v0.0.99 MAIN-INTERFACE FONT MIRROR: "Custom Font (MI)". Same catalog, same
+    -- selected font, but applied to the main window's OWN text (labels, buttons,
+    -- textboxes) instead of the feature interface. Original FontFace per label is
+    -- snapshotted on first touch, so the mirror is fully reversible. No TextSize
+    -- scaling: the feature font scales because its labels grow freely; the main
+    -- menu's rows are fixed-height, so only the face swaps there.
+    Theme._miface_cache = {}
+    Theme.MIFontOn = false
+    function Theme.applyMIFont(root, face)
+        if not root then return end
+        if face then
+            for _, v in ipairs(root:GetDescendants()) do
+                if v:IsA("TextLabel") or v:IsA("TextButton") or v:IsA("TextBox") then
+                    local c = Theme._miface_cache[v]
+                    if not c then
+                        c = v.FontFace
+                        Theme._miface_cache[v] = c
+                    end
+                    pcall(function() v.FontFace = face end)
+                end
+            end
+            Theme.MIFontOn = true
+        else
+            -- off: restore every snapshotted label to its original face. Stale
+            -- entries (destroyed labels) get pruned.
+            for v, orig in pairs(Theme._miface_cache) do
+                if v and v.Parent then
+                    pcall(function() v.FontFace = orig end)
+                else
+                    Theme._miface_cache[v] = nil
+                end
+            end
+            Theme.MIFontOn = false
+        end
     end
 end
 
@@ -1187,6 +1226,9 @@ local KoffeeOptions = {
     CustomFontOn   = false,
     CustomFontName = "None",       -- "None" | "Minecraft Bold" | "Minecraft Regular" | "ImGui" (user-expandable)
     CustomFontSize = 12,           -- global text size used when CustomFontOn is true
+    -- v0.0.99: MIRROR toggle -- same font as above, applied to the main window's own
+    -- text instead of the feature interface. Off by default.
+    MIFontOn       = false,
 }
 local nextLayoutOrder = 0
 local ROW_HEIGHT = 20
@@ -1633,20 +1675,23 @@ local tabOrder = 0        -- explicit LayoutOrder per tab
 local activeTab = nil
 local pillFirstShow = true
 
--- v0.0.30 pill machinery, rewritten. The pill is a follower: its resting state is
+-- v0.0.98: pill machinery, rewritten. The pill is a follower: its resting state is
 -- ALWAYS the active tab button's live rect (position + size, both relative to the
 -- tabBar). On a user tab-switch it plays a two-phase stretch->contract to the new
 -- rect; the rest of the time it just snaps to the active button whenever that
--- button's geometry moves. That last part is the fix -- an AutomaticSize tab button
--- grows a few frames AFTER creation once the custom font's glyph metrics land, and
--- since the tabBar itself doesn't move, the old code never re-snapped and the pill
--- sat offset until you clicked another tab. Now every source of reflow (font load,
--- window drag, resize) re-snaps through the single geometry watcher below.
--- v0.0.98: quicker pop rhythm -- the grow reads as a flick, not a ponder.
+-- button's geometry moves (font reflow, drag, resize) through pillResync.
+-- v0.0.98 pop rhythm: the grow reads as a flick -- the pill POPS (stretches to
+-- half a pill PAST the destination, centered on it) then contracts to rest.
+-- v0.0.99: generation token. The old code let a STALE tween completion (from a
+-- switch that was already cancelled by a newer one) fire pillSnap and instantly
+-- snap/restart the pill out from under the CURRENT switch -- that alternation
+-- (moves, then teleports, then sits) is the "pill flickers every other click".
+-- Every async callback now checks it still owns the latest generation.
 local PILL_STRETCH  = TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 local PILL_CONTRACT = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local pillAnimating = false
 local pillT1, pillT2 = nil, nil
+local pillGen = 0
 
 -- active button's rect expressed in tabBar-local offsets
 local function pillRectFor(button)
@@ -1656,6 +1701,7 @@ local function pillRectFor(button)
 end
 
 local function pillSnap(button)
+    pillGen = pillGen + 1   -- v0.99: a snap supersedes every in-flight tween
     if pillT1 then pillT1:Cancel(); pillT1 = nil end
     if pillT2 then pillT2:Cancel(); pillT2 = nil end
     pillAnimating = false
@@ -1672,13 +1718,14 @@ local function movePillTo(button, snap)
     if pillT1 then pillT1:Cancel(); pillT1 = nil end
     if pillT2 then pillT2:Cancel(); pillT2 = nil end
     local targetPos, targetSize = pillRectFor(button)
+    pillGen = pillGen + 1
+    local gen = pillGen
     pillAnimating = true
-    -- v0.0.98: the pill POP -- on a switch it grows only HALF A PILL past the
-    -- destination (hard cap, centered on the target so it reads as the pill
-    -- swelling, not sliding across), then the only move left is to shrink down
-    -- to the exact resting rect. No walk-span, no accumulation: if another
-    -- switch lands mid-flight both tweens are cancelled and the pop restarts
-    -- from the CURRENT rect, so the pill can never grow forever.
+    -- v0.0.98: the pill POP -- grows only HALF A PILL past the destination (hard
+    -- cap, centered on the target so it reads as the pill swelling, not moving
+    -- across), then the only move left is shrinking to the exact resting rect.
+    -- No walk-span, no accumulation: a switch mid-flight cancels both tweens and
+    -- the pop restarts from the CURRENT rect, so the pill can never grow forever.
     local w    = targetSize.X.Offset
     local ow   = w + w * 0.5
     local ox   = targetPos.X.Offset - (ow - w) * 0.5
@@ -1690,6 +1737,7 @@ local function movePillTo(button, snap)
     })
     pillT1:Play()
     pillT1.Completed:Connect(function(state)
+        if gen ~= pillGen then return end   -- superseded -- the newer switch owns everything
         if state ~= Enum.PlaybackState.Completed then return end
         if pillT2 then pillT2:Cancel() end
         pillT2 = TweenService:Create(pill, PILL_CONTRACT, {
@@ -1697,17 +1745,11 @@ local function movePillTo(button, snap)
             Size     = targetSize,
         })
         pillT2:Play()
-        pillT2.Completed:Connect(function(s2)
-            -- v0.0.98: ANY finish state clears the flag -- a stale `true` here is
-            -- what wedged the pill "growing forever" (resync was permanently
-            -- blocked). Cancelled = superseded by a newer pop, snap to truth.
-            if s2 == Enum.PlaybackState.Completed then
-                pillAnimating = false
-            else
-                pillAnimating = false
-                local t = tabs[activeTab]
-                if t then pillSnap(t.Button) end
-            end
+        pillT2.Completed:Connect(function(_)
+            if gen ~= pillGen then return end   -- stale: a newer pop or snap already owns the pill
+            -- v0.98 hard rule: ANY finish clears the flag. A stale `true`
+            -- permanently blocked pillResync and wedged the pill huge.
+            pillAnimating = false
         end)
     end)
 end
@@ -1731,20 +1773,24 @@ local function selectTab(name)
         tween(tab.Button, Theme.Animation.Fast, {
             TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted,
         })
-        -- v0.0.98: the new tab SCROLLS UP into place (quick rise + fade) instead
-        -- of blinking in -- the outgoing panel just drops instantly.
+        -- v0.0.99: pure crossfade -- the outgoing panel fades out, the incoming
+        -- fades in. No scale pop, no scroll jump: panels are ScrollingFrames so
+        -- the fade lives on each tab's CanvasGroup wrapper (GroupTransparency).
+        -- Panels get CanvasGroup wrappers in addTab; the wrapper's Visible flag
+        -- is the real show/hide (GroupTransparency = 1 is not enough -- children
+        -- of an invisible canvas can still eat input).
+        local w = tab.Wrap
         if isActive then
-            tab.Panel.Visible = true
             tab.Panel.CanvasPosition = Vector2.new(0, 0)
-            tab.Panel.GroupTransparency = 1
-            local sc = uScaleOf(tab.Panel)
-            sc.Scale = 0.985
-            tween(tab.Panel, Theme.Animation.Slow, { GroupTransparency = 0 })
-            tween(sc,           Theme.Animation.Slow, { Scale = 1 })
+            w.GroupTransparency = 1
+            w.Visible = true
+            tween(w, Theme.Animation.Slow, { GroupTransparency = 0 })
             movePillTo(tab.Button)
         else
-            tab.Panel.Visible = false
-            tab.Panel.GroupTransparency = 1
+            tween(w, Theme.Animation.Slow, { GroupTransparency = 1 })
+            task.delay(0.35, function()
+                if activeTab ~= tabName then w.Visible = false end
+            end)
         end
     end
 end
@@ -1846,13 +1892,25 @@ local function addTab(name, buildFn)
 
     -- ScrollingFrame per tab so long panel stacks don't clip. AutomaticCanvasSize
     -- reads its own children's total height so we don't have to size manually.
+    -- v0.0.99: each panel sits inside a CanvasGroup wrapper so tab switches can
+    -- CROSSFADE (ScrollingFrames have no GroupTransparency of their own). The
+    -- wrap owns Visible; the panel owns scroll.
+    local wrap = new("CanvasGroup", {
+        Name = "Wrap",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        GroupTransparency = 1,
+        Visible = false,
+        ZIndex = 32,
+        Parent = content,
+    })
     local panel = new("ScrollingFrame", {
         Name = name,
         Size = UDim2.new(1, 0, 1, 0),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        Visible = false,
-        ZIndex = 32,
+        Visible = true,
+        ZIndex = 33,
         ScrollBarThickness = 4,
         ScrollBarImageColor3 = Theme.Palette.TextFaint,
         ScrollBarImageTransparency = 0.4,
@@ -1860,7 +1918,7 @@ local function addTab(name, buildFn)
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         VerticalScrollBarPosition = Enum.VerticalScrollBarPosition.Right,
         ScrollingDirection = Enum.ScrollingDirection.Y,
-        Parent = content,
+        Parent = wrap,
     })
 
     if buildFn then
@@ -1901,11 +1959,12 @@ local function addTab(name, buildFn)
         end
     end)
     button.MouseButton1Click:Connect(function() selectTab(name) end)
-    popFx(button)   -- v0.0.98: tabs squash on press too -- every clickable does.
+    -- NOTE: no popFx here -- tab labels must never squash/scale on press (per he).
+    -- The pill's own pop is the tab switch's motion.
 
     -- v0.0.34: stash the build fn so the config system can re-run it against the
     -- same panel (clears children first) to push loaded values into every widget.
-    tabs[name] = { Button = button, Panel = panel, Build = buildFn }
+    tabs[name] = { Button = button, Panel = panel, Wrap = wrap, Build = buildFn }
 end
 
 -- v0.0.34: rebuild the config-driven tabs after a config load so sliders /
@@ -1987,13 +2046,14 @@ local function panel(parent, title)
     end
     -- v0.0.98: every card enters with a short fade + grow when its tab first
     -- builds (rebuildConfigTabs re-runs build fns, so cards re-pop on reload too).
-    card.GroupTransparency = 1
+    -- GroupTransparency only exists on CanvasGroups, and cards stay plain Frames
+    -- (their own UIGradient must not flatten children), so the entrance is a pure
+    -- scale pop -- same quick-arrive feel, zero alpha dependency.
     local sc = uScaleOf(card)
     sc.Scale = 0.96
     task.delay(0.03, function()
         if not card.Parent then return end
-        tween(card, Theme.Animation.Normal, { GroupTransparency = 0 })
-        tween(sc,  Theme.Animation.Normal, { Scale = 1 })
+        tween(sc, Theme.Animation.Normal, { Scale = 1 })
     end)
     return card
 end
@@ -2899,11 +2959,11 @@ local function dropdown(parent, label, options, initial, onChange)
     end
     local function openList()
         if isOpen then return end
-        for _, closer in pairs(openDropdowns) do
-            if closer ~= closeList then closer(true) end
+        for _, entry in pairs(openDropdowns) do
+            if entry.close ~= closeList then entry.close(true) end
         end
         isOpen = true
-        openDropdowns[list] = closeList
+        openDropdowns[list] = { btn = btn, close = closeList }
         placeBelow()
         list.BackgroundTransparency = 1
         list.Visible = true
@@ -2996,13 +3056,23 @@ UserInputService.InputBegan:Connect(function(input, processed)
     and input.UserInputType ~= Enum.UserInputType.Touch then return end
     local mp = input.Position
 
-    -- dropdowns
-    for list, closer in pairs(openDropdowns) do
+    -- dropdowns. Skip the click that lands ON a list's own button -- that click
+    -- is handled by the button's own toggle handler, so the closer must not close
+    -- first (otherwise: press closes on mouse-down via the closer, release
+    -- reopens on the button's click -- the flicker/reopen the closer caused).
+    for list, entry in pairs(openDropdowns) do
         local abs = list.AbsolutePosition
         local siz = list.AbsoluteSize
         local inside = mp.X >= abs.X and mp.X <= abs.X + siz.X
                    and mp.Y >= abs.Y and mp.Y <= abs.Y + siz.Y
-        if not inside then closer() end
+        local playsOwnToggle = false
+        if entry.btn then
+            local babs = entry.btn.AbsolutePosition
+            local bsiz = entry.btn.AbsoluteSize
+            playsOwnToggle = mp.X >= babs.X and mp.X <= babs.X + bsiz.X
+                        and mp.Y >= babs.Y and mp.Y <= babs.Y + bsiz.Y
+        end
+        if not inside and not playsOwnToggle then entry.close() end
     end
 
     -- color picker (skip close if click is on its owning swatch)
@@ -3094,14 +3164,27 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         ZIndex = 35,
         Parent = track,
     }, { pillCorner() })
-    -- v0.0.31: dot-less slider -- just the filled accent line, no draggable knob
-    -- (matcha style). The whole track width is the hit/drag area.
+    -- v0.0.99: a proper knob -- small ball at the fill tip (AnchorPoint 0.5,0.5 so
+    -- it sits ON the tip, straddling the fill edge, instead of hanging off it).
+    local knob = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(startPct, 0, 0.5, 0),
+        Size = UDim2.new(0, 12, 0, 12),
+        BackgroundColor3 = Theme.Palette.Accent,
+        BorderSizePixel = 0,
+        ZIndex = 36,
+        Parent = track,
+    }, { corner(6), stroke(Theme.Palette.Border, 1) })
+    -- v0.0.99: drag area is the ENTIRE row width (was reserving 86px for the value
+    -- box -- when the fill sat far right, the last 86px of the track was dead
+    -- space and the knob end was unreachable). The value box lives at the top of
+    -- the row, nowhere near the track, so nothing needs reserving.
     local hitArea = new("TextButton", {
         Text = "",
         AutoButtonColor = false,
         BackgroundTransparency = 1,
         Position = UDim2.new(0, 0, 0, 24),
-        Size = UDim2.new(1, -86, 0, 18),
+        Size = UDim2.new(1, 0, 0, 18),
         ZIndex = 37,
         Parent = row,
     })
@@ -3111,8 +3194,10 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         local pct = (current - min) / (max - min)
         if animate then
             tween(fill, Theme.Animation.Fast, { Size = UDim2.new(pct, 0, 1, 0) })
+            tween(knob, Theme.Animation.Fast, { Position = UDim2.new(pct, 0, 0.5, 0) })
         else
             fill.Size = UDim2.new(pct, 0, 1, 0)
+            knob.Position = UDim2.new(pct, 0, 0.5, 0)
         end
         if animate then pulse(track, 1.02) end   -- v0.0.98: track ticks on settle
         local atMax = opts.infinite and current >= max
@@ -3559,6 +3644,10 @@ local function loadSnapshot(data)
         Theme.setFeiSize(KoffeeOptions.CustomFontSize)
         Theme.setFeiOn(KoffeeOptions.CustomFontOn == true)
         if KoffeeOptions.CustomFontOn then Theme.setFeiFont(KoffeeOptions.CustomFontName) end
+        -- v0.0.99: mirror the MI font toggle across config loads (fonts + tab
+        -- rebuilds happen together; re-apply AFTER the rebuild so fresh labels
+        -- get the swap too). loadSnapshot's rebuildConfigTabs ran above.
+        Theme.applyMIFont(window, KoffeeOptions.MIFontOn and Theme.loadFeiFont(KoffeeOptions.CustomFontName) or nil)
     end)
     -- v0.0.97: Target Lock runtime state must not ride a config load -- a save
     -- taken mid-engagement would resurrect a stale lock after switching configs.
@@ -6098,7 +6187,7 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 -- virtual XButton driver (mirror of combat's; helper feeds mouse 4/5 state)
-do
+;(function()
     local pXB1, pXB2 = false, false
     RunService.Heartbeat:Connect(function()
         local xb1, xb2 = Helper.XB1, Helper.XB2
@@ -6120,7 +6209,7 @@ do
         end
         pXB1, pXB2 = xb1, xb2
     end)
-end
+end)()
 
 --== modules (checkbox = arm). OnDisable clears held so re-arming starts inactive. ==--
 local function reg(id, name)
@@ -6544,7 +6633,7 @@ end
 
 --== tab builder (called by the Character addTab in normal tab order) ==--
 Koffee._characterTab = function(root)
-    local mv = panel(root, "movement")
+    local mv = panel(root, "Movement")
     moduleCheckbox(mv, "No Jump Cooldown", "nojumpcd")
     moduleCheckbox(mv, "Infinite Jump",    "infjump")
     local function feat(label, id)
@@ -6569,7 +6658,7 @@ Koffee._characterTab = function(root)
     moduleCheckbox(mv, "Antifling", "antifling")
 
     -- visual box
-    local vis = panel(root, "visual")
+    local vis = panel(root, "Visual")
     local vpPart   -- viewport preview part (forward decl; swatch/dropdown closures set it)
 
     -- Character Material: enable toggle + colour swatch on the row
@@ -8325,10 +8414,10 @@ local Combat = {
     -- so binds set to "XButton1"/"XButton2" are driven here off the Koffee Helper's
     -- polled state instead. Handles rebind capture (the helper sees the press Roblox
     -- can't) + hold/toggle activation for aim / silent / trigger.
-    local pXB1, pXB2 = false, false
+    local pXB = { false, false }   -- last two locals this frame may hold
     RunService.Heartbeat:Connect(function()
         local xb1, xb2 = Helper.XB1, Helper.XB2
-        local e1, e2 = (xb1 and not pXB1), (xb2 and not pXB2)   -- press edges
+        local e1, e2 = (xb1 and not pXB[1]), (xb2 and not pXB[2])   -- press edges
         local function down(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
         local function edge(k) return (k == "XButton1" and e1) or (k == "XButton2" and e2) or false end
 
@@ -8884,7 +8973,7 @@ addTab("Visuals", function(root)
     local rightCol = column(2)
 
     --------------------------------------------------------------- ESP
-    local espPanel = panel(leftCol, "esp")
+    local espPanel = panel(leftCol, "ESP")
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
     -- v0.0.34: ESP ships with NO keybind by default (pill reads "no keybind").
     keybindPill(master.row, "esp", nil)
@@ -8945,7 +9034,7 @@ addTab("Visuals", function(root)
         function(v) ESP.Render.Thickness = v end)
 
     --------------------------------------------------------------- Box
-    local boxesPanel = panel(leftCol, "box")
+    local boxesPanel = panel(leftCol, "Box")
     local boxesMaster = configCheckbox(boxesPanel, "Enabled", ESP.Boxes.Enabled, function(v) ESP.Boxes.Enabled = v end)
     -- v0.0.24: main box line colour + fill colour. Outline colour is its own swatch
     -- on the esp panel's Outline row (separate now).
@@ -8985,7 +9074,7 @@ addTab("Visuals", function(root)
     slider(boxesPanel, "Corner Length", 0.05, 0.5, ESP.Boxes.CornerLength, 2, function(v) ESP.Boxes.CornerLength = v end)
 
     --------------------------------------------------------------- Name
-    local namePanel = panel(leftCol, "name")
+    local namePanel = panel(leftCol, "Name")
     local nameMaster = configCheckbox(namePanel, "Enabled", ESP.Names.Enabled, function(v) ESP.Names.Enabled = v end)
     attachSingleSwatch(nameMaster.row, ESP.Names.Color, function(c) ESP.Names.Color = c end)
     -- v0.0.28: right-click Name for text size + outline thickness (all text does this).
@@ -8999,7 +9088,7 @@ addTab("Visuals", function(root)
     -- Single panel (toggles live together in the UI); each is its own entry in
     -- the arraylist though (see GetDetail). Right-click Skeleton / Head Dot /
     -- Distance for per-feature settings popups.
-    local indPanel = panel(rightCol, "indicators")
+    local indPanel = panel(rightCol, "Indicators")
     local distRow = configCheckbox(indPanel, "Distance", ESP.Indicators.Distance.Enabled, function(v) ESP.Indicators.Distance.Enabled = v end)
     attachSingleSwatch(distRow.row, ESP.Indicators.Distance.Color, function(c) ESP.Indicators.Distance.Color = c end)
     rightClickSettings(distRow.row, "distance", function(popup)
@@ -9025,7 +9114,7 @@ addTab("Visuals", function(root)
     end)
 
     --------------------------------------------------------------- Health
-    local healthPanel = panel(rightCol, "health")
+    local healthPanel = panel(rightCol, "Health")
     local hbRow = configCheckbox(healthPanel, "Health Bar", ESP.Health.Bar.Enabled, function(v) ESP.Health.Bar.Enabled = v end)
     attachSingleSwatch(hbRow.row, ESP.Health.Bar.Color, function(c) ESP.Health.Bar.Color = c end)
     configCheckbox(healthPanel, "Health Based", ESP.Health.Based, function(v) ESP.Health.Based = v end)
@@ -9033,7 +9122,7 @@ addTab("Visuals", function(root)
     dropdown(healthPanel, "Text Pos", { "Above Name", "On Health Bar" }, ESP.Health.TextPos, function(v) ESP.Health.TextPos = v end)
 
     --------------------------------------------------------------- Tracer
-    local tracerPanel = panel(rightCol, "tracer")
+    local tracerPanel = panel(rightCol, "Tracers")
     local trRow = configCheckbox(tracerPanel, "Enabled", ESP.Tracer.Enabled, function(v) ESP.Tracer.Enabled = v end)
     attachSingleSwatch(trRow.row, ESP.Tracer.Color, function(c) ESP.Tracer.Color = c end)
     dropdown(tracerPanel, "Origin", { "Mouse", "Bottom", "Middle", "Top" }, ESP.Tracer.Origin, function(v) ESP.Tracer.Origin = v end)
@@ -9041,7 +9130,7 @@ addTab("Visuals", function(root)
 end)
 
 addTab("World", function(root)
-    local lighting = panel(root, "world lighting")
+    local lighting = panel(root, "World Lighting")
     moduleCheckbox(lighting, "Fullbright",  "fullbright")
     moduleCheckbox(lighting, "No Fog",      "nofog")
     moduleCheckbox(lighting, "Custom Time", "customtime")
@@ -9060,9 +9149,9 @@ registerConfig("options", KoffeeOptions)
 
 -- OPTIONS TAB (v0.0.34)
 addTab("Options", function(root)
-    local card = panel(root, "options")
+    local card = panel(root, "Options")
 
-    local uiPanel = panel(root, "interface")
+    local uiPanel = panel(root, "Interface")
     local arrRow = configCheckbox(uiPanel, "Arraylist", KoffeeOptions.Arraylist, function(v)
         KoffeeOptions.Arraylist = v
         labelsColumn.Visible = v
@@ -9099,6 +9188,18 @@ addTab("Options", function(root)
     dropdown(uiPanel, "Font", fontOptions, KoffeeOptions.CustomFontName, function(v)
         KoffeeOptions.CustomFontName = v
         Theme.setFeiFont(v)
+        -- v0.0.99: the MI mirror follows the SAME font pick -- re-apply when on.
+        if KoffeeOptions.MIFontOn then
+            Theme.applyMIFont(window, Theme.loadFeiFont(v))
+        end
+    end)
+    -- v0.0.99: "Custom Font (MI)" -- the mirror. Same catalog + same selected font
+    -- as above, applied to the MAIN window's own text. Snapshots + restores on
+    -- toggle; harmless to flip on top of the feature font (they're independent
+    -- surfaces -- feature interface vs. the menu itself).
+    configCheckbox(uiPanel, "Custom Font (MI)", KoffeeOptions.MIFontOn, function(v)
+        KoffeeOptions.MIFontOn = v
+        Theme.applyMIFont(window, v and Theme.loadFeiFont(KoffeeOptions.CustomFontName) or nil)
     end)
     -- Ignore Friends: friends are excluded from ESP + aimbot + silent + trigger.
     configCheckbox(card, "Ignore Friends", Shared.IgnoreFriends, function(v)
@@ -9230,7 +9331,7 @@ addTab("Configs", function(root)
     end
 
     --== manager card ==--
-    local card = panel(root, "config manager")
+    local card = panel(root, "Config Manager")
 
     local status = new("TextLabel", {
         Text = "select a config, or type a name to create one",
@@ -9536,7 +9637,7 @@ end)
 -- v0.0.37: MODULE-keybind virtual XButton driver (mirror of the combat one, for
 -- module keybind pills). Roblox can't fire mouse 4/5, so the helper drives rebind
 -- capture + module toggles for keybinds set to a virtual XButton.
-do
+;(function()
     local pXB1, pXB2 = false, false
     RunService.Heartbeat:Connect(function()
         local xb1, xb2 = Helper.XB1, Helper.XB2
@@ -9558,12 +9659,12 @@ do
         end
         pXB1, pXB2 = xb1, xb2
     end)
-end
+end)()
 
 -- v0.0.37: poll the Koffee Helper for OS-level input (XButton1/2). It serves live
 -- button state over localhost; we cache it in `Helper` for the virtual-bind drivers.
 -- Degrades silently on a slow backoff when the helper isn't running.
-do
+;(function()
     local HttpService = game:GetService("HttpService")
     local reqFn = (syn and syn.request) or (http and http.request) or http_request or request
     if reqFn then
@@ -9592,7 +9693,7 @@ do
             end
         end)
     end
-end
+end)()
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
 -- pcall'd so a bad/locked config never blocks the UI from coming up.
