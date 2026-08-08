@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.95"
+Koffee.Version = "0.0.97"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
 -- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
@@ -105,12 +105,146 @@ pcall(function()
     setthreadidentity(7)
 end)
 
+-- v0.0.96 EXECUTOR PROFILING + SAFE MODE PROMPT
+-- Some lightweight runtimes crash the game when silent aim installs the full
+-- __namecall hook (newcclosure + hookmetamethod on __namecall is a known
+-- weak-exec bricker -- the whole game freezes/dumps once we redirect FireServer
+-- reads on a runtime that can't hold a stable C-closure across metamethod
+-- boundaries). We detect the executor here and, if it's not on the known-good
+-- list (Potassium / Volt), we render a native prompt asking the user whether
+-- to load the SAFE variant of silent aim (a lighter, __index-only redirect
+-- that only spoofs Mouse.Hit/Target/UnitRay -- no __namecall touch, no
+-- Camera.CFrame spoof, no pos spoof). Prompt yields the top-level thread on a
+-- BindableEvent so the rest of Koffee waits on the user's answer before it
+-- installs anything.
+Koffee._safeMode = false
+Koffee._exec     = "Unknown"
+do
+    local execName = "Unknown"
+    pcall(function()
+        if identifyexecutor then
+            local a, b = identifyexecutor()
+            if type(a) == "string" and #a > 0 then execName = a
+            elseif type(b) == "string" and #b > 0 then execName = b end
+        end
+    end)
+    Koffee._exec = execName
+    local KNOWN_STRONG = { Potassium = true, Volt = true }
+    if not KNOWN_STRONG[execName] then
+        local ok, answer = pcall(function()
+            local Players = game:GetService("Players")
+            local CoreGui = game:GetService("CoreGui")
+            local player  = Players.LocalPlayer
+            if not player then return nil end
+            local host    = (gethui and gethui()) or CoreGui or player:WaitForChild("PlayerGui", 3)
+            if not host then return nil end
+
+            local gui = Instance.new("ScreenGui")
+            gui.Name = "KoffeeExecPrompt_" .. tostring(math.random(100000, 999999))
+            gui.IgnoreGuiInset = true
+            gui.ResetOnSpawn   = false
+            gui.DisplayOrder   = 2147483647
+            gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+            pcall(function() gui.Parent = host end)
+
+            local dim = Instance.new("Frame", gui)
+            dim.Size = UDim2.fromScale(1, 1)
+            dim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+            dim.BackgroundTransparency = 0.35
+            dim.BorderSizePixel = 0
+            dim.ZIndex = 1
+
+            local card = Instance.new("Frame", gui)
+            card.AnchorPoint = Vector2.new(0.5, 0.5)
+            card.Position = UDim2.fromScale(0.5, 0.5)
+            card.Size = UDim2.fromOffset(420, 200)
+            card.BackgroundColor3 = Color3.fromRGB(27, 22, 19)
+            card.BorderSizePixel = 0
+            card.ZIndex = 2
+            local corner = Instance.new("UICorner", card); corner.CornerRadius = UDim.new(0, 8)
+            local stroke = Instance.new("UIStroke", card)
+            stroke.Color = Color3.fromRGB(217, 150, 95)
+            stroke.Thickness = 1
+            stroke.Transparency = 0.4
+
+            local title = Instance.new("TextLabel", card)
+            title.BackgroundTransparency = 1
+            title.Position = UDim2.fromOffset(18, 14)
+            title.Size = UDim2.new(1, -36, 0, 22)
+            title.Font = Enum.Font.GothamBold
+            title.TextSize = 16
+            title.TextXAlignment = Enum.TextXAlignment.Left
+            title.TextColor3 = Color3.fromRGB(217, 150, 95)
+            title.Text = "Low-end executor detected"
+            title.ZIndex = 3
+
+            local exec = Instance.new("TextLabel", card)
+            exec.BackgroundTransparency = 1
+            exec.Position = UDim2.fromOffset(18, 40)
+            exec.Size = UDim2.new(1, -36, 0, 18)
+            exec.Font = Enum.Font.Gotham
+            exec.TextSize = 13
+            exec.TextXAlignment = Enum.TextXAlignment.Left
+            exec.TextColor3 = Color3.fromRGB(142, 129, 116)
+            exec.Text = "Detected: " .. execName
+            exec.ZIndex = 3
+
+            local body = Instance.new("TextLabel", card)
+            body.BackgroundTransparency = 1
+            body.Position = UDim2.fromOffset(18, 68)
+            body.Size = UDim2.new(1, -36, 0, 60)
+            body.Font = Enum.Font.Gotham
+            body.TextSize = 13
+            body.TextWrapped = true
+            body.TextXAlignment = Enum.TextXAlignment.Left
+            body.TextYAlignment = Enum.TextYAlignment.Top
+            body.TextColor3 = Color3.fromRGB(242, 234, 223)
+            body.Text = "This runtime may not handle silent aim's full hook stack. Load the safe version of Koffee? (silent aim will use a lighter path.)"
+            body.ZIndex = 3
+
+            local yes = Instance.new("TextButton", card)
+            yes.AnchorPoint = Vector2.new(1, 1)
+            yes.Position = UDim2.new(1, -18, 1, -14)
+            yes.Size = UDim2.fromOffset(90, 32)
+            yes.BackgroundColor3 = Color3.fromRGB(217, 150, 95)
+            yes.BorderSizePixel = 0
+            yes.AutoButtonColor = true
+            yes.Font = Enum.Font.GothamBold
+            yes.TextSize = 13
+            yes.TextColor3 = Color3.fromRGB(15, 12, 10)
+            yes.Text = "Yes (Safe)"
+            yes.ZIndex = 3
+            local yc = Instance.new("UICorner", yes); yc.CornerRadius = UDim.new(0, 6)
+
+            local no = Instance.new("TextButton", card)
+            no.AnchorPoint = Vector2.new(1, 1)
+            no.Position = UDim2.new(1, -114, 1, -14)
+            no.Size = UDim2.fromOffset(90, 32)
+            no.BackgroundColor3 = Color3.fromRGB(41, 33, 29)
+            no.BorderSizePixel = 0
+            no.AutoButtonColor = true
+            no.Font = Enum.Font.GothamBold
+            no.TextSize = 13
+            no.TextColor3 = Color3.fromRGB(242, 234, 223)
+            no.Text = "No (Full)"
+            no.ZIndex = 3
+            local nc = Instance.new("UICorner", no); nc.CornerRadius = UDim.new(0, 6)
+
+            local bindable = Instance.new("BindableEvent")
+            yes.MouseButton1Click:Connect(function() pcall(function() gui:Destroy() end); bindable:Fire(true) end)
+            no.MouseButton1Click:Connect(function()  pcall(function() gui:Destroy() end); bindable:Fire(false) end)
+            return bindable.Event:Wait()
+        end)
+        if ok and answer == true then Koffee._safeMode = true end
+    end
+end
+
 -- THEME
 local Theme = {
     -- v0.0.48 premium pass: deeper background for real contrast against the panels,
     -- borders pulled up so card edges read crisp (not muddy), accent a touch brighter.
     Palette = {
-        Background    = Color3.fromRGB(15, 12, 10),
+        Background    = Color3.fromRGB(                    ),
         Panel         = Color3.fromRGB(27, 22, 19),
         PanelElevated = Color3.fromRGB(41, 33, 29),
         Pill          = Color3.fromRGB(50, 40, 34),
@@ -124,9 +258,7 @@ local Theme = {
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
     },
-    -- v0.0.21 typography: match Matcha (soft rounded humanist, heavy-ish). Nunito is the closest
-    -- built-in (same humanist DNA); SemiBold so it never goes thin like the v0.0.5 Regular attempt.
-    -- Bold for emphasis + wordmark. Mono stays RobotoMono for keybind pills / numerals.
+    -- placeholder
     Fonts = (function()
         local MONO  = "rbxasset://fonts/families/RobotoMono.json"
         -- v0.0.29: Matcha's ACTUAL face is Proxima Soft Bold. We auto-download the .ttf once
@@ -196,6 +328,18 @@ local Theme = {
             Mono    = Font.new(MONO, Enum.FontWeight.Medium),
         }
     end)(),
+    -- v0.0.97 FEATURE-INTERFACE FONT SYSTEM (custom font for everything outside the
+    -- main Koffee window). The main interface (the window you open with Delete) keeps
+    -- using Theme.Fonts (ProximaSoft). Feature interface things -- arraylist, ESP
+    -- name/distance/health tags, HUD stats labels, etc. -- register their TextLabels
+    -- via Theme.fei(label, fontKey, baseSize) so when the user picks a custom font +
+    -- size in Options we hot-swap FontFace + scale TextSize across all of them at
+    -- once without touching each call site. Defaults to FontTable -- the system is a
+    -- no-op while FeiOn is false, so feature elements look exactly like before.
+    FeiOn     = false,
+    FeiSize   = 12,                       -- global text size used when FeiOn
+    FeiScale  = 1.0,                      -- FeiSize / Text.Body -- multiplies base sizes
+    _fei      = { labels = {}, fonts = { Regular=true, Medium=true, Bold=true, Title=true, Mono=true } },
     Sizes = {
         HudHeight    = 34,
         -- bigger overall so density stays right at larger text sizes
@@ -225,6 +369,189 @@ local Theme = {
         SnowflakeCount   = 70,
     },
 }
+
+-- v0.0.97 FEATURE-INTERFACE FONT SYSTEM -- the custom font table + helpers live
+-- OUTSIDE the Theme literal (they close over the Theme local). FeiFonts starts as
+-- an opaque alias of Fonts; setFeiFont swaps entries and applyFei re-applies them to
+-- the registered feature-interface TextLabels (arraylist / ESP tags / HUD stats /
+-- health bar text, etc.). While FeiOn is false, the FeiFonts table is never read,
+-- so this whole system is a no-op for users who keep the custom font off.
+Theme.FeiFonts = {
+    Regular = Theme.Fonts.Regular,
+    Medium  = Theme.Fonts.Medium,
+    Bold    = Theme.Fonts.Bold,
+    Title   = Theme.Fonts.Title,
+    Mono    = Theme.Fonts.Mono,
+}
+
+-- register a feature-interface TextLabel so its FontFace + TextSize follow the
+-- custom-font toggle. Returns (FontFace, TextSize) to set right now.
+-- `fontKey` is Regular / Medium / Bold / Title / Mono; `baseSize` is the Theme.Text
+-- size the label would normally use -- scaled by FeiScale while FeiOn (preserves the
+-- name/is-on/detail hierarchy of the arraylist and the ESP tag sizes).
+function Theme.fei(label, fontKey, baseSize)
+    table.insert(Theme._fei.labels, { label = label, fontKey = fontKey, baseSize = baseSize })
+    if Theme.FeiOn then
+        local sz = math.round(baseSize * Theme.FeiScale)
+        local f = Theme.FeiFonts[fontKey] or Theme.Fonts[fontKey]
+        pcall(function()
+            label.FontFace = f
+            label.TextSize = sz
+        end)
+        return f, sz
+    end
+    return Theme.Fonts[fontKey], baseSize
+end
+
+-- re-apply the current Fei state (font + scaled size) to every registered label.
+-- Call after toggling On/Off, after changing the custom font, or after changing the
+-- global size. Stale entries (destroyed labels) are cleaned up lazily.
+function Theme.applyFei()
+    local live = {}
+    for _, e in ipairs(Theme._fei.labels) do
+        local lbl = e.label
+        if lbl and lbl.Parent then
+            local f, sz
+            if Theme.FeiOn then
+                f = Theme.FeiFonts[e.fontKey] or Theme.Fonts[e.fontKey]
+                sz = math.round(e.baseSize * Theme.FeiScale)
+            else
+                f = Theme.Fonts[e.fontKey]
+                sz = e.baseSize
+            end
+            pcall(function()
+                lbl.FontFace = f
+                lbl.TextSize = sz
+            end)
+            live[#live + 1] = e
+        end
+    end
+    Theme._fei.labels = live
+end
+
+function Theme.setFeiOn(on)
+    Theme.FeiOn = on == true
+    Theme.applyFei()
+end
+
+function Theme.setFeiSize(n)
+    n = tonumber(n) or Theme.Text.Body
+    Theme.FeiSize  = n
+    Theme.FeiScale = n / Theme.Text.Body
+    Theme.applyFei()
+end
+
+-- v0.0.97 custom feature font catalog. Hosted on the koffee-assets repo (same as
+-- ProximaSoft + the sound pack). Each spec is a URL + a workspace cache path under
+-- the Koffee/ folder. The Size of the custom font itself is controlled by FeiSize
+-- via the Options slider, not here.
+--
+-- Wrapped in do/end so FONTS_CATALOG / feiFontCache / loadFeiFont don't add to the
+-- chunk-local count -- the file sits at Luau's 200-register ceiling. Only the
+-- Theme.setFeiFont assignment below escapes to chunk scope.
+do
+    local FONTS_CATALOG = {
+        ["Minecraft Bold"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/MinecraftBold.otf",
+            file = "Koffee/fonts/MinecraftBold.otf",
+        },
+        ["Minecraft Regular"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/MinecraftRegular.otf",
+            file = "Koffee/fonts/MinecraftRegular.otf",
+        },
+        ["ImGui"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProggyClean.ttf",
+            file = "Koffee/fonts/ProggyClean.ttf",
+        },
+    }
+
+    -- cached Font.new handles so re-selecting a font doesn't re-download / re-register.
+    local feiFontCache = {}
+
+    local function loadFeiFont(name)
+        if feiFontCache[name] then return feiFontCache[name] end
+        local spec = FONTS_CATALOG[name]
+        if not spec then return nil end
+        local ok, res = pcall(function()
+            local getasset = getcustomasset or getsynasset
+                or (syn and syn.getcustomasset)
+            local isf, wf = isfile, writefile
+            if not (getasset and isf and wf) then return nil end
+
+            -- Koffee/fonts/ may not exist; try to make it (writefile on known executors
+            -- creates parent dirs; on others it errors silently -- we fall back to a
+            -- flat filename below). best-effort: ignore any makefolder failure.
+            if makefolder then pcall(makefolder, "Koffee") pcall(makefolder, "Koffee/fonts") end
+
+            -- download the otf once and cache it under spec.file (flat fallback below).
+            local usedFile = spec.file
+            if not isf(spec.file) then
+                local body
+                local req = (syn and syn.request) or (http and http.request)
+                    or http_request or request
+                if req then
+                    local rok, r = pcall(req, { Url = spec.url, Method = "GET" })
+                    if rok and r and r.Body and #r.Body > 512 then body = r.Body end
+                end
+                if not body then
+                    local hok, h = pcall(function() return game:HttpGetAsync(spec.url) end)
+                    if hok and h and #h > 512 then body = h end
+                end
+                if not body then return nil end
+                local wrote = pcall(wf, spec.file, body)
+                if (not wrote) or (not isf(spec.file)) then
+                    local ext = spec.file:match("%.(.+)$") or "ttf"
+                    usedFile = "koffee_" .. name:gsub("%s", "_") .. "." .. ext
+                    wf(usedFile, body)
+                end
+            end
+
+            -- v0.0.97: register as a font-family JSON (one face per weight) so Roblox
+            -- renders at all sizes -- a bare single-face URL with Font.new(id, weight)
+            -- silently falls back to the system default at sizes/weights it can't find,
+            -- which is why the custom font looked like a generic default before. mirror
+            -- the ProximaSoft path: build a family JSON, write it, point Font.new at the
+            -- JSON URL with the desired weight.
+            local famFile = "koffee_fei_" .. name:gsub("%s","_"):lower() .. ".json"
+            if not isf(famFile) then
+                local ttfId = getasset(usedFile)
+                local fam = {
+                    name  = name:gsub("%s", ""),
+                    faces = {
+                        { name = "Regular",   weight = 400, style = "normal", assetId = ttfId },
+                        { name = "Medium",    weight = 500, style = "normal", assetId = ttfId },
+                        { name = "SemiBold",  weight = 600, style = "normal", assetId = ttfId },
+                        { name = "Bold",      weight = 700, style = "normal", assetId = ttfId },
+                        { name = "ExtraBold", weight = 800, style = "normal", assetId = ttfId },
+                    },
+                }
+                wf(famFile, game:GetService("HttpService"):JSONEncode(fam))
+            end
+            local famId = getasset(famFile)
+            local f = Font.new(famId, Enum.FontWeight.Regular)
+            feiFontCache[name] = f
+            return f
+        end)
+        return (ok and res) and res or nil
+    end
+
+    -- swap the custom font in (or revert to Theme.Fonts when name == "None"). Downloads
+    -- on demand the first time a font is selected. Recursively re-applies to all tracked
+    -- feature-interface labels.
+    function Theme.setFeiFont(name)
+        if not name or name == "None" then
+            for k in pairs(Theme.FeiFonts) do Theme.FeiFonts[k] = Theme.Fonts[k] end
+        else
+            local f = loadFeiFont(name)
+            if f then
+                for k in pairs(Theme.FeiFonts) do Theme.FeiFonts[k] = f end
+            else
+                for k in pairs(Theme.FeiFonts) do Theme.FeiFonts[k] = Theme.Fonts[k] end
+            end
+        end
+        Theme.applyFei()
+    end
+end
 
 -- SERVICES + UTIL
 local Players          = game:GetService("Players")
@@ -599,7 +926,7 @@ local hudLeft = new("Frame", {
 
 new("TextLabel", {
     Name = "Brand",
-    Text = "koffee",
+    Text = "Koffee",
     FontFace = Theme.Fonts.Title,   -- Sarpanch Bold -- AAA-game brand feel
     TextSize = Theme.Text.Title,
     TextColor3 = Theme.Palette.Accent,
@@ -633,7 +960,7 @@ local statsWidget = new("Frame", {
 })
 
 local function statLabel(name, initial)
-    return new("TextLabel", {
+    local lbl = new("TextLabel", {
         Name = name,
         Text = initial,
         FontFace = Theme.Fonts.Mono,
@@ -645,6 +972,9 @@ local function statLabel(name, initial)
         ZIndex = 23,
         Parent = statsWidget,
     })
+    -- v0.0.97: feature-interface font system (custom font + global size)
+    lbl.FontFace, lbl.TextSize = Theme.fei(lbl, "Mono", Theme.Text.Small)
+    return lbl
 end
 
 local pingLabel = statLabel("Ping", "-- ms")
@@ -669,66 +999,63 @@ local hudRight = new("Frame", {
     new("UIPadding", { PaddingRight = UDim.new(0, 14) }),
 })
 
-local hotkeysWidget = new("Frame", {
-    Name = "Hotkeys",
-    Size = UDim2.new(0, 200, 0, 22),
-    BackgroundColor3 = Theme.Palette.Panel,
-    BackgroundTransparency = 0.1,
-    BorderSizePixel = 0,
-    ZIndex = 22,
-    Parent = hudRight,
-}, {
-    corner(Theme.Radius.Small),
-    stroke(Theme.Palette.BorderSubtle),
-    new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }),
-    new("UIListLayout", {
-        FillDirection = Enum.FillDirection.Horizontal,
-        VerticalAlignment = Enum.VerticalAlignment.Center,
-        Padding = UDim.new(0, 12),
-    }),
-})
+-- v0.0.97: replaced the "del menu" hotkey panel with an Apple-style signal
+-- indicator (4 ascending bars on a shared baseline, rounded like iOS wifi).
+-- Color tracks ping latency:  green (<=100ms) / yellow (<=200ms) / red
+-- (<=350ms) / deep red (>350ms). The widget locals + paint closure live inside
+-- a do/end so they don't add to the chunk-local count (the file sits at Luau's
+-- 200-register ceiling); only the paintSignal forward declaration escapes so
+-- the ping task can reach it.
+local paintSignal
+do
+    -- 4 bars sitting on the same baseline; heights chosen to climb from short
+    -- to tall inside the 22px panel, widths uniform. Sizes: {w, h}.
+    local barSpecs = { { 4, 6 }, { 4, 9 }, { 4, 12 }, { 4, 15 } }
+    local BAR_W, BAR_H_MAX = 4, 15
 
-local function hotkey(keyText, actionText)
-    local wrap = new("Frame", {
-        BackgroundTransparency = 1,
-        AutomaticSize = Enum.AutomaticSize.X,
-        Size = UDim2.new(0, 0, 1, 0),
-        ZIndex = 23,
-        Parent = hotkeysWidget,
+    local signalWidget = new("Frame", {
+        Name = "Signal",
+        Size = UDim2.new(0, 8 + #barSpecs * BAR_W + (#barSpecs - 1) * 2 + 8, 0, BAR_H_MAX + 4),
+        BackgroundColor3 = Theme.Palette.Panel,
+        BackgroundTransparency = 0.1,
+        BorderSizePixel = 0,
+        ZIndex = 22,
+        Parent = hudRight,
     }, {
-        new("UIListLayout", {
-            FillDirection = Enum.FillDirection.Horizontal,
-            VerticalAlignment = Enum.VerticalAlignment.Center,
-            Padding = UDim.new(0, 4),
-        }),
+        corner(Theme.Radius.Small),
+        stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
     })
-    new("TextLabel", {
-        Text = keyText,
-        FontFace = Theme.Fonts.Mono,
-        TextSize = Theme.Text.Small,
-        TextColor3 = Theme.Palette.Accent,
-        BackgroundTransparency = 1,
-        AutomaticSize = Enum.AutomaticSize.X,
-        Size = UDim2.new(0, 0, 1, 0),
-        ZIndex = 24,
-        Parent = wrap,
-    })
-    new("TextLabel", {
-        Text = actionText,
-        FontFace = Theme.Fonts.Regular,
-        TextSize = Theme.Text.Small,
-        TextColor3 = Theme.Palette.TextMuted,
-        BackgroundTransparency = 1,
-        AutomaticSize = Enum.AutomaticSize.X,
-        Size = UDim2.new(0, 0, 1, 0),
-        ZIndex = 24,
-        Parent = wrap,
-    })
-end
 
--- top-right HUD only shows the menu key. Per-module keybinds are rebindable
--- via the pill next to each master toggle -- displaying them here would drift.
-hotkey("del", "menu")
+    -- bars bottom-anchored so they share the baseline -- height drives the
+    -- "ascending" look without any manual vertical offsets.
+    local signalBars = {}
+    for i, spec in ipairs(barSpecs) do
+        signalBars[i] = new("Frame", {
+            Name = "Bar" .. i,
+            Size = UDim2.new(0, spec[1], 0, spec[2]),
+            Position = UDim2.new(0, 6 + (i - 1) * (BAR_W + 2), 1, -2),
+            AnchorPoint = Vector2.new(0, 1),     -- bottom-aligned
+            BackgroundColor3 = Theme.Palette.TextFaint,
+            BorderSizePixel = 0,
+            ZIndex = 23,
+            Parent = signalWidget,
+        }, { corner(1.5) })
+    end
+
+    local function pingColor(ms)
+        if not ms or ms <= 0 then return Theme.Palette.TextFaint end
+        if ms <= 100 then return Color3.fromRGB(127, 190, 143) end      -- green
+        if ms <= 200 then return Color3.fromRGB(232, 196, 110) end     -- yellow
+        if ms <= 350 then return Color3.fromRGB(212, 106, 90) end       -- red
+        return Color3.fromRGB(148, 54, 42)                              -- deep red
+    end
+
+    paintSignal = function(ms)
+        local c = pingColor(ms)
+        for _, bar in ipairs(signalBars) do bar.BackgroundColor3 = c end
+    end
+end
 
 -- LIVE STATS
 local uptimeStart = os.time()
@@ -753,6 +1080,7 @@ task.spawn(function()
             return math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
         end)
         pingLabel.Text = (ok and p or "--") .. " ms"
+        paintSignal(ok and p or nil)
         task.wait(1)
     end
 end)
@@ -811,6 +1139,14 @@ labelsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 end)
 
 local Modules = {}
+local KoffeeOptions = {
+    Arraylist = true, ArraylistOutline = false, ArraylistOutlineSize = 1,
+    -- v0.0.97 custom feature-interface font (arraylist / ESP / health text / HUD stats,
+    -- everything outside the main Koffee window). On/Name/Size ride the config system.
+    CustomFontOn   = false,
+    CustomFontName = "None",       -- "None" | "Minecraft Bold" | "Minecraft Regular" | "ImGui" (user-expandable)
+    CustomFontSize = 12,           -- global text size used when CustomFontOn is true
+}
 local nextLayoutOrder = 0
 local ROW_HEIGHT = 20
 local ROW_ENTER = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -835,14 +1171,17 @@ end
 local function buildArrayLabelText(mod)
     local base = mod.DisplayName or mod.Id or "?"
     local detail = mod.GetDetail and mod.GetDetail() or ""
+    -- v0.0.97: scale the RichText-embedded detail/on font sizes by FeiScale when the
+    -- custom feature font is on, so the body/detail hierarchy survives the global size.
+    local scale = Theme.FeiOn and Theme.FeiScale or 1
     local s = base
     if detail and detail ~= "" then
         s = s .. string.format("<font size='%d' color='%s'>%s</font>",
-            ARRAYLIST_DETAIL_SIZE, ARRAYLIST_MUTED_COLOR, detail)
+            math.round(ARRAYLIST_DETAIL_SIZE * scale), ARRAYLIST_MUTED_COLOR, detail)
     end
     if mod.IsActive and mod.IsActive() then
         s = s .. string.format("<font size='%d' color='%s'>  on</font>",
-            ARRAYLIST_DETAIL_SIZE, ARRAYLIST_ON_COLOR)
+            math.round((ARRAYLIST_DETAIL_SIZE - 2) * scale), ARRAYLIST_MUTED_COLOR)
     end
     return s
 end
@@ -911,6 +1250,10 @@ local function addToActiveArray(mod)
         ZIndex = 18,
         Parent = wrapper,
     })
+    -- v0.0.97: register this arraylist label with the feature-interface font system
+    -- (custom font + global size slider in Options). The label is re-built per
+    -- module toggle, so register it fresh each time.
+    label.FontFace, label.TextSize = Theme.fei(label, "Medium", Theme.Text.Body)
     -- v0.0.76: per-label UIStroke driven by ESP.Config.Outline (wired below, once
     -- ESP exists). Contextual so it hugs the glyphs (Border would box the label rect).
     -- Starts disabled -- the outline heartbeat flips it on if Outline is on.
@@ -945,10 +1288,16 @@ local function addToActiveArray(mod)
             if accum < 0.2 then return end
             accum = 0
             if not (mod._arrayLabel and mod._arrayLabel.Parent) then return end
-            local newText = buildArrayLabelText(mod)
+            -- v0.0.97: the gradient heartbeat toggles RichText off when the text
+            -- gradient is active (UIGradient is ignored on RichText labels). Match
+            -- the label's current RichText state here so the detail poll doesn't
+            -- write tagged text onto a non-RichText label (would show raw <font>).
+            local newText = mod._arrayLabel.RichText
+                and buildArrayLabelText(mod)
+                or  arrayPlainText(mod)
             if mod._arrayLabel.Text ~= newText then
                 mod._arrayLabel.Text = newText
-                resortArray()   -- length/content may have changed -> reflow
+                resortArray()
             end
         end)
     end
@@ -1082,7 +1431,7 @@ local titleBar = new("Frame", {
 })
 
 new("TextLabel", {
-    Text = "koffee",
+    Text = "Koffee",
     FontFace = Theme.Fonts.Medium,
     TextSize = Theme.Text.Header,
     TextColor3 = Theme.Palette.Text,
@@ -1334,7 +1683,39 @@ end
 --   MyTeams      : Team NAMES the user marked "my team" (allies -> skipped)
 --   AdvancedTeam : use automatic isSameTeam heuristic instead of manual list
 local Shared = { IgnoreFriends = false, AdvancedTeam = false, MyTeams = {} }
+-- v0.0.97 Target Lock: type a player name, toggle the feature on, hit the keybind
+-- to "activate" -- while active, the named player is the ONLY target for aimbot,
+-- silent aim, trigger bot AND the only player ESP renders. Deactivate (hit the
+-- keybind again) -> normal multi-target behaviour resumes. The toggle (Enabled)
+-- arms the feature; the keybind (Active) engages / disengages the lock at runtime.
+Shared.TargetLock = {
+    Enabled  = false,   -- master toggle (arms the keybind)
+    Name     = "",      -- target's username or display name (case-insensitive substring match)
+    Key      = nil,     -- activation keybind (set via the keybind pill)
+    _active  = false,   -- runtime: is the lock currently engaged?
+}
+-- resolve the current TargetLock.Name to a live Player or nil.
+function Shared.targetLockPlayer()
+    if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return nil end
+    local query = Shared.TargetLock.Name
+    if not query or query == "" then return nil end
+    query = query:lower()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Name:lower():find(query, 1, true) or plr.DisplayName:lower():find(query, 1, true) then
+            return plr
+        end
+    end
+    return nil
+end
+function Shared.targetLockMatches(plr)
+    if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return false end
+    return Shared.targetLockPlayer() == plr
+end
 local isSameTeam, isFriend, registerConfig, rebuildConfigTabs, isTeammate
+-- v0.0.97 hardening: give the forward-declared registerConfig a real default NOW so
+-- a nil never reaches the registry call sites (the REAL definition is re-assigned
+-- by the config IIFE below -- same local slot, later assignment wins at runtime).
+registerConfig = function(name, tbl) end
 
 -- v0.0.37: OS-level input from the Koffee Helper (Roblox can't see mouse 4/5).
 -- The poll loop at the bottom of the file fills XB1/XB2; binds can be the virtual
@@ -3054,6 +3435,20 @@ local function loadSnapshot(data)
         end
     end
     if rebuildConfigTabs then pcall(rebuildConfigTabs) end
+    -- v0.0.96: the Arraylist option is registered state too, so a load can flip
+    -- it -- re-apply the actual column visibility (the rebuilt tab's checkbox
+    -- reads KoffeeOptions but nothing drives the live column off it).
+    if labelsColumn then labelsColumn.Visible = KoffeeOptions.Arraylist == true end
+    -- v0.0.97: a loaded config can flip CustomFontOn / change the font / size --
+    -- push those into the Theme so the feature interface reflects the saved state.
+    pcall(function()
+        Theme.setFeiSize(KoffeeOptions.CustomFontSize)
+        Theme.setFeiOn(KoffeeOptions.CustomFontOn == true)
+        if KoffeeOptions.CustomFontOn then Theme.setFeiFont(KoffeeOptions.CustomFontName) end
+    end)
+    -- v0.0.97: Target Lock runtime state must not ride a config load -- a save
+    -- taken mid-engagement would resurrect a stale lock after switching configs.
+    if Shared.TargetLock then Shared.TargetLock._active = false end
     return true
 end
 
@@ -3290,16 +3685,45 @@ RunService.Heartbeat:Connect(function()
         if lbl and lbl.Parent then
             local s = lbl:FindFirstChild("KArrayStroke")
             if s then
-                if s.Enabled ~= on then s.Enabled = on end
-                if s.Color ~= col then s.Color = col end
+                local strokeEnabled, strokeColor, strokeSize
+                if KoffeeOptions.ArraylistOutline then
+                    strokeEnabled = true
+                    strokeSize = KoffeeOptions.ArraylistOutlineSize
+                    strokeColor = Color3.new(0, 0, 0)
+                else
+                    strokeEnabled = on
+                    strokeSize = 1
+                    strokeColor = col
+                end
+                if s.Enabled ~= strokeEnabled then s.Enabled = strokeEnabled end
+                if s.Thickness ~= strokeSize then s.Thickness = strokeSize end
+                if s.Color ~= strokeColor then s.Color = strokeColor end
             end
             local g = lbl:FindFirstChild("KArrayGrad")
             if g then
                 if g.Enabled ~= gradOn then g.Enabled = gradOn end
+                -- v0.0.97: UIGradient does not render on RichText labels (Roblox
+                -- limitation -- the gradient is silently ignored when RichText is on).
+                -- When the gradient is active, flip RichText off + use the plain-text
+                -- label so the gradient's ColorSequence actually paints the glyphs.
+                -- When off, flip RichText back on for the per-span size/colour hierarchy.
                 if gradOn then
+                    if lbl.RichText then lbl.RichText = false end
+                    local pt = arrayPlainText(m)
+                    if lbl.Text ~= pt then lbl.Text = pt end
                     g.Color    = gSeq
                     g.Rotation = gRot
                     g.Offset   = gOff
+                    if lbl.TextColor3 ~= Color3.new(1, 1, 1) then
+                        lbl.TextColor3 = Color3.new(1, 1, 1)
+                    end
+                else
+                    if not lbl.RichText then lbl.RichText = true end
+                    local rt = buildArrayLabelText(m)
+                    if lbl.Text ~= rt then lbl.Text = rt end
+                    if lbl.TextColor3 == Color3.new(1, 1, 1) then
+                        lbl.TextColor3 = Theme.Palette.Text
+                    end
                 end
             end
         end
@@ -3528,6 +3952,8 @@ local function makeHealthBar(parent)
         ZIndex = 15,
         Parent = bg,
     }, { textStroke(Color3.new(0, 0, 0), 1) })
+    -- v0.0.97: feature-interface font system (custom font + global size)
+    txt.FontFace, txt.TextSize = Theme.fei(txt, "Medium", 12)
     return bg, fill, txt
 end
 
@@ -3537,7 +3963,7 @@ end
 -- head"); screen-space keeps text ALWAYS directly above the head / below the feet
 -- no matter where the camera points.
 local function makeTextTag(parent, anchorY, textSize)
-    return new("TextLabel", {
+    local lbl = new("TextLabel", {
         Name = "KTag",
         AnchorPoint = Vector2.new(0.5, anchorY),
         Size = UDim2.new(0, 0, 0, textSize + 4),
@@ -3558,6 +3984,12 @@ local function makeTextTag(parent, anchorY, textSize)
         textStroke(Color3.new(0, 0, 0), 1),
         new("UIGradient", { Enabled = false }),
     })
+    -- v0.0.97: feature-interface font system. The ESP render loop re-applies
+    -- textSize per-frame from ESP.Names.TextSize / Distance.TextSize; that loop
+    -- also honours FeiScale (see the render step), so registration here lets the
+    -- hot-swap propagate to every pooled name / distance tag automatically.
+    Theme.fei(lbl, "Medium", textSize)
+    return lbl
 end
 local function makeNameStack(parent)
     local nameLbl = makeTextTag(parent, 1, 14)   -- anchor bottom-center (sits above head)
@@ -4275,7 +4707,9 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     -- NAME (bottom-anchored just above the head top)
     if headOn and showName then
         rig.nameLbl.Text = nameStr
-        rig.nameLbl.TextSize = names.TextSize or 14
+        rig.nameLbl.TextSize = Theme.FeiOn
+            and math.round((names.TextSize or 14) * Theme.FeiScale)
+            or  (names.TextSize or 14)
         rig.nameLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or names.Color)
         styleTextBg(rig.nameLbl)
         rig.nameLbl.Position = UDim2.new(0, hp.X, 0, hp.Y - 3)
@@ -4310,7 +4744,9 @@ local function updateBillboards(rig, plr, dist, overrideColor)
         local fp = cam and cam:WorldToViewportPoint(feetWorld)
         if fp and fp.Z > 0 then
             rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
-            rig.distLbl.TextSize = distCfg.TextSize or 13
+            rig.distLbl.TextSize = Theme.FeiOn
+                and math.round((distCfg.TextSize or 13) * Theme.FeiScale)
+                or  (distCfg.TextSize or 13)
             rig.distLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or distCfg.Color)
             styleTextBg(rig.distLbl)
             rig.distLbl.Position = UDim2.new(0, fp.X, 0, fp.Y + 3)
@@ -4411,6 +4847,11 @@ local function updateESPRigs()
         -- + Options "Ignore Friends" gate, shared with the combat systems.
         local same = isTeammate(plr)
         if (same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr)) then
+            hideRigVisuals(rig); continue
+        end
+        -- v0.0.97 TARGET LOCK: while engaged, only the named player's rig renders.
+        if Shared.TargetLock.Enabled and Shared.TargetLock._active
+        and Shared.targetLockPlayer() ~= plr then
             hideRigVisuals(rig); continue
         end
         local dist = (rig.torso.Position - camPos).Magnitude
@@ -4828,8 +5269,8 @@ local function updateESPRigs()
             -- as the body got SMALLER (opposite of natural). Clamp 1..6 keeps it
             -- visible at extreme range without dominating at point-blank.
             local barW = math.clamp((hbBot - hbTop) * 0.04, 1, 6)
-            local gap = 7
-            rig.healthBg.Position = UDim2.new(0, hbLeft - gap - barW, 0, hbTop)
+            local barLeft = ESP.Boxes.Enabled and tX or hbLeft
+            rig.healthBg.Position = UDim2.new(0, barLeft - 2 - barW, 0, hbTop)
             rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(hbBot - hbTop, 1))
             rig.healthBg.Visible = true
             local barColor
@@ -5127,10 +5568,17 @@ local Move = {
 registerConfig("movement", Move)
 
 -- id -> its config sub-table (activation pills + input matching)
+local CustomAnimCFG = { Key = nil, Mode = "Toggle", Name = "Orbit 1" }
 local CFG = {
     walkspeed = Move.WalkSpeed, teleportwalk = Move.TeleportWalk, fly = Move.Fly,
     spinbot = Move.Spin, noclip = Move.Noclip, float = Move.Float, clicktp = Move.ClickTP,
+    customanim = CustomAnimCFG,
 }
+-- v0.0.96: CustomAnim got its own registry slot. Its Key/Mode live here (off
+-- the movement CFG table) and the Name field must survive a config save/load just
+-- like every other dropdown value -- without this it only rode along implicitly
+-- through Visual.CustomAnim and could be lost when the CFG was reloaded.
+registerConfig("custom_anim", CustomAnimCFG)
 
 -- held[id] = keybind-driven "active" flag; a feature RUNS only when its module is
 -- Enabled (armed) AND held (activated).
@@ -5242,18 +5690,13 @@ FEAT.fly = {
     end,
 }
 
--- v0.0.87 Spinbot rewrite.
--- Two paths, selected by Move.Spin.BypassCameraLock (runtime-switchable).
---   DEFAULT (Bypass OFF): rewrite HRP.CFrame each frame. Writes now go through a
---     RenderStep bind at priority Character+1 (301) so games that hard-set
---     HumanoidRootPart.CFrame from their character controller each frame (camera-
---     lock games) don't beat us -- we always win the last write of the frame.
---   BYPASS (Bypass ON): rotate the root Motor6D joint (HRP -> Torso/LowerTorso).
---     Character body visually spins relative to HRP; HRP orientation is untouched
---     so camera-lock games see stable HRP + your aim/movement stay locked to
---     wherever you're looking. Movement direction unaffected.
--- Original RootJoint.C0 snapshotted on first apply + restored on disable / mode
--- flip.
+-- v0.0.97 Spinbot rewrite -- single path: HRP rotation at Last+1 priority.
+-- Writes run AFTER every game character controller so HRP actually spins in
+-- first-person / shift-lock / camera-lock games alike -- in first person the
+-- camera follows HRP so the view spins with it; in third-person the camera
+-- follows the character position but the body rotates underneath.
+-- BypassCameraLock flag is now informational (UI label) -- both modes use the
+-- same writer since Last+1 beats any character controller.
 local function findRootJoint(char)
     if not char then return nil end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -5279,40 +5722,23 @@ FEAT.spinbot = {
     step = function(dt)
         local s = st.spin; if not s then return end
         s.a = s.a + math.rad(Move.Spin.Speed) * dt
-        if Move.Spin.BypassCameraLock then
-            -- unbind HRP writer if we were in default mode last frame
-            if s.boundRS then
-                pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
-                s.boundRS = false
-            end
-            local char = LocalPlayer.Character
-            local j = s.joint
-            if not (j and j.Parent) then
-                j = findRootJoint(char)
-                if not j then return end
-                s.joint = j
-                s.origC0 = j.C0
-            end
-            j.C0 = s.origC0 * CFrame.Angles(0, s.a, 0)
-        else
-            -- restore joint if we were in bypass mode last frame
+        -- bind HRP writer at Last+1 the first time we run (and on mode flip back
+        -- from the legacy bypass path). Same priority as the aimbot step so the
+        -- render order is predictable.
+        if not s.boundRS then
             if s.joint and s.origC0 then
                 pcall(function() s.joint.C0 = s.origC0 end)
                 s.joint = nil; s.origC0 = nil
             end
-            -- bind HRP writer AFTER the character controller so camera-lock games don't beat us
-            if not s.boundRS then
-                pcall(function()
-                    RunService:BindToRenderStep("KSpinbot",
-                        Enum.RenderPriority.Character.Value + 1, function()
-                            local sp = st.spin; if not sp then return end
-                            if Move.Spin.BypassCameraLock then return end
-                            local r = rootOf(); if not r then return end
-                            r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
-                        end)
-                end)
-                s.boundRS = true
-            end
+            pcall(function()
+                RunService:BindToRenderStep("KSpinbot",
+                    Enum.RenderPriority.Last.Value + 1, function()
+                        local sp = st.spin; if not sp then return end
+                        local r = rootOf(); if not r then return end
+                        r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
+                    end)
+            end)
+            s.boundRS = true
         end
     end,
 }
@@ -5580,6 +6006,7 @@ local function reg(id, name)
 end
 reg("walkspeed", "WalkSpeed"); reg("teleportwalk", "Teleport Walk"); reg("fly", "Fly")
 reg("spinbot", "Spinbot"); reg("noclip", "Noclip"); reg("float", "Float"); reg("clicktp", "Click TP")
+reg("customanim", "Custom Anim")
 registerModule("antifling", "Antifling", function() end, function() end)   -- no keybind: on = on
 
 -- VISUAL FEATURES (v0.0.54) -- plain toggles (no keybind), passive visual effects.
@@ -5593,6 +6020,8 @@ local Visual = {
     Arms     = { X = 0, Y = 0, Z = 0, RX = 0, RY = 0, RZ = 0 },
     Material = { Name = "Neon", Color = Color3.fromRGB(212, 145, 90) },
 }
+-- CustomAnim config reused from CFG so the pill/held system drives it
+Visual.CustomAnim = CFG.customanim
 registerConfig("character_visual", Visual)
 
 local SHOULDER = { ["Right Shoulder"] = true, ["Left Shoulder"] = true,
@@ -5673,22 +6102,33 @@ local function restoreMaterial()
     matSnap = {}
 end
 
--- v0.0.66: Static Forcefield -- a forcefield-material SHELL layered over the character (a
--- "second material": the base Character Material stays underneath). Clones each visible
--- part's shape, sets Material = ForceField, welds it on. Marked with the KFF attribute so
--- Character Material skips it. The ForceField MATERIAL is the static hex shell, not the
--- animated spawn-protection bubble.
+-- v0.0.66 -> v0.0.97: Static Forcefield shell. Originally a separate module with
+-- its own toggle; v0.0.97 folded it into the Material dropdown as a "Static"
+-- option so the user picks forcefield-look material once instead of toggling two
+-- things. Clones each visible part's shape, sets Material = ForceField, welds it
+-- on. Marked with the KFF attribute so Character Material skips it. v0.0.97:
+-- skip MeshParts and parts whose descendants include a mesh -- cloning those
+-- produced a duplicate visible head/face floating at the same CFrame (the
+-- "second head stuck on blue" bug the user reported).
 local ffShell, ffChar = {}, nil
 local function clearFF()
     for _, shell in pairs(ffShell) do pcall(function() shell:Destroy() end) end
     ffShell, ffChar = {}, nil
+end
+local function partHasMesh(p)
+    if p:IsA("MeshPart") then return true end
+    for _, ch in ipairs(p:GetChildren()) do
+        if ch:IsA("SpecialMesh") or ch:IsA("DataModelMesh") then return true end
+    end
+    return false
 end
 local function applyFF()
     local c = char(); if not c then return end
     if ffChar ~= c then clearFF(); ffChar = c end
     for _, p in ipairs(c:GetDescendants()) do
         if p:IsA("BasePart") and not ffShell[p] and not p:GetAttribute("KFF")
-           and p.Name ~= "HumanoidRootPart" and p.Transparency < 1 then
+           and p.Name ~= "HumanoidRootPart" and p.Transparency < 1
+           and not partHasMesh(p) then
             local ok, shell = pcall(function()
                 local s = p:Clone()
                 for _, ch in ipairs(s:GetChildren()) do
@@ -5817,7 +6257,66 @@ end)
 
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
 registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
-registerModule("staticff",     "Static Forcefield", function() end, function() clearFF() end)
+local ANIM_IDS = {
+    ["Orbit 1"] = "118314972618293", ["Orbit 2"] = "133811691098518", ["Orbit 3"] = "138488217385385", ["Orbit 4"] = "91729309021707",
+    ["Aura 1"] = "140445336277156", ["Aura 2"] = "107902247206226", ["Aura 3"] = "71799101103620",
+    ["Small Body 1"] = "132582392404773", ["Small Body 2"] = "117450501566142"
+}
+local currentAnimTrack = nil
+local currentAnimId = nil
+RunService.Heartbeat:Connect(function()
+    local active = Modules.customanim and Modules.customanim.IsActive()
+    if not active then
+        if currentAnimTrack then
+            currentAnimTrack:Stop()
+            currentAnimTrack:Destroy()
+            currentAnimTrack = nil
+        end
+        currentAnimId = nil
+        return
+    end
+    local targetId = ANIM_IDS[Visual.CustomAnim.Name]
+    if currentAnimTrack and currentAnimId == targetId then
+        if not currentAnimTrack.IsPlaying then currentAnimTrack:Play() end
+        return
+    end
+    if currentAnimTrack then
+        currentAnimTrack:Stop()
+        currentAnimTrack:Destroy()
+        currentAnimTrack = nil
+    end
+    local character = LocalPlayer.Character
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    local animator = humanoid:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = Instance.new("Animator")
+        animator.Parent = humanoid
+    end
+    local animObject = nil
+    local success, objects = pcall(function() return game:GetObjects("rbxassetid://" .. targetId) end)
+    if success and objects and #objects > 0 then
+        for _, obj in ipairs(objects) do
+            if obj:IsA("Animation") then animObject = obj; break end
+            local childAnim = obj:FindFirstChildOfClass("Animation", true)
+            if childAnim then animObject = childAnim; break end
+        end
+    end
+    if not animObject then
+        animObject = Instance.new("Animation")
+        animObject.AnimationId = "rbxassetid://" .. targetId
+    end
+    local ok, track = pcall(function() return animator:LoadAnimation(animObject) end)
+    if ok and track then
+        track.Looped = true
+        track.Priority = Enum.AnimationPriority.Action4
+        track:Play()
+        currentAnimTrack = track
+        currentAnimId = targetId
+    end
+end)
+registerModule("staticff",     "Static Forcefield", function() end, function() clearFF() end)  -- v0.0.97: kept registered (no UI toggle) so clearFF runs if a config still has it on
 registerModule("bodyremoval",  "Body Removal",      function() end, function() restoreBodyRemoval() end)
 registerModule("thirdperson",  "3rd Person",        function() tpOnEnable() end, function() tpOnDisable() end)
 RunService.RenderStepped:Connect(function()
@@ -5828,7 +6327,7 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- curated material list (dropdown). Names resolve via Enum.Material[name].
-local MATERIALS = { "Plastic", "SmoothPlastic", "Neon", "ForceField", "Glass", "Metal",
+local MATERIALS = { "Plastic", "SmoothPlastic", "Neon", "ForceField", "Static", "Glass", "Metal",
     "DiamondPlate", "Foil", "Wood", "WoodPlanks", "Marble", "Granite", "Slate", "Concrete",
     "Brick", "Cobblestone", "Ice", "Grass", "Sand", "Fabric", "Pebble", "CorrodedMetal" }
 
@@ -5937,7 +6436,7 @@ Koffee._characterTab = function(root)
     slider(mv, "Fly Speed", 0, 5000, Move.Fly.Speed, 0, function(v) Move.Fly.Speed = v end)
     dropdown(mv, "Fly Mode", { "Default Fly", "Vehicle Fly", "CFrame Fly" }, Move.Fly.Kind, function(v) Move.Fly.Kind = v end)
     feat("Spinbot", "spinbot")
-    slider(mv, "Spin Speed", 0, 1000, Move.Spin.Speed, 0, function(v) Move.Spin.Speed = v end)
+    slider(mv, "Spin Speed", 1, 1000, Move.Spin.Speed, 0, function(v) Move.Spin.Speed = v end)
     configCheckbox(mv, "Bypass Camera Lock", Move.Spin.BypassCameraLock, function(v) Move.Spin.BypassCameraLock = v end)
     feat("Noclip", "noclip")
     feat("Float", "float")
@@ -5964,6 +6463,9 @@ Koffee._characterTab = function(root)
     dropdown(ddHost, "Material", MATERIALS, Visual.Material.Name, function(v)
         Visual.Material.Name = v
         if vpPart then vpPart.Material = matEnum() end
+        -- v0.0.97: "Static" option drives the static forcefield shell overlay
+        -- (was a separate toggle pre-v0.0.97). Clear on any non-Static selection.
+        if v == "Static" then applyFF() else clearFF() end
     end)
     local vpf = new("ViewportFrame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 22),
         Size = UDim2.new(0, 44, 0, 26), BackgroundColor3 = Theme.Palette.PanelElevated,
@@ -5981,10 +6483,12 @@ Koffee._characterTab = function(root)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then openMaterialPreview() end
     end)
 
-    -- Static Forcefield: a second material -- forcefield-hex shell over the base material
-    moduleCheckbox(vis, "Static Forcefield", "staticff")
+    -- v0.0.97: Static Forcefield was removed as a separate toggle -- it's now a
+    -- "Static" option inside the Material dropdown above. The shell logic
+    -- (applyFF / clearFF) lives on so saved configs that still have the old
+    -- toggle on can be cleared cleanly via the module's onDisable hook.
 
-    -- v0.0.76: Body Removal -- makes every character part invisible while enabled
+    -- v0.0.76: Body Removal -- makes every character body part invisible while enabled
     moduleCheckbox(vis, "Body Removal", "bodyremoval")
 
     -- v0.0.94 3rd Person: toggle + keybind pill (combo-aware -- accepts Shift+C etc.).
@@ -6000,6 +6504,15 @@ Koffee._characterTab = function(root)
     slider(vis, "Arm Rot X", -180, 180, Visual.Arms.RX, 0, function(v) Visual.Arms.RX = v end)
     slider(vis, "Arm Rot Y", -180, 180, Visual.Arms.RY, 0, function(v) Visual.Arms.RY = v end)
     slider(vis, "Arm Rot Z", -180, 180, Visual.Arms.RZ, 0, function(v) Visual.Arms.RZ = v end)
+
+    -- Custom Anim
+    local animRow = moduleCheckbox(vis, "Custom Anim", "customanim")
+    activationPill(animRow.row, CFG.customanim)
+    dropdown(vis, "Animation", {
+        "Orbit 1", "Orbit 2", "Orbit 3", "Orbit 4",
+        "Aura 1", "Aura 2", "Aura 3",
+        "Small Body 1", "Small Body 2"
+    }, Visual.CustomAnim.Name, function(v) Visual.CustomAnim.Name = v end)
 end
 
 end)()
@@ -6029,6 +6542,7 @@ local Combat = {
         ThirdPerson   = false,
         Distance      = 500,
         Sensitivity   = 0.4,
+        PerfectLock   = false,                            -- v0.0.96: true = snap straight onto the target, ignores Sensitivity + Smooth
         TeamCheck     = true,
         VisibleCheck  = false,
         HealthCheck   = false,
@@ -6242,6 +6756,11 @@ local Combat = {
                 local excluded = (cfg.TeamCheck and isTeammate(plr))
                               or (Shared.IgnoreFriends and isFriend(plr))
                 if alive and hcOk and not excluded then
+                    -- v0.0.97 TARGET LOCK: while engaged, only the named player is
+                    -- a legal target at all. Everything else is invisible to the
+                    -- targeting loop (aim, silent, trigger all share this).
+                    if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) 
+                       or Shared.targetLockPlayer() == plr then
                     if true then
                         local part = aimPart(char, cfg.HitPart)
                         if part then
@@ -6262,6 +6781,7 @@ local Combat = {
                                 end
                             end
                         end
+                    end
                     end
                 end
             end
@@ -6471,6 +6991,9 @@ local Combat = {
 
     --== activation pill: click = rebind (any input), right-click = hold/toggle ==--
     local pendingActivation = nil
+    -- v0.0.97: Target Lock status updater -- set by the Combat UI builder (which owns
+    -- tlStatus); the key-toggle handler above calls it after flipping _active.
+    local tlStatusUpdater = nil
     local function activationPill(row, cfg)
         local pill = new("TextButton", {
             Name = "ActivationPill", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
@@ -6664,11 +7187,19 @@ local Combat = {
                 if key == "Hit" then return true, CFrame.new(pos) end
                 if key == "Target" then return true, tgt end
                 -- UnitRay: Pos Spoof (fire frame) -> origin in front of the target (wallbang);
-                -- else the real camera origin (direction to target).
-                if posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
+                -- else the real camera origin (direction to target). Pos Spoof is
+                -- gated off in safe mode -- keep the plain camera-origin ray.
+                if not Combat.Silent._safe and posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
                 if SR.camPos then return true, Ray.new(SR.camPos, (pos - SR.camPos).Unit) end
                 return PASS_H, PASS_V
             end
+            -- v0.0.96 SAFE MODE: everything below (Camera.CFrame spoof, Mouse.X/Y
+            -- spoof, Pos Spoof part reads) is skipped on weak execs -- these paths
+            -- are the ones that freeze/dump the game on runtimes that can't hold a
+            -- stable hookmetamethod C-closure across the extra scoping work. Mouse
+            -- aim reads above are enough for basic silent aim on client-authoritative
+            -- games; server-authoritative wallbang stays disabled here.
+            if Combat.Silent._safe then return PASS_H, PASS_V end
             -- (B) v0.0.39 FIRE-READ: spoof the aim the instant the WEAPON SCRIPT reads
             -- Camera.CFrame or the cursor -- scoped by getcallingscript so the real
             -- camera the renderer/Popper reads is NEVER modified (view stays put). This
@@ -6791,9 +7322,24 @@ local Combat = {
         pcall(function()
             local hookmm   = hookmetamethod
             local ncmethod = getnamecallmethod
-            local wrap     = newcclosure or function(f) return f end
             local ccaller  = checkcaller   -- true => called from our own executor thread
             if not hookmm then return end
+
+            -- v0.0.96 SAFE MODE branch. On runtimes flagged by the load-time exec
+            -- prompt (anything not on the known-good list), silent aim installs
+            -- ONLY the __index hook, without newcclosure wrapping, without the
+            -- __namecall hook, and the resolver never runs the Camera.CFrame /
+            -- pos-spoof / wallshot paths (see Combat.Silent._safe checks inside
+            -- resolveIndex). This avoids the newcclosure+__namecall pairing that
+            -- freezes lightweight runtimes when a weapon triggers a FireServer
+            -- redirect. Result: less powerful silent aim (no wallbang, no server-
+            -- side forced-mb via namecall), but the game doesn't crash. Trade-off
+            -- is what the popup asked the user about.
+            local safe = Koffee._safeMode == true
+            Combat.Silent._safe = safe
+            local wrap = safe and function(f) return f end
+                                or (newcclosure or function(f) return f end)
+
             local oldIndex
             oldIndex = hookmm(game, "__index", wrap(function(self, key)
                 -- our own reads are never spoofed; also defeats trap-callbacks that
@@ -6806,34 +7352,39 @@ local Combat = {
                 end
                 return oldIndex(self, key)
             end))
-            local oldNc
-            oldNc = hookmm(game, "__namecall", wrap(function(self, ...)
-                -- Capture method BEFORE anything else. NEVER do a nested namecall here --
-                -- getnamecallmethod reads one shared C state; a nested namecall while a
-                -- real FireServer is dispatching corrupts it and bricks the weapon after
-                -- one shot ("one bullet then the gun dies" bug, fixed in v0.0.40).
-                local m = ncmethod and ncmethod() or ""
-                if ccaller and ccaller() then return oldNc(self, ...) end
-                local r = genv and genv[K.nc]
-                if r then
-                    local args = table.pack(...)
-                    local ok, handled, value = pcall(r, self, m, args)
-                    if ok then
-                        if handled == true then return value end
-                        if handled == "call" then return oldNc(self, table.unpack(value, 1, args.n)) end
+
+            if not safe then
+                local oldNc
+                oldNc = hookmm(game, "__namecall", wrap(function(self, ...)
+                    -- Capture method BEFORE anything else. NEVER do a nested namecall here --
+                    -- getnamecallmethod reads one shared C state; a nested namecall while a
+                    -- real FireServer is dispatching corrupts it and bricks the weapon after
+                    -- one shot ("one bullet then the gun dies" bug, fixed in v0.0.40).
+                    local m = ncmethod and ncmethod() or ""
+                    if ccaller and ccaller() then return oldNc(self, ...) end
+                    local r = genv and genv[K.nc]
+                    if r then
+                        local args = table.pack(...)
+                        local ok, handled, value = pcall(r, self, m, args)
+                        if ok then
+                            if handled == true then return value end
+                            if handled == "call" then return oldNc(self, table.unpack(value, 1, args.n)) end
+                        end
                     end
-                end
-                return oldNc(self, ...)
-            end))
+                    return oldNc(self, ...)
+                end))
+            end
         end)
     end
 
     --== render loops ==--
-    -- aimbot: run AFTER the default camera update so our CFrame wins. cold-start
-    -- safety: a prior run's binding survives re-exec and re-binding the same name
-    -- throws -- unbind first so the loader can be re-run cleanly.
+    -- aimbot: run AFTER every camera controller in the game (Last+1) so our
+    -- CFrame is the final write before render -- fast mouse movement can't shake
+    -- a Perfect Lock. cold-start safety: a prior run's binding survives re-exec
+    -- and re-binding the same name throws -- unbind first so the loader can be
+    -- re-run cleanly.
     pcall(function() RunService:UnbindFromRenderStep(KID.ctx.bind) end)
-    RunService:BindToRenderStep(KID.ctx.bind, Enum.RenderPriority.Camera.Value + 1, function()
+    RunService:BindToRenderStep(KID.ctx.bind, Enum.RenderPriority.Last.Value + 1, function()
         if not (Combat.Aim.Enabled and aimHeld) then
             Combat.Aim._target = nil; Combat.Aim._rageLock = nil; return
         end
@@ -6872,15 +7423,25 @@ local Combat = {
         Combat.Aim._rageLock = nil
 
         local plr, part
+        -- v0.0.97 true sticky: hold the locked player across FOV / off-screen, only
+        -- drop when the player dies / respawns / leaves. The aim math (lookAt /
+        -- aimCFrame) handles a target behind the camera by rotating back toward it,
+        -- so the locked victim is chased off-screen too -- not replaced the moment
+        -- they leave the FOV circle. Falls through to getBestTarget for a fresh lock
+        -- only when there's no valid held target.
         if Combat.Aim.Sticky and Combat.Aim._target then
             local t = Combat.Aim._target
             local char = t.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if char and hum and hum.Health > 0 then
                 local p = aimPart(char, Combat.Aim.HitPart)
+                -- v0.0.97: respect the Distance rule even for a held sticky target --
+                -- if they run beyond Combat.Aim.Distance the lock releases and a fresh
+                -- target is acquired inside range.
                 if p then
-                    local sp = cam:WorldToViewportPoint(p.Position)
-                    if sp.Z > 0 and (Vector2.new(sp.X, sp.Y) - aimCenter).Magnitude <= maxR then
+                    local distOk = (not Combat.Aim.Distance)
+                                or ((p.Position - cam.CFrame.Position).Magnitude <= Combat.Aim.Distance)
+                    if distOk then
                         plr, part = t, p
                     end
                 end
@@ -6907,7 +7468,21 @@ local Combat = {
             aY = math.clamp(sens / math.max(Combat.Aim.Smooth.Y, 0.01), 0, 1)
         end
 
-        if Combat.Aim.ThirdPerson then
+        if Combat.Aim.PerfectLock then
+            -- v0.0.97 Perfect Lock: mode-aware. Camera aim type = snap camera
+            -- angles straight to the target via aimCFrame with aX=aY=1 (full 1:1
+            -- interpolation, no sensitivity / smoothing). Mouse / Third-Person =
+            -- move the real mouse cursor straight onto the target's screen point.
+            if Combat.Aim.AimType == "Camera" and not Combat.Aim.ThirdPerson then
+                cam.CFrame = aimCFrame(cam, cam.CFrame.Position, tpos, 1, 1)
+            elseif mousemoverel then
+                local sp = cam:WorldToViewportPoint(tpos)
+                if sp.Z > 0 then
+                    local ml = UserInputService:GetMouseLocation()
+                    pcall(mousemoverel, sp.X - ml.X, sp.Y - ml.Y)
+                end
+            end
+        elseif Combat.Aim.ThirdPerson then
             -- v0.0.36.1: drive the REAL mouse onto the target's screen point. Measured
             -- live: WorldToViewportPoint INCLUDES the 58px GUI inset but PlayerMouse.X/Y
             -- does NOT -- mixing them aimed a constant ~58px low (whole-body error at
@@ -7368,7 +7943,7 @@ local Combat = {
     local function untrackHP(plr)
         local st = plrHP[plr]; if not st then return end
         for _, c in ipairs(st.conns) do pcall(function() c:Disconnect() end) end
-        SR.recentDamage[plr.Character] = nil
+        if plr.Character then SR.recentDamage[plr.Character] = nil end
         plrHP[plr] = nil
     end
     local function onHpDropped(char, dropped, nowZero)
@@ -7581,6 +8156,13 @@ local Combat = {
             return
         end
         if gpe then return end
+        -- v0.0.97 TARGET LOCK toggle key: armed + key pressed -> flip the lock.
+        if Shared.TargetLock.Enabled and Shared.TargetLock.Key
+        and inputMatches(input, Shared.TargetLock.Key) then
+            Shared.TargetLock._active = not Shared.TargetLock._active
+            if tlStatusUpdater then tlStatusUpdater() end
+            return
+        end
         if Combat.Aim.Enabled and inputMatches(input, Combat.Aim.ActivationKey) then
             if Combat.Aim.ActivationMode == "Toggle" then aimHeld = not aimHeld else aimHeld = true end
         end
@@ -7650,6 +8232,13 @@ local Combat = {
             if Combat.Trigger.ActivationMode == "Toggle" then
                 if edge(Combat.Trigger.ActivationKey) then trigHeld = not trigHeld end
             else trigHeld = down(Combat.Trigger.ActivationKey) end
+        end
+        -- v0.0.97 TARGET LOCK: toggle the lock on a virtual XButton edge
+        if type(Shared.TargetLock.Key) == "string" then
+            if Shared.TargetLock.Enabled and edge(Shared.TargetLock.Key) then
+                Shared.TargetLock._active = not Shared.TargetLock._active
+                if tlStatusUpdater then tlStatusUpdater() end
+            end
         end
 
         pXB1, pXB2 = xb1, xb2
@@ -7870,6 +8459,7 @@ local Combat = {
         configCheckbox(L.Aimbot, "Third Person", Combat.Aim.ThirdPerson, function(v) Combat.Aim.ThirdPerson = v end)
         slider(L.Aimbot, "Distance", 50, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end, { infinite = true })
         slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
+        configCheckbox(L.Aimbot, "Perfect Lock", Combat.Aim.PerfectLock, function(v) Combat.Aim.PerfectLock = v end)
         dropdown(L.Aimbot, "Hit Part", HITPARTS, Combat.Aim.HitPart, function(v) Combat.Aim.HitPart = v end)
         dropdown(L.Aimbot, "Aim Type", { "Camera", "Mouse" }, Combat.Aim.AimType, function(v) Combat.Aim.AimType = v end)
         local rageRow = configCheckbox(L.Aimbot, "Ragebot", Combat.Aim.Rage, function(v) Combat.Aim.Rage = v end)
@@ -7930,6 +8520,115 @@ local Combat = {
         configCheckbox(soundCard, "Overlap Sounds", Combat.HitSounds.Overlap, function(v) Combat.HitSounds.Overlap = v end)
         slider(soundCard, "Attr Window (s)", 0.5, 5, Combat.HitSounds.AttrWindow, 2, function(v) Combat.HitSounds.AttrWindow = v end)
         slider(soundCard, "Before Click (ms)", 1, 500, Combat.HitSounds.BeforeClick, 0, function(v) Combat.HitSounds.BeforeClick = math.floor(v) end)
+
+        --== v0.0.97 TARGET LOCK -- type a name, arm the toggle, hit the keybind to
+        -- engage. While engaged, only that named player is a valid target for aimbot /
+        -- silent aim / trigger, and ESP renders only them. Hit the keybind again
+        -- (or un-arm) to release back to "everyone".
+        local tlCard = panel(leftCol, "Target Lock")
+        local tlArm = configCheckbox(tlCard, "Armed", Shared.TargetLock.Enabled, function(v)
+            Shared.TargetLock.Enabled = v
+            if not v then Shared.TargetLock._active = false; if tlState then tlState:set() end end
+        end)
+        -- name input row
+        local tlNameRow = new("Frame", {
+            Size = UDim2.new(1, 0, 0, CHECKBOX_ROW_HEIGHT),
+            BackgroundTransparency = 1, ZIndex = 34,
+            LayoutOrder = 2, Parent = tlCard,
+        })
+        new("TextLabel", {
+            Text = "Target Name", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            Position = UDim2.new(0, CHECKBOX_LABEL_OFFSET, 0, 0),
+            Size = UDim2.new(1, -CHECKBOX_LABEL_OFFSET - 90, 1, 0),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = tlNameRow,
+        })
+        local tlBox = new("TextBox", {
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 80, 0, CHECKBOX_ROW_HEIGHT - 8),
+            Text = Shared.TargetLock.Name or "", PlaceholderText = "username...",
+            ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, ZIndex = 36, Parent = tlNameRow,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+        tlBox.FocusLost:Connect(function(enter)
+            Shared.TargetLock.Name = tlBox.Text
+            tlStatusUpdater()
+        end)
+        -- activation keybind row
+        local tlKeyRow = new("Frame", {
+            Size = UDim2.new(1, 0, 0, CHECKBOX_ROW_HEIGHT),
+            BackgroundTransparency = 1, ZIndex = 34, LayoutOrder = 3, Parent = tlCard,
+        })
+        new("TextLabel", {
+            Text = "Activate Key", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            Position = UDim2.new(0, CHECKBOX_LABEL_OFFSET, 0, 0),
+            Size = UDim2.new(1, -CHECKBOX_LABEL_OFFSET - 90, 100, 0),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = tlKeyRow,
+        })
+        local tlKeyPill = new("TextButton", {
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 34, 0, 15), AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, AutoButtonColor = false,
+            Text = keyLabel(Shared.TargetLock.Key) or "set", FontFace = Theme.Fonts.Mono,
+            TextSize = Theme.Text.Tiny, TextColor3 = Theme.Palette.TextMuted, ZIndex = 38, Parent = tlKeyRow,
+        }, { pillCorner(), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        tlKeyPill.MouseButton1Click:Connect(function()
+            if pendingActivation then pendingActivation.refresh() end
+            tlKeyPill.Text = "..."
+            tween(tlKeyPill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
+            -- proxy cfg: the rebind commit writes cfg.ActivationKey (InputBegan +
+            -- XButton poll both do this) -- mirror into Shared.TargetLock.Key so the
+            -- runtime key reader picks it up.
+            local proxy = {}
+            pendingActivation = { pill = tlKeyPill, cfg = proxy, refresh = function()
+                tlKeyPill.Text = keyLabel(Shared.TargetLock.Key) or "-"
+            end }
+            local _g = proxy
+            setmetatable(proxy, { __index = function() end, __newindex = function(self, k, v)
+                if k == "ActivationKey" then
+                    Shared.TargetLock.Key = v
+                    tlKeyPill.Text = keyLabel(v) or "-"
+                end
+                _g[k] = v
+            end })
+        end)
+        -- live status label: shows who is locked / none
+        local tlStatus = new("TextLabel", {
+            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = 4, ZIndex = 35, Parent = tlCard,
+        })
+        -- status updater -- also auto-releases when the locked player leaves / dies
+        -- (the lock cannot dangle on a ghost). Set into the combat IIFE-local slot the
+        -- key-toggle handler already calls.
+        tlStatusUpdater = function()
+            local engaged = Shared.TargetLock.Enabled and Shared.TargetLock._active
+            if not engaged then
+                tlStatus.Text = "idle -- press key to lock"
+                return
+            end
+            local t = Shared.targetLockPlayer()
+            if not t then
+                tlStatus.Text = "locked -- target not found"
+                return
+            end
+            tlStatus.Text = "locked -> " .. t.Name
+        end
+        tlStatusUpdater()
+        RunService.Heartbeat:Connect(function()
+            if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return end
+            if not Shared.targetLockPlayer() then
+                Shared.TargetLock._active = false
+                tlStatusUpdater()
+            end
+        end)
 
         --== RIGHT COLUMN ==--
         local rightCard = panel(rightCol)
@@ -8231,9 +8930,51 @@ end)
 
 addTab("Character", function(root) Koffee._characterTab(root) end)
 
+-- v0.0.96: options state (arraylist preferences) rides the config system too.
+registerConfig("options", KoffeeOptions)
+
 -- OPTIONS TAB (v0.0.34)
 addTab("Options", function(root)
     local card = panel(root, "options")
+
+    local uiPanel = panel(root, "interface")
+    local arrRow = configCheckbox(uiPanel, "Arraylist", KoffeeOptions.Arraylist, function(v)
+        KoffeeOptions.Arraylist = v
+        labelsColumn.Visible = v
+    end)
+    rightClickSettings(arrRow.row, "arraylist", function(menu)
+        menu:toggle("Overwrite Outline", KoffeeOptions.ArraylistOutline, function(v)
+            KoffeeOptions.ArraylistOutline = v
+        end)
+        menu:slider("Outline Size", 1, 5, KoffeeOptions.ArraylistOutlineSize, 0, function(v)
+            KoffeeOptions.ArraylistOutlineSize = v
+        end)
+    end)
+
+    -- v0.0.97 CUSTOM FONT -- applies a user-chosen font to everything that isn't
+    -- the main Koffee window (arraylist, ESP name / distance / health text, HUD
+    -- stats, etc.). The dropdown lists the fonts hosted on koffee-assets (see
+    -- FONTS_CATALOG); right-click the row to tune the global text size used while
+    -- the custom font is on -- so the pixel fonts don't render too big / small.
+    -- Default off + "None" -- feature interface looks exactly like before.
+    local fontOptions = { "None", "Minecraft Bold", "Minecraft Regular", "ImGui" }
+    -- user-dropped fonts land in the workspace as koffee_<name>.otf; surface any
+    -- extra cached entries the catalog doesn't know so they're selectable too.
+    local fontRow = configCheckbox(uiPanel, "Custom Font", KoffeeOptions.CustomFontOn, function(v)
+        KoffeeOptions.CustomFontOn = v
+        Theme.setFeiOn(v)
+        if v then Theme.setFeiFont(KoffeeOptions.CustomFontName) end
+    end)
+    rightClickSettings(fontRow.row, "custom font", function(menu)
+        menu:slider("Font Size", 8, 28, KoffeeOptions.CustomFontSize, 0, function(v)
+            KoffeeOptions.CustomFontSize = v
+            Theme.setFeiSize(v)
+        end)
+    end)
+    dropdown(uiPanel, "Font", fontOptions, KoffeeOptions.CustomFontName, function(v)
+        KoffeeOptions.CustomFontName = v
+        Theme.setFeiFont(v)
+    end)
     -- Ignore Friends: friends are excluded from ESP + aimbot + silent + trigger.
     configCheckbox(card, "Ignore Friends", Shared.IgnoreFriends, function(v)
         Shared.IgnoreFriends = v
@@ -8522,58 +9263,8 @@ task.spawn(function()
     selectTab("Visuals")
 end)
 
--- SESSION TOAST (BOTTOM-RIGHT)
--- v0.0.95: toast is wider + sub-text wraps + auto-sizes vertically so the
--- warning line doesn't spill outside the panel background.
-local toast = new("Frame", {
-    Name = "SessionToast",
-    AnchorPoint = Vector2.new(1, 1),
-    Size = UDim2.new(0, 300, 0, 46),
-    AutomaticSize = Enum.AutomaticSize.Y,
-    Position = UDim2.new(1, -12, 1, -12),
-    BackgroundColor3 = Theme.Palette.Panel,
-    BackgroundTransparency = 0.1,
-    BorderSizePixel = 0,
-    ZIndex = 20,
-    Parent = screen,
-}, {
-    corner(Theme.Radius.Medium),
-    stroke(Theme.Palette.BorderSubtle),
-    new("UIPadding", {
-        PaddingLeft = UDim.new(0, 12),
-        PaddingRight = UDim.new(0, 12),
-        PaddingTop = UDim.new(0, 8),
-        PaddingBottom = UDim.new(0, 8),
-    }),
-})
-
-new("TextLabel", {
-    Text = "session validated",
-    FontFace = Theme.Fonts.Medium,
-    TextSize = Theme.Text.Body,
-    TextColor3 = Theme.Palette.Success,
-    BackgroundTransparency = 1,
-    Size = UDim2.new(1, 0, 0, 14),
-    TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 21,
-    Parent = toast,
-})
-
-new("TextLabel", {
-    Text = "do not attempt to crack koffee or share credentials",
-    FontFace = Theme.Fonts.Regular,
-    TextSize = Theme.Text.Small,
-    TextColor3 = Theme.Palette.TextMuted,
-    BackgroundTransparency = 1,
-    Position = UDim2.new(0, 0, 0, 16),
-    Size = UDim2.new(1, 0, 0, 14),
-    AutomaticSize = Enum.AutomaticSize.Y,
-    TextWrapped = true,
-    TextYAlignment = Enum.TextYAlignment.Top,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 21,
-    Parent = toast,
-})
+-- v0.0.97: the bottom-right session toast was removed entirely (the user
+-- asked to drop the widget, not just the headline label). nothing replaces it.
 
 -- WINDOW TOGGLE + BACKGROUND SYNC
 -- Delete key toggles. Everything (window + snow + dim + blur) fades
