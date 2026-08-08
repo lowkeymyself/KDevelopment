@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.97"
+Koffee.Version = "0.0.98"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
 -- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
@@ -617,6 +617,47 @@ local function tween(inst, info, props)
     local t = TweenService:Create(inst, info, props)
     t:Play()
     return t
+end
+
+-- v0.0.98: MAIN-INTERFACE ANIMATION LAYER. Every widget class in the window gets
+-- a short, quick motion -- nothing here touches the Second Interface (top bar /
+-- HUD / toast / arraylist / ESP). Three primitives, all built on a per-instance
+-- UIScale (visual-only, never fights UIListLayout / AutomaticSize):
+--   uScaleOf(inst)  -- lazily attaches one UIScale per instance
+--   popFx(btn)      -- press feedback: squash to 0.95 while held, spring back
+--   popIn(inst, f)  -- entrance: scale f -> 1 (fades transparency too if asked)
+--   pulse(inst, s)  -- one-shot: to f then back to 1 (ticks, pops, catches)
+local _us_cache = {}
+local function uScaleOf(inst)
+    local sc = _us_cache[inst]
+    if not sc then
+        sc = new("UIScale", { Parent = inst })
+        _us_cache[inst] = sc
+    end
+    return sc
+end
+
+-- press-squash: everything clickable in the window responds with a tiny squash
+-- instead of static text swaps. Cancel-proof: MouseLeave while held restores.
+local function popFx(btn)
+    local sc = uScaleOf(btn)
+    btn.MouseButton1Down:Connect(function()
+        tween(sc, Theme.Animation.Fast, { Scale = 0.94 })
+    end)
+    btn.MouseButton1Up:Connect(function()
+        tween(sc, Theme.Animation.Fast, { Scale = 1 })
+    end)
+    btn.MouseLeave:Connect(function()
+        tween(sc, Theme.Animation.Fast, { Scale = 1 })
+    end)
+end
+
+-- entrance: fade + grow-in (cards, tab panels, popups).
+-- one-shot tick: to `to` then settle back to 1.
+local function pulse(inst, to)
+    local sc = uScaleOf(inst)
+    sc.Scale = to
+    tween(sc, Theme.Animation.Fast, { Scale = 1 })
 end
 
 local function colorToHex(c)
@@ -1601,8 +1642,9 @@ local pillFirstShow = true
 -- since the tabBar itself doesn't move, the old code never re-snapped and the pill
 -- sat offset until you clicked another tab. Now every source of reflow (font load,
 -- window drag, resize) re-snaps through the single geometry watcher below.
-local PILL_STRETCH  = TweenInfo.new(0.20, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-local PILL_CONTRACT = TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+-- v0.0.98: quicker pop rhythm -- the grow reads as a flick, not a ponder.
+local PILL_STRETCH  = TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+local PILL_CONTRACT = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local pillAnimating = false
 local pillT1, pillT2 = nil, nil
 
@@ -1627,26 +1669,45 @@ end
 
 local function movePillTo(button, snap)
     if pillFirstShow or snap then pillSnap(button); return end
+    if pillT1 then pillT1:Cancel(); pillT1 = nil end
+    if pillT2 then pillT2:Cancel(); pillT2 = nil end
     local targetPos, targetSize = pillRectFor(button)
-    -- stretch phase: span both the current pill and the destination, then contract.
-    local curX, curW = pill.Position.X.Offset, pill.Size.X.Offset
-    local endX, endW = targetPos.X.Offset, targetSize.X.Offset
-    local stretchX = math.min(curX, endX)
-    local stretchW = math.max(curX + curW, endX + endW) - stretchX
-    if pillT1 then pillT1:Cancel() end
-    if pillT2 then pillT2:Cancel() end
     pillAnimating = true
+    -- v0.0.98: the pill POP -- on a switch it grows only HALF A PILL past the
+    -- destination (hard cap, centered on the target so it reads as the pill
+    -- swelling, not sliding across), then the only move left is to shrink down
+    -- to the exact resting rect. No walk-span, no accumulation: if another
+    -- switch lands mid-flight both tweens are cancelled and the pop restarts
+    -- from the CURRENT rect, so the pill can never grow forever.
+    local w    = targetSize.X.Offset
+    local ow   = w + w * 0.5
+    local ox   = targetPos.X.Offset - (ow - w) * 0.5
+    local y    = targetPos.Y.Offset
+    local h    = targetSize.Y.Offset
     pillT1 = TweenService:Create(pill, PILL_STRETCH, {
-        Position = UDim2.new(0, stretchX, 0, targetPos.Y.Offset),
-        Size     = UDim2.new(0, stretchW, 0, targetSize.Y.Offset),
+        Position = UDim2.new(0, ox, 0, y),
+        Size     = UDim2.new(0, ow, 0, h),
     })
     pillT1:Play()
     pillT1.Completed:Connect(function(state)
         if state ~= Enum.PlaybackState.Completed then return end
-        pillT2 = TweenService:Create(pill, PILL_CONTRACT, { Position = targetPos, Size = targetSize })
+        if pillT2 then pillT2:Cancel() end
+        pillT2 = TweenService:Create(pill, PILL_CONTRACT, {
+            Position = targetPos,
+            Size     = targetSize,
+        })
         pillT2:Play()
         pillT2.Completed:Connect(function(s2)
-            if s2 == Enum.PlaybackState.Completed then pillAnimating = false end
+            -- v0.0.98: ANY finish state clears the flag -- a stale `true` here is
+            -- what wedged the pill "growing forever" (resync was permanently
+            -- blocked). Cancelled = superseded by a newer pop, snap to truth.
+            if s2 == Enum.PlaybackState.Completed then
+                pillAnimating = false
+            else
+                pillAnimating = false
+                local t = tabs[activeTab]
+                if t then pillSnap(t.Button) end
+            end
         end)
     end)
 end
@@ -1670,8 +1731,21 @@ local function selectTab(name)
         tween(tab.Button, Theme.Animation.Fast, {
             TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted,
         })
-        tab.Panel.Visible = isActive
-        if isActive then movePillTo(tab.Button) end
+        -- v0.0.98: the new tab SCROLLS UP into place (quick rise + fade) instead
+        -- of blinking in -- the outgoing panel just drops instantly.
+        if isActive then
+            tab.Panel.Visible = true
+            tab.Panel.CanvasPosition = Vector2.new(0, 0)
+            tab.Panel.GroupTransparency = 1
+            local sc = uScaleOf(tab.Panel)
+            sc.Scale = 0.985
+            tween(tab.Panel, Theme.Animation.Slow, { GroupTransparency = 0 })
+            tween(sc,           Theme.Animation.Slow, { Scale = 1 })
+            movePillTo(tab.Button)
+        else
+            tab.Panel.Visible = false
+            tab.Panel.GroupTransparency = 1
+        end
     end
 end
 
@@ -1827,6 +1901,7 @@ local function addTab(name, buildFn)
         end
     end)
     button.MouseButton1Click:Connect(function() selectTab(name) end)
+    popFx(button)   -- v0.0.98: tabs squash on press too -- every clickable does.
 
     -- v0.0.34: stash the build fn so the config system can re-run it against the
     -- same panel (clears children first) to push loaded values into every widget.
@@ -1910,6 +1985,16 @@ local function panel(parent, title)
             Parent = card,
         })
     end
+    -- v0.0.98: every card enters with a short fade + grow when its tab first
+    -- builds (rebuildConfigTabs re-runs build fns, so cards re-pop on reload too).
+    card.GroupTransparency = 1
+    local sc = uScaleOf(card)
+    sc.Scale = 0.96
+    task.delay(0.03, function()
+        if not card.Parent then return end
+        tween(card, Theme.Animation.Normal, { GroupTransparency = 0 })
+        tween(sc,  Theme.Animation.Normal, { Scale = 1 })
+    end)
     return card
 end
 
@@ -2002,6 +2087,7 @@ local function checkboxVisual(parent, label, initialOn)
         Parent = row,
     })
     attachHover(row, btn)
+    popFx(btn)   -- v0.0.98: checkbox rows squash on press
 
     local CB_GROW   = TweenInfo.new(0.16, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
     local CB_SHRINK = TweenInfo.new(0.12, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
@@ -2024,6 +2110,7 @@ local function checkboxVisual(parent, label, initialOn)
             activeSize = tween(innerFill, CB_GROW, {
                 Size = UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER),
             })
+            pulse(box, 1.12)   -- v0.0.98: box ticks out as the fill grows in
         else
             -- ON -> OFF: shrink INWARD to center, then super-fast fade to hide.
             -- Ensure opacity is opaque going in (guards against superseded fade).
@@ -2132,8 +2219,10 @@ local function keybindPill(row, moduleId, initialKey)
         end
         pill.Text = "..."
         tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
+        pulse(pill, 1.1)   -- v0.0.98: pill ticks when the rebind arms
         pendingRebind = { moduleId = moduleId, pill = pill }
     end)
+    popFx(pill)
     return pill
 end
 
@@ -2507,10 +2596,13 @@ local function openColorPicker(swatchInstance, initialColor, onChange, opts)
     ColorPicker.root.Position = UDim2.new(0, x, 0, y - 4)
     ColorPicker.root.Visible = true
     ColorPicker.root.BackgroundTransparency = 1
+    local rsc = uScaleOf(ColorPicker.root)   -- v0.0.98: picker grows open
+    rsc.Scale = 0.94
     tween(ColorPicker.root, Theme.Animation.Menu, {
         BackgroundTransparency = 0.02,
         Position = UDim2.new(0, x, 0, y),
     })
+    tween(rsc, Theme.Animation.Menu, { Scale = 1 })
     ColorPicker.apply()
 end
 
@@ -2547,6 +2639,7 @@ local function colorSwatch(parent, initialColor, size, opts)
         ZIndex = 38,
         Parent = parent,
     }, { corner(3), stroke(Theme.Palette.Border, 1) })
+    popFx(sw)   -- v0.0.98: swatches squash on press
 
     -- v0.0.17: tooltip parented to popupScreen (not the swatch) so it
     -- escapes the window CanvasGroup's clip bounds. Positioned live on
@@ -2823,6 +2916,11 @@ local function dropdown(parent, label, options, initial, onChange)
         tween(list, Theme.Animation.Menu, {
             BackgroundTransparency = 0.05,
         })
+        -- v0.0.98: popup drops open with a quick grow (scale from 0.92) instead
+        -- of materialising -- same Menu timing as the fade so they land together.
+        local usc = uScaleOf(list)
+        usc.Scale = 0.92
+        tween(usc, Theme.Animation.Menu, { Scale = 1 })
         tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
         -- v0.0.17: only text labels fade in. Option button bg is always 1
         -- (invisible) -- hover drives it to 0.7.
@@ -2870,6 +2968,7 @@ local function dropdown(parent, label, options, initial, onChange)
         end)
         optBtn.MouseButton1Click:Connect(function()
             valueLbl.Text = opt
+            pulse(valueLbl, 1.08)   -- v0.0.98: value ticks on pick
             closeList()
             if onChange then onChange(opt) end
         end)
@@ -2878,6 +2977,7 @@ local function dropdown(parent, label, options, initial, onChange)
     btn.MouseButton1Click:Connect(function()
         if isOpen then closeList() else openList() end
     end)
+    popFx(btn)   -- v0.0.98: dropdowns squash on press
     return {
         frame = wrap,
         button = btn,
@@ -3007,8 +3107,6 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     })
     local dragging = false
 
-    -- v0.0.32: animate the fill on programmatic set (click / typed value), snap
-    -- during a live drag so it tracks the cursor 1:1.
     local function applyValue(animate)
         local pct = (current - min) / (max - min)
         if animate then
@@ -3016,6 +3114,7 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         else
             fill.Size = UDim2.new(pct, 0, 1, 0)
         end
+        if animate then pulse(track, 1.02) end   -- v0.0.98: track ticks on settle
         local atMax = opts.infinite and current >= max
         valueBox.Text = atMax and "Infinite" or tostring(current)
         if onChange then onChange(atMax and math.huge or current) end
@@ -3028,13 +3127,6 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         current = round(min + (max - min) * pct)
         applyValue(false)
     end
-    hitArea.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            setFromInputX(input.Position.X)
-        end
-    end)
     UserInputService.InputChanged:Connect(function(input)
         if dragging
         and (input.UserInputType == Enum.UserInputType.MouseMovement
@@ -3042,10 +3134,29 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
             setFromInputX(input.Position.X)
         end
     end)
-    UserInputService.InputEnded:Connect(function(input)
+    -- v0.0.98: track squashes to 0.98 while the drag grabs it, springs back on
+    -- release (both on the button's own end AND the service end as a failsafe).
+    hitArea.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 0.98 })
+            setFromInputX(input.Position.X)
+        end
+    end)
+    hitArea.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
+            tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if dragging
+        and (input.UserInputType == Enum.UserInputType.MouseButton1
+          or input.UserInputType == Enum.UserInputType.Touch) then
+            dragging = false
+            tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
         end
     end)
     valueBox.FocusLost:Connect(function(enterPressed)
@@ -3187,6 +3298,9 @@ local function rightClickSettings(row, title, buildFn)
         local ox, oy = popupOffsetFor(popupFrame, dx, dy)
         popupFrame.Position = UDim2.new(0, ox, 0, oy)
         popupFrame.Visible = true
+        local psc = uScaleOf(popupFrame)   -- v0.0.98: settings popup grows open
+        psc.Scale = 0.94
+        tween(psc, Theme.Animation.Menu, { Scale = 1 })
     end
 
     btn.MouseButton2Click:Connect(function()
@@ -5858,6 +5972,10 @@ local function openChooser(pill, cfg)
         new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
     })
     frame.Parent = popupScreen
+    -- v0.0.98: chooser drops open with a quick grow.
+    local fsc = uScaleOf(frame)
+    fsc.Scale = 0.92
+    tween(fsc, Theme.Animation.Menu, { Scale = 1 })
     for _, mode in ipairs({ "Hold", "Toggle" }) do
         local sel = cfg.Mode == mode
         local opt = new("TextButton", { Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Theme.Palette.PanelElevated,
@@ -5865,7 +5983,12 @@ local function openChooser(pill, cfg)
             FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
             TextColor3 = sel and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 231 }, { corner(4) })
         opt.Parent = frame
-        opt.MouseButton1Click:Connect(function() cfg.Mode = mode; closeChooser() end)
+        popFx(opt)   -- v0.0.98: chooser options squash on press
+        opt.MouseButton1Click:Connect(function()
+            cfg.Mode = mode
+            pulse(opt, 1.08)
+            closeChooser()
+        end)
     end
     local abs, siz = pill.AbsolutePosition, pill.AbsoluteSize
     local ox, oy = popupOffsetFor(frame, abs.X + siz.X - 120, abs.Y + siz.Y + 6)
@@ -5915,6 +6038,7 @@ local function activationPill(row, cfg)
         pendingBind = { pill = pill, cfg = cfg, refresh = refresh }
     end)
     pill.MouseButton2Click:Connect(function() openChooser(pill, cfg) end)
+    popFx(pill)   -- v0.0.98: activation pills squash on press
     return pill
 end
 
@@ -8528,7 +8652,7 @@ local Combat = {
         local tlCard = panel(leftCol, "Target Lock")
         local tlArm = configCheckbox(tlCard, "Armed", Shared.TargetLock.Enabled, function(v)
             Shared.TargetLock.Enabled = v
-            if not v then Shared.TargetLock._active = false; if tlState then tlState:set() end end
+            if not v then Shared.TargetLock._active = false end
         end)
         -- name input row
         local tlNameRow = new("Frame", {
@@ -8578,6 +8702,7 @@ local Combat = {
             TextSize = Theme.Text.Tiny, TextColor3 = Theme.Palette.TextMuted, ZIndex = 38, Parent = tlKeyRow,
         }, { pillCorner(), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        popFx(tlKeyPill)   -- v0.0.98: target-lock key pill squashes too
         tlKeyPill.MouseButton1Click:Connect(function()
             if pendingActivation then pendingActivation.refresh() end
             tlKeyPill.Text = "..."
@@ -9280,7 +9405,10 @@ local function setWindowOpen(open)
     if open then
         window.Visible = true
         window.GroupTransparency = 1
+        local wsc = uScaleOf(window)   -- v0.0.98: window pops open (fade + grow)
+        wsc.Scale = 0.90
         tween(window, Theme.Animation.WindowFade, { GroupTransparency = 0 })
+        tween(wsc,   Theme.Animation.WindowFade, { Scale = 1 })
         -- v0.0.95: force the cursor UNLOCKED + visible while the menu is up so
         -- the user can click Koffee widgets without having to open the Roblox
         -- menu (Esc) first. Restore whatever the game/3rd-Person had set on close.
@@ -9296,6 +9424,10 @@ local function setWindowOpen(open)
         for _, closer in pairs(openDropdowns) do closer(true) end
         for _, closer in pairs(openSettingsPopups) do closer() end
         tween(window, Theme.Animation.WindowFade, { GroupTransparency = 1 })
+        -- v0.0.98: sink slightly as it goes, with the fade.
+        if _us_cache[window] then
+            tween(_us_cache[window], Theme.Animation.WindowFade, { Scale = 0.96 })
+        end
         task.delay(0.2, function()
             if not windowOpen then window.Visible = false end
         end)
