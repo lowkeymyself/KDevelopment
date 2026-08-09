@@ -1,18 +1,12 @@
--- koffee v0.0.75
+-- koffee v0.1.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.0.99"
+Koffee.Version = "0.1.0"
 
--- v0.0.90 SOUND ASSET AUTO-DOWNLOAD.
--- Sounds live in a PUBLIC repo (lowkeymyself/koffee-assets/sounds/) so any user
--- gets them without a PAT -- just game:HttpGet. On load, task.spawn'd background
--- job checks each expected mp3, downloads missing ones into
--- <exec_workspace>/Koffee/sounds/<name>.mp3. Silent no-op if the exec lacks
--- writefile/isfile/makefolder or if a download fails (sound just doesn't play).
--- Koffee._soundsReady flips true when the sweep finishes so the future loading
--- screen can wait on it before hiding.
+-- v0.0.90 SOUND ASSET AUTO-DOWNLOAD: fetches missing <exec>/Koffee/sounds/*.mp3
+-- from the public koffee-assets repo. Silent no-op on locked-down executors.
 Koffee._soundsReady = false
 task.spawn(function()
     local SOUNDS = {
@@ -105,18 +99,12 @@ pcall(function()
     setthreadidentity(7)
 end)
 
--- v0.0.96 EXECUTOR PROFILING + SAFE MODE PROMPT
--- Some lightweight runtimes crash the game when silent aim installs the full
--- __namecall hook (newcclosure + hookmetamethod on __namecall is a known
--- weak-exec bricker -- the whole game freezes/dumps once we redirect FireServer
--- reads on a runtime that can't hold a stable C-closure across metamethod
--- boundaries). We detect the executor here and, if it's not on the known-good
--- list (Potassium / Volt), we render a native prompt asking the user whether
--- to load the SAFE variant of silent aim (a lighter, __index-only redirect
--- that only spoofs Mouse.Hit/Target/UnitRay -- no __namecall touch, no
--- Camera.CFrame spoof, no pos spoof). Prompt yields the top-level thread on a
--- BindableEvent so the rest of Koffee waits on the user's answer before it
--- installs anything.
+-- v0.0.96 EXECUTOR PROFILING + SAFE MODE PROMPT. Weak executors crash when
+-- silent aim installs the full __namecall hook (newcclosure+hookmetamethod is a
+-- known bricker). If the executor isn't on the known-good list (Potassium/Volt),
+-- prompt for the SAFE variant: __index-only redirect (Mouse.Hit/Target/UnitRay
+-- only, no __namecall, no Camera/pos spoof) -> the game doesn't crash, but
+-- wallbang + forced-mb stay disabled. Prompt yields on a BindableEvent.
 Koffee._safeMode = false
 Koffee._exec     = "Unknown"
 do
@@ -244,7 +232,7 @@ local Theme = {
     -- v0.0.48 premium pass: deeper background for real contrast against the panels,
     -- borders pulled up so card edges read crisp (not muddy), accent a touch brighter.
     Palette = {
-        Background    = Color3.fromRGB(                    ),
+        Background    = Color3.fromRGB(21, 18, 16),
         Panel         = Color3.fromRGB(27, 22, 19),
         PanelElevated = Color3.fromRGB(41, 33, 29),
         Pill          = Color3.fromRGB(50, 40, 34),
@@ -555,34 +543,37 @@ do
     -- expose the loader so the Main-Interface mirror can reuse the same catalog.
     function Theme.loadFeiFont(name) return loadFeiFont(name) end
 
-    -- v0.0.99 MAIN-INTERFACE FONT MIRROR: "Custom Font (MI)". Same catalog, same
-    -- selected font, but applied to the main window's OWN text (labels, buttons,
-    -- textboxes) instead of the feature interface. Original FontFace per label is
-    -- snapshotted on first touch, so the mirror is fully reversible. No TextSize
-    -- scaling: the feature font scales because its labels grow freely; the main
-    -- menu's rows are fixed-height, so only the face swaps there.
+    -- v0.0.99 MAIN-INTERFACE FONT MIRROR: "Custom Font (MI)". Same catalog as the
+    -- feature font, but applied to the main window's OWN text (labels, buttons,
+    -- textboxes) instead of the feature interface. Original FontFace + TextSize per
+    -- label is snapshotted on first touch, so the mirror is fully reversible.
+    -- v0.1.0: independent name + size. Size swaps TextSize on the same labels
+    -- (TextSize stays a plain number swap; the rows don't reflow, same as before).
     Theme._miface_cache = {}
     Theme.MIFontOn = false
-    function Theme.applyMIFont(root, face)
+    function Theme.applyMIFont(root, face, size)
         if not root then return end
+        size = tonumber(size)
         if face then
             for _, v in ipairs(root:GetDescendants()) do
                 if v:IsA("TextLabel") or v:IsA("TextButton") or v:IsA("TextBox") then
                     local c = Theme._miface_cache[v]
                     if not c then
-                        c = v.FontFace
+                        c = { face = v.FontFace, size = v.TextSize }
                         Theme._miface_cache[v] = c
                     end
                     pcall(function() v.FontFace = face end)
+                    if size then pcall(function() v.TextSize = size end) end
                 end
             end
             Theme.MIFontOn = true
         else
-            -- off: restore every snapshotted label to its original face. Stale
-            -- entries (destroyed labels) get pruned.
-            for v, orig in pairs(Theme._miface_cache) do
+            -- off: restore every snapshotted label to its original face/size.
+            -- Stale entries (destroyed labels) get pruned.
+            for v, c in pairs(Theme._miface_cache) do
                 if v and v.Parent then
-                    pcall(function() v.FontFace = orig end)
+                    pcall(function() v.FontFace = c.face end)
+                    pcall(function() v.TextSize = c.size end)
                 else
                     Theme._miface_cache[v] = nil
                 end
@@ -1226,9 +1217,11 @@ local KoffeeOptions = {
     CustomFontOn   = false,
     CustomFontName = "None",       -- "None" | "Minecraft Bold" | "Minecraft Regular" | "ImGui" (user-expandable)
     CustomFontSize = 12,           -- global text size used when CustomFontOn is true
-    -- v0.0.99: MIRROR toggle -- same font as above, applied to the main window's own
-    -- text instead of the feature interface. Off by default.
-    MIFontOn       = false,
+    -- v0.0.99+: MIRROR font for the main window's own text. v0.1.0: independent
+    -- of the feature font -- own name + own size, both ride the config system.
+    MIFontOn   = false,
+    MIFontName = "None",           -- separate catalog pick
+    MIFontSize = 12,               -- "12" = Theme mirror default; slider in right-click
 }
 local nextLayoutOrder = 0
 local ROW_HEIGHT = 20
@@ -1675,18 +1668,11 @@ local tabOrder = 0        -- explicit LayoutOrder per tab
 local activeTab = nil
 local pillFirstShow = true
 
--- v0.0.98: pill machinery, rewritten. The pill is a follower: its resting state is
--- ALWAYS the active tab button's live rect (position + size, both relative to the
--- tabBar). On a user tab-switch it plays a two-phase stretch->contract to the new
--- rect; the rest of the time it just snaps to the active button whenever that
--- button's geometry moves (font reflow, drag, resize) through pillResync.
--- v0.0.98 pop rhythm: the grow reads as a flick -- the pill POPS (stretches to
--- half a pill PAST the destination, centered on it) then contracts to rest.
--- v0.0.99: generation token. The old code let a STALE tween completion (from a
--- switch that was already cancelled by a newer one) fire pillSnap and instantly
--- snap/restart the pill out from under the CURRENT switch -- that alternation
--- (moves, then teleports, then sits) is the "pill flickers every other click".
--- Every async callback now checks it still owns the latest generation.
+-- v0.0.98/99 pill machinery. Follower pill: resting state is ALWAYS the active
+-- tab button's live rect; on switch it pops (stretch past destination) then
+-- contracts; snaps via pillResync whenever button geometry moves. v0.0.99:
+-- a generation token lets stale tween completions bail instead of fighting a
+-- newer switch (the "pill flickers every other click" fix).
 local PILL_STRETCH  = TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 local PILL_CONTRACT = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local pillAnimating = false
@@ -3647,7 +3633,8 @@ local function loadSnapshot(data)
         -- v0.0.99: mirror the MI font toggle across config loads (fonts + tab
         -- rebuilds happen together; re-apply AFTER the rebuild so fresh labels
         -- get the swap too). loadSnapshot's rebuildConfigTabs ran above.
-        Theme.applyMIFont(window, KoffeeOptions.MIFontOn and Theme.loadFeiFont(KoffeeOptions.CustomFontName) or nil)
+        Theme.applyMIFont(window, KoffeeOptions.MIFontOn and Theme.loadFeiFont(KoffeeOptions.MIFontName) or nil,
+            KoffeeOptions.MIFontOn and KoffeeOptions.MIFontSize or nil)
     end)
     -- v0.0.97: Target Lock runtime state must not ride a config load -- a save
     -- taken mid-engagement would resurrect a stale lock after switching configs.
@@ -3869,6 +3856,12 @@ registerConfig("shared",         Shared)
 -- this heartbeat toggles + tints it live off ESP.Config.Outline + ESP.Boxes.OutlineColor.
 -- Kept here (after ESP is defined) so the upvalue resolves cleanly -- addToActiveArray
 -- sits above ESP in the file and can't reference it directly.
+-- v0.1.0: textGradSeq/gradOffset are defined further down (after makeGradSeqGetter),
+-- so a bare reference here would bind to a nil GLOBAL and crash the heartbeat the
+-- moment TextGradient toggles on. Pre-declare the slots; they get filled below.
+local textGradSeq = nil
+local gradOffset = nil
+local lineGradSeq = nil
 RunService.Heartbeat:Connect(function()
     local on = ESP.Config.Outline == true
     local col = ESP.Boxes.OutlineColor
@@ -4753,10 +4746,10 @@ local function makeGradSeqGetter()
         return seq
     end
 end
-local textGradSeq = makeGradSeqGetter()
-local lineGradSeq = makeGradSeqGetter()
+textGradSeq = makeGradSeqGetter()
+lineGradSeq = makeGradSeqGetter()
 -- animated offset (Vector2) along the gradient's rotation, speed + reverse aware.
-local function gradOffset()
+gradOffset = function()
     local sp = ESP.Config.GradientSpeed
     local t = ((os.clock() * sp) % 2) - 1        -- -1 -> 1, seamless
     if ESP.Config.GradientReverse then t = -t end
@@ -6375,10 +6368,8 @@ local bodySnap = {}
 local function applyBodyRemoval()
     local c = char(); if not c then return end
     for _, p in ipairs(c:GetDescendants()) do
-        if p:IsA("BasePart") and not p:GetAttribute("KFF") and p.Name ~= "HumanoidRootPart" then
-            if bodySnap[p] == nil then bodySnap[p] = p.Transparency end
-            if p.Transparency ~= 1 then p.Transparency = 1 end
-        elseif p:IsA("Decal") or p:IsA("Texture") then
+        if (p:IsA("BasePart") and not p:GetAttribute("KFF") and p.Name ~= "HumanoidRootPart")
+            or p:IsA("Decal") or p:IsA("Texture") then
             if bodySnap[p] == nil then bodySnap[p] = p.Transparency end
             if p.Transparency ~= 1 then p.Transparency = 1 end
         end
@@ -6391,20 +6382,10 @@ local function restoreBodyRemoval()
     bodySnap = {}
 end
 
--- v0.0.94 THIRD PERSON. Universal over-the-shoulder shift-lock camera. Ported
--- from He's message.txt reference + fixes:
---   1. LTM=0 (character-visible-forcing) now lives INSIDE the enabled check so
---      character stays hidden per game rules when toggled off (source script
---      always forced visible -> character shown before enabling).
---   2. Camera write on RenderStep at Camera.Value priority (200) -- BEFORE the
---      aimbot bind at Camera.Value+1 (201) -- so aimbot's aim adjustment wins
---      when armed and 3rd-person write wins when aimbot isn't touching camera.
---      Fixes "breaks aimbot" report.
---   3. Only writes HRP.CFrame while enabled (source script did this
---      unconditionally too via the always-on LTM loop -- same fix as #1).
---   4. Camera restored to Custom + MouseBehavior to Default on disable.
--- Config knobs (sensitivity, zoom min/max, shoulder offset) exposed via a
--- right-click on the module row + defaults known-good (matches source).
+-- v0.0.94 THIRD PERSON. Universal over-the-shoulder camera. LTM stays off
+-- (character hidden per game rules), camera writes at RenderPriority 200
+-- (one below the aimbot's 201 so aimbot wins when armed), HRP.CFrame
+-- written only while enabled, and camera/mouse restore on disable.
 local TP = {
     Enabled     = false,
     Sensitivity = 0.25,
@@ -6972,9 +6953,8 @@ local Combat = {
                     -- v0.0.97 TARGET LOCK: while engaged, only the named player is
                     -- a legal target at all. Everything else is invisible to the
                     -- targeting loop (aim, silent, trigger all share this).
-                    if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) 
+                    if not (Shared.TargetLock.Enabled and Shared.TargetLock._active)
                        or Shared.targetLockPlayer() == plr then
-                    if true then
                         local part = aimPart(char, cfg.HitPart)
                         if part then
                             local worldDist = (part.Position - camPos).Magnitude
@@ -6994,7 +6974,6 @@ local Combat = {
                                 end
                             end
                         end
-                    end
                     end
                 end
             end
@@ -7072,13 +7051,12 @@ local Combat = {
     local silentTarget = nil   -- the part (for Mouse.Target)
     local silentPos    = nil   -- Vector3 redirect point (predicted; drives Hit/UnitRay)
 
-    -- v0.0.39: fire-read resolver state + caller scoping. ONE local table to respect
-    -- the Combat chunk's ~200-local budget; the resolvers read it as an upvalue.
-    --   cam/camPos/screen : cached each frame so the __index hook never re-reads
-    --                       Camera.* (that would re-enter the hook / recurse).
-    --   mouse             : the PlayerMouse instance, for identity compares (no IsA).
-    --   fire/fireN        : learned weapon scripts + their fire tally (observation).
-    --   view/viewN        : learned CUSTOM camera controllers to EXCLUDE + read tally.
+    -- v0.0.39: fire-read resolver state + caller scoping. ONE local table so the
+    -- Combat chunk's ~200-local budget stays below the limit; resolvers read it
+    -- as an upvalue. cam/camPos/screen cached per frame (never re-read Camera.*
+    -- inside the hook -- re-entry/recursion), mouse for identity compares, and
+    -- the learned weapon/camera-controller sets are only touched by namecall-safe
+    -- code (never lazily inside a hook: FindFirstChild is a namecall).
     local SR = { cam = nil, camPos = nil, screen = nil, mouse = nil, pm = nil }
     local getCS = getcallingscript   -- executor global; nil on runtimes without it
     SR.own = getCS and getCS()       -- Koffee's own script: never spoof its OWN camera
@@ -7246,17 +7224,9 @@ local Combat = {
     -- to mouse1click / mouse1press+release only if VIM isn't available.
     local VIM = nil
     pcall(function() VIM = game:GetService("VirtualInputManager") end)
-    -- v0.0.80: mouse-over-Koffee gate -- CRITICAL SILENT+TRIGGER BUG FIX.
-    -- Symptom (v0.0.78/79): with Silent Aim on, triggerbot couldn't be toggled.
-    -- The user clicked the trigger checkbox -> Enabled=true -> silent had a target
-    -- -> triggerShouldFire returned true -> clickMouse fired MB1 via VIM -> that
-    -- synthesized MouseButton1 event was delivered to whatever GUI was under the
-    -- cursor, which was STILL THE TRIGGER CHECKBOX. Re-clicking the checkbox
-    -- toggled it back off. Fix: suppress clickMouse when the cursor is over the
-    -- Koffee window (the only place our clickable UI lives). When the window is
-    -- closed (GroupTransparency == 1), always fire. GetMouseLocation is inset-
-    -- included; the window sits on an IgnoreGuiInset ScreenGui so AbsolutePosition
-    -- is inset-excluded -- subtract GuiService:GetGuiInset() to compare.
+    -- v0.0.80: throttled LMB synthesis when the cursor is over the Koffee window,
+    -- so silent/trigger can't re-click our own GUI (GetMouseLocation is inset-included;
+    -- subtract GuiService:GetGuiInset() before comparing with AbsolutePosition).
     local GuiService = game:GetService("GuiService")
     local function mouseOverKoffee()
         if not (window and window.GroupTransparency < 1) then return false end
@@ -7281,28 +7251,13 @@ local Combat = {
             pcall(mouse1press); task.wait(); pcall(mouse1release)
         end
     end
-    -- UNIVERSAL SILENT AIM
-    --
-    -- Roblox FPS fire paths take three broad shapes:
-    --   (a) mouse-based:  read Mouse.Hit / Mouse.Target / Mouse.UnitRay
-    --   (b) camera-ray:   compute a Ray from Camera:ViewportPointToRay / ScreenPointToRay
-    --   (c) direct cast:  Workspace:Raycast(camera_pos, camera_look * range, params)
-    --                     or the older FindPartOnRayWithIgnoreList / *WithWhitelist
-    --
-    -- We hook all three. (a) + (b) are exact — always redirect when Silent is armed.
-    -- (c) is dangerous because the same API is used by:
-    --   - Popper (camera collision): origin BEHIND cam, direction points TOWARD cam
-    --     (opposite LookVector), length ~5-15 studs
-    --   - streaming/loading probes, character controllers, tool internals
-    -- Distinguisher for a fire ray: forward-facing (dir . LookVector > 0.5)
-    -- AND long-range (magnitude > 20). Popper is negative-dot and short -> skipped.
-    -- Only the direction gets rotated to hit our target; length is preserved so the
-    -- game's range gates still fire, and origin stays where the game put it.
-    --
-    -- Persistence: hookmetamethod stacks across re-executions and is never restored.
-    -- The BODY installs at most once per session. All logic lives in the resolver
-    -- functions we publish through getgenv, so every subsequent loader run rewires
-    -- the behaviour with zero rejoin required.
+    -- UNIVERSAL SILENT AIM: hooks the three fire-ray shapes (mouse reads,
+    -- camera-rays, direct Workspace rays). Camera-ray + mouse reads redirect
+    -- exactly; direct-cast rays only rotate the DIRECTION (never origin) and
+    -- only when forward-facing (dir . LookVector > 0.5) and long-range (> 20),
+    -- so camera-collision (Popper) and probe rays are skipped untouched.
+    -- Hooks install once per session; all logic lives in getgenv-published
+    -- resolvers so every re-exec just rewires the bodies.
     local function installSilentHooks()
         if Combat.Silent._hooked then return end
         Combat.Silent._hooked = true
@@ -7345,19 +7300,10 @@ local Combat = {
             if not Combat.Silent.RequireLMB then return true end
             return lmbDown or (os.clock() - lmbClickAt) < 0.12
         end
-        -- v0.0.81: Camera.CFrame spoof gate -- tighter than isArmed to fix "camera
-        -- freezes when silent aim is on" on games with a CUSTOM camera controller
-        -- (not under PlayerModule -> not caught by isView / spoofAim). Continuous
-        -- spoof was making those controllers read the fake CFrame every frame ->
-        -- write it back into the real Camera -> view stuck.
-        -- v0.0.89 Camera.CFrame spoof gate. Continuous spoof (v0.0.86 = isArmed) was
-        -- causing hard crashes on some games -- the game's custom camera controller
-        -- reads our spoofed CFrame every frame, does math on it, and either freezes
-        -- or hits an engine assertion. Fix: Camera.CFrame is fire-frame gated
-        -- (RequireLMB ON = LMB held; RequireLMB OFF = 120ms window post-press).
-        -- Mouse.X/Y and Mouse.Hit stay CONTINUOUS via isArmed (v0.0.86 behavior for
-        -- those -- they're only read by aim code, not per-frame by camera controllers,
-        -- so no crash / freeze from continuous mouse-read spoof).
+        -- Camera.CFrame spoof is fire-frame gated (v0.0.89): continuous spoof made
+        -- custom camera controllers read the fake CFrame every frame and freeze
+        -- or crash. Mouse.X/Y + Mouse.Hit stay continuous (only aim code reads
+        -- those, so continuous spoof is safe there).
         local function camFire()
             if not silentPos then return false end
             if not Combat.Silent.RequireLMB then
@@ -7415,23 +7361,9 @@ local Combat = {
             if Combat.Silent._safe then return PASS_H, PASS_V end
             -- (B) v0.0.39 FIRE-READ: spoof the aim the instant the WEAPON SCRIPT reads
             -- Camera.CFrame or the cursor -- scoped by getcallingscript so the real
-            -- camera the renderer/Popper reads is NEVER modified (view stays put). This
-            -- is what lands silent on server-validated shooters that ignore mouse.Hit.
-            -- Identity compares (self == SR.cam / SR.mouse) keep this off the hot path
-            -- and avoid an IsA namecall on every .CFrame read in the game.
-            -- v0.0.81: Camera.CFrame + Mouse.X/Y spoof now gated by camFire (fire-frame
-            -- window), not isArmed. Was freezing the view on games with custom camera
-            -- controllers not under PlayerModule (spoofAim couldn't exclude them, so
-            -- continuous camera spoof made the controller read the fake CFrame every
-            -- frame). Fire-frame gate = camera reads land the spoof only around the shot,
-            -- controller reads real Camera between shots -> view stays free.
-            -- v0.0.89 SPLIT GATES: Camera.CFrame uses camFire (fire-frame gate) to
-            -- avoid crashing on custom-cam-controller games where continuous read
-            -- of a spoofed Camera.CFrame corrupts the controller's math each frame.
-            -- Mouse.X/Y uses isArmed (continuous) -- mouse coords are only read by
-            -- aim/cursor code, never per-frame by camera controllers, so continuous
-            -- spoof is safe there and preserves RequireLMB OFF continuous silent aim
-            -- on all mouse-based games.
+            -- camera/renderer is never modified. Camera.CFrame is gated by camFire
+            -- (fire-frame window; continuous spoof froze custom camera controllers);
+            -- Mouse.X/Y uses isArmed (continuous -- only aim code reads mouse coords).
             if camFire() then
                 -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
                 --   default (Forced MB): origin stays REAL, look-direction bends to target.
@@ -8016,20 +7948,12 @@ local Combat = {
         end)
     end)
 
-    -- v0.0.88 HIT / KILL SOUND ENGINE.
-    -- Mechanism: universal Humanoid.Health drop watcher per player. Attribution:
-    -- INVISIBLE MOUSE TARGET LOCK -- each frame while LMB held, whoever is closest
-    -- to the mouse cursor in screen-space (within MouseRadius) becomes SR.mouseTgt.
-    -- When THAT enemy's Humanoid.Health drops, we play the hit sound (kill sound
-    -- if Health hit 0). Independent of silent aim / aimbot lock -- pure mouse-based
-    -- attribution, works with or without any combat feature active.
-    -- Cooldown (per type) enforced via a last-played timestamp so auto-fire hits
-    -- don't buzz. Suppressed while the Koffee window is open (no ear fatigue in-UI).
-    -- v0.0.89 sound presets = local mp3 filenames in <exec_workspace>/Koffee/sounds/.
-    -- Loaded via getcustomasset per-play. If getcustomasset is unavailable OR the
-    -- file's missing, sound silently no-ops. CustomId > 0 overrides preset (uses
-    -- rbxassetid://). List mirrors what ships in the Koffee/sounds folder --
-    -- filenames without .mp3 extension.
+    -- v0.0.88 Hit/Kill sound engine. Universal per-player Humanoid.Health drop
+    -- watcher; attribution via the screen-space mouse-target lock (LMB-held
+    -- nearest-to-cursor sampling, kept fresh every heartbeat). Cooldowns per
+    -- type; suppressed while the menu is open. Presets are <exec>/Koffee/sounds/
+    -- mp3 names (getcustomasset per play; CustomId > 0 overrides with a
+    -- rbxassetid://). Sound silently no-ops on executors without the API.
     local SND_PRESETS = {
         "12", "agpa2", "basshit", "bell", "blizzard", "bubble", "chockpro",
         "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
@@ -8454,7 +8378,7 @@ local Combat = {
             end
         end
 
-        pXB1, pXB2 = xb1, xb2
+        pXB[2], pXB[1] = xb2, xb1
     end)
 
     --== modules (arraylist + master toggles) ==--
@@ -8890,6 +8814,11 @@ local Combat = {
         slider(trigCard, "Delay (ms)", 0, 500, Combat.Trigger.Delay, 0, function(v) Combat.Trigger.Delay = v end)
         slider(trigCard, "Release (ms)", 0, 500, Combat.Trigger.Release, 0, function(v) Combat.Trigger.Release = v end)
     end)
+    -- v0.1.0: the Options tab (built in this file's shared scope, outside this
+    -- IIFE) reads Combat state + the sound instances during unload; hand them up
+    -- through Shared so that path sees the same tables, not nil globals.
+    Shared.Combat = Combat
+    Shared.CombatSounds = { hit = hitSnd, kill = killSnd }
 end)()
 
 -- helper: attach two color swatches (visible + hidden) to a Visible Check row
@@ -9188,18 +9117,28 @@ addTab("Options", function(root)
     dropdown(uiPanel, "Font", fontOptions, KoffeeOptions.CustomFontName, function(v)
         KoffeeOptions.CustomFontName = v
         Theme.setFeiFont(v)
-        -- v0.0.99: the MI mirror follows the SAME font pick -- re-apply when on.
-        if KoffeeOptions.MIFontOn then
-            Theme.applyMIFont(window, Theme.loadFeiFont(v))
-        end
     end)
-    -- v0.0.99: "Custom Font (MI)" -- the mirror. Same catalog + same selected font
-    -- as above, applied to the MAIN window's own text. Snapshots + restores on
-    -- toggle; harmless to flip on top of the feature font (they're independent
-    -- surfaces -- feature interface vs. the menu itself).
-    configCheckbox(uiPanel, "Custom Font (MI)", KoffeeOptions.MIFontOn, function(v)
+    -- v0.1.0: "Custom Font (MI)" is its own surface now -- separate catalog pick
+    -- (MIFontName, independent of the feature font) + own size via the row's
+    -- right-click. Toggle snapshots + restores the main window's text.
+    local miRow = configCheckbox(uiPanel, "Custom Font (MI)", KoffeeOptions.MIFontOn, function(v)
         KoffeeOptions.MIFontOn = v
-        Theme.applyMIFont(window, v and Theme.loadFeiFont(KoffeeOptions.CustomFontName) or nil)
+        Theme.applyMIFont(window, v and Theme.loadFeiFont(KoffeeOptions.MIFontName) or nil,
+            v and KoffeeOptions.MIFontSize or nil)
+    end)
+    rightClickSettings(miRow.row, "custom font MI", function(menu)
+        menu:slider("Font Size", 8, 28, KoffeeOptions.MIFontSize, 0, function(v)
+            KoffeeOptions.MIFontSize = v
+            if KoffeeOptions.MIFontOn then
+                Theme.applyMIFont(window, Theme.loadFeiFont(KoffeeOptions.MIFontName), v)
+            end
+        end)
+    end)
+    dropdown(uiPanel, "MI Font", fontOptions, KoffeeOptions.MIFontName, function(v)
+        KoffeeOptions.MIFontName = v
+        if KoffeeOptions.MIFontOn then
+            Theme.applyMIFont(window, Theme.loadFeiFont(v), KoffeeOptions.MIFontSize)
+        end
     end)
     -- Ignore Friends: friends are excluded from ESP + aimbot + silent + trigger.
     configCheckbox(card, "Ignore Friends", Shared.IgnoreFriends, function(v)
@@ -9219,9 +9158,13 @@ addTab("Options", function(root)
         -- 2. explicit combat state reset (silent hook stays installed for the
         -- session -- can't un-hookmetamethod -- but its body early-returns on
         -- Combat.Silent.Enabled = false, so it becomes a no-op).
-        Combat.Silent.Enabled  = false
-        Combat.Aim.Enabled     = false
-        Combat.Trigger.Enabled = false
+        -- v0.1.0: Combat lives in its own IIFE; reach it via the Shared export.
+        local combat = Shared.Combat
+        if combat then
+            combat.Silent.Enabled  = false
+            combat.Aim.Enabled     = false
+            combat.Trigger.Enabled = false
+        end
         -- 3. unbind our RenderStep bindings
         pcall(function() RunService:UnbindFromRenderStep(KID.ctx.bind) end)
         pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
@@ -9231,8 +9174,9 @@ addTab("Options", function(root)
         pcall(function() popupScreen:Destroy() end)
         pcall(function() blur:Destroy() end)
         -- 5. destroy any sound instances we created
-        pcall(function() hitSnd:Destroy() end)
-        pcall(function() killSnd:Destroy() end)
+        local combatSounds = Shared.CombatSounds
+        pcall(function() if combatSounds then combatSounds.hit:Destroy() end end)
+        pcall(function() if combatSounds then combatSounds.kill:Destroy() end end)
         -- 6. restore camera + mouse to game defaults
         pcall(function()
             local cam = Workspace.CurrentCamera
