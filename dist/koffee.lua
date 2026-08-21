@@ -1,9 +1,9 @@
--- koffee v0.1.0
+-- koffee v0.1.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.0"
+Koffee.Version = "0.1.1"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD: fetches missing <exec>/Koffee/sounds/*.mp3
 -- from the public koffee-assets repo. Silent no-op on locked-down executors.
@@ -43,10 +43,17 @@ task.spawn(function()
     Koffee._soundsReady = true
 end)
 
--- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Runs on every load, BEFORE anything
--- else touches the game, so the anti-cheat's Detected/Kill paths are hooked to no-ops
--- immediately. Fully guarded: if the runtime lacks any required global (getgc, hookfunction,
--- setthreadidentity, getrenv) the whole block pcalls out and the suite loads normally.
+-- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Hooks the anti-cheat's
+-- Detected/Kill paths to no-ops. Fully guarded: if the runtime lacks any required
+-- global (getgc, hookfunction, setthreadidentity, getrenv) the whole block pcalls
+-- out and the suite loads normally.
+-- v0.1.1: DEFERRED to task.spawn. The getgc(true) walk is O(N) over every live GC
+-- object -- on populated games (busy Adonis servers, dev-console builds) this
+-- crossed the "game freezes on load" threshold. Deferring means the AC hooks
+-- install one frame after script load instead of before the first line of user
+-- code runs; Adonis doesn't fire in that window in any observed game. Still
+-- pcall'd -- errors here must never take the suite down.
+task.spawn(function()
 pcall(function()
     if not (getgc and hookfunction and setthreadidentity and getrenv) then return end
     local dbg = false          -- flip true to see what the AC tried to do
@@ -98,6 +105,7 @@ pcall(function()
 
     setthreadidentity(7)
 end)
+end)
 
 -- v0.0.96 EXECUTOR PROFILING + SAFE MODE PROMPT. Weak executors crash when
 -- silent aim installs the full __namecall hook (newcclosure+hookmetamethod is a
@@ -117,8 +125,12 @@ do
         end
     end)
     Koffee._exec = execName
-    local KNOWN_STRONG = { Potassium = true, Volt = true }
-    if not KNOWN_STRONG[execName] then
+    -- v0.1.1: case-insensitive lookup. identifyexecutor() casing isn't contractual
+    -- across runtimes ("Potassium" vs "potassium" both seen in the wild); a strict
+    -- match sends whitelisted users into the safe-mode BindableEvent gate, which
+    -- yields the load thread until they click a button they don't know they need.
+    local KNOWN_STRONG = { potassium = true, volt = true }
+    if not (type(execName) == "string" and KNOWN_STRONG[execName:lower()]) then
         local ok, answer = pcall(function()
             local Players = game:GetService("Players")
             local CoreGui = game:GetService("CoreGui")
@@ -253,6 +265,12 @@ local Theme = {
         -- (cached to executor workspace), wrap it in a font-family JSON for getcustomasset.
         -- Everything is pcall'd with a Nunito fallback -- locked-down executors still render.
         -- Font is a nicety, never a hard dep.
+        -- v0.1.1: SYNC path is CACHE-ONLY. If the cached ttf+json are already on
+        -- disk, we register them synchronously. If NOT, we return nil (Nunito
+        -- fallback) and kick off the download in a background task so the NEXT
+        -- session finds the cache. This kills a ~700KB HTTP-download-on-main-
+        -- thread that friend's game froze on when a first-run happened after a
+        -- fresh executor cache wipe.
         local FONT_URL  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProximaSoft-Bold.ttf"
         local FONT_FILE = "koffee_proximasoft.ttf"
         local FONT_JSON = "koffee_proximasoft.json"
@@ -264,7 +282,7 @@ local Theme = {
                 if not (getasset and isf and wf) then return nil end
 
                 -- honour a manual drop first (any local proxima/koffee_font file),
-                -- otherwise download the hosted ttf once and cache it.
+                -- otherwise register the hosted ttf if already cached.
                 local target
                 for _, name in ipairs({
                     FONT_FILE, "koffee_font.ttf", "koffee_font.otf",
@@ -273,25 +291,27 @@ local Theme = {
                     if not target and isf(name) then target = name end
                 end
                 if not target then
-                    -- download: prefer a binary-safe request API, fall back to HttpGet
-                    local body
-                    local req = (syn and syn.request) or (http and http.request)
-                        or http_request or request
-                    if req then
-                        local rok, r = pcall(req, { Url = FONT_URL, Method = "GET" })
-                        if rok and r and r.Body and #r.Body > 4096 then body = r.Body end
-                    end
-                    if not body then
-                        local hok, h = pcall(function() return game:HttpGetAsync(FONT_URL) end)
-                        if hok and h and #h > 4096 then body = h end
-                    end
-                    if not body then return nil end   -- no HTTP -> Nunito fallback
-                    wf(FONT_FILE, body)
-                    target = FONT_FILE
+                    -- CACHE MISS: background-download for next session, return nil now.
+                    task.spawn(function()
+                        local body
+                        local req = (syn and syn.request) or (http and http.request)
+                            or http_request or request
+                        if req then
+                            local rok, r = pcall(req, { Url = FONT_URL, Method = "GET" })
+                            if rok and r and r.Body and #r.Body > 4096 then body = r.Body end
+                        end
+                        if not body then
+                            local hok, h = pcall(function() return game:HttpGetAsync(FONT_URL) end)
+                            if hok and h and #h > 4096 then body = h end
+                        end
+                        if body then pcall(wf, FONT_FILE, body) end
+                    end)
+                    return nil
                 end
 
+                -- CACHE HIT: register the family JSON synchronously (fast, no HTTP).
+                if isf(FONT_JSON) then return getasset(FONT_JSON) end
                 local ttfId = getasset(target)
-                -- one bold face driving every weight (Matcha's UI is single-weight).
                 local fam = {
                     name  = "ProximaSoft",
                     faces = {
@@ -1224,14 +1244,13 @@ local KoffeeOptions = {
     MIFontSize = 12,               -- "12" = Theme mirror default; slider in right-click
 }
 local nextLayoutOrder = 0
-local ROW_HEIGHT = 20
-local ROW_ENTER = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
--- v0.0.14: arraylist label uses RichText; base name in Text color, detail suffix (e.g. "box") in Muted.
--- v0.0.17: detail suffix is smaller (size 12 vs body 14) + wider spacing; RichText <font size='N'> drives the delta.
-local ARRAYLIST_MUTED_COLOR = "rgb(138,125,112)"   -- Theme.Palette.TextMuted
-local ARRAYLIST_DETAIL_SIZE = 12                    -- smaller than Body (14)
-local ARRAYLIST_ON_COLOR    = "rgb(217,150,95)"     -- Theme.Palette.Accent (the "on" tag)
+local ROW = {
+    height = 20,
+    enter  = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+    muted  = "rgb(138,125,112)",   -- Theme.Palette.TextMuted
+    detail = 12,                   -- smaller than Body (14)
+    on     = "rgb(217,150,95)",    -- Theme.Palette.Accent (the "on" tag)
+}
 
 -- v0.0.73: the plain (tag-free) visible string -- base + detail + " on" when active.
 -- Drives BOTH the sort key (length + alpha) and equality checks. Spaces in the detail
@@ -1253,11 +1272,11 @@ local function buildArrayLabelText(mod)
     local s = base
     if detail and detail ~= "" then
         s = s .. string.format("<font size='%d' color='%s'>%s</font>",
-            math.round(ARRAYLIST_DETAIL_SIZE * scale), ARRAYLIST_MUTED_COLOR, detail)
+            math.round(ROW.detail * scale), ROW.muted, detail)
     end
     if mod.IsActive and mod.IsActive() then
         s = s .. string.format("<font size='%d' color='%s'>  on</font>",
-            math.round((ARRAYLIST_DETAIL_SIZE - 2) * scale), ARRAYLIST_MUTED_COLOR)
+            math.round((ROW.detail - 2) * scale), ROW.muted)
     end
     return s
 end
@@ -1302,7 +1321,7 @@ local function addToActiveArray(mod)
     -- so ListLayout doesn't fight us on Position.
     local wrapper = new("Frame", {
         Name = mod.Id,
-        Size = UDim2.new(1, 0, 0, ROW_HEIGHT),
+        Size = UDim2.new(1, 0, 0, ROW.height),
         BackgroundTransparency = 1,
         LayoutOrder = nextLayoutOrder,
         ZIndex = 17,
@@ -1342,7 +1361,7 @@ local function addToActiveArray(mod)
     -- ESP.Config.TextGradient is true (wired after ESP config exists).
     local arrGrad = new("UIGradient", { Enabled = false, Parent = label })
     arrGrad.Name = "KArrayGrad"
-    tween(label, ROW_ENTER, {
+    tween(label, ROW.enter, {
         Position = UDim2.new(0, 0, 0, 0),
         TextTransparency = 0,
     })
@@ -2073,16 +2092,12 @@ end
 --                fade tail so it doesn't pop out of existence
 -- Also cancels any in-flight tweens on each state change so rapid clicking can't
 -- stack animations and desync the visual from the actual state.
-local CHECKBOX_ROW_HEIGHT = 22
-local CHECKBOX_OUTER = 16
-local CHECKBOX_INNER = 12
-local CHECKBOX_LABEL_OFFSET = 26
-local CHECKBOX_RIGHT_RESERVE = 74
+local CBOX = { h = 22, outer = 16, inner = 12, off = 26, reserve = 74 }
 
 local function checkboxVisual(parent, label, initialOn)
     local state = initialOn and true or false
     local row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, CHECKBOX_ROW_HEIGHT),
+        Size = UDim2.new(1, 0, 0, CBOX.h),
         BackgroundTransparency = 1,
         ZIndex = 34,
         Parent = parent,
@@ -2091,7 +2106,7 @@ local function checkboxVisual(parent, label, initialOn)
     local box = new("Frame", {
         AnchorPoint = Vector2.new(0, 0.5),
         Position = UDim2.new(0, 0, 0.5, 0),
-        Size = UDim2.new(0, CHECKBOX_OUTER, 0, CHECKBOX_OUTER),
+        Size = UDim2.new(0, CBOX.outer, 0, CBOX.outer),
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BackgroundTransparency = 0.15,
         BorderSizePixel = 0,
@@ -2103,7 +2118,7 @@ local function checkboxVisual(parent, label, initialOn)
     local innerFill = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = state and UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER)
+        Size = state and UDim2.new(0, CBOX.inner, 0, CBOX.inner)
                      or UDim2.new(0, 0, 0, 0),
         BackgroundColor3 = Theme.Palette.Accent,
         BackgroundTransparency = state and 0 or 1,
@@ -2117,8 +2132,8 @@ local function checkboxVisual(parent, label, initialOn)
         TextSize = Theme.Text.Body,
         TextColor3 = state and Theme.Palette.Accent or Theme.Palette.Text,
         BackgroundTransparency = 1,
-        Position = UDim2.new(0, CHECKBOX_LABEL_OFFSET, 0, 0),
-        Size = UDim2.new(1, -CHECKBOX_LABEL_OFFSET - CHECKBOX_RIGHT_RESERVE, 1, 0),
+        Position = UDim2.new(0, CBOX.off, 0, 0),
+        Size = UDim2.new(1, -CBOX.off - CBOX.reserve, 1, 0),
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Center,
         ZIndex = 35,
@@ -2127,7 +2142,7 @@ local function checkboxVisual(parent, label, initialOn)
     local btn = new("TextButton", {
         Text = "",
         BackgroundTransparency = 1,
-        Size = UDim2.new(1, -CHECKBOX_RIGHT_RESERVE, 1, 0),
+        Size = UDim2.new(1, -CBOX.reserve, 1, 0),
         ZIndex = 37,
         AutoButtonColor = false,
         Parent = row,
@@ -2154,7 +2169,7 @@ local function checkboxVisual(parent, label, initialOn)
             innerFill.Size = UDim2.new(0, 0, 0, 0)
             innerFill.BackgroundTransparency = 0
             activeSize = tween(innerFill, CB_GROW, {
-                Size = UDim2.new(0, CHECKBOX_INNER, 0, CHECKBOX_INNER),
+                Size = UDim2.new(0, CBOX.inner, 0, CBOX.inner),
             })
             pulse(box, 1.12)   -- v0.0.98: box ticks out as the fill grows in
         else
@@ -3421,7 +3436,7 @@ local function teamCheckSettings(api)
         local name = team.Name
         -- CanvasGroup so GroupTransparency dims the whole row uniformly when greyed.
         local cg = new("CanvasGroup", {
-            Size = UDim2.new(1, 0, 0, CHECKBOX_ROW_HEIGHT),
+            Size = UDim2.new(1, 0, 0, CBOX.h),
             BackgroundTransparency = 1, GroupTransparency = 0,
             BorderSizePixel = 0, ZIndex = 211, Parent = frame,
         })
@@ -3600,6 +3615,19 @@ local function loadSnapshot(data)
         for name, tbl in pairs(data.registry) do
             local target = ConfigRegistry[name]
             if target and type(tbl) == "table" then applyInto(target, tbl) end
+        end
+    end
+    -- per-game custom-anim list (place 155615604): a config saved in another
+    -- game can carry an animation Name that doesn't exist in THIS game's list.
+    -- Snap it before the tab rebuild renders the dropdown (reads the live
+    -- registered table, freshly merged above; the per-game lists are seeded
+    -- onto Koffee by the character-visual IIFE).
+    local ca = ConfigRegistry and ConfigRegistry["custom_anim"]
+    if ca then
+        local ids = Koffee._animIDs
+        if ids and not ids[ca.Name] then
+            local opts = Koffee._animDropdown
+            ca.Name = (opts and opts[1]) or "Orbit 1"
         end
     end
     if data.keybinds then
@@ -3985,8 +4013,7 @@ end
 -- ("menu takes a second to open with fill on"). 40 strips at step 5 still reads as
 -- a smooth solid (the cube edges draw on top and hide any stair-stepping) for a
 -- fraction of the frames + fill/hull work.
-local MAX_FILL_ROWS = 40
-local FILL_ROW_STEP = 5
+local FILL = { max = 40, step = 5 }
 
 local function makeFillRows(parent)
     -- v0.0.22: CanvasGroup flattens overlapping strips into ONE layer before transparency,
@@ -4006,7 +4033,7 @@ local function makeFillRows(parent)
         Parent = parent,
     }, { lineGradient() })
     local rows = {}
-    for _ = 1, MAX_FILL_ROWS do
+    for _ = 1, FILL.max do
         rows[#rows + 1] = new("Frame", {
             BackgroundColor3 = Color3.new(1, 1, 1),
             BackgroundTransparency = 0,
@@ -4462,9 +4489,7 @@ local CUBE_VERTEX_NEIGHBORS = {
 --   Result: only ONE screen scalar drives everything, so width and height
 --   are truly linked. Camera angle / character rotation / animation do NOT
 --   change the box shape.
-local STATIC_TOP_STUDS = 3
-local STATIC_BOT_STUDS = 3
-local STATIC_ASPECT    = 0.5   -- fallback width = height * 0.5 (used only if no bbox)
+local STATIC = { top = 3, bot = 3, aspect = 0.5 }   -- fallback width = height * 0.5 (used only if no bbox)
 
 local function projectStatic(torso, character)
     -- v0.0.15: anchor is torso.Position (live world read).
@@ -4492,8 +4517,8 @@ local function projectStatic(torso, character)
     if not topWorld then
         local pos = torso.Position
         centerWorld = pos
-        topWorld = pos + Vector3.new(0, STATIC_TOP_STUDS, 0)
-        botWorld = pos + Vector3.new(0, -STATIC_BOT_STUDS, 0)
+        topWorld = pos + Vector3.new(0, STATIC.top, 0)
+        botWorld = pos + Vector3.new(0, -STATIC.bot, 0)
     end
     local top2D = cam:WorldToViewportPoint(topWorld)
     local bot2D = cam:WorldToViewportPoint(botWorld)
@@ -4507,7 +4532,7 @@ local function projectStatic(torso, character)
         local r2D = cam:WorldToViewportPoint(centerWorld + right * (girth * 0.5))
         width = math.abs(r2D.X - l2D.X)
     end
-    if not width or width <= 0 then width = height * STATIC_ASPECT end
+    if not width or width <= 0 then width = height * STATIC.aspect end
     local centerX = (top2D.X + bot2D.X) * 0.5
     local centerY = (top2D.Y + bot2D.Y) * 0.5
     local x0 = centerX - width * 0.5
@@ -5204,7 +5229,7 @@ local function updateESPRigs()
                 end
                 local totalH = hy1 - hy0
                 local spanX  = math.max(hx1 - hx0, 1)
-                local rowCount = math.clamp(math.floor(totalH / FILL_ROW_STEP), 1, MAX_FILL_ROWS)
+                local rowCount = math.clamp(math.floor(totalH / FILL.step), 1, FILL.max)
                 local rowH = totalH / rowCount
                 -- v0.0.29: group hugs the fill AABB (not the full screen) so a
                 -- gradient on the CanvasGroup spans the silhouette instead of a
@@ -5217,7 +5242,7 @@ local function updateESPRigs()
                 -- gradient when on; flat fillColor when off.
                 applyLineGradient(rig.fillGroup, lineGradOn)
                 local stripCol = lineGradOn and Color3.new(1, 1, 1) or fillColor
-                for i = 1, MAX_FILL_ROWS do
+                for i = 1, FILL.max do
                     local f = rig.fillRows[i]
                     if i <= rowCount then
                         local yTop = hy0 + (i - 1) * rowH
@@ -5611,11 +5636,20 @@ local World = {
     Fullbright = { Saved = nil, Conn = nil },
     NoFog      = { Saved = nil, Conn = nil },
     Time       = { Saved = nil, Target = 14, Conn = nil },
+    -- v0.0.100: effects batch
+    CC     = { Saved = nil, Conn = nil, Owned = nil, Saturation = 0, Contrast = 0, Brightness = 0, Tint = Color3.fromRGB(255, 255, 255) },
+    Light  = { Saved = nil, Conn = nil, Color = Color3.fromRGB(255, 255, 255), Intensity = 1 },
+    Sky    = { Saved = nil, Conn = nil },
+    Clouds = { Saved = nil, Conn = nil },
+    Gfx    = { Saved = nil },
 }
 
 -- v0.0.34: only the Clock Time target persists (Saved/Conn are runtime + skipped
 -- by the serializer). Fullbright/NoFog are pure toggles -> restored via modules.
 registerConfig("world_time", World.Time)
+-- v0.0.100: slider/swatch values for the effects batch persist; Saved/Conn don't.
+registerConfig("world_cc", World.CC)
+registerConfig("world_light", World.Light)
 
 registerModule("fullbright", "Fullbright",
     function()
@@ -5707,6 +5741,140 @@ registerModule("customtime", "Custom Time",
             Lighting.ClockTime = s.ClockTime
             World.Time.Saved = nil
         end
+    end
+)
+
+-- WORLD EFFECTS (v0.0.100): color correction, ambient tint, sky/clouds kill,
+-- low graphics. Same save/restore + Heartbeat re-assert pattern as above.
+
+registerModule("colorcorrection", "Color Correction",
+    function()
+        local fx = Lighting:FindFirstChildOfClass("ColorCorrectionEffect")
+        if fx then
+            World.CC.Owned = false
+        else
+            fx = Instance.new("ColorCorrectionEffect")
+            fx.Name = "KoffeeCC"
+            fx.Parent = Lighting
+            World.CC.Owned = true
+        end
+        World.CC.Saved = {
+            Origin = fx.Origin, Saturation = fx.Saturation,
+            Contrast = fx.Contrast, Brightness = fx.Brightness, TintColor = fx.TintColor,
+        }
+        World.CC.Conn = RunService.Heartbeat:Connect(function()
+            local f = Lighting:FindFirstChildOfClass("ColorCorrectionEffect")
+            if not f then
+                f = Instance.new("ColorCorrectionEffect")
+                f.Name = "KoffeeCC"
+                f.Parent = Lighting
+                World.CC.Owned = true
+            end
+            f.Saturation = World.CC.Saturation
+            f.Contrast   = World.CC.Contrast
+            f.Brightness = World.CC.Brightness
+            f.TintColor  = World.CC.Tint
+        end)
+    end,
+    function()
+        if World.CC.Conn then World.CC.Conn:Disconnect(); World.CC.Conn = nil end
+        local fx = Lighting:FindFirstChildOfClass("ColorCorrectionEffect")
+        local s = World.CC.Saved
+        if fx and s then
+            if World.CC.Owned then
+                fx:Destroy()
+            else
+                fx.Origin = s.Origin; fx.Saturation = s.Saturation
+                fx.Contrast = s.Contrast; fx.Brightness = s.Brightness
+                fx.TintColor = s.TintColor
+            end
+        end
+        World.CC.Saved = nil; World.CC.Owned = nil
+    end
+)
+
+registerModule("ambientcolor", "Ambient Color",
+    function()
+        World.Light.Saved = {
+            Ambient = Lighting.Ambient,
+            OutdoorAmbient = Lighting.OutdoorAmbient,
+        }
+        World.Light.Conn = RunService.Heartbeat:Connect(function()
+            local c = World.Light.Color * World.Light.Intensity
+            Lighting.Ambient = c
+            Lighting.OutdoorAmbient = c
+        end)
+    end,
+    function()
+        if World.Light.Conn then World.Light.Conn:Disconnect(); World.Light.Conn = nil end
+        local s = World.Light.Saved
+        if not s then return end
+        Lighting.Ambient = s.Ambient
+        Lighting.OutdoorAmbient = s.OutdoorAmbient
+        World.Light.Saved = nil
+    end
+)
+
+registerModule("removesky", "Remove Sky",
+    function()
+        local skies = {}
+        for _, sky in ipairs(Lighting:GetChildren()) do
+            if sky:IsA("Sky") then table.insert(skies, { sky = sky, parent = sky.Parent }) end
+        end
+        for _, w in ipairs(workspace:GetChildren()) do
+            if w:IsA("Sky") then table.insert(skies, { sky = w, parent = w.Parent }) end
+        end
+        World.Sky.Saved = skies
+        for _, e in ipairs(skies) do e.sky.Parent = nil end
+        World.Sky.Conn = RunService.Heartbeat:Connect(function()
+            for _, e in ipairs(World.Sky.Saved or {}) do e.sky.Parent = nil end
+        end)
+    end,
+    function()
+        if World.Sky.Conn then World.Sky.Conn:Disconnect(); World.Sky.Conn = nil end
+        local s = World.Sky.Saved
+        if not s then return end
+        for _, e in ipairs(s) do
+            if e.parent then e.sky.Parent = e.parent end
+        end
+        World.Sky.Saved = nil
+    end
+)
+
+registerModule("noclouds", "Disable Clouds",
+    function()
+        local list = {}
+        for _, c in ipairs(workspace:GetChildren()) do
+            if c:IsA("Clouds") then table.insert(list, { c = c, on = c.Enable }) end
+        end
+        World.Clouds.Saved = list
+        for _, e in ipairs(list) do e.c.Enable = false end
+        World.Clouds.Conn = RunService.Heartbeat:Connect(function()
+            for _, c in ipairs(workspace:GetChildren()) do
+                if c:IsA("Clouds") and c.Enable then c.Enable = false end
+            end
+        end)
+    end,
+    function()
+        if World.Clouds.Conn then World.Clouds.Conn:Disconnect(); World.Clouds.Conn = nil end
+        local s = World.Clouds.Saved
+        if not s then return end
+        for _, e in ipairs(s) do e.c.Enable = e.on end
+        World.Clouds.Saved = nil
+    end
+)
+
+registerModule("lowgfx", "Low Graphics",
+    function()
+        local rs = settings().Rendering
+        World.Gfx.Saved = rs.QualityLevel
+        pcall(function() rs.QualityLevel = 1 end)
+    end,
+    function()
+        local s = World.Gfx.Saved
+        if s == nil then return end
+        pcall(function() settings().Rendering.QualityLevel = s end)
+        World.Gfx.Saved = nil
     end
 )
 
@@ -5917,7 +6085,9 @@ FEAT.spinbot = {
     end,
     step = function(dt)
         local s = st.spin; if not s then return end
-        s.a = s.a + math.rad(Move.Spin.Speed) * dt
+        -- Nonlinear map: slider 1..1000 -> rad/s via 0.05 * v^1.7, so 1 is a
+        -- near-invisible crawl (~3 deg/s) and 1000 is ~630 rev/s.
+        s.a = s.a + math.rad(0.05 * Move.Spin.Speed ^ 1.7) * dt
         -- bind HRP writer at Last+1 the first time we run (and on mode flip back
         -- from the legacy bypass path). Same priority as the aimbot step so the
         -- render order is predictable.
@@ -6451,13 +6621,40 @@ end)
 
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
 registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
-local ANIM_IDS = {
+ANIM_IDS = {
     ["Orbit 1"] = "118314972618293", ["Orbit 2"] = "133811691098518", ["Orbit 3"] = "138488217385385", ["Orbit 4"] = "91729309021707",
     ["Aura 1"] = "140445336277156", ["Aura 2"] = "107902247206226", ["Aura 3"] = "71799101103620",
     ["Small Body 1"] = "132582392404773", ["Small Body 2"] = "117450501566142"
 }
+local ANIM_LOOP = {}
+ANIM_DROPDOWN = { "Orbit 1", "Orbit 2", "Orbit 3", "Orbit 4", "Aura 1", "Aura 2", "Aura 3", "Small Body 1", "Small Body 2" }
+-- Place 155615604: replace the whole custom-anim list with these (loop only where noted)
+if game.PlaceId == 155615604 then
+    ANIM_IDS = {
+        ["Prone"] = "481089053",
+        ["Prone Walking"] = "481088553",
+        ["Sitting"] = "178130996",
+        ["Climbing"] = "180436334",
+        ["Falling"] = "180436148",
+        ["Reloading"] = "388723916"
+    }
+    ANIM_LOOP = { ["Prone Walking"] = true, ["Reloading"] = true }
+    ANIM_DROPDOWN = { "Prone", "Prone Walking", "Sitting", "Climbing", "Falling", "Reloading" }
+    if not ANIM_IDS[Visual.CustomAnim.Name] then Visual.CustomAnim.Name = "Prone" end
+end
+-- published for the config-load sanitize (config system lives in its own IIFE
+-- which runs BEFORE this block assigns the per-game lists).
+Koffee._animIDs = ANIM_IDS
+Koffee._animDropdown = ANIM_DROPDOWN
 local currentAnimTrack = nil
 local currentAnimId = nil
+local function stopOtherTracks(animator)
+    local ok, list = pcall(function() return animator:GetPlayingAnimationTracks() end)
+    if not ok or not list then return end
+    for _, t in ipairs(list) do
+        if t ~= currentAnimTrack then pcall(function() t:Stop() end) end
+    end
+end
 RunService.Heartbeat:Connect(function()
     local active = Modules.customanim and Modules.customanim.IsActive()
     if not active then
@@ -6470,14 +6667,14 @@ RunService.Heartbeat:Connect(function()
         return
     end
     local targetId = ANIM_IDS[Visual.CustomAnim.Name]
-    if currentAnimTrack and currentAnimId == targetId then
-        if not currentAnimTrack.IsPlaying then currentAnimTrack:Play() end
+    if not targetId then
+        if currentAnimTrack then
+            currentAnimTrack:Stop()
+            currentAnimTrack:Destroy()
+            currentAnimTrack = nil
+        end
+        currentAnimId = nil
         return
-    end
-    if currentAnimTrack then
-        currentAnimTrack:Stop()
-        currentAnimTrack:Destroy()
-        currentAnimTrack = nil
     end
     local character = LocalPlayer.Character
     if not character then return end
@@ -6487,6 +6684,16 @@ RunService.Heartbeat:Connect(function()
     if not animator then
         animator = Instance.new("Animator")
         animator.Parent = humanoid
+    end
+    if currentAnimTrack and currentAnimId == targetId then
+        if not currentAnimTrack.IsPlaying then currentAnimTrack:Play() end
+        stopOtherTracks(animator)
+        return
+    end
+    if currentAnimTrack then
+        currentAnimTrack:Stop()
+        currentAnimTrack:Destroy()
+        currentAnimTrack = nil
     end
     local animObject = nil
     local success, objects = pcall(function() return game:GetObjects("rbxassetid://" .. targetId) end)
@@ -6501,13 +6708,16 @@ RunService.Heartbeat:Connect(function()
         animObject = Instance.new("Animation")
         animObject.AnimationId = "rbxassetid://" .. targetId
     end
+    local looping = true
+    if next(ANIM_LOOP) then looping = ANIM_LOOP[Visual.CustomAnim.Name] == true end
     local ok, track = pcall(function() return animator:LoadAnimation(animObject) end)
     if ok and track then
-        track.Looped = true
+        track.Looped = looping
         track.Priority = Enum.AnimationPriority.Action4
         track:Play()
         currentAnimTrack = track
         currentAnimId = targetId
+        stopOtherTracks(animator)
     end
 end)
 registerModule("staticff",     "Static Forcefield", function() end, function() clearFF() end)  -- v0.0.97: kept registered (no UI toggle) so clearFF runs if a config still has it on
@@ -6702,11 +6912,7 @@ Koffee._characterTab = function(root)
     -- Custom Anim
     local animRow = moduleCheckbox(vis, "Custom Anim", "customanim")
     activationPill(animRow.row, CFG.customanim)
-    dropdown(vis, "Animation", {
-        "Orbit 1", "Orbit 2", "Orbit 3", "Orbit 4",
-        "Aura 1", "Aura 2", "Aura 3",
-        "Small Body 1", "Small Body 2"
-    }, Visual.CustomAnim.Name, function(v) Visual.CustomAnim.Name = v end)
+    dropdown(vis, "Animation", ANIM_DROPDOWN, Visual.CustomAnim.Name, function(v) Visual.CustomAnim.Name = v end)
 end
 
 end)()
@@ -6987,7 +7193,7 @@ local Combat = {
         local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then return pos end
         local v = hrp.AssemblyLinearVelocity
-        return pos + Vector3.new(v.X / math.max(pr.X, 0.01), v.Y / math.max(pr.Y, 0.01), v.Z / math.max(pr.X, 0.01))
+        return pos + Vector3.new(v.X / math.max(pr.X, 0.01), v.Y / math.max(pr.Y, 0.01), v.Z / math.max(pr.Z, 0.01))
     end
 
     --== FOV circles (one per context -- aimbot + silent -- both can be active) ==--
@@ -8669,20 +8875,20 @@ local Combat = {
         end)
         -- name input row
         local tlNameRow = new("Frame", {
-            Size = UDim2.new(1, 0, 0, CHECKBOX_ROW_HEIGHT),
+            Size = UDim2.new(1, 0, 0, CBOX.h),
             BackgroundTransparency = 1, ZIndex = 34,
             LayoutOrder = 2, Parent = tlCard,
         })
         new("TextLabel", {
             Text = "Target Name", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
-            Position = UDim2.new(0, CHECKBOX_LABEL_OFFSET, 0, 0),
-            Size = UDim2.new(1, -CHECKBOX_LABEL_OFFSET - 90, 1, 0),
+            Position = UDim2.new(0, CBOX.off, 0, 0),
+            Size = UDim2.new(1, -CBOX.off - 90, 1, 0),
             TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = tlNameRow,
         })
         local tlBox = new("TextBox", {
             AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
-            Size = UDim2.new(0, 80, 0, CHECKBOX_ROW_HEIGHT - 8),
+            Size = UDim2.new(0, 80, 0, CBOX.h - 8),
             Text = Shared.TargetLock.Name or "", PlaceholderText = "username...",
             ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
@@ -8696,14 +8902,14 @@ local Combat = {
         end)
         -- activation keybind row
         local tlKeyRow = new("Frame", {
-            Size = UDim2.new(1, 0, 0, CHECKBOX_ROW_HEIGHT),
+            Size = UDim2.new(1, 0, 0, CBOX.h),
             BackgroundTransparency = 1, ZIndex = 34, LayoutOrder = 3, Parent = tlCard,
         })
         new("TextLabel", {
             Text = "Activate Key", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
-            Position = UDim2.new(0, CHECKBOX_LABEL_OFFSET, 0, 0),
-            Size = UDim2.new(1, -CHECKBOX_LABEL_OFFSET - 90, 100, 0),
+            Position = UDim2.new(0, CBOX.off, 0, 0),
+            Size = UDim2.new(1, -CBOX.off - 90, 100, 0),
             TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = tlKeyRow,
         })
         local tlKeyPill = new("TextButton", {
@@ -9069,6 +9275,20 @@ addTab("World", function(root)
             Lighting.ClockTime = v
         end
     end)
+
+    -- v0.0.100: effects batch
+    local fx = panel(root, "Effects")
+    local cc = moduleCheckbox(fx, "Color Correction", "colorcorrection")
+    attachSingleSwatch(cc.row, World.CC.Tint, function(c) World.CC.Tint = c end)
+    slider(fx, "Saturation", -1, 1, World.CC.Saturation, 2, function(v) World.CC.Saturation = v end)
+    slider(fx, "Contrast",   -1, 1, World.CC.Contrast,   2, function(v) World.CC.Contrast   = v end)
+    slider(fx, "Brightness", -1, 1, World.CC.Brightness, 2, function(v) World.CC.Brightness = v end)
+    local amb = moduleCheckbox(fx, "Ambient Color", "ambientcolor")
+    attachSingleSwatch(amb.row, World.Light.Color, function(c) World.Light.Color = c end)
+    slider(fx, "Ambient Intensity", 0, 2, World.Light.Intensity, 2, function(v) World.Light.Intensity = v end)
+    moduleCheckbox(fx, "Remove Sky",     "removesky")
+    moduleCheckbox(fx, "Disable Clouds", "noclouds")
+    moduleCheckbox(fx, "Low Graphics",   "lowgfx")
 end)
 
 addTab("Character", function(root) Koffee._characterTab(root) end)
@@ -9439,6 +9659,9 @@ end)
 -- WINDOW TOGGLE + BACKGROUND SYNC
 -- Delete key toggles. Everything (window + snow + dim + blur) fades
 -- with the same linear timing so they leave together, cleanly.
+-- IIFE: own register budget. The main chunk rides Luau's 200-local ceiling
+-- (same pattern as the Combat IIFE further up).
+;(function()
 local windowOpen = true
 
 -- v0.0.95: track pre-open mouse state so we can restore what the game (or 3rd
@@ -9647,5 +9870,6 @@ task.spawn(function()
     task.wait(0.25)
     pcall(function() Koffee.Config.load(auto) end)
 end)
+end)()
 
 return Koffee
