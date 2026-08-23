@@ -1,9 +1,9 @@
--- koffee v0.1.4
+-- koffee v0.1.5
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.4"
+Koffee.Version = "0.1.5"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -1003,6 +1003,7 @@ local KID = (function()
     ctx.keys.nc     = ctx.keys.nc     or ("_" .. rand(14))
     ctx.keys.res    = ctx.keys.res    or ("_" .. rand(14))
     ctx.keys.hooked = ctx.keys.hooked or ("_" .. rand(14))
+    ctx.keys.ctrl   = ctx.keys.ctrl   or ("_" .. rand(14))
     return {
         ctx   = ctx,
         name  = function(k)
@@ -7530,10 +7531,20 @@ local Combat = {
     -- or the read-spoof rotates the real view / teleports you on games with custom handlers.
     -- Populated by the __newindex writer-detector; only pure-READER (shooting) code is left
     -- to be spoofed. Session-stable so re-exec keeps what it already learned.
+    -- v0.1.5 Second-Camera: the learned set is actually ENFORCED (v0.0.70 shipped the
+    -- detector but the revert removed enforcement). In SC mode a script that writes
+    -- Camera.CFrame is a RENDERER and always gets real data, while pure-reader weapon
+    -- scripts get bent continuously -- that is the actual "two cameras" split: the game's
+    -- fire logic sees the locked direction, your view never moves. Merged handler+weapon
+    -- scripts land in the set too and degrade to MB (switch methods there).
     function SR.spoofAim(src)
         if not src then return false end
         if src == SR.own then return false end              -- never Koffee's own reads
         if SR.isView(src) then return false end             -- never the camera system
+        if Combat.Silent.Method == "Second-Camera" then
+            local set = getgenv and getgenv()[KID.ctx.keys.ctrl]
+            if set and rawget(set, src) then return false end  -- learned renderer: real data
+        end
         return true                                         -- any non-camera script
     end
 
@@ -7816,14 +7827,20 @@ local Combat = {
             -- camera/renderer is never modified. Camera.CFrame is gated by camFire
             -- (fire-frame window; continuous spoof froze custom camera controllers);
             -- Mouse.X/Y uses isArmed (continuous -- only aim code reads mouse coords).
-            -- v0.1.4: Second-Camera now runs the FULL read-spoof set (Camera.CFrame
-            -- included, per Jack) -- the only difference from Forced MB is the gate:
-            -- everything is locked to the shot window (activation key if set + LMB
-            -- down / post-click grace), and idle reads pass through 100% real. The
-            -- camera can tug for the ~120ms window on custom-camera games (their
-            -- controller re-reads CFrame every frame) but between shots it never
-            -- bends.
-            if camFire() then
+            -- v0.1.5 Second-Camera: the CFrame gate is ENGAGEMENT, not the click window.
+            -- While armed (target + activation key if set), weapon-facing callers get the
+            -- bent CFrame CONTINUOUSLY and learned renderers (writer-detector) always get
+            -- real CFrame via spoofAim -- so a separate controller never moves your view,
+            -- spray or not. Merged handler+weapon games degrade (their script writes the
+            -- camera -> excluded -> switch to Forced MB there).
+            local scCam = false
+            if Combat.Silent.Method == "Second-Camera" then
+                scCam = silentPos ~= nil
+                    and (not Combat.Silent.ActivationKey or silentHeld)
+            else
+                scCam = camFire()
+            end
+            if scCam then
                 -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
                 --   default (Forced MB): origin stays REAL, look-direction bends to target.
                 --   Pos Spoof + fire frame: camera moves to 3 studs in FRONT of the target,
@@ -7917,6 +7934,11 @@ local Combat = {
             genv[K.ri]  = resolveIndex
             genv[K.nc]  = resolveNamecall
             genv[K.res] = function() return silentPos, silentTarget end
+            -- v0.1.5: learned camera-controller set (weak keys -> destroyed scripts GC out).
+            -- Session-stable: survives re-exec so what a game taught us isn't unlearned.
+            if not genv[K.ctrl] then
+                genv[K.ctrl] = setmetatable({}, { __mode = "k" })
+            end
         end
 
         -- HOOK BODY: installed once per session, forever. Delegates to the repointable
@@ -7976,6 +7998,30 @@ local Combat = {
                         end
                     end
                     return oldNc(self, ...)
+                end))
+
+                -- v0.1.5 Second-Camera WRITER-DETECTOR: any game script that writes
+                -- Camera.CFrame is a camera RENDERER/CONTROLLER (FpsController, custom
+                -- orbit cams...). Recorded session-stable under K.ctrl (weak keys --
+                -- destroyed scripts GC out) and excluded from spoofing by SR.spoofAim.
+                -- Two cheap comparisons short-circuit the 99.9% case; only CFrame writes
+                -- on the current camera do work. getcallingscript is a plain read here
+                -- (no namecall involved), so this is hook-body safe.
+                local gcs = getcallingscript
+                local oldWi
+                oldWi = hookmm(game, "__newindex", wrap(function(self, k, v)
+                    if Combat.Silent.Method == "Second-Camera"
+                        and k == "CFrame" and self == SR.cam then
+                        if ccaller and ccaller() then return oldWi(self, k, v) end
+                        if gcs then
+                            local src = gcs()
+                            if src and src ~= SR.own then
+                                local set = genv[K.ctrl]
+                                if set then set[src] = true end
+                            end
+                        end
+                    end
+                    return oldWi(self, k, v)
                 end))
             end
         end)
