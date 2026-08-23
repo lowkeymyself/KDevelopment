@@ -1,9 +1,9 @@
--- koffee v0.1.7
+-- koffee v0.1.8
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.7"
+Koffee.Version = "0.1.8"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -7764,22 +7764,9 @@ local Combat = {
             if not Combat.Silent.RequireLMB then return true end
             return lmbDown or (os.clock() - lmbClickAt) < 0.12
         end
-        -- Camera.CFrame spoof is fire-frame gated (v0.0.89): continuous spoof made
-        -- custom camera controllers read the fake CFrame every frame and freeze
-        -- or crash. Mouse.X/Y + Mouse.Hit stay continuous (only aim code reads
-        -- those, so continuous spoof is safe there).
-        local function camFire()
-            if not silentPos then return false end
-            -- v0.1.4: Second-Camera rides the same shot window as its other gates
-            -- (RequireLMB is inherent to the method -- the click IS the engagement).
-            if Combat.Silent.Method == "Second-Camera" then
-                return lmbDown or (os.clock() - lmbClickAt) < 0.12
-            end
-            if not Combat.Silent.RequireLMB then
-                return lmbDown or (os.clock() - lmbClickAt) < 0.12
-            end
-            return lmbDown
-        end
+        -- Camera.CFrame spoof gate for Forced MB lives inline in resolveIndex now
+        -- (v0.1.8: RequireLMB-off is continuous for non-writer callers; learned camera
+        -- writers stay click-window gated). The old camFire() helper is gone.
         -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
         -- any wall between you and them), aimed AT the target -> the client raycast hits them
         -- with no wall in the way. Uses cached camPos (no Camera re-read inside the hook).
@@ -7847,8 +7834,24 @@ local Combat = {
             if Combat.Silent.Method == "Second-Camera" then
                 scCam = silentPos ~= nil
                     and (not Combat.Silent.ActivationKey or silentHeld)
-            else
-                scCam = camFire()
+            elseif silentPos then
+                -- Forced MB. v0.1.8: Require Left-Click OFF is now TRULY continuous --
+                -- the CFrame bend no longer collapses to the click window, EXCEPT for
+                -- learned camera WRITERS (writer-detector set), which stay window-gated
+                -- so custom-camera games can't freeze/crash under continuous spoofing
+                -- (v0.0.89 lesson) while every pure-reader weapon script gets the
+                -- always-on bend RequireLMB-off promises.
+                if Combat.Silent.RequireLMB then
+                    scCam = lmbDown or (os.clock() - lmbClickAt) < 0.12
+                else
+                    local msrc = getCS and getCS()
+                    local mset = (msrc and genv) and genv[KID.ctx.keys.ctrl]
+                    if mset and rawget(mset, msrc) then
+                        scCam = lmbDown or (os.clock() - lmbClickAt) < 0.12
+                    else
+                        scCam = true
+                    end
+                end
             end
             if scCam then
                 -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
