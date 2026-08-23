@@ -1,9 +1,9 @@
--- koffee v0.1.5
+-- koffee v0.1.6
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.5"
+Koffee.Version = "0.1.6"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -7542,6 +7542,12 @@ local Combat = {
         if src == SR.own then return false end              -- never Koffee's own reads
         if SR.isView(src) then return false end             -- never the camera system
         if Combat.Silent.Method == "Second-Camera" then
+            -- v0.1.5: learned renderers ALWAYS see real data -- absolute, no waivers.
+            -- (a v0.1.6 click-window waiver was ripped: bending a writer's reads at ANY
+            -- time bends the view, because it writes what it read straight back.)
+            -- These games are covered by the OUTBOUND path instead (FireServer arg
+            -- rewrite in resolveNamecall) -- the client sees truth, the wire carries
+            -- the lock.
             local set = getgenv and getgenv()[KID.ctx.keys.ctrl]
             if set and rawget(set, src) then return false end  -- learned renderer: real data
         end
@@ -7902,6 +7908,79 @@ local Combat = {
                 if posFire() and self == SR.char and SR.spoofAim(getCS and getCS()) then
                     return true, CFrame.new(silentPos)
                 end
+                return PASS_H, PASS_V
+            end
+            -- v0.1.6 OUTBOUND REWRITE (Second-Camera only): games whose weapon script
+            -- WRITES the camera while firing (recoil / ADS / sway) can't have their reads
+            -- bent at ALL without dragging the view (the writer-detector excludes them
+            -- absolutely -- a click-window waiver was tried and ripped same-day: bending a
+            -- writer's reads at ANY time bends the view, because it writes back what it
+            -- read). So for those scripts the reads stay REAL forever and the shot
+            -- direction is rewritten inside the OUTGOING remote args instead: the client
+            -- sees truth, the wire carries the lock. Surgical rules (v0.0.43/72 lesson --
+            -- never clobber blind):
+            --   * only callers already in the learned controller set are touched
+            --   * direction-shaped Vector3s (sub-8 magnitude, within ~41 deg of the real
+            --     look dir) rotate to aim at the target from the shooter's root; the
+            --     original magnitude is preserved
+            --   * point-shaped Vector3s (>50 studs out, within 12 studs of the look ray)
+            --     move onto the target's hit point
+            --   * Rays keep their EXACT origin; only the direction rotates
+            --   * everything else passes untouched -- args are never dropped/reordered/
+            --     invented, so unmatched schemas behave exactly vanilla
+            -- Namecall-safe: typeof / component math / constructors only -- no :Dot(),
+            -- :Unit() etc. on vectors (same shared-C-state rule as everything else here).
+            if method == "FireServer" or method == "InvokeServer" then
+                if Combat.Silent.Method ~= "Second-Camera" then return PASS_H, PASS_V end
+                if not (silentPos and silentTarget and SR.camLook) then return PASS_H, PASS_V end
+                if Combat.Silent.ActivationKey and not silentHeld then return PASS_H, PASS_V end
+                local src = getCS and getCS()
+                local set = (src and genv) and genv[KID.ctx.keys.ctrl]
+                if not (set and rawget(set, src)) then return PASS_H, PASS_V end
+                local origin = SR.rootPos or SR.camPos
+                local lk = SR.camLook
+                if not (origin and lk) then return PASS_H, PASS_V end
+                local changed = false
+                for i = 1, args.n do
+                    local a = args[i]
+                    local t = typeof(a)
+                    if t == "Vector3" then
+                        local m = a.Magnitude
+                        if m > 1e-4 and m < 8 then
+                            -- direction-shaped: near the real look direction?
+                            if (a.X * lk.X + a.Y * lk.Y + a.Z * lk.Z) / m > 0.75 then
+                                local nd = silentPos - origin
+                                local nl = (nd.X * nd.X + nd.Y * nd.Y + nd.Z * nd.Z) ^ 0.5
+                                if nl > 1e-3 then
+                                    local s = m / nl
+                                    args[i] = Vector3.new(nd.X * s, nd.Y * s, nd.Z * s)
+                                    changed = true
+                                end
+                            end
+                        elseif m >= 50 and SR.camPos then
+                            -- point-shaped: far away AND hugging the look ray?
+                            local rx, ry, rz = a.X - SR.camPos.X, a.Y - SR.camPos.Y, a.Z - SR.camPos.Z
+                            local proj = rx * lk.X + ry * lk.Y + rz * lk.Z
+                            if proj > 10 then
+                                local px, py, pz = rx - lk.X * proj, ry - lk.Y * proj, rz - lk.Z * proj
+                                if (px * px + py * py + pz * pz) ^ 0.5 < 12 then
+                                    args[i] = silentPos
+                                    changed = true
+                                end
+                            end
+                        end
+                    elseif t == "Ray" then
+                        local o = a.Origin
+                        local nd = silentPos - o
+                        local nl = (nd.X * nd.X + nd.Y * nd.Y + nd.Z * nd.Z) ^ 0.5
+                        if nl > 1e-3 then
+                            local s = a.Direction.Magnitude / nl
+                            args[i] = Ray.new(o, Vector3.new(nd.X * s, nd.Y * s, nd.Z * s))
+                            changed = true
+                        end
+                    end
+                end
+                if changed then return "call", args end
                 return PASS_H, PASS_V
             end
             -- v0.0.81: Wallbang Raycast REMOVED. Was detected by some ACs, didn't work on
@@ -8714,10 +8793,13 @@ local Combat = {
             -- v0.0.39: cache the real camera + target's screen point so the fire-read
             -- resolvers never re-read Camera.* inside the __index hook (recursion).
             local cam = Workspace.CurrentCamera
+            local cf
             if cam then
                 SR.cam = cam
-                local cf = cam.CFrame
+                cf = cam.CFrame
                 SR.camPos = cf.Position
+                -- v0.1.6: real look direction, cached namecall-safe (outbound arg-rewrite)
+                SR.camLook = cf.LookVector
                 local sp = cam:WorldToViewportPoint(silentPos)
                 SR.screen = Vector2.new(sp.X, sp.Y)
             end
@@ -8728,6 +8810,9 @@ local Combat = {
             -- lookup, never a namecall.
             local ch = LocalPlayer.Character
             SR.char = ch
+            -- v0.1.6: own root position cached namecall-safe (outbound arg-rewrite origin)
+            local rt = ch and (ch:FindFirstChild("HumanoidRootPart") or (findTorso and findTorso(ch)))
+            if rt then SR.rootPos = rt.Position else SR.rootPos = nil end
             local sp = {}
             if ch then
                 for _, d in ipairs(ch:GetDescendants()) do
@@ -8738,6 +8823,7 @@ local Combat = {
         else
             silentTarget = nil; silentPos = nil
             SR.camPos = nil; SR.screen = nil
+            SR.camLook = nil; SR.rootPos = nil
         end
     end)
 
