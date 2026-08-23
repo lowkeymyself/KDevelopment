@@ -1,9 +1,9 @@
--- koffee v0.1.3
+-- koffee v0.1.4
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.3"
+Koffee.Version = "0.1.4"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -7712,8 +7712,7 @@ local Combat = {
             -- v0.1.2 Second-Camera method: fully engagement-gated. Reads pass through
             -- REAL unless an actual shot is happening (optional activation key held +
             -- LMB down / post-click window). Between shots the game sees 100% vanilla
-            -- aim data, so custom camera controllers never see bent reads and the view
-            -- never locks onto the target while you look elsewhere.
+            -- aim data; during the window the full spoof set runs (v0.1.4).
             if Combat.Silent.Method == "Second-Camera" then
                 if Combat.Silent.ActivationKey and not silentHeld then return false end
                 return lmbDown or (os.clock() - lmbClickAt) < 0.12
@@ -7754,6 +7753,11 @@ local Combat = {
         -- those, so continuous spoof is safe there).
         local function camFire()
             if not silentPos then return false end
+            -- v0.1.4: Second-Camera rides the same shot window as its other gates
+            -- (RequireLMB is inherent to the method -- the click IS the engagement).
+            if Combat.Silent.Method == "Second-Camera" then
+                return lmbDown or (os.clock() - lmbClickAt) < 0.12
+            end
             if not Combat.Silent.RequireLMB then
                 return lmbDown or (os.clock() - lmbClickAt) < 0.12
             end
@@ -7812,12 +7816,14 @@ local Combat = {
             -- camera/renderer is never modified. Camera.CFrame is gated by camFire
             -- (fire-frame window; continuous spoof froze custom camera controllers);
             -- Mouse.X/Y uses isArmed (continuous -- only aim code reads mouse coords).
-            -- v0.1.2: Camera.CFrame spoof NEVER runs in Second-Camera mode. Custom
-            -- camera controllers re-read CFrame every render step, so even a
-            -- click-window spoof drags their view onto the target -- this read is
-            -- exactly what that method exists to avoid. Camera-ray / mouse-read
-            -- weapons still redirect (they don't collide with renderers).
-            if camFire() and Combat.Silent.Method ~= "Second-Camera" then
+            -- v0.1.4: Second-Camera now runs the FULL read-spoof set (Camera.CFrame
+            -- included, per Jack) -- the only difference from Forced MB is the gate:
+            -- everything is locked to the shot window (activation key if set + LMB
+            -- down / post-click grace), and idle reads pass through 100% real. The
+            -- camera can tug for the ~120ms window on custom-camera games (their
+            -- controller re-reads CFrame every frame) but between shots it never
+            -- bends.
+            if camFire() then
                 -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
                 --   default (Forced MB): origin stays REAL, look-direction bends to target.
                 --   Pos Spoof + fire frame: camera moves to 3 studs in FRONT of the target,
