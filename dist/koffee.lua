@@ -1,47 +1,275 @@
--- koffee v0.1.1
+-- koffee v0.1.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.2"
+Koffee.Version = "0.1.3"
 
--- v0.0.90 SOUND ASSET AUTO-DOWNLOAD: fetches missing <exec>/Koffee/sounds/*.mp3
--- from the public koffee-assets repo. Silent no-op on locked-down executors.
-Koffee._soundsReady = false
-task.spawn(function()
+-- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
+-- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
+-- screen; the suite below does not execute until the manifest settles. Cached
+-- files skip instantly, so only a first run / cache wipe waits. Locked-down
+-- executors (no file API) skip straight through -- the legacy fallbacks below
+-- (Nunito face, silent-missing sounds) still cover them.
+do
+    local BASE = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/"
     local SOUNDS = {
         "12", "agpa2", "basshit", "bell", "blizzard", "bubble", "chockpro",
         "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
         "minecraft orb", "neverlose", "rust", "skeet",
     }
-    local BASE = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/sounds/"
-    if not (writefile and isfile and makefolder and isfolder) then
-        Koffee._soundsReady = true
-        return
+    local MANIFEST = {
+        { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
+        { name = "font: minecraft bold",   path = "Koffee/fonts/MinecraftBold.otf",     url = BASE .. "MinecraftBold.otf",     min = 512 },
+        { name = "font: minecraft regular",path = "Koffee/fonts/MinecraftRegular.otf",  url = BASE .. "MinecraftRegular.otf",  min = 512 },
+        { name = "font: imgui",            path = "Koffee/fonts/ProggyClean.ttf",       url = BASE .. "ProggyClean.ttf",       min = 512 },
+    }
+    for _, s in ipairs(SOUNDS) do
+        table.insert(MANIFEST, {
+            name = "sound: " .. s,
+            path = "Koffee/sounds/" .. s .. ".mp3",
+            url  = BASE .. "sounds/" .. string.gsub(s, " ", "%%20") .. ".mp3",
+            min  = 512,
+        })
     end
-    if not isfolder("Koffee") then pcall(makefolder, "Koffee") end
-    if not isfolder("Koffee/sounds") then pcall(makefolder, "Koffee/sounds") end
-    for _, name in ipairs(SOUNDS) do
-        local path = "Koffee/sounds/" .. name .. ".mp3"
-        if not isfile(path) then
-            -- URL-encode spaces (e.g. "minecraft orb")
-            local urlName = string.gsub(name, " ", "%%20")
-            local body
-            -- prefer runtime request (headers work if we ever move to private assets);
-            -- fall back to plain HttpGet which works fine on this public repo.
-            if request then
-                local ok, res = pcall(request, { Url = BASE .. urlName .. ".mp3", Method = "GET" })
-                if ok and res and res.StatusCode == 200 then body = res.Body end
+
+    -- no file API -> nothing we can prefetch; fall through instantly (legacy paths).
+    if writefile and isfile then
+        local hostOk, host = pcall(function()
+            if gethui then return gethui() end
+            local cg = game:GetService("CoreGui")
+            local _ = cg.Name
+            return cg
+        end)
+        if hostOk and host then
+            local TweenService = game:GetService("TweenService")
+            local ACCENT  = Color3.fromRGB(212, 145, 90)
+            local MINT    = Color3.fromRGB(127, 190, 143)
+            local TEXT    = Color3.fromRGB(235, 225, 215)
+            local MUTED   = Color3.fromRGB(140, 128, 118)
+            local PANEL   = Color3.fromRGB(30, 24, 21)
+
+            pcall(function()
+                local orphan = host:FindFirstChild("KoffeePreloader")
+                if orphan then orphan:Destroy() end
+            end)
+
+            local gui = Instance.new("ScreenGui")
+            gui.Name = "KoffeePreloader"
+            gui.ResetOnSpawn = false
+            gui.IgnoreGuiInset = true
+            gui.DisplayOrder = 9999
+            gui.Parent = host
+
+            local root = Instance.new("Frame")
+            root.Size = UDim2.new(1, 0, 1, 0)
+            root.BackgroundColor3 = Color3.fromRGB(20, 16, 14)
+            root.BorderSizePixel = 0
+            root.Parent = gui
+
+            local brand = Instance.new("TextLabel")
+            brand.AnchorPoint = Vector2.new(0.5, 0)
+            brand.Position = UDim2.new(0.5, 0, 0.5, -58)
+            brand.Size = UDim2.new(0, 300, 0, 42)
+            brand.BackgroundTransparency = 1
+            brand.Text = "koffee"
+            brand.Font = Enum.Font.GothamBold
+            brand.TextSize = 34
+            brand.TextColor3 = TEXT
+            brand.Parent = root
+
+            local sub = Instance.new("TextLabel")
+            sub.AnchorPoint = Vector2.new(0.5, 0)
+            sub.Position = UDim2.new(0.5, 0, 0.5, -18)
+            sub.Size = UDim2.new(0, 300, 0, 16)
+            sub.BackgroundTransparency = 1
+            sub.Text = "v" .. Koffee.Version .. " -- warming up"
+            sub.Font = Enum.Font.Gotham
+            sub.TextSize = 12
+            sub.TextColor3 = MUTED
+            sub.TextTransparency = 0.2
+            sub.Parent = root
+
+            local track = Instance.new("Frame")
+            track.AnchorPoint = Vector2.new(0.5, 0)
+            track.Position = UDim2.new(0.5, 0, 0.5, 12)
+            track.Size = UDim2.new(0, 280, 0, 4)
+            track.BackgroundColor3 = PANEL
+            track.BorderSizePixel = 0
+            track.Parent = root
+            local tCorner = Instance.new("UICorner")
+            tCorner.CornerRadius = UDim.new(1, 0)
+            tCorner.Parent = track
+
+            local fill = Instance.new("Frame")
+            fill.Size = UDim2.new(0, 0, 1, 0)
+            fill.BackgroundColor3 = ACCENT
+            fill.BorderSizePixel = 0
+            fill.Parent = track
+            local fCorner = Instance.new("UICorner")
+            fCorner.CornerRadius = UDim.new(1, 0)
+            fCorner.Parent = fill
+
+            local status = Instance.new("TextLabel")
+            status.AnchorPoint = Vector2.new(0.5, 0)
+            status.Position = UDim2.new(0.5, 0, 0.5, 26)
+            status.Size = UDim2.new(0, 340, 0, 16)
+            status.BackgroundTransparency = 1
+            status.Text = "checking cache"
+            status.Font = Enum.Font.Gotham
+            status.TextSize = 11
+            status.TextColor3 = MUTED
+            status.TextTruncate = Enum.TextTruncate.AtEnd
+            status.Parent = root
+
+            local btnRow = Instance.new("Frame")
+            btnRow.AnchorPoint = Vector2.new(0.5, 0)
+            btnRow.Position = UDim2.new(0.5, 0, 0.5, 52)
+            btnRow.Size = UDim2.new(0, 280, 0, 28)
+            btnRow.BackgroundTransparency = 1
+            btnRow.Visible = false
+            btnRow.Parent = root
+
+            local function mkBtn(x, w, label, color)
+                local b = Instance.new("TextButton")
+                b.AnchorPoint = Vector2.new(0, 0.5)
+                b.Position = UDim2.new(0, x, 0.5, 0)
+                b.Size = UDim2.new(0, w, 1, 0)
+                b.BackgroundColor3 = PANEL
+                b.BorderSizePixel = 0
+                b.Text = label
+                b.Font = Enum.Font.Gotham
+                b.TextSize = 12
+                b.TextColor3 = color
+                b.Parent = btnRow
+                local bc = Instance.new("UICorner")
+                bc.CornerRadius = UDim.new(0, 6)
+                bc.Parent = b
+                return b
             end
-            if not body then
-                local ok, res = pcall(function() return game:HttpGet(BASE .. urlName .. ".mp3") end)
-                if ok and type(res) == "string" and #res > 0 then body = res end
+            local retryBtn = mkBtn(0, 134, "retry", TEXT)
+            local skipBtn  = mkBtn(146, 134, "skip", MUTED)
+
+            local pctLabel = Instance.new("TextLabel")
+            pctLabel.AnchorPoint = Vector2.new(0.5, 0)
+            pctLabel.Position = UDim2.new(0.5, 0, 0.5, -80)
+            pctLabel.Size = UDim2.new(0, 300, 0, 14)
+            pctLabel.BackgroundTransparency = 1
+            pctLabel.Text = ""
+            pctLabel.Font = Enum.Font.Gotham
+            pctLabel.TextSize = 10
+            pctLabel.TextColor3 = MUTED
+            pctLabel.Parent = root
+
+            local function setBar(done, total)
+                local pct = total > 0 and (done / total) or 1
+                fill:TweenSize(UDim2.new(pct, 0, 1, 0), Enum.EasingDirection.Out,
+                    Enum.EasingStyle.Quart, 0.18, true)
+                pctLabel.Text = math.floor(pct * 100 + 0.5) .. "%"
             end
-            if body then pcall(writefile, path, body) end
+
+            local function close()
+                Koffee._assetsReady = true
+                local out = TweenService:Create(root, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                    BackgroundTransparency = 1,
+                })
+                for _, l in ipairs({ brand, sub, status, pctLabel }) do
+                    TweenService:Create(l, out.TweenInfo, { TextTransparency = 1 }):Play()
+                end
+                TweenService:Create(fill, out.TweenInfo, { BackgroundTransparency = 1 }):Play()
+                TweenService:Create(track, out.TweenInfo, { BackgroundTransparency = 1 }):Play()
+                out:Play()
+                out.Completed:Wait()
+                gui:Destroy()
+            end
+
+            local req = request or (http and http.request) or http_request or (syn and syn.request)
+            local function fetch(url, min)
+                if req then
+                    local ok, res = pcall(req, { Url = url, Method = "GET" })
+                    if ok and res and ((res.StatusCode or 200) == 200)
+                        and type(res.Body) == "string" and #res.Body >= min then
+                        return res.Body
+                    end
+                end
+                local ok2, body = pcall(function() return game:HttpGetAsync(url) end)
+                if ok2 and type(body) == "string" and #body >= min then return body end
+                local ok3, body2 = pcall(function() return game:HttpGet(url) end)
+                if ok3 and type(body2) == "string" and #body2 >= min then return body2 end
+                return nil
+            end
+
+            pcall(makefolder, "Koffee")
+            pcall(makefolder, "Koffee/sounds")
+            pcall(makefolder, "Koffee/fonts")
+
+            local function settle(entry)
+                for attempt = 1, 2 do
+                    local body = fetch(entry.url, entry.min)
+                    if body then
+                        if pcall(writefile, entry.path, body) and isfile(entry.path) then
+                            return true
+                        end
+                    end
+                    task.wait(0.25 * attempt)
+                end
+                return false
+            end
+
+            local failed = {}
+            local function runList(entries, total)
+                for _, e in ipairs(entries) do
+                    if isfile(e.path) then
+                        local good = 0
+                        for _, f in ipairs(MANIFEST) do
+                            if isfile(f.path) then good = good + 1 end
+                        end
+                        setBar(good, total)
+                    else
+                        status.Text = e.name
+                        if not settle(e) then
+                            table.insert(failed, e)
+                        end
+                        local good = 0
+                        for _, f in ipairs(MANIFEST) do
+                            if isfile(f.path) then good = good + 1 end
+                        end
+                        setBar(good, total)
+                    end
+                    task.wait()
+                end
+            end
+
+            runList(MANIFEST, #MANIFEST)
+
+            while #failed > 0 do
+                status.TextColor3 = Color3.fromRGB(220, 110, 100)
+                status.Text = failed[1].name .. " failed" ..
+                    (#failed > 1 and (" +" .. tostring(#failed - 1) .. " more") or "")
+                btnRow.Visible = true
+                local choice = nil
+                local c1 = retryBtn.MouseButton1Click:Connect(function() choice = "retry" end)
+                local c2 = skipBtn.MouseButton1Click:Connect(function() choice = "skip" end)
+                while choice == nil do task.wait() end
+                c1:Disconnect(); c2:Disconnect()
+                btnRow.Visible = false
+                if choice == "skip" then break end
+                local retrySet = failed
+                failed = {}
+                status.TextColor3 = MUTED
+                runList(retrySet, #MANIFEST)
+            end
+
+            status.TextColor3 = MINT
+            status.Text = "ready"
+            close()
+        else
+            Koffee._assetsReady = true
         end
+    else
+        Koffee._assetsReady = true
     end
-    Koffee._soundsReady = true
-end)
+end
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Hooks the anti-cheat's
 -- Detected/Kill paths to no-ops. Fully guarded: if the runtime lacks any required
