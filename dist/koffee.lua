@@ -3,7 +3,7 @@
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.1"
+Koffee.Version = "0.1.2"
 
 -- v0.0.90 SOUND ASSET AUTO-DOWNLOAD: fetches missing <exec>/Koffee/sounds/*.mp3
 -- from the public koffee-assets repo. Silent no-op on locked-down executors.
@@ -7481,6 +7481,15 @@ local Combat = {
         -- which is a namecall and illegal inside these hooks.
         local function isArmed()
             if not silentPos then return false end
+            -- v0.1.2 Second-Camera method: fully engagement-gated. Reads pass through
+            -- REAL unless an actual shot is happening (optional activation key held +
+            -- LMB down / post-click window). Between shots the game sees 100% vanilla
+            -- aim data, so custom camera controllers never see bent reads and the view
+            -- never locks onto the target while you look elsewhere.
+            if Combat.Silent.Method == "Second-Camera" then
+                if Combat.Silent.ActivationKey and not silentHeld then return false end
+                return lmbDown or (os.clock() - lmbClickAt) < 0.12
+            end
             if Combat.Silent.RequireLMB and not lmbDown then return false end
             return true
         end
@@ -7503,6 +7512,11 @@ local Combat = {
         -- before our lmbDown flag flips.
         local function posFire()
             if not posArmed() then return false end
+            -- v0.1.2: Second-Camera always rides the shot window (RequireLMB is
+            -- inherent to the method -- the click IS the engagement).
+            if Combat.Silent.Method == "Second-Camera" then
+                return lmbDown or (os.clock() - lmbClickAt) < 0.12
+            end
             if not Combat.Silent.RequireLMB then return true end
             return lmbDown or (os.clock() - lmbClickAt) < 0.12
         end
@@ -7570,7 +7584,12 @@ local Combat = {
             -- camera/renderer is never modified. Camera.CFrame is gated by camFire
             -- (fire-frame window; continuous spoof froze custom camera controllers);
             -- Mouse.X/Y uses isArmed (continuous -- only aim code reads mouse coords).
-            if camFire() then
+            -- v0.1.2: Camera.CFrame spoof NEVER runs in Second-Camera mode. Custom
+            -- camera controllers re-read CFrame every render step, so even a
+            -- click-window spoof drags their view onto the target -- this read is
+            -- exactly what that method exists to avoid. Camera-ray / mouse-read
+            -- weapons still redirect (they don't collide with renderers).
+            if camFire() and Combat.Silent.Method ~= "Second-Camera" then
                 -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
                 --   default (Forced MB): origin stays REAL, look-direction bends to target.
                 --   Pos Spoof + fire frame: camera moves to 3 studs in FRONT of the target,
@@ -8987,7 +9006,7 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
-        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet" }, Combat.Silent.Method,
+        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "Second-Camera" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
         configCheckbox(R["Silent Aim"], "Pos Spoof", Combat.Silent.PosSpoof, function(v) Combat.Silent.PosSpoof = v end)
