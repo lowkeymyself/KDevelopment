@@ -1,9 +1,9 @@
--- koffee v0.1.6
+-- koffee v0.1.7
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.6"
+Koffee.Version = "0.1.7"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -7801,6 +7801,10 @@ local Combat = {
             lastDbg = now
             print("[koffee][pos] spoofed " .. what .. " caller=" .. tostring(getCS and getCS()))
         end
+        -- v0.1.6: outbound-path diagnostic -- throttled log of EVERY FireServer/InvokeServer
+        -- from a learned-controller script: arg types + whether any shape matched. This is
+        -- how you tell "rewrite never fired" from "fired but the game uses buffer blobs".
+        local lastOutDbg = 0
         -- SAFE default: redirect ONLY the Mouse's own aim reads (Hit / Target /
         -- UnitRay). These are what FE weapons read and NOTHING else in the engine
         -- touches, so cameras, Popper occlusion, physics and other scripts stay
@@ -7941,6 +7945,8 @@ local Combat = {
                 local lk = SR.camLook
                 if not (origin and lk) then return PASS_H, PASS_V end
                 local changed = false
+                local matched = ""
+                local touched = nil
                 for i = 1, args.n do
                     local a = args[i]
                     local t = typeof(a)
@@ -7955,6 +7961,7 @@ local Combat = {
                                     local s = m / nl
                                     args[i] = Vector3.new(nd.X * s, nd.Y * s, nd.Z * s)
                                     changed = true
+                                    matched = matched .. i .. "(dir) "
                                 end
                             end
                         elseif m >= 50 and SR.camPos then
@@ -7966,6 +7973,7 @@ local Combat = {
                                 if (px * px + py * py + pz * pz) ^ 0.5 < 12 then
                                     args[i] = silentPos
                                     changed = true
+                                    matched = matched .. i .. "(pt) "
                                 end
                             end
                         end
@@ -7977,7 +7985,20 @@ local Combat = {
                             local s = a.Direction.Magnitude / nl
                             args[i] = Ray.new(o, Vector3.new(nd.X * s, nd.Y * s, nd.Z * s))
                             changed = true
+                            matched = matched .. i .. "(ray) "
                         end
+                    end
+                end
+                if genv and genv.KoffeePosDebug then
+                    local now2 = os.clock()
+                    if now2 - lastOutDbg > 0.5 then
+                        lastOutDbg = now2
+                        local types = {}
+                        for i = 1, args.n do types[i] = typeof(args[i]) end
+                        print("[koffee][pos] outbound src=" .. tostring(src)
+                            .. " n=" .. tostring(args.n)
+                            .. " types=" .. table.concat(types, ",")
+                            .. " matched=" .. (matched ~= "" and matched or "none"))
                     end
                 end
                 if changed then return "call", args end
