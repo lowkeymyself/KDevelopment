@@ -1,9 +1,9 @@
--- koffee v0.3.6
+-- koffee v0.3.7
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.6"
+Koffee.Version = "0.3.7"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -8944,14 +8944,37 @@ local Combat = {
             local ps = LocalPlayer:FindFirstChild("PlayerScripts")
             SR.pm = ps and ps:FindFirstChild("PlayerModule")
         end
-        if not Combat.Silent.Enabled then silentTarget = nil; silentPos = nil; return end
+        if not Combat.Silent.Enabled then silentTarget = nil; silentPos = nil; Combat.Silent._target = nil; Combat.Silent._lastGoodAt = nil; return end
         -- v0.0.34: if the user bound an arm key it must be held (per its mode);
         -- with no key bound (default) this gate is skipped entirely.
         if Combat.Silent.ActivationKey and not silentHeld then
-            silentTarget = nil; silentPos = nil; return
+            silentTarget = nil; silentPos = nil; Combat.Silent._target = nil; Combat.Silent._lastGoodAt = nil; return
         end
         local maxR = Combat.Silent.FOV.Enabled and Combat.Silent.FOV.Size or math.huge
-        local plr, part = getBestTarget(Combat.Silent, maxR, fovCenter(Combat.Silent.FOV))
+        local plr, part
+        -- v0.3.7: Silent Sticky (parity with aimbot). Hold the locked player
+        -- across FOV/off-screen/occlusion misses; only drop when they die,
+        -- respawn, or leave Distance. Fixes the External-method flake where
+        -- brief picker nils blanked silentPos and the 30Hz /config push sent
+        -- has_target=false, disarming the helper mid-fire.
+        if Combat.Silent.Sticky and Combat.Silent._target then
+            local t = Combat.Silent._target
+            local char = t.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if char and hum and hum.Health > 0 then
+                local p = aimPart(char, Combat.Silent.HitPart)
+                if p then
+                    local cam2 = Workspace.CurrentCamera
+                    local distOk = (not Combat.Silent.Distance) or (cam2
+                        and (p.Position - cam2.CFrame.Position).Magnitude <= Combat.Silent.Distance)
+                    if distOk then plr, part = t, p end
+                end
+            end
+        end
+        if not (plr and part) then
+            plr, part = getBestTarget(Combat.Silent, maxR, fovCenter(Combat.Silent.FOV))
+            if plr then Combat.Silent._target = plr end
+        end
         if plr and part then
             silentTarget = part
             -- prediction shifts the redirect point for lead; the hooks read silentPos
@@ -8986,10 +9009,22 @@ local Combat = {
                 end
             end
             SR.spoofParts = sp
+            Combat.Silent._lastGoodAt = os.clock()
         else
-            silentTarget = nil; silentPos = nil
-            SR.camPos = nil; SR.screen = nil
-            SR.camLook = nil; SR.rootPos = nil
+            -- v0.3.7: grace window. Keep the last known silentPos alive for
+            -- ~150ms across brief picker nils (target one frame off-screen,
+            -- occlusion flicker, respawn race). Without this, the 30Hz push
+            -- to KoffeeHelper sends has_target=false the instant the picker
+            -- burps, and the helper disarms mid-fire. Grace is short so a
+            -- truly-gone target still releases quickly.
+            local age = Combat.Silent._lastGoodAt and (os.clock() - Combat.Silent._lastGoodAt) or math.huge
+            if age > 0.15 then
+                silentTarget = nil; silentPos = nil
+                SR.camPos = nil; SR.screen = nil
+                SR.camLook = nil; SR.rootPos = nil
+                Combat.Silent._lastGoodAt = nil
+                if not Combat.Silent.Sticky then Combat.Silent._target = nil end
+            end
         end
     end)
 
