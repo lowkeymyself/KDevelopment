@@ -1,9 +1,9 @@
--- koffee v0.3.1
+-- koffee v0.3.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.1"
+Koffee.Version = "0.3.2"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -6575,14 +6575,10 @@ end
 UserInputService.InputBegan:Connect(function(input, gpe)
     if pendingBind then
         local it = input.UserInputType
-        -- v0.3.1: Escape now CANCELS (keeps existing key) instead of the
-        -- old escape-unbinds behaviour, which surprised users. Delete /
-        -- Backspace are the explicit UNBIND -- they clear the key.
+        -- v0.3.2: Escape UNBINDS (restored -- v0.3.1 tried Escape=cancel
+        -- but Jack wanted the original semantics back). Delete/Backspace
+        -- removed as separate handlers, redundant with Escape now.
         if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
-            clearPending(); return
-        end
-        if it == Enum.UserInputType.Keyboard
-           and (input.KeyCode == Enum.KeyCode.Delete or input.KeyCode == Enum.KeyCode.Backspace) then
             pendingBind.cfg.Key = nil; clearPending(); return
         end
         local bind
@@ -9023,15 +9019,11 @@ local Combat = {
         end
         if pendingActivation then
             local it = input.UserInputType
-            -- v0.3.1: Escape CANCELS (keeps existing key). Delete / Backspace
-            -- are the explicit UNBIND -- they clear the ActivationKey.
-            -- Reverts the v0.0.36 escape-unbinds default, which surprised
-            -- users into losing keybinds while trying to abort a rebind.
+            -- v0.3.2: Escape UNBINDS (restored to v0.0.36 semantics --
+            -- v0.3.1 tried Escape=cancel and Jack asked for the original
+            -- behaviour back). Delete/Backspace handlers removed as
+            -- redundant.
             if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
-                pendingActivation.refresh(); pendingActivation = nil; return
-            end
-            if it == Enum.UserInputType.Keyboard
-               and (input.KeyCode == Enum.KeyCode.Delete or input.KeyCode == Enum.KeyCode.Backspace) then
                 pendingActivation.cfg.ActivationKey = nil
                 pendingActivation.refresh(); pendingActivation = nil; return
             end
