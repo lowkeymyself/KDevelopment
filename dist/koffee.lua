@@ -1,9 +1,9 @@
--- koffee v0.3.0
+-- koffee v0.3.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.0"
+Koffee.Version = "0.3.1"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -2069,17 +2069,39 @@ Shared.TargetLock = {
     _active  = false,   -- runtime: is the lock currently engaged?
 }
 -- resolve the current TargetLock.Name to a live Player or nil.
+-- v0.3.1: match ranking. Previous first-match-wins picked whoever appeared
+-- earliest in the Players list -- typing "a" could lock onto "Anna" when
+-- the intended target was "alice". Now every player is scored and the
+-- best is returned:
+--   6 = exact Name              (case-insensitive)
+--   5 = exact DisplayName
+--   4 = Name starts with query
+--   3 = DisplayName starts with query
+--   2 = Name contains query
+--   1 = DisplayName contains query
+--   0 = no match
+-- Ties break on the FIRST player scored (arbitrary but deterministic).
 function Shared.targetLockPlayer()
     if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return nil end
     local query = Shared.TargetLock.Name
     if not query or query == "" then return nil end
     query = query:lower()
+
+    local bestPlr, bestScore = nil, 0
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr.Name:lower():find(query, 1, true) or plr.DisplayName:lower():find(query, 1, true) then
-            return plr
-        end
+        local name = plr.Name:lower()
+        local disp = plr.DisplayName:lower()
+        local score
+        if name == query then score = 6
+        elseif disp == query then score = 5
+        elseif name:sub(1, #query) == query then score = 4
+        elseif disp:sub(1, #query) == query then score = 3
+        elseif name:find(query, 1, true) then score = 2
+        elseif disp:find(query, 1, true) then score = 1
+        else score = 0 end
+        if score > bestScore then bestScore, bestPlr = score, plr end
     end
-    return nil
+    return bestPlr
 end
 function Shared.targetLockMatches(plr)
     if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return false end
@@ -6533,7 +6555,13 @@ local function activationPill(row, cfg)
         end
     end)
     pill.MouseButton1Click:Connect(function()
-        if pendingBind and pendingBind.pill ~= pill then clearPending() end
+        -- v0.3.1: click-again-to-cancel. Clicking the SAME pending pill
+        -- again returns to the previous key without waiting on a keypress.
+        if pendingBind and pendingBind.pill == pill then
+            clearPending()
+            return
+        end
+        if pendingBind then clearPending() end
         pill.Text = "..."
         tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
         pendingBind = { pill = pill, cfg = cfg, refresh = refresh }
@@ -6547,7 +6575,14 @@ end
 UserInputService.InputBegan:Connect(function(input, gpe)
     if pendingBind then
         local it = input.UserInputType
+        -- v0.3.1: Escape now CANCELS (keeps existing key) instead of the
+        -- old escape-unbinds behaviour, which surprised users. Delete /
+        -- Backspace are the explicit UNBIND -- they clear the key.
         if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
+            clearPending(); return
+        end
+        if it == Enum.UserInputType.Keyboard
+           and (input.KeyCode == Enum.KeyCode.Delete or input.KeyCode == Enum.KeyCode.Backspace) then
             pendingBind.cfg.Key = nil; clearPending(); return
         end
         local bind
@@ -7686,6 +7721,13 @@ local Combat = {
             end
         end)
         pill.MouseButton1Click:Connect(function()
+            -- v0.3.1: click-again cancels an active rebind on the same pill,
+            -- preserving the existing key. Prior behaviour left you no way
+            -- out of the "..." state except pressing a key or Escape.
+            if pendingActivation and pendingActivation.pill == pill then
+                pendingActivation.refresh(); pendingActivation = nil
+                return
+            end
             if pendingActivation and pendingActivation.pill ~= pill then pendingActivation.refresh() end
             pill.Text = "..."
             tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
@@ -8981,8 +9023,15 @@ local Combat = {
         end
         if pendingActivation then
             local it = input.UserInputType
-            -- v0.0.36: ESC CLEARS the bind (no activation key), not just cancels.
+            -- v0.3.1: Escape CANCELS (keeps existing key). Delete / Backspace
+            -- are the explicit UNBIND -- they clear the ActivationKey.
+            -- Reverts the v0.0.36 escape-unbinds default, which surprised
+            -- users into losing keybinds while trying to abort a rebind.
             if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
+                pendingActivation.refresh(); pendingActivation = nil; return
+            end
+            if it == Enum.UserInputType.Keyboard
+               and (input.KeyCode == Enum.KeyCode.Delete or input.KeyCode == Enum.KeyCode.Backspace) then
                 pendingActivation.cfg.ActivationKey = nil
                 pendingActivation.refresh(); pendingActivation = nil; return
             end
@@ -9502,6 +9551,8 @@ local Combat = {
         local tlArm = configCheckbox(tlCard, "Armed", Shared.TargetLock.Enabled, function(v)
             Shared.TargetLock.Enabled = v
             if not v then Shared.TargetLock._active = false end
+            -- v0.3.1: reflect the Armed change in the status label live.
+            if tlStatusUpdater then tlStatusUpdater() end
         end)
         -- name input row
         local tlNameRow = new("Frame", {
@@ -9526,9 +9577,16 @@ local Combat = {
             BorderSizePixel = 0, ZIndex = 36, Parent = tlNameRow,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+        -- v0.3.1: react as you type instead of only on focus loss, so the
+        -- status label + resolver see the new name immediately. FocusLost
+        -- still fires (Text hasn't changed by then, cheap no-op).
+        tlBox:GetPropertyChangedSignal("Text"):Connect(function()
+            Shared.TargetLock.Name = tlBox.Text
+            if tlStatusUpdater then tlStatusUpdater() end
+        end)
         tlBox.FocusLost:Connect(function(enter)
             Shared.TargetLock.Name = tlBox.Text
-            tlStatusUpdater()
+            if tlStatusUpdater then tlStatusUpdater() end
         end)
         -- activation keybind row
         local tlKeyRow = new("Frame", {
@@ -9553,6 +9611,12 @@ local Combat = {
             new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
         popFx(tlKeyPill)   -- v0.0.98: target-lock key pill squashes too
         tlKeyPill.MouseButton1Click:Connect(function()
+            -- v0.3.1: click-again on the same pending pill cancels the
+            -- rebind attempt, preserving the existing key.
+            if pendingActivation and pendingActivation.pill == tlKeyPill then
+                pendingActivation.refresh(); pendingActivation = nil
+                return
+            end
             if pendingActivation then pendingActivation.refresh() end
             tlKeyPill.Text = "..."
             tween(tlKeyPill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
@@ -9561,16 +9625,29 @@ local Combat = {
             -- runtime key reader picks it up.
             local proxy = {}
             pendingActivation = { pill = tlKeyPill, cfg = proxy, refresh = function()
-                tlKeyPill.Text = keyLabel(Shared.TargetLock.Key) or "-"
+                tlKeyPill.Text = keyLabel(Shared.TargetLock.Key) or "set"
             end }
             local _g = proxy
             setmetatable(proxy, { __index = function() end, __newindex = function(self, k, v)
                 if k == "ActivationKey" then
                     Shared.TargetLock.Key = v
-                    tlKeyPill.Text = keyLabel(v) or "-"
+                    tlKeyPill.Text = keyLabel(v) or "set"
+                    -- v0.3.1: fold the new key into the "ready -- press ..." line.
+                    if tlStatusUpdater then tlStatusUpdater() end
                 end
                 _g[k] = v
             end })
+        end)
+        -- v0.3.1: right-click the target-lock pill to UNBIND (mirror of the
+        -- Delete/Backspace shortcut inside the rebind capture flow).
+        tlKeyPill.MouseButton2Click:Connect(function()
+            if pendingActivation and pendingActivation.pill == tlKeyPill then
+                pendingActivation.refresh(); pendingActivation = nil
+            end
+            Shared.TargetLock.Key = nil
+            tlKeyPill.Text = "set"
+            tween(tlKeyPill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+            if tlStatusUpdater then tlStatusUpdater() end
         end)
         -- live status label: shows who is locked / none
         local tlStatus = new("TextLabel", {
@@ -9582,18 +9659,35 @@ local Combat = {
         -- status updater -- also auto-releases when the locked player leaves / dies
         -- (the lock cannot dangle on a ghost). Set into the combat IIFE-local slot the
         -- key-toggle handler already calls.
+        -- v0.3.1: status now walks the full state so the user always knows
+        -- WHY the lock isn't engaged instead of the generic "idle" line.
         tlStatusUpdater = function()
-            local engaged = Shared.TargetLock.Enabled and Shared.TargetLock._active
-            if not engaged then
-                tlStatus.Text = "idle -- press key to lock"
+            if not Shared.TargetLock.Enabled then
+                tlStatus.Text = "off -- tick Armed to enable"
+                return
+            end
+            local hasName = Shared.TargetLock.Name and Shared.TargetLock.Name ~= ""
+            if not hasName then
+                tlStatus.Text = "type a target name above"
+                return
+            end
+            if not Shared.TargetLock._active then
+                local keyTxt = Shared.TargetLock.Key and keyLabel(Shared.TargetLock.Key) or "activate key"
+                tlStatus.Text = "ready -- press " .. keyTxt .. " to lock"
                 return
             end
             local t = Shared.targetLockPlayer()
             if not t then
-                tlStatus.Text = "locked -- target not found"
+                tlStatus.Text = "locked -- '" .. Shared.TargetLock.Name .. "' not in game"
                 return
             end
-            tlStatus.Text = "locked -> " .. t.Name
+            -- Show display name when it differs from Name -- helps confirm
+            -- the ranked matcher picked the person the user actually meant.
+            if t.Name ~= t.DisplayName then
+                tlStatus.Text = "locked -> " .. t.DisplayName .. " (@" .. t.Name .. ")"
+            else
+                tlStatus.Text = "locked -> " .. t.Name
+            end
         end
         tlStatusUpdater()
         RunService.Heartbeat:Connect(function()
