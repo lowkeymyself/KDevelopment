@@ -37,10 +37,18 @@ std::string read_rbx_string(std::uint64_t address) {
 }
 
 std::string read_class_name(std::uint64_t instance) {
+    // Two indirections. Instance + ClassDescriptor -> descriptor pointer.
+    // Descriptor + ClassName -> POINTER to a std::string (not the embedded
+    // string itself, unlike NameContainer + Name). Fix vs a2p2, which read
+    // descriptor+ClassName as if it were the string directly and returned
+    // empty for every child on the first live-Roblox test.
     const std::uint64_t descriptor =
         koffee::mem::read<std::uint64_t>(instance + rbx_inst::class_descriptor);
     if (!koffee::mem::addr_ok(descriptor)) return {};
-    return read_rbx_string(descriptor + rbx_inst::class_name);
+    const std::uint64_t str_ptr =
+        koffee::mem::read<std::uint64_t>(descriptor + rbx_inst::class_name);
+    if (!koffee::mem::addr_ok(str_ptr)) return {};
+    return read_rbx_string(str_ptr);
 }
 
 std::string read_instance_name(std::uint64_t instance) {
