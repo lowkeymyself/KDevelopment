@@ -50,24 +50,46 @@ std::string read_instance_name(std::uint64_t instance) {
     return read_rbx_string(container + rbx_inst::name);
 }
 
-// Iterate an Instance's children. Callback returns false to stop the walk
-// early. Cap at 4096 iterations as a safety net against corrupted / stale
-// pointers -- a real Instance never has that many children.
+// Iterate an Instance's children.
+//
+// v0.3.0-alpha2.1: fixed against semun's own walker after the first live-
+// Roblox test showed pick_target always returning empty. Two bugs in the
+// previous version:
+//   1. `Instance + ChildrenStart` is a pointer to a CHILDREN_STRUCT, not
+//      the child pointer array itself. Need to dereference once, then
+//      read start/end from that struct (start at +0, end at +ChildrenEnd).
+//   2. Each entry in the array is 16 bytes wide (shared_ptr<Instance>:
+//      raw ptr + control-block ptr), not 8. Iterating by 8 walks the
+//      control-block pointers as if they were instance pointers -> reads
+//      garbage.
+//
+// Callback returns false to stop the walk early. Sanity caps: struct
+// pointer valid, byte-size divisible by stride, count <= 10000.
 template <typename F>
 void for_each_child(std::uint64_t instance, F&& fn) {
     if (!koffee::mem::addr_ok(instance)) return;
-    const std::uint64_t start =
+
+    const std::uint64_t children_struct =
         koffee::mem::read<std::uint64_t>(instance + rbx_inst::children_start);
-    const std::uint64_t end =
-        koffee::mem::read<std::uint64_t>(instance + rbx_inst::children_start + rbx_inst::children_end);
+    if (!koffee::mem::addr_ok(children_struct)) return;
+
+    const std::uint64_t start = koffee::mem::read<std::uint64_t>(children_struct);
+    const std::uint64_t end   = koffee::mem::read<std::uint64_t>(
+        children_struct + rbx_inst::children_end);
     if (!koffee::mem::addr_ok(start) || end <= start) return;
 
-    const std::uint64_t count = (end - start) / sizeof(std::uint64_t);
-    if (count > 4096) return;  // sanity cap
+    constexpr std::uint64_t kStep = 16;
+    constexpr std::uint64_t kMaxChildren = 10000;
+    const std::uint64_t byte_size = end - start;
+    if (byte_size > kMaxChildren * kStep) return;
+    if (byte_size % kStep != 0) return;
+    const std::uint64_t count = byte_size / kStep;
+
     for (std::uint64_t i = 0; i < count; ++i) {
         const std::uint64_t child =
-            koffee::mem::read<std::uint64_t>(start + i * sizeof(std::uint64_t));
+            koffee::mem::read<std::uint64_t>(start + i * kStep);
         if (!koffee::mem::addr_ok(child)) continue;
+        if (child == 0xFFFFFFFFFFFFFFFFull) continue;
         if (!fn(child)) return;
     }
 }
@@ -211,6 +233,24 @@ world_snap snapshot_world(std::uint64_t cached_data_model) {
     });
 
     return w;
+}
+
+std::vector<child_info> list_children_diag(std::uint64_t instance,
+                                           std::size_t cap) {
+    std::vector<child_info> out;
+    std::size_t count = 0;
+    // Reuse the fixed walker; capture into `out` up to `cap` entries.
+    for_each_child(instance, [&](std::uint64_t child) {
+        if (count >= cap) return false;
+        child_info ci{};
+        ci.address       = child;
+        ci.class_name    = read_class_name(child);
+        ci.instance_name = read_instance_name(child);
+        out.push_back(std::move(ci));
+        ++count;
+        return true;
+    });
+    return out;
 }
 
 }  // namespace koffee::game

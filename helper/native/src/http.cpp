@@ -15,6 +15,7 @@
 #include "http.h"
 #include "log.h"
 #include "mem.h"
+#include "game.h"
 #include "aim/hook.h"
 #include "aim/silentaim.h"
 
@@ -34,7 +35,7 @@ using nlohmann::json;
 constexpr const char* kAuthHeader = "X-Koffee-Key";
 constexpr const char* kDevKey     = "KoffeeBetaDevelopmentTesting";
 
-constexpr const char* kVersion = "0.3.0-alpha2";
+constexpr const char* kVersion = "0.3.0-a2p2";
 
 std::atomic<httplib::Server*> g_server{nullptr};
 
@@ -160,6 +161,74 @@ void install_routes(httplib::Server& srv) {
         }
         koffee::aim::apply_config(parse_config(*silent_obj));
         set_json(res, 200, json{{"status", "ok"}});
+    });
+
+    // /debug/world -- no auth, diagnostic. Forces a fresh DataModel scan +
+    // snapshot and returns the walker's view of the world so we can pin
+    // down which layer a picker fails at (dm/workspace/camera/players).
+    // Added 2026-08-29 while chasing "hook.installed:true but aiming:false"
+    // on the first live-Roblox test.
+    srv.Get("/debug/world", [](const httplib::Request&, httplib::Response& res) {
+        if (!koffee::mem::g_ctx.attached.load(std::memory_order_relaxed)) {
+            set_json(res, 200, json{{"error", "not_attached"}});
+            return;
+        }
+        const std::uint64_t dm = koffee::game::refresh_data_model();
+        const auto w = koffee::game::snapshot_world(dm);
+
+        json players_arr = json::array();
+        for (const auto& p : w.players) {
+            players_arr.push_back({
+                {"player_inst",      p.player_inst},
+                {"character",        p.character},
+                {"hrp",              p.hrp},
+                {"humanoid",         p.humanoid},
+                {"hrp_pos", {
+                    {"x", p.hrp_position.x},
+                    {"y", p.hrp_position.y},
+                    {"z", p.hrp_position.z},
+                }},
+                {"health",           p.health},
+                {"max_health",       p.max_health},
+                {"team_brick_color", p.team_brick_color},
+            });
+        }
+
+        // v0.3.0-a2p2: also dump the raw child walk of DataModel with
+        // class + name strings. This is the smoking-gun view when
+        // players is empty -- either the walker returns nothing (walk
+        // broken) or the class-name reads produce garbage (offsets
+        // wrong for ClassDescriptor/ClassName), and the JSON tells us
+        // which. Capped at 64 entries so a bad walker can't dump MB
+        // of garbage into the response.
+        json dm_children_arr = json::array();
+        if (dm) {
+            const auto kids = koffee::game::list_children_diag(dm, 64);
+            for (const auto& c : kids) {
+                dm_children_arr.push_back({
+                    {"addr",  c.address},
+                    {"class", c.class_name},
+                    {"name",  c.instance_name},
+                });
+            }
+        }
+
+        set_json(res, 200, json{
+            {"data_model",       w.data_model},
+            {"workspace",        w.workspace},
+            {"current_camera",   w.current_camera},
+            {"camera_pos", {
+                {"x", w.camera_position.x},
+                {"y", w.camera_position.y},
+                {"z", w.camera_position.z},
+            }},
+            {"local_player",         w.local_player},
+            {"local_team_brick",     w.local_team_brick_color},
+            {"players_count",        w.players.size()},
+            {"players",              players_arr},
+            {"dm_children_count",    dm_children_arr.size()},
+            {"dm_children",          dm_children_arr},
+        });
     });
 
     // /clear -- POST, no body needed, X-Koffee-Key required.

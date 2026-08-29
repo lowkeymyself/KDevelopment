@@ -1,9 +1,9 @@
--- koffee v0.3.2
+-- koffee v0.3.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.2"
+Koffee.Version = "0.3.3"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -6575,11 +6575,18 @@ end
 UserInputService.InputBegan:Connect(function(input, gpe)
     if pendingBind then
         local it = input.UserInputType
-        -- v0.3.2: Escape UNBINDS (restored -- v0.3.1 tried Escape=cancel
-        -- but Jack wanted the original semantics back). Delete/Backspace
-        -- removed as separate handlers, redundant with Escape now.
+        -- v0.3.2: Escape UNBINDS (restored).
         if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
             pendingBind.cfg.Key = nil; clearPending(); return
+        end
+        -- v0.3.3: skip mouse buttons routed to a GUI (gpe=true) -- prevents
+        -- clicking the pill (or any other koffee button) from binding
+        -- MouseButton1 as the key. See the pendingActivation head for the
+        -- same fix on the combat / target-lock activation pills.
+        if gpe and (it == Enum.UserInputType.MouseButton1
+                 or it == Enum.UserInputType.MouseButton2
+                 or it == Enum.UserInputType.MouseButton3) then
+            return
         end
         local bind
         if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then bind = input.KeyCode
@@ -9019,13 +9026,22 @@ local Combat = {
         end
         if pendingActivation then
             local it = input.UserInputType
-            -- v0.3.2: Escape UNBINDS (restored to v0.0.36 semantics --
-            -- v0.3.1 tried Escape=cancel and Jack asked for the original
-            -- behaviour back). Delete/Backspace handlers removed as
-            -- redundant.
+            -- v0.3.2: Escape UNBINDS (restored to v0.0.36 semantics).
             if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
                 pendingActivation.cfg.ActivationKey = nil
                 pendingActivation.refresh(); pendingActivation = nil; return
+            end
+            -- v0.3.3: mouse buttons that were routed to a GUI element
+            -- (gpe=true) are almost always the user clicking somewhere on
+            -- the koffee window itself (the pill to cancel, the Armed
+            -- checkbox, the target name TextBox, another pill). Binding
+            -- MouseButton1 to the activation key in that case is never
+            -- what the user wanted. Bind mouse buttons only when the
+            -- click landed OUTSIDE all GUIs (game-world click).
+            if gpe and (it == Enum.UserInputType.MouseButton1
+                     or it == Enum.UserInputType.MouseButton2
+                     or it == Enum.UserInputType.MouseButton3) then
+                return
             end
             -- v0.0.36: accept ANY key + ANY button-like input (mouse 1/2/3 and
             -- whatever else the runtime surfaces through InputBegan, e.g. XButton1/2
@@ -10467,6 +10483,14 @@ UserInputService.InputBegan:Connect(function(input, processed)
             pill.Text = "no keybind"
             tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
             pendingRebind = nil
+            return
+        end
+        -- v0.3.3: same gpe-mouse-button guard as pendingBind/pendingActivation --
+        -- clicking on the koffee UI (pill, checkbox, textbox) shouldn't bind
+        -- MouseButton1 as the module keybind.
+        if processed and (it == Enum.UserInputType.MouseButton1
+                       or it == Enum.UserInputType.MouseButton2
+                       or it == Enum.UserInputType.MouseButton3) then
             return
         end
         -- v0.0.94: pressing JUST a modifier alone (Shift/Ctrl/Alt without another key)

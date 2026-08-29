@@ -59,4 +59,15 @@ std::uint64_t refresh_data_model();
 // Callers should treat 0 addresses / 0 health as "skip this player" gates.
 world_snap snapshot_world(std::uint64_t cached_data_model);
 
+// Diagnostic: list an Instance's direct children with their class + name.
+// Used by /debug/world to print the walker's raw view for offset triage.
+// Cap on entries defends against corrupted children arrays.
+struct child_info {
+    std::uint64_t address{0};
+    std::string   class_name;
+    std::string   instance_name;
+};
+std::vector<child_info> list_children_diag(std::uint64_t instance,
+                                           std::size_t cap = 64);
+
 }  // namespace koffee::game
