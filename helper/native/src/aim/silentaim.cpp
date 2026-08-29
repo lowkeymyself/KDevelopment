@@ -111,6 +111,16 @@ void tick() {
     koffee::aim::hook::ensure(true);
     if (!koffee::aim::hook::installed()) return;
 
+    // v0.3.0-a2p4: engaged gate. koffee.lua only sets engaged=true when
+    // the user is actively firing under the silent-aim gates. If false,
+    // disarm the thunk so unrelated raycasts (IK, occlusion, footsteps)
+    // don't get rewritten. Fixes wallbang looking flaky on games that
+    // raycast heavily outside of shot windows.
+    if (!cfg.engaged) {
+        koffee::aim::hook::set_active(false, {}, {}, false);
+        return;
+    }
+
     // Refresh DataModel every ~500ms.
     static auto s_last_dm_refresh = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
@@ -118,6 +128,23 @@ void tick() {
         || now - s_last_dm_refresh > std::chrono::milliseconds(500)) {
         s_cached_data_model = koffee::game::refresh_data_model();
         s_last_dm_refresh = now;
+    }
+
+    // v0.3.0-a2p4: when koffee.lua sends a target, use it verbatim.
+    // Lua-side picker is smarter than the helper native (FOV cone,
+    // priority, sticky, sub-team check, target lock, prediction). Only
+    // fall back to native picker if lua didn't send one this tick.
+    if (cfg.has_target) {
+        // Still walk to get a fresh camera position -- thunk uses it for
+        // its own short-range gate. Cheap: workspace -> camera -> pos, no
+        // players walk needed.
+        const auto snap = koffee::game::snapshot_world(s_cached_data_model);
+        if (!snap.data_model) s_cached_data_model = 0;
+        const auto cam_pos = snap.camera_position.length_squared() > 1e-6f
+            ? snap.camera_position
+            : koffee::math::vector3{};
+        koffee::aim::hook::set_active(true, cfg.target, cam_pos, cfg.wallbang);
+        return;
     }
 
     const auto snap = koffee::game::snapshot_world(s_cached_data_model);

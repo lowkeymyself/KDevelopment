@@ -30,6 +30,19 @@ struct silent_config {
     float        distance      = 1500.f;       // studs, world-space cap
     float        fov_radius    = 150.f;        // pixels around crosshair
     bool         fov_enabled   = false;
+
+    // v0.3.0-a2p4: lua-side driving fields.
+    //   `engaged` -- true only when koffee.lua's own gates say the user is
+    //   actively firing (silent enabled + activation key + require-LMB).
+    //   Helper only arms the thunk when this is true, so unrelated raycasts
+    //   pass through vanilla.
+    //   `has_target` + `target` -- lua-picked target world position. When
+    //   has_target is true the helper uses this verbatim; otherwise it
+    //   falls back to the native picker (which walks Roblox and picks by
+    //   3D distance).
+    bool                 engaged     = false;
+    bool                 has_target  = false;
+    koffee::math::vector3 target{};
 };
 
 // Set once at helper startup; reads run lock-free.

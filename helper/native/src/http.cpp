@@ -35,7 +35,7 @@ using nlohmann::json;
 constexpr const char* kAuthHeader = "X-Koffee-Key";
 constexpr const char* kDevKey     = "KoffeeBetaDevelopmentTesting";
 
-constexpr const char* kVersion = "0.3.0-a2p3";
+constexpr const char* kVersion = "0.3.0-a2p4";
 
 std::atomic<httplib::Server*> g_server{nullptr};
 
@@ -82,11 +82,18 @@ json status_body() {
         {"silent", {
             {"keepalive_recent", keepalive},
             {"enabled",          cfg.enabled},
+            {"engaged",          cfg.engaged},
             {"wallbang",         cfg.wallbang},
             {"hit_part",         cfg.hit_part},
             {"team_check",       cfg.team_check},
             {"health_check",     cfg.health_check},
             {"distance",         cfg.distance},
+            {"has_target",       cfg.has_target},
+            {"target", {
+                {"x", cfg.target.x},
+                {"y", cfg.target.y},
+                {"z", cfg.target.z},
+            }},
         }},
     };
 }
@@ -115,6 +122,23 @@ koffee::aim::silent_config parse_config(const json& j) {
     load_float("distance",     out.distance);
     load_float("fov_radius",   out.fov_radius);
     load_bool("fov_enabled",   out.fov_enabled);
+    load_bool("engaged",       out.engaged);
+
+    // v0.3.0-a2p4: optional target vector. Accepted as an object with x/y/z
+    // keys; koffee.lua sends this shape from buildConfigBody(). Absent when
+    // lua's own picker has no lock (helper falls back to native picker).
+    if (auto it = j.find("target"); it != j.end() && it->is_object()) {
+        auto rx = it->find("x");
+        auto ry = it->find("y");
+        auto rz = it->find("z");
+        if (rx != it->end() && ry != it->end() && rz != it->end()
+            && rx->is_number() && ry->is_number() && rz->is_number()) {
+            out.target = koffee::math::vector3{
+                rx->get<float>(), ry->get<float>(), rz->get<float>(),
+            };
+            out.has_target = true;
+        }
+    }
 
     // Clamp obvious garbage. koffee.lua's distance slider can push huge
     // numbers if the user unbounds it; we cap here to avoid float weirdness

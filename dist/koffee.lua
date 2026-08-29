@@ -1,9 +1,9 @@
--- koffee v0.3.3
+-- koffee v0.3.4
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.3"
+Koffee.Version = "0.3.4"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -9223,10 +9223,25 @@ local Combat = {
         -- Build the JSON body from the current Combat.Silent state. Kept in
         -- lock-step with helper/native/src/http.cpp `parse_config` so adding
         -- a field is a one-side change per side.
+        --
+        -- v0.3.4:
+        --   * `target` (nullable {x,y,z}) -- koffee.lua's own picker output.
+        --     When present the helper uses it verbatim instead of running
+        --     the native picker. Ships the same target the Lua-side hooks
+        --     would rewrite to under the Raycast / Forced-MB methods,
+        --     which is a much smarter pick than the helper's naive
+        --     3D-distance-from-camera fallback.
+        --   * `engaged` (bool) -- true only when the user is actively
+        --     firing (silent enabled + activation-key gate + require-LMB
+        --     gate). Helper only arms the thunk when this is true, so
+        --     unrelated raycasts (IK, occlusion, footsteps) pass through
+        --     unmodified. Fixes wallbang looking flaky on games that
+        --     raycast heavily outside of shot windows.
         local function buildConfigBody()
             local s = Combat.Silent
             local HttpService = game:GetService("HttpService")
-            return HttpService:JSONEncode({
+
+            local body = {
                 silent = {
                     enabled      = s.Enabled == true,
                     wallbang     = s.Wallbang == true,
@@ -9237,7 +9252,25 @@ local Combat = {
                     fov_enabled  = s.FOV and s.FOV.Enabled or false,
                     fov_radius   = (s.FOV and s.FOV.Size) or 150,
                 },
-            })
+            }
+
+            -- Engaged mirrors the same gate the Lua-side hooks use to
+            -- decide whether to rewrite: enabled + (no arm key OR key held)
+            -- + (not RequireLMB OR LMB down).
+            local keyOk = (not s.ActivationKey) or (silentHeld == true)
+            local lmbOk = (not s.RequireLMB) or (lmbDown == true)
+            body.silent.engaged = (s.Enabled == true) and keyOk and lmbOk
+
+            -- Target is the same silentPos the Lua-side hooks use for
+            -- Mouse.Hit rewrites -- includes prediction, priority, sticky,
+            -- team/health/FOV gates from koffee.lua's own picker.
+            if silentPos then
+                body.silent.target = {
+                    x = silentPos.X, y = silentPos.Y, z = silentPos.Z,
+                }
+            end
+
+            return HttpService:JSONEncode(body)
         end
 
         function M.pushConfig()
@@ -9248,9 +9281,17 @@ local Combat = {
 
         function M.clear() call("POST", "/clear", "") end
 
-        -- Keepalive loop. Fires while (Silent.Enabled AND Method == External).
+        -- Keepalive + target push loop. Fires while (Silent.Enabled AND
+        -- Method == External).
         -- On enable transition, probes /health and warns if the helper isn't
         -- reachable (once per enable cycle, not spammed).
+        --
+        -- v0.3.4: tick raised from 2s to ~33ms (30Hz). Now that /config
+        -- carries `target` + `engaged`, the helper's thunk needs fresh
+        -- data every shot window. 30Hz keeps target error under ~1.7
+        -- studs for a max-speed sprinting player, comfortable for head
+        -- hits. Executor-provided `request()` bypasses HttpService's
+        -- rate limits so the throughput isn't an issue.
         local warned = false
         local wasActive = false
         task.spawn(function()
@@ -9274,7 +9315,7 @@ local Combat = {
                     warned = false
                 end
                 wasActive = isActive
-                task.wait(2)
+                task.wait(0.033)
             end
         end)
 
