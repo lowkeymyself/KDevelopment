@@ -1,9 +1,9 @@
--- koffee v0.1.8
+-- koffee v0.2.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.1.8"
+Koffee.Version = "0.2.0"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -7215,7 +7215,11 @@ local Combat = {
         HealthCheck   = false,
         Sticky        = false,
         RequireLMB    = true,
-        PosSpoof      = false,   -- v0.0.64: spoof your ROOT position reads -> shot origin inside the target
+        -- v0.2.0: Wallbang (renamed from Pos Spoof). Now Raycast-method exclusive --
+        -- rewrites the workspace:Raycast ORIGIN to 3 studs in front of the target so the
+        -- client ray reaches them through any wall. Silently no-ops under Forced MB /
+        -- Second-Camera (checkbox is disabled by the UI too).
+        Wallbang      = false,
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default -- fire-read is always
@@ -7739,8 +7743,13 @@ local Combat = {
         end
         -- v0.0.64 Pos Spoof arm gate: active whenever a target is acquired (NO RequireLMB --
         -- "doesn't need left-click"). Only gated by the module + an optional activation key.
+        -- v0.2.0: renamed Pos Spoof -> Wallbang and gated to the Raycast method ONLY. Under
+        -- Forced MB / Second-Camera this is a hard no-op (posFire() collapses to false), so
+        -- every legacy posFire()-guarded spoof block below is dormant unless the user picks
+        -- Method = "Raycast". Wallbang's actual effect lives in the workspace:Raycast branch.
         local function posArmed()
-            if not Combat.Silent.PosSpoof then return false end
+            if Combat.Silent.Method ~= "Raycast" then return false end
+            if not Combat.Silent.Wallbang then return false end
             if not (Combat.Silent.Enabled and silentPos and silentTarget) then return false end
             if Combat.Silent.ActivationKey and not silentHeld then return false end
             return true
@@ -7808,7 +7817,11 @@ local Combat = {
                 -- UnitRay: Pos Spoof (fire frame) -> origin in front of the target (wallbang);
                 -- else the real camera origin (direction to target). Pos Spoof is
                 -- gated off in safe mode -- keep the plain camera-origin ray.
-                if not Combat.Silent._safe and posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
+                -- v0.2.0: Raycast method's wallbang lives ONLY in the workspace:Raycast
+                -- branch (see resolveNamecall). Skip the UnitRay wallshot cascade so
+                -- the mouse.UnitRay fallback stays honest camera->target under Raycast.
+                if not Combat.Silent._safe and Combat.Silent.Method ~= "Raycast"
+                   and posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
                 if SR.camPos then return true, Ray.new(SR.camPos, (pos - SR.camPos).Unit) end
                 return PASS_H, PASS_V
             end
@@ -7834,8 +7847,9 @@ local Combat = {
             if Combat.Silent.Method == "Second-Camera" then
                 scCam = silentPos ~= nil
                     and (not Combat.Silent.ActivationKey or silentHeld)
-            elseif silentPos then
+            elseif Combat.Silent.Method == "Forced Magic-Bullet" and silentPos then
                 -- Forced MB. v0.1.8: Require Left-Click OFF is now TRULY continuous --
+                -- v0.2.0: explicit method match -- Raycast method never spoofs Camera.CFrame.
                 -- the CFrame bend no longer collapses to the click window, EXCEPT for
                 -- learned camera WRITERS (writer-detector set), which stay window-gated
                 -- so custom-camera games can't freeze/crash under continuous spoofing
@@ -7874,7 +7888,9 @@ local Combat = {
                     end
                 end
             end
-            if isArmed() then
+            -- v0.2.0: Mouse.X/Y is a Forced-MB/Second-Camera fire read (cursor spoof).
+            -- Not raycast-flavored -- skipped under the Raycast method.
+            if isArmed() and Combat.Silent.Method ~= "Raycast" then
                 if (key == "X" or key == "Y") and self == SR.mouse and SR.screen then
                     if SR.spoofAim(getCS and getCS()) then
                         return true, (key == "X") and SR.screen.X or SR.screen.Y
@@ -7887,7 +7903,12 @@ local Combat = {
             -- range). Broad set = all character descendants incl. the gun's muzzle parts /
             -- attachments, so guns reading the tool position (not just HRP) land too. Real
             -- parts never move. Scoped by spoofAim (camera + Koffee excluded); no LMB gate.
-            if posFire() then
+            -- v0.2.0: Raycast method owns origin manipulation via workspace:Raycast ONLY --
+            -- character/tool part reads stay honest so animations, IK and non-fire game
+            -- systems that peek at those parts see truth. This block is legacy for the
+            -- (now-dormant) Forced MB Pos Spoof; posFire() is already Raycast-gated but the
+            -- explicit method guard keeps the intent readable.
+            if posFire() and Combat.Silent.Method ~= "Raycast" then
                 local sp = SR.spoofParts
                 if sp and sp[self] then
                     if key == "Position" or key == "WorldPosition" then
@@ -7911,8 +7932,11 @@ local Combat = {
             -- and constructors are used below -- no namecalls.
             -- v0.0.64 POS SPOOF: Character:GetPivot()/GetPrimaryPartCFrame -> target CFrame,
             -- BEFORE the LMB gate (Pos Spoof doesn't require left-click). Namecall-free.
+            -- v0.2.0: legacy Forced-MB spoof -- Raycast method skips this (same reasoning
+            -- as the part.Position block: origin manipulation is workspace:Raycast-only).
             if method == "GetPivot" or method == "GetPrimaryPartCFrame" then
-                if posFire() and self == SR.char and SR.spoofAim(getCS and getCS()) then
+                if posFire() and Combat.Silent.Method ~= "Raycast"
+                   and self == SR.char and SR.spoofAim(getCS and getCS()) then
                     return true, CFrame.new(silentPos)
                 end
                 return PASS_H, PASS_V
@@ -8007,15 +8031,55 @@ local Combat = {
                 if changed then return "call", args end
                 return PASS_H, PASS_V
             end
-            -- v0.0.81: Wallbang Raycast REMOVED. Was detected by some ACs, didn't work on
-            -- Gun Grounds FFA (camera-baked-arg class -- see v0.0.42/74 history), and
-            -- didn't cover Jack's tested game (the KoffeePosDebug log from v0.0.78 showed
-            -- only Camera.CFrame spoofs + one stray raycast intercept -- the weapon
-            -- doesn't call workspace raycasts at fire time). The raycast-based FE FPS
-            -- class (Phantom Forces, Arsenal, Aimblox) can be re-added later as a per-game
-            -- module (see PINNED plan in the vault note) once we have a game where it
-            -- actually lands + a less-detectable implementation.
+            -- v0.0.81: Wallbang Raycast REMOVED (as an always-on Forced-MB add-on). Was
+            -- detected by some ACs, didn't work on Gun Grounds FFA (camera-baked-arg class
+            -- -- see v0.0.42/74 history), and didn't cover Jack's tested game (the
+            -- KoffeePosDebug log from v0.0.78 showed only Camera.CFrame spoofs + one stray
+            -- raycast intercept -- the weapon doesn't call workspace raycasts at fire time).
+            -- v0.2.0: RE-ADDED, opt-in, as the "Raycast" method (see branch below). Now it
+            -- is a top-level Method choice instead of an always-on cascade -- users pick it
+            -- specifically for FE FPS raycast weapons (Phantom Forces / Arsenal / Aimblox
+            -- class). Wallbang rides on this method exclusively.
             if not isArmed() then return PASS_H, PASS_V end
+            -- v0.2.0 RAYCAST METHOD: universal workspace:Raycast rewrite for games whose
+            -- weapon builds its own ray (muzzle attachment / camera vector) and passes it
+            -- straight into workspace:Raycast -- these skip every Mouse/Camera read the
+            -- Forced-MB spoofs catch. Direction rotates to point at the target from the
+            -- caller's real origin; magnitude preserved so range checks pass. Wallbang
+            -- (posFire) additionally moves the origin to 3 studs in FRONT of the target so
+            -- the client ray reaches them through any wall. Gate order (namecall-safe: only
+            -- constructors + component math, zero `:` calls):
+            --   * dir.Magnitude > 20  -- skip probe/occlusion/IK rays
+            --   * dir approx aligned with camLook OR with (target - origin)  -- fire-shaped only
+            -- Cheap comparisons short-circuit the 99% pass-through case.
+            if method == "Raycast" and self == Workspace then
+                if Combat.Silent.Method ~= "Raycast" then return PASS_H, PASS_V end
+                if not silentPos then return PASS_H, PASS_V end
+                local origin, dir, rparams = args[1], args[2], args[3]
+                if typeof(origin) ~= "Vector3" or typeof(dir) ~= "Vector3" then return PASS_H, PASS_V end
+                local mag = dir.Magnitude
+                if mag < 20 then return PASS_H, PASS_V end
+                local unit = dir / mag
+                local aim = silentPos - origin
+                local aimMag = aim.Magnitude
+                if aimMag < 1e-3 then return PASS_H, PASS_V end
+                local aimUnit = aim / aimMag
+                local look = SR.camLook
+                local dotLook = look and (look.X*unit.X + look.Y*unit.Y + look.Z*unit.Z) or -1
+                local dotAim  = aimUnit.X*unit.X + aimUnit.Y*unit.Y + aimUnit.Z*unit.Z
+                if dotLook < 0.5 and dotAim < 0.5 then return PASS_H, PASS_V end
+                if posFire() then
+                    local wo = silentPos - aimUnit * 3
+                    dbg("workspace:Raycast (wallbang)")
+                    return "call", { wo, aimUnit * mag, rparams }
+                end
+                dbg("workspace:Raycast")
+                return "call", { origin, aimUnit * mag, rparams }
+            end
+            -- v0.2.0: ViewportPointToRay/ScreenPointToRay + GetMouseLocation are
+            -- Forced-MB/Second-Camera fire reads. Skipped under Raycast method (that
+            -- method deliberately touches ONLY Mouse.Hit reads + workspace:Raycast).
+            if Combat.Silent.Method == "Raycast" then return PASS_H, PASS_V end
             -- camera-ray / cursor methods the game uses to build its shot. Direction bends to
             -- the target; on the Pos Spoof fire frame the ORIGIN moves in front of the target
             -- (wallbang), else real (SR.camPos). spoofAim excludes the camera + Koffee. Namecall-free.
@@ -9396,10 +9460,12 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
-        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "Second-Camera" }, Combat.Silent.Method,
+        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "Second-Camera", "Raycast" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
-        configCheckbox(R["Silent Aim"], "Pos Spoof", Combat.Silent.PosSpoof, function(v) Combat.Silent.PosSpoof = v end)
+        -- v0.2.0: Wallbang (renamed from Pos Spoof) is Raycast-method-exclusive.
+        -- Silently no-ops under Forced MB / Second-Camera (posArmed short-circuits).
+        configCheckbox(R["Silent Aim"], "Wallbang", Combat.Silent.Wallbang, function(v) Combat.Silent.Wallbang = v end)
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
         -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
         -- are never touched. Spoof Scope is the caller-identification strategy (both
