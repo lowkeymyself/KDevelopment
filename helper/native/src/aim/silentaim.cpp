@@ -28,11 +28,37 @@ constexpr auto kTickPeriod = std::chrono::milliseconds(16);
 // aim if the game crashes or the script unloads without sending /clear).
 constexpr auto kKeepaliveMax = std::chrono::seconds(5);
 
+// v0.3.0-a2p6: target sticky window. When lua's picker briefly returns
+// nil (target one frame off-screen, occlusion flicker, respawn race, or
+// a POST landing between picker updates), has_target flaps to false and
+// the naive path would call set_active(false), disarming the thunk mid-
+// fire so the shot raycast slips through unrewritten. Cache the last
+// lua-provided target for this window and keep the thunk armed; only
+// truly disarm when the target has been absent for the full window.
+// The v0.3.7 lua-side grace was 150ms; add a bit more slack here since
+// the helper's 60Hz tick can consume up to ~16ms of it.
+constexpr auto kTargetStickyMs = std::chrono::milliseconds(200);
+
 std::atomic<bool>   g_running{false};
 std::thread         g_thread;
 std::atomic<std::chrono::steady_clock::time_point> g_last_config{};
 
 silent_state g_state;
+
+// v0.3.0-a2p6: sticky-target cache lives at namespace scope so the
+// disarm paths above the sticky check can invalidate it. Otherwise a
+// silent-disable (or keepalive expire) leaves a ghost target that the
+// next tick would happily re-arm on inside the sticky window.
+koffee::math::vector3                s_last_lua_target{};
+bool                                 s_last_lua_wallbang = false;
+bool                                 s_last_lua_valid    = false;
+std::chrono::steady_clock::time_point s_last_lua_time{};
+
+void invalidate_lua_sticky() {
+    s_last_lua_valid    = false;
+    s_last_lua_wallbang = false;
+    s_last_lua_target   = {};
+}
 
 // Pick the "best" target from the world snapshot given the config.
 // Alpha2 metric: closest player by 3D world distance from camera, gated by
@@ -88,6 +114,7 @@ void tick() {
 
     if (!koffee::mem::attach()) {
         // No Roblox process; disarm any prior state and skip.
+        invalidate_lua_sticky();
         koffee::aim::hook::set_active(false, {}, {}, false);
         koffee::aim::hook::ensure(false);
         return;
@@ -102,6 +129,7 @@ void tick() {
     g_state.keepalive_recent.store(!stale, std::memory_order_relaxed);
 
     if (!cfg.enabled || stale) {
+        invalidate_lua_sticky();
         koffee::aim::hook::set_active(false, {}, {}, false);
         koffee::aim::hook::ensure(false);
         return;
@@ -117,6 +145,7 @@ void tick() {
     // don't get rewritten. Fixes wallbang looking flaky on games that
     // raycast heavily outside of shot windows.
     if (!cfg.engaged) {
+        invalidate_lua_sticky();
         koffee::aim::hook::set_active(false, {}, {}, false);
         return;
     }
@@ -134,7 +163,26 @@ void tick() {
     // Lua-side picker is smarter than the helper native (FOV cone,
     // priority, sticky, sub-team check, target lock, prediction). Only
     // fall back to native picker if lua didn't send one this tick.
-    if (cfg.has_target) {
+    //
+    // v0.3.0-a2p6: TARGET STICKY. If has_target flaps false but was true
+    // within kTargetStickyMs, keep the thunk armed on the cached target.
+    // Prevents mid-fire disarm from single-POST nils. wallbang is also
+    // cached so the sticky window uses the same flags the user last saw.
+    // Cache is invalidated on silent-disable / keepalive-expire /
+    // engaged=false / process detach so a stale ghost can't leak into
+    // the next silent session.
+    const bool use_lua_target = cfg.has_target
+        || (s_last_lua_valid
+            && (std::chrono::steady_clock::now() - s_last_lua_time) < kTargetStickyMs);
+
+    if (use_lua_target) {
+        // Refresh cache when we have a live target.
+        if (cfg.has_target) {
+            s_last_lua_target   = cfg.target;
+            s_last_lua_wallbang = cfg.wallbang;
+            s_last_lua_valid    = true;
+            s_last_lua_time     = std::chrono::steady_clock::now();
+        }
         // Still walk to get a fresh camera position -- thunk uses it for
         // its own short-range gate. Cheap: workspace -> camera -> pos, no
         // players walk needed.
@@ -143,9 +191,16 @@ void tick() {
         const auto cam_pos = snap.camera_position.length_squared() > 1e-6f
             ? snap.camera_position
             : koffee::math::vector3{};
-        koffee::aim::hook::set_active(true, cfg.target, cam_pos, cfg.wallbang);
+
+        const auto& tgt      = cfg.has_target ? cfg.target   : s_last_lua_target;
+        const bool  wallbang = cfg.has_target ? cfg.wallbang : s_last_lua_wallbang;
+        koffee::aim::hook::set_active(true, tgt, cam_pos, wallbang);
         return;
     }
+
+    // Cache expired -- release the sticky so the native picker path below
+    // isn't holding a stale ghost.
+    s_last_lua_valid = false;
 
     const auto snap = koffee::game::snapshot_world(s_cached_data_model);
     if (!snap.data_model || snap.camera_position.length_squared() < 1e-6f) {
@@ -198,6 +253,7 @@ void force_disarm() {
         std::lock_guard lock{g_state.mtx};
         g_state.cfg.enabled = false;
     }
+    invalidate_lua_sticky();
     // Immediate hook set-inactive; the loop will pick it up next tick too.
     koffee::aim::hook::set_active(false, {}, {}, false);
 }
