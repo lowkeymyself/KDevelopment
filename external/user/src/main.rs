@@ -1,122 +1,37 @@
-//! Koffee External -- entry point.
+//! Koffee driver loader — standalone.
 //!
-//! This binary is the loader + host process. Responsibilities:
-//!   1. Find the Roblox process (or wait for it to launch).
-//!   2. Open a transport to its memory -- either the real kernel driver
-//!      (production) or a mock (host-side dev without a driver).
-//!   3. Discover the Roblox main module base address (required for every
-//!      offset-based read).
-//!   4. Run the feature loop (later -- this scaffolding just proves the
-//!      transport works).
+//! One job: ensure the kernel driver is mapped and its device is reachable.
+//! Invoked as a subprocess by `KoffeeHelper.exe` (native C++ under
+//! `helper/native/`) at helper startup. This binary calls
+//! `loader::ensure_loaded()`, writes `READY` on stdout when the driver is up,
+//! then exits. The helper waits for that line, opens `\\.\<koffee device>`
+//! via `DeviceIoControl`, and owns the session from there.
 //!
-//! Feature code will live in sibling modules and only ever touch the
-//! `Transport` trait -- never a raw syscall or `DeviceIoControl`. Swapping
-//! transports (mock <-> real driver <-> future EV-signed driver) never
-//! reaches feature code.
+//! Everything user-facing (silent aim, wallbang, target selection, HTTP
+//! bridge to koffee.lua) lives in the native helper. This binary is deliberately
+//! minimal — the smaller the loader surface, the less to re-audit whenever the
+//! driver rebuilds.
 
-mod ioctl;
 mod loader;
-mod proc;
-mod transport;
 
 use std::process::ExitCode;
-use transport::Transport;
-
-// pick the transport at compile-time via a feature flag. defaults to mock so
-// `cargo run` on a dev host works out of the box (no driver, no admin).
-// build with `cargo run --features real-driver` in the VM once the driver
-// is installed.
-#[cfg(not(feature = "real-driver"))]
-type ChosenTransport = transport::mock::MockTransport;
-#[cfg(feature = "real-driver")]
-type ChosenTransport = transport::driver::DriverTransport;
-
-const ROBLOX_EXE: &str = "RobloxPlayerBeta.exe";
 
 fn main() -> ExitCode {
-    loader::dbg::init();
-    loader::dbg::log(format_args!("main: entered"));
-    println!("koffee-external v{} -- {}", env!("CARGO_PKG_VERSION"),
-        if cfg!(feature = "real-driver") { "real driver" } else { "mock transport (dev)" });
-
-    // Target selection order:
-    //   1. CLI arg 1 (`KoffeeExternal.exe SomeTarget.exe`) -- first driver-testing use case
-    //      is `KoffeeTestTarget.exe`, so we need to point at anything.
-    //   2. `KOFFEE_TARGET_EXE` env var -- convenient for running under a shell / debugger.
-    //   3. default = RobloxPlayerBeta.exe (prod path).
-    let target_exe: String = std::env::args().nth(1)
-        .or_else(|| std::env::var("KOFFEE_TARGET_EXE").ok())
-        .unwrap_or_else(|| ROBLOX_EXE.to_string());
-
-    // 0. Ensure KoffeeMem.sys is in the kernel.
-    //    On first run: full BYOVD sequence (drop RTCore64.sys → NtLoadDriver →
-    //    map KoffeeMem.sys into pool → call DriverEntry → unload RTCore64).
-    //    On subsequent runs: device already accessible → instant no-op.
-    #[cfg(feature = "real-driver")]
-    if let Err(e) = loader::ensure_loaded() {
-        eprintln!("[!] loader failed: {}", e);
-        eprintln!("[!] check: Memory Integrity off? VulnerableDriverBlocklistEnable=0? Running as admin?");
-        return ExitCode::from(1);
-    }
-
-    // 1. locate the target process.
-    let pid = match proc::find_process(&target_exe) {
-        Some(p) => p,
-        None => {
-            eprintln!("[!] {} not found -- launch it first.", target_exe);
-            return ExitCode::from(2);
+    match loader::ensure_loaded() {
+        Ok(()) => {
+            // Contract with KoffeeHelper: single trimmed line on stdout,
+            // followed by immediate exit. The helper reads until it sees this
+            // line, then closes the child's stdio and proceeds. Do NOT change
+            // the token without updating the helper's parser.
+            println!("READY");
+            ExitCode::SUCCESS
         }
-    };
-    println!("[+] found {} pid = {}", target_exe, pid);
-
-    // 2. open the transport.
-    let mut t = match ChosenTransport::open(pid) {
-        Ok(t) => t,
         Err(e) => {
-            eprintln!("[!] transport open failed: {}", e);
-            return ExitCode::from(3);
+            // Same contract for failure: prefix + message on stderr, non-zero
+            // exit. Helper surfaces the message to its log so the user has a
+            // real diagnostic instead of "loader failed."
+            eprintln!("LOAD_FAIL: {e}");
+            ExitCode::FAILURE
         }
-    };
-    println!("[+] transport ready");
-
-    // 3. main-module base. this is the first real memory-adjacent op; if it
-    //    works, the transport works.
-    let base = match t.module_base(pid, &target_exe) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("[!] module_base failed: {}", e);
-            return ExitCode::from(4);
-        }
-    };
-    println!("[+] {} base = 0x{:X}", target_exe, base);
-
-    // 4. proof-of-life read: dump 16 bytes at the module base (should start
-    //    with 'MZ' -- PE header). NOTHING to do with Deleter2 yet -- this is
-    //    just "did the transport actually read a byte back."
-    let mut buf = [0u8; 16];
-    if let Err(e) = t.read(base, &mut buf) {
-        eprintln!("[!] proof-of-life read failed: {}", e);
-        return ExitCode::from(5);
     }
-    println!("[+] bytes @ base: {}", hex(&buf));
-    if &buf[0..2] == b"MZ" {
-        println!("[+] MZ signature present -- transport is reading real memory.");
-    } else {
-        println!("[?] no MZ signature -- transport may be returning garbage. investigate.");
-    }
-
-    // scaffolding stops here. next: implement `game::` module (typed reads of
-    // roblox structs off known offsets) + `features::` modules that mirror
-    // the lua one-for-one.
-    println!("[.] scaffolding done. feature loop lands next.");
-    ExitCode::SUCCESS
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 3);
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 { s.push(' '); }
-        s.push_str(&format!("{:02X}", b));
-    }
-    s
 }

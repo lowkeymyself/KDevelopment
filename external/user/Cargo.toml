@@ -1,31 +1,27 @@
 [package]
-name = "koffee-external"
-version = "0.1.0"
+name = "koffee-loader"
+version = "0.2.0"
 edition = "2021"
-description = "External Roblox suite -- kernel-driver-backed memory transport + Rust feature port of the Koffee Lua script"
+description = "Standalone BYOVD loader for the Koffee kernel driver. Invoked as a subprocess by KoffeeHelper.exe on startup; writes READY on stdout, exits."
+
+# v0.3.0-alpha1 (2026-08-28): stripped the Rust 'external as a full app'
+# scaffolding (ui/, game/, transport/, features/, probes) — the helper now
+# owns everything user-facing in native C++. This crate is loader-only.
 
 [[bin]]
-name = "KoffeeExternal"
+name = "KoffeeLoader"
 path = "src/main.rs"
 
-# Dev-only test target. Runs unprotected in the VM; the driver attaches to it
-# and exercises read/write against known-value memory regions. Zero AC, zero
-# code protection -- built for BSOD-safe integration testing before we ever
-# point the driver at Roblox.
+# Dev-only. Ships to nobody. Attached to by the driver in the VM to prove
+# read/write against known-value memory before pointing at any real target.
 [[bin]]
 name = "KoffeeTestTarget"
 path = "src/bin/testtarget.rs"
 
-[features]
-# Default = mock transport (host dev, no driver, no admin). Build with
-# `--features real-driver` in the VM once the driver is loaded to point the
-# same feature code at real kernel-driver IOCTLs.
-default = []
-real-driver = []
-
 [dependencies]
-# windows-sys covers everything we need: process enumeration, DeviceIoControl, VirtualQueryEx, etc.
-# feature-gated so we only pull the exact API surfaces used (small binary).
+# Only the API surfaces the loader path actually touches. Feature-gated to
+# keep the compiled binary small (loader is a subprocess, so cold-start cost
+# is on the helper's critical path).
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",
@@ -34,11 +30,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_IO",
     "Win32_Storage_FileSystem",
     "Win32_Security",
-    # loader needs: registry ops, VirtualAlloc, GetProcAddress
     "Win32_System_Registry",
     "Win32_System_Memory",
     "Win32_System_LibraryLoader",
-    # RAM-range enumeration (SMBIOS Type 19)
     "Win32_System_SystemInformation",
 ] }
 
