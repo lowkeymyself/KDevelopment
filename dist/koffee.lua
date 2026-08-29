@@ -1,9 +1,9 @@
--- koffee v0.2.0
+-- koffee v0.2.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.2.0"
+Koffee.Version = "0.2.1"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -501,7 +501,15 @@ local Theme = {
         -- fresh executor cache wipe.
         local FONT_URL  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProximaSoft-Bold.ttf"
         local FONT_FILE = "koffee_proximasoft.ttf"
-        local FONT_JSON = "koffee_proximasoft.json"
+        -- v0.2.1: versioned filename + always-rebuild. The OLD `koffee_proximasoft.json`
+        -- cached across sessions was the source of the "font shows as Nunito" bug --
+        -- `getcustomasset()` produces a per-session asset URL for the ttf, but the
+        -- JSON on disk still held the PRIOR session's URL, which Roblox couldn't
+        -- resolve this session, silently falling back to the engine default (Nunito).
+        -- Bumping the filename ignores every stale cache in the wild; regenerating
+        -- unconditionally on every load keeps the assetId inside the JSON fresh.
+        local FONT_JSON = "koffee_proximasoft_v2.json"
+        local FONT_JSON_OLD = "koffee_proximasoft.json"
         local customFam = (function()
             local ok, res = pcall(function()
                 local getasset = getcustomasset or getsynasset
@@ -537,8 +545,14 @@ local Theme = {
                     return nil
                 end
 
-                -- CACHE HIT: register the family JSON synchronously (fast, no HTTP).
-                if isf(FONT_JSON) then return getasset(FONT_JSON) end
+                -- v0.2.1: nuke the v1 cache from prior sessions -- if it survived to
+                -- disk here, its embedded ttf assetId is guaranteed stale by now.
+                if delfile and isf(FONT_JSON_OLD) then pcall(delfile, FONT_JSON_OLD) end
+                -- CACHE HIT: rebuild the family JSON synchronously every load. The
+                -- ttfId embedded below MUST come from THIS session's getasset() call --
+                -- caching the JSON across sessions was the "font renders as Nunito"
+                -- bug (see comment above FONT_JSON). Cheap: one getasset + JSONEncode
+                -- + writefile per load. No HTTP, all local.
                 local ttfId = getasset(target)
                 local fam = {
                     name  = "ProximaSoft",
@@ -748,8 +762,14 @@ do
             -- which is why the custom font looked like a generic default before. mirror
             -- the ProximaSoft path: build a family JSON, write it, point Font.new at the
             -- JSON URL with the desired weight.
-            local famFile = "koffee_fei_" .. name:gsub("%s","_"):lower() .. ".json"
-            if not isf(famFile) then
+            -- v0.2.1: bumped filename (_v2) + always-rebuild. Same stale-assetId bug as
+            -- ProximaSoft's -- getcustomasset() gives per-session ttf URLs, so a JSON
+            -- cached across sessions rendered as the engine default. Ignore the v1
+            -- cache in the wild; regenerate every load with THIS session's ttfId.
+            local famFile    = "koffee_fei_" .. name:gsub("%s","_"):lower() .. "_v2.json"
+            local famFileOld = "koffee_fei_" .. name:gsub("%s","_"):lower() .. ".json"
+            if delfile and isf(famFileOld) then pcall(delfile, famFileOld) end
+            do
                 local ttfId = getasset(usedFile)
                 local fam = {
                     name  = name:gsub("%s", ""),
