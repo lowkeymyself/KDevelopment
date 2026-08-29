@@ -1,9 +1,9 @@
--- koffee v0.3.4
+-- koffee v0.3.5
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.4"
+Koffee.Version = "0.3.5"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -9256,9 +9256,15 @@ local Combat = {
 
             -- Engaged mirrors the same gate the Lua-side hooks use to
             -- decide whether to rewrite: enabled + (no arm key OR key held)
-            -- + (not RequireLMB OR LMB down).
+            -- + (not RequireLMB OR LMB down OR post-click window).
+            -- v0.3.5: added the 200ms post-click grace window (matches the
+            -- Lua-side `posFire()` pattern) so a fire raycast happening a
+            -- frame or two after LMB press still lands with engaged=true
+            -- at the helper. Without it, single-shot pistols / snipers
+            -- that read late would flake against the 30Hz post cadence.
             local keyOk = (not s.ActivationKey) or (silentHeld == true)
             local lmbOk = (not s.RequireLMB) or (lmbDown == true)
+                          or ((os.clock() - lmbClickAt) < 0.2)
             body.silent.engaged = (s.Enabled == true) and keyOk and lmbOk
 
             -- Target is the same silentPos the Lua-side hooks use for
@@ -9281,19 +9287,37 @@ local Combat = {
 
         function M.clear() call("POST", "/clear", "") end
 
-        -- Keepalive + target push loop. Fires while (Silent.Enabled AND
-        -- Method == External).
-        -- On enable transition, probes /health and warns if the helper isn't
-        -- reachable (once per enable cycle, not spammed).
+        -- Keepalive + target push loop.
+        -- v0.3.5: two-tier scheduling.
+        --   * RunService.Heartbeat push -- fires the same frame the
+        --     picker updates silentPos, task.spawned so HTTP latency
+        --     doesn't stutter render. This is the fast path: target +
+        --     engaged reach the helper the same frame they change.
+        --   * task.wait(2) keepalive loop -- covers /health probes,
+        --     enable/disable transitions, and idle-state /clear posts.
+        --     Also acts as a fallback keepalive if the Heartbeat push
+        --     ever misses a beat (helper's 5s TTL still fires disarm).
         --
-        -- v0.3.4: tick raised from 2s to ~33ms (30Hz). Now that /config
-        -- carries `target` + `engaged`, the helper's thunk needs fresh
-        -- data every shot window. 30Hz keeps target error under ~1.7
-        -- studs for a max-speed sprinting player, comfortable for head
-        -- hits. Executor-provided `request()` bypasses HttpService's
-        -- rate limits so the throughput isn't an issue.
+        -- A single in-flight guard keeps concurrent HTTP calls from
+        -- stacking if the executor's request() is slow -- if a push is
+        -- still on the wire when Heartbeat fires again, we drop the
+        -- new one (next Heartbeat picks up the fresh silentPos anyway).
         local warned = false
         local wasActive = false
+        local pushInFlight = false
+
+        RunService.Heartbeat:Connect(function()
+            if pushInFlight then return end
+            if not (Combat.Silent.Enabled and Combat.Silent.Method == "External") then
+                return
+            end
+            pushInFlight = true
+            task.spawn(function()
+                M.pushConfig()
+                pushInFlight = false
+            end)
+        end)
+
         task.spawn(function()
             while true do
                 local isActive = Combat.Silent.Enabled
@@ -9309,13 +9333,12 @@ local Combat = {
                             warned = false
                         end
                     end
-                    M.pushConfig()
                 elseif wasActive then
                     M.clear()
                     warned = false
                 end
                 wasActive = isActive
-                task.wait(0.033)
+                task.wait(2)
             end
         end)
 
