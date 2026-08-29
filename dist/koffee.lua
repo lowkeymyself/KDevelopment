@@ -1,9 +1,9 @@
--- koffee v0.3.7
+-- koffee v0.3.8
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.7"
+Koffee.Version = "0.3.8"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -281,9 +281,34 @@ end
 -- install one frame after script load instead of before the first line of user
 -- code runs; Adonis doesn't fire in that window in any observed game. Still
 -- pcall'd -- errors here must never take the suite down.
+-- v0.3.8: PRESENCE GATE. High-quality games (big worlds, heavy modules) can
+-- hit a 100k+ live GC-object heap where getgc(true) itself is the freezer,
+-- even when the game runs no Adonis at all. Cheap presence check up-front:
+-- look for the client-side Adonis loader in ReplicatedStorage / PlayerScripts
+-- (both cheap FindFirstChild calls) and the getgenv/_G markers Adonis
+-- typically leaves. If none are present, skip the walk entirely -- the whole
+-- bypass is Adonis-specific and does nothing useful on non-Adonis servers.
+-- (Retry once ~5s in for late-loading Adonis clients before giving up.)
+local function adonisLikelyPresent()
+    local RS = game:GetService("ReplicatedStorage")
+    if RS:FindFirstChild("Adonis_Client") then return true end
+    if RS:FindFirstChild("Adonis") then return true end
+    -- LocalPlayer is resolved further down the file, so grab it fresh here.
+    local lp = game:GetService("Players").LocalPlayer
+    local ps = lp and lp:FindFirstChild("PlayerScripts")
+    if ps and ps:FindFirstChild("Adonis_Client") then return true end
+    local genv = (getgenv and getgenv()) or {}
+    if genv.Adonis or genv.Adonis_Loader or genv["Adonis Cache"] then return true end
+    if rawget(_G, "Adonis") or rawget(_G, "Adonis_Loader") then return true end
+    return false
+end
 task.spawn(function()
 pcall(function()
     if not (getgc and hookfunction and setthreadidentity and getrenv) then return end
+    if not adonisLikelyPresent() then
+        task.wait(5)
+        if not adonisLikelyPresent() then return end
+    end
     local dbg = false          -- flip true to see what the AC tried to do
     local held = {}            -- keep hook refs alive
     local flagged, killer
@@ -1034,8 +1059,42 @@ local KID = (function()
     }
 end)()
 
+-- v0.3.8: broader executor GUI-parent discovery + protection call.
+-- Passive ACs that iterate CoreGui:GetChildren()/PlayerGui:GetChildren()
+-- (or listen on ChildAdded) flag Koffee if we land there. gethui() puts
+-- us in a container that isn't in the CoreGui tree at all; when that's
+-- unavailable we still try every known "hidden GUI" API before falling
+-- back to CoreGui/PlayerGui.
+local function pickHiddenHost()
+    local candidates = { gethui, get_hidden_gui, get_hidden_ui, gethiddenui }
+    for _, fn in ipairs(candidates) do
+        if type(fn) == "function" then
+            local ok, host = pcall(fn)
+            if ok and typeof(host) == "Instance" then return host end
+        end
+    end
+    return nil
+end
+
+-- Executor GUI protector -- adds the passed instance to the executor's
+-- hidden set so GetChildren / GetDescendants scans don't include it.
+-- No-op if no such API is exposed (VirtuaExe / small executors).
+local function protectGuiSafe(inst)
+    local candidates = {
+        (syn and syn.protect_gui), protect_gui, protectgui,
+        (syn and syn.protectgui),  (fluxus and fluxus.protect_gui),
+    }
+    for _, fn in ipairs(candidates) do
+        if type(fn) == "function" then
+            pcall(fn, inst)
+            return
+        end
+    end
+end
+
 local function guiParent()
-    if gethui then return gethui() end
+    local hidden = pickHiddenHost()
+    if hidden then return hidden end
     local ok = pcall(function() return CoreGui.Name end)
     if ok then return CoreGui end
     return LocalPlayer:WaitForChild("PlayerGui")
@@ -1067,6 +1126,7 @@ local screen = KID.track(new("ScreenGui", {
     DisplayOrder = math.random(4000, 8000),
     Parent = guiParent(),
 }))
+protectGuiSafe(screen)
 
 -- separate top-level ScreenGui for popups (dropdowns, color picker) so they
 -- render ABOVE the main window's CanvasGroup regardless of ZIndex quirks.
@@ -1078,6 +1138,7 @@ local popupScreen = KID.track(new("ScreenGui", {
     DisplayOrder = screen.DisplayOrder + 1,
     Parent = guiParent(),
 }))
+protectGuiSafe(popupScreen)
 
 -- BACKGROUND: dim + blur + snow (activates when window is open)
 local dim = new("Frame", {
@@ -1090,11 +1151,27 @@ local dim = new("Frame", {
     Parent = screen,
 })
 
+-- v0.3.8: park the BlurEffect on CurrentCamera instead of Lighting.
+-- Post-processing effects work under either, and Lighting:GetChildren()
+-- is a common passive-AC scan target -- unexpected BlurEffects in
+-- Lighting are a giveaway even with a random Name. CurrentCamera swaps
+-- occasionally (custom camera systems) so a re-parent hook keeps blur
+-- attached to whatever's active. Falls back to Lighting only if we
+-- can't get a camera at all.
+local function currentBlurHost()
+    local cam = Workspace.CurrentCamera
+    if cam then return cam end
+    return Lighting
+end
 local blur = KID.track(new("BlurEffect", {
     Name = KID.name("blur"),
     Size = 0,
-    Parent = Lighting,
+    Parent = currentBlurHost(),
 }))
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    local host = currentBlurHost()
+    if blur and blur.Parent ~= host then pcall(function() blur.Parent = host end) end
+end)
 
 -- snow (Frame-based so it respects gui ZIndex and stays *under* the window)
 local snowLayer = new("Frame", {
