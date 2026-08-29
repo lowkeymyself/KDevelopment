@@ -1,15 +1,14 @@
-# KoffeeHelper — native (C++) helper for the Koffee suite.
+# KoffeeHelper -- native (C++) helper for the Koffee suite.
 #
-# What this builds (alpha1): a headless service that binds a local HTTP port
-# and answers GET /health. Alpha2 adds subprocess management for the Rust
-# loader (external/user, produces KoffeeLoader.exe + the driver device),
-# a DeviceIoControl wrapper for r/w against the driver, and the silent-aim +
-# wallbang execution loop the koffee.lua script drives via /config.
+# Alpha2 (this build): raycast inline hook + native target picker + HTTP
+# bridge (/config, /clear, /health, /status). koffee.lua drives it via
+# `POST /config` with a X-Koffee-Key header. Uses user-mode OpenProcess +
+# ReadProcessMemory/WriteProcessMemory for now -- alpha3 swaps r/w for the
+# koffee kernel driver via DeviceIoControl.
 #
-# Build (from this directory):
+# Build:
 #   cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 #   cmake --build build --config Release
-#
 # Output: build/Release/KoffeeHelper.exe
 
 cmake_minimum_required(VERSION 3.20)
@@ -20,13 +19,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
-    # /W4 — high warning level; /permissive- — strict conformance;
-    # /Zc:__cplusplus — accurate __cplusplus macro (MSVC lies by default).
     add_compile_options(/W4 /permissive- /Zc:__cplusplus)
+    # /wd4324 -- struct padded due to alignas (raycast_state_t is #pragma pack(push, 4)
+    #            already, this suppresses false-positive warnings from vendored headers).
+    # /wd4127 -- conditional expression is constant (cpp-httplib uses this pattern).
+    add_compile_options(/wd4127)
     add_compile_definitions(
         _CRT_SECURE_NO_WARNINGS
         WIN32_LEAN_AND_MEAN
         NOMINMAX
+        # cpp-httplib is header-only, but our translation unit that instantiates
+        # its templates needs it to see the impl. Single-header library, no split.
     )
 endif()
 
@@ -34,19 +37,26 @@ add_executable(KoffeeHelper
     src/main.cpp
     src/http.cpp
     src/log.cpp
+    src/mem.cpp
+    src/game.cpp
+    src/aim/hook.cpp
+    src/aim/silentaim.cpp
 )
 
-target_include_directories(KoffeeHelper PRIVATE src)
+target_include_directories(KoffeeHelper PRIVATE src vendor)
 
-# ws2_32 — WinSock 2 (bind/listen/accept/recv/send for the HTTP server).
-# Alpha2 will add: Advapi32 (service control), Shell32 (tray icon), and
-# the C++ shim linking against DeviceIoControl (already in kernel32).
-target_link_libraries(KoffeeHelper PRIVATE ws2_32)
+# ws2_32   -- WinSock 2 (cpp-httplib backend on Windows).
+# psapi    -- EnumProcessModulesEx, GetModuleBaseNameA (module walker in mem.cpp).
+# advapi32 -- reserved for alpha3 (service control / driver device ACL).
+target_link_libraries(KoffeeHelper PRIVATE
+    ws2_32
+    psapi
+    advapi32
+)
 
 set_target_properties(KoffeeHelper PROPERTIES
     OUTPUT_NAME "KoffeeHelper"
-    # Console subsystem during dev/alpha so log() reaches stdout when the
-    # user launches from a terminal. Alpha2 (or first release build) flips
-    # this to WIN32 subsystem + logs to file so the exe runs headless.
+    # Console subsystem during alpha for stdout logging. Flip to WIN32
+    # subsystem + file log at first release build.
     WIN32_EXECUTABLE OFF
 )

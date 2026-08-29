@@ -1,185 +1,200 @@
+// HTTP server rewritten over cpp-httplib for alpha2.
+//
+// Routes:
+//   * GET  /health   -- unchanged from alpha1, no auth. Cheapest liveness
+//                       probe from koffee.lua on Silent Aim enable.
+//   * GET  /status   -- richer than /health: attach state + current config +
+//                       hook state. Diagnostic use.
+//   * POST /config   -- koffee.lua pushes the silent-aim config blob (JSON).
+//                       Auth: X-Koffee-Key header must equal the shared key.
+//   * POST /clear    -- force disarm the aim path. Auth: same.
+//
+// Auth: dev key `KoffeeBetaDevelopmentTesting`, matches Koffee.md's
+// "Round-1 auth (dev)" section. Alpha3+ swaps in a real key provider.
+
 #include "http.h"
 #include "log.h"
+#include "mem.h"
+#include "aim/hook.h"
+#include "aim/silentaim.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
+// vendored
+#include "../vendor/httplib.h"
+#include "../vendor/json.hpp"
 
 #include <atomic>
-#include <cstring>
 #include <string>
-#include <string_view>
-#include <thread>
 
 namespace koffee::http {
 
 namespace {
 
-constexpr int kRecvBufSize = 4096;
-constexpr int kRecvTimeoutMs = 2000;
-constexpr int kSendTimeoutMs = 2000;
+using nlohmann::json;
 
-// Alpha1 health payload. Alpha2 will grow this to include driver + Roblox
-// attach state so koffee.lua can toast "helper up but not attached" instead
-// of a false-positive "everything green."
-constexpr std::string_view kHealthBody =
-    R"({"status":"ok","version":"0.3.0-alpha1","stage":"skeleton"})";
+constexpr const char* kAuthHeader = "X-Koffee-Key";
+constexpr const char* kDevKey     = "KoffeeBetaDevelopmentTesting";
 
-// Response builder. Fixed content-type application/json; the client is
-// koffee.lua parsing this via HttpService:JSONDecode.
-std::string build_response(int status, std::string_view reason,
-                           std::string_view body) {
-    std::string s;
-    s.reserve(128 + body.size());
-    s += "HTTP/1.1 ";
-    s += std::to_string(status);
-    s += ' ';
-    s += reason;
-    s += "\r\n";
-    s += "Content-Type: application/json\r\n";
-    s += "Content-Length: ";
-    s += std::to_string(body.size());
-    s += "\r\n";
-    s += "Connection: close\r\n";
-    s += "\r\n";
-    s += body;
-    return s;
+constexpr const char* kVersion = "0.3.0-alpha2";
+
+std::atomic<httplib::Server*> g_server{nullptr};
+
+bool has_valid_key(const httplib::Request& req) {
+    const auto it = req.headers.find(kAuthHeader);
+    if (it == req.headers.end()) return false;
+    return it->second == kDevKey;
 }
 
-// Read until end-of-headers OR buffer full. Alpha1 doesn't parse the body
-// (no route needs it), so once we have the request line + headers we stop.
-// Returns empty string on socket error / timeout / oversize.
-std::string read_head(SOCKET client) {
-    std::string buf;
-    buf.reserve(kRecvBufSize);
-    char tmp[512];
-    while (buf.size() < kRecvBufSize) {
-        const int n = ::recv(client, tmp, sizeof(tmp), 0);
-        if (n <= 0) return {};
-        buf.append(tmp, tmp + n);
-        // End-of-headers marker.
-        if (buf.find("\r\n\r\n") != std::string::npos) break;
+void set_json(httplib::Response& res, int status, const json& j) {
+    res.status = status;
+    res.set_content(j.dump(), "application/json");
+}
+
+json health_body() {
+    return json{
+        {"status",  "ok"},
+        {"version", kVersion},
+        {"stage",   "alpha2"},
+    };
+}
+
+json status_body() {
+    const bool attached      = koffee::mem::g_ctx.attached.load(std::memory_order_relaxed);
+    const bool hook_up       = koffee::aim::hook::installed();
+    const bool hook_aiming   = koffee::aim::hook::aiming();
+    const bool keepalive     = koffee::aim::state().keepalive_recent.load(std::memory_order_relaxed);
+
+    // Copy config under lock so we don't race with /config writes.
+    koffee::aim::silent_config cfg;
+    {
+        std::lock_guard lock{koffee::aim::state().mtx};
+        cfg = koffee::aim::state().cfg;
     }
-    return buf;
+
+    return json{
+        {"version",  kVersion},
+        {"attached", attached},
+        {"pid",      koffee::mem::g_ctx.pid},
+        {"hook", {
+            {"installed", hook_up},
+            {"aiming",    hook_aiming},
+        }},
+        {"silent", {
+            {"keepalive_recent", keepalive},
+            {"enabled",          cfg.enabled},
+            {"wallbang",         cfg.wallbang},
+            {"hit_part",         cfg.hit_part},
+            {"team_check",       cfg.team_check},
+            {"health_check",     cfg.health_check},
+            {"distance",         cfg.distance},
+        }},
+    };
 }
 
-// Parse "METHOD PATH HTTP/1.x\r\n..." — returns METHOD and PATH in-place
-// views into `raw`. Empty result on malformed input.
-struct RequestLine {
-    std::string_view method;
-    std::string_view path;
-};
-RequestLine parse_request_line(std::string_view raw) {
-    const auto line_end = raw.find("\r\n");
-    if (line_end == std::string_view::npos) return {};
-    const auto line = raw.substr(0, line_end);
-    const auto sp1 = line.find(' ');
-    if (sp1 == std::string_view::npos) return {};
-    const auto sp2 = line.find(' ', sp1 + 1);
-    if (sp2 == std::string_view::npos) return {};
-    return {line.substr(0, sp1), line.substr(sp1 + 1, sp2 - sp1 - 1)};
+// Best-effort JSON -> silent_config. Missing / wrong-typed fields fall back
+// to defaults from a fresh config, so a partial payload from koffee.lua
+// (e.g. old script version) still parses cleanly. Never throws.
+koffee::aim::silent_config parse_config(const json& j) {
+    koffee::aim::silent_config out;   // defaults
+
+    auto load_bool = [&](const char* key, bool& dst) {
+        if (auto it = j.find(key); it != j.end() && it->is_boolean()) dst = it->get<bool>();
+    };
+    auto load_float = [&](const char* key, float& dst) {
+        if (auto it = j.find(key); it != j.end() && it->is_number()) dst = it->get<float>();
+    };
+    auto load_string = [&](const char* key, std::string& dst) {
+        if (auto it = j.find(key); it != j.end() && it->is_string()) dst = it->get<std::string>();
+    };
+
+    load_bool("enabled",       out.enabled);
+    load_bool("wallbang",      out.wallbang);
+    load_string("hit_part",    out.hit_part);
+    load_bool("team_check",    out.team_check);
+    load_bool("health_check",  out.health_check);
+    load_float("distance",     out.distance);
+    load_float("fov_radius",   out.fov_radius);
+    load_bool("fov_enabled",   out.fov_enabled);
+
+    // Clamp obvious garbage. koffee.lua's distance slider can push huge
+    // numbers if the user unbounds it; we cap here to avoid float weirdness
+    // in the picker's `d*d` comparisons.
+    if (out.distance < 1.f)     out.distance = 1.f;
+    if (out.distance > 100000.f) out.distance = 100000.f;
+    return out;
 }
 
-void handle_client(SOCKET client) {
-    // Apply timeouts so a stuck peer can't hold a worker thread forever.
-    DWORD rt = kRecvTimeoutMs, st = kSendTimeoutMs;
-    ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
-                 reinterpret_cast<const char*>(&rt), sizeof(rt));
-    ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO,
-                 reinterpret_cast<const char*>(&st), sizeof(st));
+void install_routes(httplib::Server& srv) {
+    // /health -- no auth, cheap. Called on Silent Aim enable in koffee.lua.
+    srv.Get("/health", [](const httplib::Request&, httplib::Response& res) {
+        set_json(res, 200, health_body());
+    });
 
-    const std::string head = read_head(client);
-    std::string response;
+    // /status -- no auth, diagnostic.
+    srv.Get("/status", [](const httplib::Request&, httplib::Response& res) {
+        set_json(res, 200, status_body());
+    });
 
-    if (head.empty()) {
-        // Malformed / timed out — respond with 400 as a courtesy, then close.
-        response = build_response(400, "Bad Request",
-                                  R"({"error":"malformed_request"})");
-    } else {
-        const auto req = parse_request_line(head);
-        if (req.method == "GET" && req.path == "/health") {
-            response = build_response(200, "OK", kHealthBody);
-        } else {
-            response = build_response(404, "Not Found",
-                                      R"({"error":"unknown_route"})");
+    // /config -- POST, JSON, X-Koffee-Key required.
+    srv.Post("/config", [](const httplib::Request& req, httplib::Response& res) {
+        if (!has_valid_key(req)) {
+            set_json(res, 401, json{{"error", "bad_or_missing_key"}});
+            return;
         }
-    }
+        json j;
+        try {
+            j = json::parse(req.body);
+        } catch (...) {
+            set_json(res, 400, json{{"error", "bad_json"}});
+            return;
+        }
+        if (!j.is_object()) {
+            set_json(res, 400, json{{"error", "expected_object"}});
+            return;
+        }
+        // koffee.lua sends {"silent": {...}} to leave room for future
+        // config groups (aim, esp, etc). Fall back to top-level for
+        // convenience during manual testing.
+        const json* silent_obj = &j;
+        if (auto it = j.find("silent"); it != j.end() && it->is_object()) {
+            silent_obj = &(*it);
+        }
+        koffee::aim::apply_config(parse_config(*silent_obj));
+        set_json(res, 200, json{{"status", "ok"}});
+    });
 
-    // Best-effort send; on partial send we just close (browser / lua client
-    // will surface the error). Ignore return -- worker exits either way.
-    ::send(client, response.data(), static_cast<int>(response.size()), 0);
-    ::shutdown(client, SD_BOTH);
-    ::closesocket(client);
+    // /clear -- POST, no body needed, X-Koffee-Key required.
+    srv.Post("/clear", [](const httplib::Request& req, httplib::Response& res) {
+        if (!has_valid_key(req)) {
+            set_json(res, 401, json{{"error", "bad_or_missing_key"}});
+            return;
+        }
+        koffee::aim::force_disarm();
+        set_json(res, 200, json{{"status", "cleared"}});
+    });
 }
 
 }  // namespace
 
 int serve(std::uint16_t port) {
-    WSADATA wsa{};
-    if (const int rc = ::WSAStartup(MAKEWORD(2, 2), &wsa); rc != 0) {
-        koffee::log_err("WSAStartup failed");
-        return rc;
-    }
+    httplib::Server srv;
+    srv.set_read_timeout(2, 0);
+    srv.set_write_timeout(2, 0);
+    // Payload cap -- config JSON is at most a few hundred bytes; anything
+    // bigger is garbage or an attack surface. Reject early.
+    srv.set_payload_max_length(64 * 1024);
 
-    SOCKET listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (listener == INVALID_SOCKET) {
-        koffee::log_err("socket() failed");
-        ::WSACleanup();
-        return 1;
-    }
+    install_routes(srv);
 
-    // 127.0.0.1 ONLY. The helper accepts no external connections; koffee.lua
-    // runs in the same-machine Roblox process and talks over localhost.
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    g_server.store(&srv, std::memory_order_release);
 
-    BOOL reuse = TRUE;
-    ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR,
-                 reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    koffee::log(std::string("http listening on 127.0.0.1:") + std::to_string(port));
+    const bool ok = srv.listen("127.0.0.1", port);
+    g_server.store(nullptr, std::memory_order_release);
 
-    if (::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr))
-        == SOCKET_ERROR) {
-        koffee::log_err("bind() failed -- port likely in use");
-        ::closesocket(listener);
-        ::WSACleanup();
+    if (!ok) {
+        koffee::log_err("http listen() failed -- port likely in use");
         return 2;
     }
-    if (::listen(listener, SOMAXCONN) == SOCKET_ERROR) {
-        koffee::log_err("listen() failed");
-        ::closesocket(listener);
-        ::WSACleanup();
-        return 3;
-    }
-
-    {
-        std::string msg = "http listening on 127.0.0.1:";
-        msg += std::to_string(port);
-        koffee::log(msg);
-    }
-
-    // Accept forever. Each connection gets its own detached thread; the pool
-    // is unbounded here because alpha1 traffic is tiny (one koffee.lua
-    // instance sending occasional keepalives). Alpha2 caps concurrency.
-    for (;;) {
-        sockaddr_in peer{};
-        int peer_len = sizeof(peer);
-        SOCKET client = ::accept(listener,
-                                 reinterpret_cast<sockaddr*>(&peer),
-                                 &peer_len);
-        if (client == INVALID_SOCKET) {
-            // WSAEINTR on shutdown, WSAENOBUFS under load — either way, keep
-            // the loop alive; abrupt exit here would silently kill /health.
-            continue;
-        }
-        std::thread(handle_client, client).detach();
-    }
-
-    // Unreachable in alpha1 — no shutdown path yet. Alpha2 wires a signal
-    // handler that closes `listener` from outside the accept loop.
-    ::closesocket(listener);
-    ::WSACleanup();
     return 0;
 }
 

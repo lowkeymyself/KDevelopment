@@ -1,9 +1,9 @@
--- koffee v0.2.1
+-- koffee v0.3.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.2.1"
+Koffee.Version = "0.3.0"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -7235,10 +7235,14 @@ local Combat = {
         HealthCheck   = false,
         Sticky        = false,
         RequireLMB    = true,
-        -- v0.2.0: Wallbang (renamed from Pos Spoof). Now Raycast-method exclusive --
-        -- rewrites the workspace:Raycast ORIGIN to 3 studs in front of the target so the
-        -- client ray reaches them through any wall. Silently no-ops under Forced MB /
-        -- Second-Camera (checkbox is disabled by the UI too).
+        -- v0.2.0: Wallbang (renamed from Pos Spoof). Under Raycast method,
+        -- rewrites the workspace:Raycast ORIGIN to 3 studs in front of the target so
+        -- the client ray reaches them through any wall.
+        -- v0.3.0: Wallbang now also flows to the External method via POST /config -->
+        -- KoffeeHelper reads the flag and widens its raycast-inline-hook rewrite
+        -- (origin shift + visibility-filter bypass) inside Roblox. Under Forced MB /
+        -- Second-Camera the checkbox is inert -- neither Lua-side arm nor helper
+        -- config reads it there.
         Wallbang      = false,
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
@@ -7826,6 +7830,12 @@ local Combat = {
         -- touches, so cameras, Popper occlusion, physics and other scripts stay
         -- untouched -- this is why the default never breaks the game / camera.
         local function resolveIndex(self, key)
+            -- v0.3.0: External method delegates ALL silent-aim work to KoffeeHelper.exe
+            -- over localhost HTTP. Under this method, every Lua-side spoof stays dormant
+            -- so the game sees 100% vanilla client behaviour -- the raycast rewrite
+            -- happens inside Roblox via the helper's inline hook on the raycast bound
+            -- function, not here.
+            if Combat.Silent.Method == "External" then return PASS_H, PASS_V end
             -- (A) Mouse aim reads (Hit/Target/UnitRay) -- safe on every game, no caller
             -- scoping needed (nothing but aim code reads these). v0.0.35 behaviour.
             if (key == "Hit" or key == "Target" or key == "UnitRay")
@@ -7943,6 +7953,9 @@ local Combat = {
             return PASS_H, PASS_V
         end
         local function resolveNamecall(self, method, args)
+            -- v0.3.0: External method offloads everything to KoffeeHelper (see
+            -- resolveIndex head comment). Every namecall passes through vanilla.
+            if Combat.Silent.Method == "External" then return PASS_H, PASS_V end
             -- v0.0.39 fire-read universal path (always on -- "Forced Magic-Bullet").
             -- CRITICAL: NOTHING in here may perform a Roblox namecall (a `:` method
             -- call). getnamecallmethod reads one shared C state, so a nested namecall
@@ -9100,9 +9113,133 @@ local Combat = {
                 print("[koffee][trig] DISABLE @ " .. tostring(os.clock()) .. "  stack=" .. tostring(debug.traceback and debug.traceback("", 2) or "?"))
             end
         end)
+    -- v0.3.0 EXTERNAL METHOD BRIDGE. koffee.lua speaks to KoffeeHelper.exe
+    -- (native C++ helper, source at helper/native/) over localhost HTTP.
+    -- Under Silent Aim's "External" method, all Lua-side spoof paths short-
+    -- circuit (see resolveIndex / resolveNamecall heads) and the helper does
+    -- the actual work via a raycast inline hook inside the Roblox process.
+    --
+    -- Wire contract:
+    --   * fixed local port 27374 (mirrored in helper/native/src/main.cpp).
+    --   * dev key from Koffee.md's Round-1 auth section, sent as
+    --     X-Koffee-Key on POST /config + POST /clear.
+    --   * every ~2s while External is the active method AND Silent.Enabled,
+    --     push the current silent config to /config as a keepalive. The
+    --     helper auto-disarms if the keepalive stops arriving (its own 5s
+    --     TTL -- see aim/silentaim.cpp kKeepaliveMax).
+    --   * on External -> non-External transition (or Silent disable), POST
+    --     /clear so the helper drops the target immediately instead of
+    --     waiting out its keepalive TTL.
+    Koffee.External = (function()
+        local M = {}
+        local URL = "http://127.0.0.1:27374"
+        local KEY = "KoffeeBetaDevelopmentTesting"
+
+        local function pickReq()
+            return (syn and syn.request) or (http and http.request)
+                or http_request or request
+        end
+
+        local function call(method, path, body)
+            local req = pickReq()
+            if not req then return false, "no_http_api" end
+            local ok, res = pcall(req, {
+                Url = URL .. path,
+                Method = method,
+                Headers = {
+                    ["X-Koffee-Key"] = KEY,
+                    ["Content-Type"] = "application/json",
+                },
+                Body = body,
+            })
+            if not ok then return false, tostring(res) end
+            local status = res and (res.StatusCode or res.status_code)
+            local success = (status == 200) or (res and res.Success == true)
+            return success, res and res.Body or ""
+        end
+
+        function M.healthOk()
+            local ok = call("GET", "/health", nil)
+            return ok == true
+        end
+
+        -- Build the JSON body from the current Combat.Silent state. Kept in
+        -- lock-step with helper/native/src/http.cpp `parse_config` so adding
+        -- a field is a one-side change per side.
+        local function buildConfigBody()
+            local s = Combat.Silent
+            local HttpService = game:GetService("HttpService")
+            return HttpService:JSONEncode({
+                silent = {
+                    enabled      = s.Enabled == true,
+                    wallbang     = s.Wallbang == true,
+                    hit_part     = tostring(s.HitPart or "Head"),
+                    team_check   = s.TeamCheck == true,
+                    health_check = s.HealthCheck == true,
+                    distance     = tonumber(s.Distance) or 1500,
+                    fov_enabled  = s.FOV and s.FOV.Enabled or false,
+                    fov_radius   = (s.FOV and s.FOV.Size) or 150,
+                },
+            })
+        end
+
+        function M.pushConfig()
+            local body = buildConfigBody()
+            local ok = call("POST", "/config", body)
+            return ok
+        end
+
+        function M.clear() call("POST", "/clear", "") end
+
+        -- Keepalive loop. Fires while (Silent.Enabled AND Method == External).
+        -- On enable transition, probes /health and warns if the helper isn't
+        -- reachable (once per enable cycle, not spammed).
+        local warned = false
+        local wasActive = false
+        task.spawn(function()
+            while true do
+                local isActive = Combat.Silent.Enabled
+                    and Combat.Silent.Method == "External"
+                if isActive then
+                    if not wasActive then
+                        if not M.healthOk() then
+                            if not warned then
+                                warned = true
+                                warn("[koffee] external method selected but helper is not reachable at " .. URL)
+                            end
+                        else
+                            warned = false
+                        end
+                    end
+                    M.pushConfig()
+                elseif wasActive then
+                    M.clear()
+                    warned = false
+                end
+                wasActive = isActive
+                task.wait(2)
+            end
+        end)
+
+        -- Called by the Method dropdown on change. Immediate response so the
+        -- helper disarms right away instead of on the next 2s keepalive tick.
+        function M.onMethodChange(newMethod)
+            if newMethod ~= "External" then M.clear() end
+        end
+
+        return M
+    end)()
+
     registerModule("silentaim", "Silent Aim",
         function() installSilentHooks(); Combat.Silent.Enabled = true end,
-        function() Combat.Silent.Enabled = false; silentTarget = nil end)
+        function()
+            Combat.Silent.Enabled = false
+            silentTarget = nil
+            -- If we were on External, tell the helper to disarm immediately.
+            if Combat.Silent.Method == "External" and Koffee.External then
+                Koffee.External.clear()
+            end
+        end)
     -- v0.0.73: arraylist "on" indicator -- active = held by the activation key, OR (no key
     -- bound) always-active while enabled. Mirrors each feature's real arm gate.
     Modules.aimbot.IsActive     = function() return (not Combat.Aim.ActivationKey)    or aimHeld end
@@ -9480,11 +9617,12 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
-        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "Second-Camera", "Raycast" }, Combat.Silent.Method,
-            function(v) Combat.Silent.Method = v end)
+        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "Second-Camera", "Raycast", "External" }, Combat.Silent.Method,
+            function(v) Combat.Silent.Method = v; if Koffee.External then Koffee.External.onMethodChange(v) end end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
-        -- v0.2.0: Wallbang (renamed from Pos Spoof) is Raycast-method-exclusive.
-        -- Silently no-ops under Forced MB / Second-Camera (posArmed short-circuits).
+        -- v0.2.0/v0.3.0: Wallbang is honoured under Raycast (Lua-side origin
+        -- rewrite) AND External (helper-side inline-hook wallbang). Silently
+        -- no-ops under Forced MB / Second-Camera.
         configCheckbox(R["Silent Aim"], "Wallbang", Combat.Silent.Wallbang, function(v) Combat.Silent.Wallbang = v end)
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
         -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
