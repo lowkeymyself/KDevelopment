@@ -14,10 +14,10 @@ cl /nologo /std:c++20 /O2 /EHsc /W4 /permissive- /Zc:__cplusplus /wd4127 ^
    src\main.cpp src\http.cpp src\log.cpp src\mem.cpp src\game.cpp ^
    src\aim\hook.cpp src\aim\silentaim.cpp ^
    ws2_32.lib psapi.lib advapi32.lib ^
-   /link /OUT:build_local\KoffeeHelper_a2p4.exe
+   /link /OUT:build_local\KoffeeHelper_a2p5.exe
 if errorlevel 1 (
     echo BUILD_FAILED
     exit /b 1
 )
 echo BUILD_OK
-dir build_local\KoffeeHelper_a2p4.exe
+dir build_local\KoffeeHelper_a2p5.exe

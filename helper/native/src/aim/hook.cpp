@@ -9,6 +9,7 @@
 
 #include "hook.h"
 
+#include "../log.h"
 #include "../mem.h"
 #include "../offsets.h"
 
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -509,7 +511,7 @@ bool install() {
     if (g_hook.installed) return true;
 
     const std::uintptr_t base = get_module_base();
-    if (!base) return false;
+    if (!base) { koffee::log_err("hook.install: get_module_base returned 0"); return false; }
 
     const auto now = std::chrono::steady_clock::now();
     if (g_last_fail.time_since_epoch().count() != 0
@@ -521,17 +523,31 @@ bool install() {
     const std::uintptr_t fn   = static_cast<std::uintptr_t>(
         koffee::mem::read<std::uint64_t>(slot));
 
-    if (!addr_ok(fn)) { g_last_fail = now; return false; }
+    if (!addr_ok(fn)) {
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+            "hook.install: raw fn pointer failed addr_ok. base=0x%llx slot=0x%llx fn=0x%llx (offsets stale?)",
+            (unsigned long long)base, (unsigned long long)slot, (unsigned long long)fn);
+        koffee::log_err(buf);
+        g_last_fail = now; return false;
+    }
+    {
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+            "hook.install: resolved fn=0x%llx (base=0x%llx)",
+            (unsigned long long)fn, (unsigned long long)base);
+        koffee::log(buf);
+    }
 
     if (!g_hook.state) {
         g_hook.state = reinterpret_cast<std::uintptr_t>(::VirtualAllocEx(
             proc_handle(), nullptr, page_sz(),
             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     }
-    if (!g_hook.state) { g_last_fail = now; return false; }
+    if (!g_hook.state) { koffee::log_err("hook.install: VirtualAllocEx(state) failed"); g_last_fail = now; return false; }
 
     auto thunk = make_hook_thunk(g_hook.state, fn);
-    if (thunk.size() > 0x200) { g_last_fail = now; return false; }
+    if (thunk.size() > 0x200) { koffee::log_err("hook.install: thunk >0x200"); g_last_fail = now; return false; }
 
     bool owned = false;
     std::uintptr_t stub = 0;
@@ -567,10 +583,18 @@ bool install() {
         }
     }
 
-    if (!stub) { g_last_fail = now; return false; }
+    if (!stub) { koffee::log_err("hook.install: no cave found AND alloc_exec_page failed"); g_last_fail = now; return false; }
+    {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+            "hook.install: thunk placed at 0x%llx (owned=%d)",
+            (unsigned long long)stub, (int)owned);
+        koffee::log(buf);
+    }
 
     raycast_state_t empty{};
     if (!w_mem(g_hook.state, &empty, sizeof(empty))) {
+        koffee::log_err("hook.install: state zero-init write failed");
         g_last_fail = now;
         if (owned) free_remote(stub);
         return false;
@@ -581,6 +605,11 @@ bool install() {
 
     const DWORD prot = query_protect(stub);
     if (!is_executable_protect(prot)) {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+            "hook.install: stub not executable after write, prot=0x%lx",
+            (unsigned long)prot);
+        koffee::log_err(buf);
         g_last_fail = now;
         if (owned) free_remote(stub);
         return false;
@@ -589,10 +618,17 @@ bool install() {
     protect_remote(slot, 8, PAGE_READWRITE, nullptr);
     if (!write_protected(slot, &stub, sizeof(stub))
         || koffee::mem::read<std::uint64_t>(slot) != stub) {
+        char buf[192];
+        const std::uint64_t got = koffee::mem::read<std::uint64_t>(slot);
+        std::snprintf(buf, sizeof(buf),
+            "hook.install: vtable slot rewrite failed. slot=0x%llx want=0x%llx got=0x%llx (CFG rejection?)",
+            (unsigned long long)slot, (unsigned long long)stub, (unsigned long long)got);
+        koffee::log_err(buf);
         g_last_fail = now;
         if (owned) free_remote(stub);
         return false;
     }
+    koffee::log("hook.install: OK");
 
     g_hook.module_base     = base;
     g_hook.original_fn     = fn;

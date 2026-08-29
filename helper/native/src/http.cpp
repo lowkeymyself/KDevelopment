@@ -35,7 +35,7 @@ using nlohmann::json;
 constexpr const char* kAuthHeader = "X-Koffee-Key";
 constexpr const char* kDevKey     = "KoffeeBetaDevelopmentTesting";
 
-constexpr const char* kVersion = "0.3.0-a2p4";
+constexpr const char* kVersion = "0.3.0-a2p5";
 
 std::atomic<httplib::Server*> g_server{nullptr};
 
