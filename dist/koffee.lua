@@ -1,9 +1,9 @@
--- koffee v0.3.5
+-- koffee v0.3.6
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.5"
+Koffee.Version = "0.3.6"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -9254,18 +9254,15 @@ local Combat = {
                 },
             }
 
-            -- Engaged mirrors the same gate the Lua-side hooks use to
-            -- decide whether to rewrite: enabled + (no arm key OR key held)
-            -- + (not RequireLMB OR LMB down OR post-click window).
-            -- v0.3.5: added the 200ms post-click grace window (matches the
-            -- Lua-side `posFire()` pattern) so a fire raycast happening a
-            -- frame or two after LMB press still lands with engaged=true
-            -- at the helper. Without it, single-shot pistols / snipers
-            -- that read late would flake against the 30Hz post cadence.
+            -- v0.3.6: dropped the RequireLMB gate entirely. External
+            -- method is "always silent aim while target locked" now --
+            -- matches semun's model, avoids the timing race where the
+            -- fire raycast happens before the LMB-down flag has round-
+            -- tripped through /config. RequireLMB only affects the
+            -- Lua-side methods (Raycast / Forced MB / Second-Camera);
+            -- under External the user's RequireLMB setting is ignored.
             local keyOk = (not s.ActivationKey) or (silentHeld == true)
-            local lmbOk = (not s.RequireLMB) or (lmbDown == true)
-                          or ((os.clock() - lmbClickAt) < 0.2)
-            body.silent.engaged = (s.Enabled == true) and keyOk and lmbOk
+            body.silent.engaged = (s.Enabled == true) and keyOk
 
             -- Target is the same silentPos the Lua-side hooks use for
             -- Mouse.Hit rewrites -- includes prediction, priority, sticky,
@@ -9287,37 +9284,18 @@ local Combat = {
 
         function M.clear() call("POST", "/clear", "") end
 
-        -- Keepalive + target push loop.
-        -- v0.3.5: two-tier scheduling.
-        --   * RunService.Heartbeat push -- fires the same frame the
-        --     picker updates silentPos, task.spawned so HTTP latency
-        --     doesn't stutter render. This is the fast path: target +
-        --     engaged reach the helper the same frame they change.
-        --   * task.wait(2) keepalive loop -- covers /health probes,
-        --     enable/disable transitions, and idle-state /clear posts.
-        --     Also acts as a fallback keepalive if the Heartbeat push
-        --     ever misses a beat (helper's 5s TTL still fires disarm).
+        -- Keepalive + target push loop. Fires while (Silent.Enabled AND
+        -- Method == External). 30Hz tick keeps the target ~1.7 studs fresh
+        -- at sprint speed. Executor request() bypasses HttpService rate
+        -- limits so the throughput is fine. Also probes /health on the
+        -- enable transition + POST /clear on the disable transition.
         --
-        -- A single in-flight guard keeps concurrent HTTP calls from
-        -- stacking if the executor's request() is slow -- if a push is
-        -- still on the wire when Heartbeat fires again, we drop the
-        -- new one (next Heartbeat picks up the fresh silentPos anyway).
+        -- v0.3.6: reverted v0.3.5's Heartbeat-based push + in-flight
+        -- guard -- simpler is better while we chase the flake, and the
+        -- LMB gate removal makes stale-target windows less painful
+        -- (always-on aim doesn't need per-frame LMB freshness).
         local warned = false
         local wasActive = false
-        local pushInFlight = false
-
-        RunService.Heartbeat:Connect(function()
-            if pushInFlight then return end
-            if not (Combat.Silent.Enabled and Combat.Silent.Method == "External") then
-                return
-            end
-            pushInFlight = true
-            task.spawn(function()
-                M.pushConfig()
-                pushInFlight = false
-            end)
-        end)
-
         task.spawn(function()
             while true do
                 local isActive = Combat.Silent.Enabled
@@ -9333,12 +9311,13 @@ local Combat = {
                             warned = false
                         end
                     end
+                    M.pushConfig()
                 elseif wasActive then
                     M.clear()
                     warned = false
                 end
                 wasActive = isActive
-                task.wait(2)
+                task.wait(0.033)
             end
         end)
 
