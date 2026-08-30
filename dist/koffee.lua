@@ -1,9 +1,9 @@
--- koffee v0.8.1
+-- koffee v0.8.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.8.1"
+Koffee.Version = "0.8.2"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -7155,13 +7155,21 @@ end)
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
 registerModule("headoffset",   "Head Offset",       function() end, function() restoreHead() end)
 registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
-ANIM_IDS = {
+-- v0.8.2: ANIM_IDS / ANIM_DROPDOWN were declared WITHOUT `local`, so they landed
+-- in _G as static, predictable globals named exactly what they are. That is the
+-- one footprint KID exists to prevent (every instance name + getgenv key in this
+-- file is randomized per session); a name-scanning AC walking _G saw them for
+-- free. Both are only ever read inside this IIFE, and the config loader reads the
+-- published Koffee._animIDs / Koffee._animDropdown copies below, so localizing
+-- them changes no behaviour. The per-place reassignments further down write the
+-- same local slots.
+local ANIM_IDS = {
     ["Orbit 1"] = "118314972618293", ["Orbit 2"] = "133811691098518", ["Orbit 3"] = "138488217385385", ["Orbit 4"] = "91729309021707",
     ["Aura 1"] = "140445336277156", ["Aura 2"] = "107902247206226", ["Aura 3"] = "71799101103620",
     ["Small Body 1"] = "132582392404773", ["Small Body 2"] = "117450501566142"
 }
 local ANIM_LOOP = {}
-ANIM_DROPDOWN = { "Orbit 1", "Orbit 2", "Orbit 3", "Orbit 4", "Aura 1", "Aura 2", "Aura 3", "Small Body 1", "Small Body 2" }
+local ANIM_DROPDOWN = { "Orbit 1", "Orbit 2", "Orbit 3", "Orbit 4", "Aura 1", "Aura 2", "Aura 3", "Small Body 1", "Small Body 2" }
 -- Place 155615604: replace the whole custom-anim list with these (loop only where noted)
 if game.PlaceId == 155615604 then
     ANIM_IDS = {
@@ -10096,7 +10104,12 @@ local Combat = {
             Text = "Activate Key", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
             Position = UDim2.new(0, CBOX.off, 0, 0),
-            Size = UDim2.new(1, -CBOX.off - 90, 100, 0),
+            -- v0.8.2: was `100, 0` in the Y slot -- a SCALE of 100, i.e. a label
+            -- 100x the row height (2200px). It rendered fine only because the text
+            -- is Y-centered in that runaway box and nothing clips it, but it made
+            -- the label swallow clicks far below its row inside the card. The
+            -- "Target Name" label directly above is the correct reference: 1, 0.
+            Size = UDim2.new(1, -CBOX.off - 90, 1, 0),
             TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = tlKeyRow,
         })
         local tlKeyPill = new("TextButton", {
@@ -12131,8 +12144,15 @@ addTab("World", function(root)
     })
 
     local function refreshRules()
+        -- v0.8.2: was `ch:IsA("Frame") and ch ~= emptyLabel`. Correct today purely
+        -- by accident of class hierarchy -- TextLabel does NOT inherit from Frame,
+        -- so the reference check never actually did anything, and the moment
+        -- emptyLabel became a Frame (an icon, a styled empty card) every refresh
+        -- would have destroyed it and left the empty state permanently blank.
+        -- Keep by REFERENCE, and spare UIComponents (the UIListLayout) by class,
+        -- so the sweep is honest about what it is protecting and why.
         for _, ch in ipairs(rulesList:GetChildren()) do
-            if ch:IsA("Frame") and ch ~= emptyLabel then ch:Destroy() end
+            if ch ~= emptyLabel and not ch:IsA("UIComponent") then ch:Destroy() end
         end
         emptyLabel.Visible = (#Shared.WorldRules.List == 0)
         for i, rule in ipairs(Shared.WorldRules.List) do
