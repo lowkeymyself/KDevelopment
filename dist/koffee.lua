@@ -1,9 +1,9 @@
--- koffee v0.8.0
+-- koffee v0.8.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.8.0"
+Koffee.Version = "0.8.1"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -10344,6 +10344,12 @@ end
     -- (CurvierAngle > 0). This replaces the v0.5 single-Frame-per-arm approach
     -- which couldn't render arcs no matter the rotation.
     local ARM_SEG = 14
+    -- v0.8.1: Roblox Frames reject arbitrary properties (`_segs` isn't a valid
+    -- member), so instead of hanging the segment list off the container Frame
+    -- we keep a side-table keyed by the container. Simpler than a wrapper
+    -- struct and works with the existing armU/D/L/R Instance references used
+    -- by STYLE_ARMS visibility gating.
+    local armSegs = {}
     local function mkArm(name)
         local c = new("Frame", {
             Name = name, AnchorPoint = Vector2.new(0.5, 0.5),
@@ -10365,7 +10371,7 @@ end
             }, { new("UIStroke", { Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
                 Enabled = false, LineJoinMode = Enum.LineJoinMode.Miter }) })
         end
-        c._segs = segs
+        armSegs[c] = segs
         return c
     end
     -- The armU/D/L/R names are kept for the STYLE_ARMS visibility mask; the
@@ -10399,7 +10405,8 @@ end
     -- shifts arm heading). curvierDeg = total sweep across arm, split evenly
     -- across ARM_SEG segments.
     local function paintArm(container, thetaArm, thickness, length, gap, color, outline, ocol, othick, curveDeg, curvierDeg)
-        local segs = container._segs
+        local segs = armSegs[container]
+        if not segs then return end
         local segLen = length / ARM_SEG
         local theta = thetaArm + math.rad(curveDeg or 0)
         local turn = math.rad(curvierDeg or 0) / ARM_SEG
