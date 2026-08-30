@@ -1,9 +1,9 @@
--- koffee v0.5.2
+-- koffee v0.5.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.5.2"
+Koffee.Version = "0.5.3"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -3763,7 +3763,11 @@ local function rightClickSettings(row, title, buildFn)
     local function openPopup()
         ensurePopup()
         for _, closer in pairs(openSettingsPopups) do closer() end
-        for _, closer in pairs(openDropdowns) do closer(true) end
+        -- v0.5.3: openDropdowns stores { btn, close } tables, not bare functions
+        -- (see openList at ~3355). Old contract lingered here and tripped
+        -- "attempt to call a table value" the moment a right-click popup was
+        -- opened while any dropdown was open. Same access pattern openList uses.
+        for _, entry in pairs(openDropdowns) do entry.close(true) end
         isOpen = true
         openSettingsPopups[popupFrame] = closePopup
         local abs, siz, vp = btn.AbsolutePosition, btn.AbsoluteSize, viewport()
