@@ -1,9 +1,9 @@
--- koffee v0.10.1
+-- koffee v0.11.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.10.1"
+Koffee.Version = "0.11.0"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Hooks the anti-cheat's
 -- Detected/Kill paths to no-ops. Fully guarded: if the runtime lacks any required
@@ -1633,6 +1633,17 @@ local KoffeeOptions = {
     MIFontOn   = false,
     MIFontName = "None",           -- separate catalog pick
     MIFontSize = 12,               -- "12" = Theme mirror default; slider in right-click
+    -- v0.11.0 CUSTOM UI COLORS. Seven palette roles the user can repaint. Defaults
+    -- are the stock Theme.Palette values, so an untouched config is a no-op.
+    UIColors = {
+        Accent        = Color3.fromRGB(217, 150, 95),
+        Background    = Color3.fromRGB(21, 18, 16),
+        Panel         = Color3.fromRGB(27, 22, 19),
+        PanelElevated = Color3.fromRGB(41, 33, 29),
+        Border        = Color3.fromRGB(60, 49, 42),
+        Text          = Color3.fromRGB(242, 234, 223),
+        TextMuted     = Color3.fromRGB(142, 129, 116),
+    },
 }
 local nextLayoutOrder = 0
 local ROW = {
@@ -4220,6 +4231,26 @@ local ESP = {
         GradientReverse   = false, -- flip travel direction
         SizingType     = "Static",     -- per he: Static first + default
         RenderDistance = 1000,
+        -- v0.11.0 COLOR MODE. One master that resolves the colour for every
+        -- Second-Interface element (box, cube, corners, skeleton, tracer, head dot,
+        -- name/distance text, health bar, chams) instead of each carrying a flat
+        -- swatch. "Static" returns nil so every element keeps its own configured
+        -- colour -- i.e. exactly the pre-v0.11 behaviour, and the default.
+        --   Gradient  animated A2/B2 ramp, targets spread along it
+        --   Rainbow   hue cycle, targets spread across the wheel
+        --   Health    red -> amber -> green by the target's health fraction
+        --   Team      team colour for allies, visible/hidden colour otherwise
+        --   Distance  ColorNear -> ColorFar across RenderDistance
+        ColorMode      = "Static",
+        ColorNear      = Color3.fromRGB(120, 255, 140),
+        ColorFar       = Color3.fromRGB(255, 90, 90),
+        RainbowSpeed   = 0.35,   -- cycles/sec
+        -- per-target hue/phase offset. 0 = every target identical (one solid
+        -- colour that changes together); higher fans a lineup across the ramp,
+        -- which is most of what makes these modes read as "a different script".
+        ColorSpread    = 0.35,
+        RainbowSat     = 0.85,
+        RainbowVal     = 1,
     },
     -- v0.0.22: shared Feature-Interface render model. One place drives the
     -- thickness of every rendered feature (box lines, cube edges, skeleton,
@@ -4311,6 +4342,32 @@ local ESP = {
         Hidden  = Color3.fromRGB(120, 120, 120),
         Team    = Color3.fromRGB(127, 190, 143),
     },
+    -- v0.11.0 CHAMS. Two independent layers, because "chams" means two different
+    -- things and people want both:
+    --   MATERIAL  -- overwrite each part's Material/Color/Transparency. This is what
+    --               gives Neon / Glass / X-Ray / Wireframe their look, and it is the
+    --               only way to get anything other than a flat silhouette.
+    --   OVERLAY   -- one Highlight per character for the through-walls pass, with
+    --               its own colour while occluded.
+    -- Both ride the ESP render loop, so they inherit team check, target lock,
+    -- render distance and the colour mode for free. That does mean the ESP module
+    -- has to be on -- chams is an ESP feature here, not a standalone one.
+    Chams = {
+        Enabled      = false,
+        Style        = "Flat",   -- Flat | Neon | Glass | X-Ray | Wireframe | Ghost | None
+        Color        = Color3.fromRGB(212, 145, 90),
+        Transparency = 0,
+        Accessories  = false,    -- include hats/tools, off by default (they read as noise)
+        Overlay      = true,
+        OverlayFill    = 0.55,
+        OverlayOutline = 0,
+        OverlayColor   = Color3.fromRGB(212, 145, 90),
+        HiddenColor    = Color3.fromRGB(255, 90, 90),
+        ThroughWalls   = true,
+        -- Roblox stops rendering Highlights past ~31 live instances, so the overlay
+        -- is capped to the nearest N. Material chams have no such limit.
+        MaxOverlays  = 24,
+    },
     Connections = {},
     Rigs = {},
     UpdateConn = nil,
@@ -4326,6 +4383,199 @@ registerConfig("esp_indicators", ESP.Indicators)
 registerConfig("esp_health",     ESP.Health)
 registerConfig("esp_tracer",     ESP.Tracer)
 registerConfig("esp_colors",     ESP.Colors)
+registerConfig("esp_chams",      ESP.Chams)
+
+-- v0.11.0 COLOR ENGINE + CHAMS. Own IIFE for the register budget. Publishes
+-- Shared.dyeColor (the colour-mode resolver) and Shared.chams / Shared.chamsOff,
+-- which the ESP render loop calls per rig.
+;(function()
+    local C = ESP.Config
+
+    -- Stable per-target phase so a lineup fans across the ramp instead of every
+    -- player being the same colour. UserId-derived: no state, survives respawns,
+    -- and two players never collide unless their ids are congruent mod 97.
+    local function phaseOf(plr)
+        return ((plr and plr.UserId or 0) % 97) / 97
+    end
+
+    -- ctx = { hidden, same, health (0..1), dist, phase }
+    -- Returns nil in Static mode, which is the signal for "element keeps its own
+    -- colour" -- the caller falls through to the pre-existing visible/hidden logic.
+    function Shared.dyeColor(ctx)
+        local m = C.ColorMode
+        if m == "Team" then
+            if ctx.same then return ESP.Colors.Team end
+            return ctx.hidden and ESP.Colors.Hidden or ESP.Colors.Visible
+        elseif m == "Health" then
+            local h = math.clamp(ctx.health or 1, 0, 1)
+            if h < 0.5 then
+                return Color3.fromRGB(230, 60, 60):Lerp(Color3.fromRGB(240, 190, 70), h * 2)
+            end
+            return Color3.fromRGB(240, 190, 70):Lerp(Color3.fromRGB(110, 225, 130), (h - 0.5) * 2)
+        elseif m == "Distance" then
+            local t = math.clamp((ctx.dist or 0) / math.max(C.RenderDistance, 1), 0, 1)
+            return C.ColorNear:Lerp(C.ColorFar, t)
+        elseif m == "Rainbow" then
+            local h = (os.clock() * C.RainbowSpeed + (ctx.phase or 0) * C.ColorSpread) % 1
+            return Color3.fromHSV(h, C.RainbowSat, C.RainbowVal)
+        elseif m == "Gradient" then
+            -- same A2/B2 ramp the Gradient toggle animates, sampled per target
+            -- rather than swept across one UIGradient.
+            local dir = C.GradientReverse and -1 or 1
+            local t = ((os.clock() * C.GradientSpeed * dir) + (ctx.phase or 0) * C.ColorSpread) % 1
+            local sp = math.clamp(C.GradientSpacing or 0.5, 0.05, 0.95)
+            local f = (t <= sp) and (t / sp) or (1 - (t - sp) / (1 - sp))
+            return C.GradientColorA2:Lerp(C.GradientColorB2, math.clamp(f, 0, 1))
+        end
+        return nil
+    end
+    Shared.dyePhase = phaseOf
+
+    ------------------------------------------------------------------------ chams
+    local MATERIAL_FOR = {
+        Flat      = Enum.Material.SmoothPlastic,
+        Neon      = Enum.Material.Neon,
+        Glass     = Enum.Material.Glass,
+        ["X-Ray"] = Enum.Material.ForceField,
+        Ghost     = Enum.Material.Neon,
+        Wireframe = Enum.Material.SmoothPlastic,   -- body is hidden; edges do the work
+    }
+    -- extra transparency the style forces on top of the user's slider
+    local STYLE_ALPHA = { Glass = 0.45, Ghost = 0.55, Wireframe = 1 }
+
+    local function partsFor(char)
+        local out = {}
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then
+                local acc = d:FindFirstAncestorOfClass("Accessory")
+                    or d:FindFirstAncestorOfClass("Tool")
+                if ESP.Chams.Accessories or not acc then
+                    -- HumanoidRootPart is invisible by design; painting it puts a
+                    -- solid block through the middle of every character.
+                    if d.Name ~= "HumanoidRootPart" then out[#out + 1] = d end
+                end
+            end
+        end
+        return out
+    end
+
+    -- Snapshot once per part, so restore is exact however many times the style
+    -- changes while chams are on. Deliberately records ONLY the three fields we
+    -- write: snapshotting Reflectance/CastShadow and handing them back would
+    -- clobber any change the game legitimately made to them in the meantime.
+    local function snap(rig, p)
+        rig._cham = rig._cham or {}
+        if rig._cham[p] then return end
+        rig._cham[p] = { m = p.Material, c = p.Color, t = p.Transparency }
+    end
+
+    function Shared.chamsOff(rig)
+        if not rig then return end
+        if rig._cham then
+            for p, s in pairs(rig._cham) do
+                if p and p.Parent then
+                    pcall(function()
+                        p.Material = s.m; p.Color = s.c; p.Transparency = s.t
+                    end)
+                end
+            end
+            rig._cham = nil
+        end
+        if rig._chamEdges then
+            for _, e in ipairs(rig._chamEdges) do pcall(function() e:Destroy() end) end
+            rig._chamEdges = nil
+        end
+        if rig._chamHL then pcall(function() rig._chamHL:Destroy() end); rig._chamHL = nil end
+    end
+
+    -- `rank` is the target's nearest-first index, used only to stay under the
+    -- Highlight render cap.
+    function Shared.chams(rig, color, hidden, rank)
+        local cfg = ESP.Chams
+        if not (cfg.Enabled and rig.character and rig.character.Parent) then
+            Shared.chamsOff(rig); return
+        end
+        local col = color or cfg.Color
+        local style = cfg.Style
+
+        ---------------------------------------------------------------- material
+        if style == "None" then
+            if rig._cham then
+                for p, s in pairs(rig._cham) do
+                    if p and p.Parent then
+                        pcall(function()
+                            p.Material = s.m; p.Color = s.c; p.Transparency = s.t
+                        end)
+                    end
+                end
+                rig._cham = nil
+            end
+            if rig._chamEdges then
+                for _, e in ipairs(rig._chamEdges) do pcall(function() e:Destroy() end) end
+                rig._chamEdges = nil
+            end
+        else
+            local mat = MATERIAL_FOR[style] or Enum.Material.SmoothPlastic
+            local alpha = math.clamp(cfg.Transparency + (STYLE_ALPHA[style] or 0), 0, 1)
+            local parts = partsFor(rig.character)
+            for _, p in ipairs(parts) do
+                snap(rig, p)
+                if p.Material ~= mat then p.Material = mat end
+                if p.Color ~= col then p.Color = col end
+                if p.Transparency ~= alpha then p.Transparency = alpha end
+            end
+            -- Wireframe: the body is invisible and a per-part SelectionBox draws the
+            -- edges. Roblox has no mesh-level wireframe exposed to scripts, so this
+            -- is the honest version of it -- the character's part volumes as lines.
+            if style == "Wireframe" then
+                if not rig._chamEdges then
+                    rig._chamEdges = {}
+                    for _, p in ipairs(parts) do
+                        local sb = Instance.new("SelectionBox")
+                        sb.Name = KID.name("chamedge")
+                        sb.Adornee = p
+                        sb.LineThickness = 0.02
+                        sb.SurfaceTransparency = 1
+                        sb.Transparency = 0
+                        sb.Parent = p
+                        rig._chamEdges[#rig._chamEdges + 1] = sb
+                    end
+                end
+                for _, sb in ipairs(rig._chamEdges) do
+                    if sb.Parent then sb.Color3 = col end
+                end
+            elseif rig._chamEdges then
+                for _, e in ipairs(rig._chamEdges) do pcall(function() e:Destroy() end) end
+                rig._chamEdges = nil
+            end
+        end
+
+        ----------------------------------------------------------------- overlay
+        local wantHL = cfg.Overlay and rank <= cfg.MaxOverlays
+        if not wantHL then
+            if rig._chamHL then pcall(function() rig._chamHL:Destroy() end); rig._chamHL = nil end
+            return
+        end
+        local hl = rig._chamHL
+        if not hl or not hl.Parent then
+            hl = Instance.new("Highlight")
+            hl.Name = KID.name("cham")
+            hl.Adornee = rig.character
+            hl.Parent = rig.character
+            rig._chamHL = hl
+        end
+        if hl.Adornee ~= rig.character then hl.Adornee = rig.character end
+        local hc = (hidden and cfg.HiddenColor) or (color or cfg.OverlayColor)
+        hl.FillColor = hc
+        hl.OutlineColor = hc
+        hl.FillTransparency = cfg.OverlayFill
+        hl.OutlineTransparency = cfg.OverlayOutline
+        pcall(function()
+            hl.DepthMode = cfg.ThroughWalls and Enum.HighlightDepthMode.AlwaysOnTop
+                or Enum.HighlightDepthMode.Occluded
+        end)
+    end
+end)()
 registerConfig("shared",         Shared)
 
 -- v0.5.0: Crosshair -- custom on-screen crosshair renderer, sits between world
@@ -4917,6 +5167,7 @@ local function cleanRig(rig)
     end
     pcall(function() rig.headDot:Destroy() end)
     pcall(function() rig.tracer:Destroy() end)
+    if Shared.chamsOff then pcall(Shared.chamsOff, rig) end   -- v0.11.0
     pcall(function() rig.healthBg:Destroy() end)   -- fill is a child, goes with it
     pcall(function() rig.pfp:Destroy() end)
     pcall(function() rig.nameLbl:Destroy() end)
@@ -5233,6 +5484,10 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
 end
 
 local function hideRigVisuals(rig)
+    -- v0.11.0: chams write to the CHARACTER, not to our own frames, so every path
+    -- that stops rendering a rig has to hand the materials back. Missing this is how
+    -- you leave a whole server neon after switching teams.
+    if Shared.chamsOff then Shared.chamsOff(rig) end
     rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
@@ -5552,6 +5807,11 @@ local function updateESPRigs()
     local cam = Workspace.CurrentCamera
     if not cam then return end
     local camPos = cam.CFrame.Position
+    -- v0.11.0: rank counts rigs that clear every gate this frame, and only exists to
+    -- keep the chams overlay under Roblox's ~31 live Highlight limit. Iteration
+    -- order, not nearest-first -- pairs() over ESP.Rigs is stable between joins, so
+    -- the cap doesn't flicker, and at MaxOverlays 24 it almost never binds anyway.
+    local rank = 0
     for plr, entry in pairs(ESP.Rigs) do
         local rig = entry.rig
         -- v0.0.15 hard life gate. Torso (HRP) replaces head as the anchor:
@@ -5607,12 +5867,27 @@ local function updateESPRigs()
             local hit = Workspace:Raycast(camPos, rig.torso.Position - camPos, rp)
             hidden = hit ~= nil
         end
-        local overrideColor = nil
-        if ESP.Config.TeamBasedColor and same then
-            overrideColor = ESP.Colors.Team
-        elseif ESP.Config.VisibleCheck then
-            overrideColor = hidden and ESP.Colors.Hidden or ESP.Colors.Visible
+        -- v0.11.0: the colour mode gets first say. Static returns nil, which falls
+        -- through to exactly the v0.10 team/visible logic below -- so the default
+        -- path is unchanged and only an explicitly picked mode overrides.
+        local maxHp = (hum.MaxHealth and hum.MaxHealth > 0) and hum.MaxHealth or 100
+        local overrideColor = Shared.dyeColor({
+            hidden = hidden, same = same,
+            health = hum.Health / maxHp, dist = dist,
+            phase = Shared.dyePhase(plr),
+        })
+        if not overrideColor then
+            if ESP.Config.TeamBasedColor and same then
+                overrideColor = ESP.Colors.Team
+            elseif ESP.Config.VisibleCheck then
+                overrideColor = hidden and ESP.Colors.Hidden or ESP.Colors.Visible
+            end
         end
+
+        -- v0.11.0 chams ride this loop so they inherit team check, target lock,
+        -- render distance and the colour mode without duplicating any of it.
+        rank = rank + 1
+        Shared.chams(rig, overrideColor, hidden, rank)
 
         -- world-anchored overlays + skeleton render regardless of the box.
         updateBillboards(rig, plr, dist, overrideColor)
@@ -10081,7 +10356,10 @@ local Combat = {
         end)
         configCheckbox(parent, "Spin", F.Spin, function(v) F.Spin = v end)
         slider(parent, "Fill Transparency", 0, 1, F.FillTransparency, 2, function(v) F.FillTransparency = v end)
-        slider(parent, "Size", 20, 500, F.Size, 0, function(v) F.Size = v end)
+        -- v0.10.2: floor is 1, not 20. A near-zero FOV is the whole point of a
+        -- tight legit setup -- it is the "only fire when the crosshair is basically
+        -- on them" case -- and 20px was already a generous cone at close range.
+        slider(parent, "Size", 1, 500, F.Size, 0, function(v) F.Size = v end)
         dropdown(parent, "Origin", { "Center", "Mouse" }, F.Origin, function(v) F.Origin = v end)
         -- v0.5.0: Follow Target -- ring slides toward the current target's screen
         -- position. Right-click for Smoothness (0=snap, 0.98=very slow). Targeting
@@ -12669,6 +12947,23 @@ addTab("Visuals", function(root)
     end
     rightClickSettings(grad2Row.row, "gradient", gradientSettings)
     rightClickSettings(gradRow.row, "gradient", gradientSettings)
+    -- v0.11.0 COLOR MODE. One master over every Second-Interface element. Static
+    -- keeps each feature's own swatch (the default and the old behaviour); anything
+    -- else overrides all of them at once.
+    local cmDd = dropdown(espPanel, "Color Mode",
+        { "Static", "Gradient", "Rainbow", "Health", "Team", "Distance" },
+        ESP.Config.ColorMode, function(v) ESP.Config.ColorMode = v end)
+    rightClickSettings(cmDd.frame, "color mode", function(popup)
+        -- Spread is the interesting one: 0 paints every target the same colour,
+        -- higher fans a lineup across the ramp.
+        popup:slider("Spread", 0, 1, ESP.Config.ColorSpread, 2, function(v) ESP.Config.ColorSpread = v end)
+        popup:slider("Rainbow Speed", 0, 3, ESP.Config.RainbowSpeed, 2, function(v) ESP.Config.RainbowSpeed = v end)
+        popup:slider("Rainbow Saturation", 0, 1, ESP.Config.RainbowSat, 2, function(v) ESP.Config.RainbowSat = v end)
+        popup:slider("Rainbow Value", 0, 1, ESP.Config.RainbowVal, 2, function(v) ESP.Config.RainbowVal = v end)
+        popup:swatch("Distance Near", ESP.Config.ColorNear, function(c) ESP.Config.ColorNear = c end)
+        popup:swatch("Distance Far",  ESP.Config.ColorFar,  function(c) ESP.Config.ColorFar = c end)
+    end)
+
     -- v0.0.28: Text Background is tunable -- right-click for colour / transparency / padding.
     local textBgRow = configCheckbox(espPanel, "Text Background", ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
     rightClickSettings(textBgRow.row, "text background", function(popup)
@@ -12700,6 +12995,34 @@ addTab("Visuals", function(root)
     -- v0.0.28: Equal Size removed (broke distance-scaled features) -- pinned ON permanently.
     slider(espPanel, "Thickness", 0.1, 8, ESP.Render.Thickness, 1,
         function(v) ESP.Render.Thickness = v end)
+
+    --------------------------------------------------------------- Chams
+    -- v0.11.0. Material layer + through-walls Highlight overlay, independent of
+    -- each other. Needs the ESP module on -- it rides that render loop.
+    local chamsPanel = panel(espSub, "Chams")
+    local chamRow = configCheckbox(chamsPanel, "Enabled", ESP.Chams.Enabled,
+        function(v) ESP.Chams.Enabled = v end)
+    attachSingleSwatch(chamRow.row, ESP.Chams.Color, function(c) ESP.Chams.Color = c end)
+    -- Flat/Neon/Glass/X-Ray/Ghost repaint the parts; Wireframe hides them and draws
+    -- their edges; None leaves materials alone and runs the overlay only.
+    dropdown(chamsPanel, "Style", { "Flat", "Neon", "Glass", "X-Ray", "Wireframe", "Ghost", "None" },
+        ESP.Chams.Style, function(v) ESP.Chams.Style = v end)
+    slider(chamsPanel, "Transparency", 0, 1, ESP.Chams.Transparency, 2,
+        function(v) ESP.Chams.Transparency = v end)
+    configCheckbox(chamsPanel, "Accessories", ESP.Chams.Accessories,
+        function(v) ESP.Chams.Accessories = v end)
+    local chamOvRow = configCheckbox(chamsPanel, "Overlay", ESP.Chams.Overlay,
+        function(v) ESP.Chams.Overlay = v end)
+    attachDualSwatch(chamOvRow.row, ESP.Chams.OverlayColor, ESP.Chams.HiddenColor,
+        function(c) ESP.Chams.OverlayColor = c end,
+        function(c) ESP.Chams.HiddenColor = c end)
+    rightClickSettings(chamOvRow.row, "chams overlay", function(popup)
+        popup:toggle("Through Walls", ESP.Chams.ThroughWalls, function(v) ESP.Chams.ThroughWalls = v end)
+        popup:slider("Fill", 0, 1, ESP.Chams.OverlayFill, 2, function(v) ESP.Chams.OverlayFill = v end)
+        popup:slider("Outline", 0, 1, ESP.Chams.OverlayOutline, 2, function(v) ESP.Chams.OverlayOutline = v end)
+        -- Roblox stops drawing Highlights past ~31 live instances.
+        popup:slider("Max Overlays", 1, 30, ESP.Chams.MaxOverlays, 0, function(v) ESP.Chams.MaxOverlays = math.floor(v) end)
+    end)
 
     --------------------------------------------------------------- Box
     local boxesPanel = panel(espSub, "Box")
@@ -13124,6 +13447,66 @@ addTab("Character", function(root) Koffee._characterTab(root) end)
 -- v0.0.96: options state (arraylist preferences) rides the config system too.
 registerConfig("options", KoffeeOptions)
 
+-- v0.11.0 CUSTOM UI COLORS. Widgets bake Theme.Palette values straight into
+-- BackgroundColor3 / TextColor3 / UIStroke.Color at construction, across hundreds of
+-- call sites. Tagging every one with its palette role would be a far larger and more
+-- fragile change than this: instead, remember the palette currently ON SCREEN and,
+-- when a role changes, sweep the two ScreenGuis swapping that exact colour for the
+-- new one. The stock palette values are distinct enough for the match to be
+-- unambiguous, and re-pointing Theme.Palette keeps anything built later in step.
+--
+-- State-driven rather than fired from the swatch callback, so a loaded config
+-- repaints too. Throttled because the colour picker fires continuously while you
+-- drag it, and a full GetDescendants sweep per frame would visibly stutter.
+;(function()
+    local ROLES = { "Accent", "Background", "Panel", "PanelElevated", "Border",
+                    "Text", "TextMuted" }
+    local live, lastAt = {}, 0
+    for _, r in ipairs(ROLES) do live[r] = Theme.Palette[r] end
+
+    local function swap(root, from, to)
+        for _, d in ipairs(root:GetDescendants()) do
+            if d:IsA("GuiObject") then
+                if d.BackgroundColor3 == from then d.BackgroundColor3 = to end
+                if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                    if d.TextColor3 == from then d.TextColor3 = to end
+                end
+                if d:IsA("ImageLabel") or d:IsA("ImageButton") then
+                    if d.ImageColor3 == from then d.ImageColor3 = to end
+                end
+                if d:IsA("ScrollingFrame") and d.ScrollBarImageColor3 == from then
+                    d.ScrollBarImageColor3 = to
+                end
+            elseif d:IsA("UIStroke") and d.Color == from then
+                d.Color = to
+            end
+        end
+    end
+
+    RunService.Heartbeat:Connect(function()
+        if Koffee._unloaded then return end
+        local want = KoffeeOptions.UIColors
+        if not want then return end
+        local now = os.clock()
+        if now - lastAt < 0.08 then return end
+        local dirty = false
+        for _, r in ipairs(ROLES) do
+            if want[r] and want[r] ~= live[r] then dirty = true; break end
+        end
+        if not dirty then return end
+        lastAt = now
+        for _, r in ipairs(ROLES) do
+            local to, from = want[r], live[r]
+            if to and from and to ~= from then
+                pcall(swap, screen, from, to)
+                pcall(swap, popupScreen, from, to)
+                Theme.Palette[r] = to
+                live[r] = to
+            end
+        end
+    end)
+end)()
+
 -- OPTIONS TAB (v0.0.34)
 addTab("Options", function(root)
     local card = panel(root, "Options")
@@ -13192,6 +13575,32 @@ addTab("Options", function(root)
             Theme.applyMIFont(window, Theme.loadFeiFont(v), KoffeeOptions.MIFontSize)
         end
     end)
+    -- v0.11.0: repaint the menu itself. One row per palette role; the sweep that
+    -- applies them lives next to registerConfig("options").
+    local uiColorsPanel = panel(root, "UI Colors")
+    local function colorRow(label, key)
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+            ZIndex = 33, Parent = uiColorsPanel,
+        })
+        new("TextLabel", {
+            Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, -24, 1, 0),
+            ZIndex = 34, Parent = row,
+        })
+        attachSingleSwatch(row, KoffeeOptions.UIColors[key],
+            function(c) KoffeeOptions.UIColors[key] = c end)
+    end
+    colorRow("Accent",         "Accent")
+    colorRow("Background",     "Background")
+    colorRow("Panel",          "Panel")
+    colorRow("Panel Elevated", "PanelElevated")
+    colorRow("Border",         "Border")
+    colorRow("Text",           "Text")
+    colorRow("Text Muted",     "TextMuted")
+
     -- Ignore Friends: friends are excluded from ESP + aimbot + silent + trigger.
     configCheckbox(card, "Ignore Friends", Shared.IgnoreFriends, function(v)
         Shared.IgnoreFriends = v
