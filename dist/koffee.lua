@@ -1,9 +1,9 @@
--- koffee v0.13.2
+-- koffee v0.13.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.13.2"
+Koffee.Version = "0.13.3"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -13857,7 +13857,7 @@ registerConfig("custom", Koffee.Custom)
         blurb = "reads a detail off a player",
         ins = { { key = "player", type = "player", label = "Player" } },
         outs = { text = true, number = true },
-        opts = { Field = "Name", Decimals = 0, Prefix = "", Suffix = "" },
+        opts = { Field = "Name", Decimals = 0 },
         eval = function(o, ins)
             local plr = ins.player and ins.player.player
             if not plr then return { text = "", number = 0 } end
@@ -13876,7 +13876,7 @@ registerConfig("custom", Koffee.Custom)
                 local m = 10 ^ math.max(math.floor(o.Decimals or 0), 0)
                 txt = tostring(math.floor(num * m + 0.5) / m)
             end
-            return { text = (o.Prefix or "") .. (txt or "") .. (o.Suffix or ""), number = num or 0 }
+            return { text = txt or "", number = num or 0 }
         end,
         ui = function(api, o)
             api:dropdown("Field", { "Name", "Display Name", "Distance", "Health", "Health %" },
@@ -13926,9 +13926,11 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Text = {
-        blurb = "draws words on your screen",
+        blurb = "draws words on your screen. put {a} {b} {c} in the text to drop in wired values",
         sink = true,
-        ins = { { key = "text",  type = "text",  label = "Text" },
+        ins = { { key = "a",     type = "text",  label = "Value A" },
+                { key = "b",     type = "text",  label = "Value B" },
+                { key = "c",     type = "text",  label = "Value C" },
                 { key = "color", type = "color", label = "Colour" },
                 { key = "show",  type = "bool",  label = "Show When" } },
         outs = {},
@@ -13938,7 +13940,7 @@ registerConfig("custom", Koffee.Custom)
                  Outline = true, OutlineThickness = 2,
                  OutlineColor = Color3.fromRGB(0, 0, 0) },
         ui = function(api, o)
-            api:text("Text", o.Text, function(v) o.Text = v end)
+            api:text("Text  ({a} {b} {c})", o.Text, function(v) o.Text = v end)
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             api:dropdown("Font", Theme.FontNames, o.Font, function(v) o.Font = v end)
             api:slider("Size", 8, 96, o.Size, 0, function(v) o.Size = v end)
@@ -13995,11 +13997,25 @@ registerConfig("custom", Koffee.Custom)
             st:SetAttribute("KUserColor", true)
             labels[node.id] = lb
         end
-        -- a wired input wins; the block's own value is the unwired fallback
         local wired = node.wires or {}
         if wired.show and not (ins.show and ins.show.bool) then lb.Visible = false; return end
         lb.Visible = true
-        lb.Text = (wired.text and (ins.text and ins.text.text or "")) or o.Text or ""
+        -- the Text field is a template: {a}/{b}/{c} become the wired values. A token
+        -- for an unwired slot blanks; an unknown letter is left alone so "{x}" still
+        -- reads as literal text. No token at all and A wired = plain passthrough.
+        local tpl = o.Text or ""
+        local function val(k) return (ins[k] and ins[k].text) or "" end
+        if tpl:find("{") then
+            lb.Text = (tpl:gsub("{(%a)}", function(k)
+                k = k:lower()
+                if k == "a" or k == "b" or k == "c" then return val(k) end
+                return nil
+            end))
+        elseif wired.a then
+            lb.Text = val("a")
+        else
+            lb.Text = tpl
+        end
         lb.TextColor3 = (wired.color and ins.color and ins.color.color) or o.Color
         lb.TextSize = o.Size
         lb.FontFace = (Theme.loadFeiFont and Theme.loadFeiFont(o.Font)) or Theme.Fonts.Bold
@@ -14051,6 +14067,87 @@ registerConfig("custom", Koffee.Custom)
                                  x = x or 24, y = y or 24 })
         return id
     end
+    -- v0.13.3: the Text block's single "text" slot became "a". Re-point old graphs
+    -- once rather than silently dropping the wire.
+    local function migrate()
+        for _, n in ipairs(CF.Nodes) do
+            local w = n.wires
+            if w and w.text and not w.a then w.a = w.text; w.text = nil end
+        end
+    end
+
+    local function enc(v)
+        local t = typeof(v)
+        if t == "number" or t == "boolean" then return tostring(v) end
+        if t == "string" then return string.format("%q", v) end
+        if t == "Color3" then
+            return string.format("Color3.new(%.5f,%.5f,%.5f)", v.R, v.G, v.B)
+        end
+        if t == "table" then
+            local parts = {}
+            for k, val in pairs(v) do
+                local e = enc(val)
+                if e then
+                    local ek = (type(k) == "number") and ("[" .. k .. "]")
+                        or ("[" .. string.format("%q", k) .. "]")
+                    parts[#parts + 1] = ek .. "=" .. e
+                end
+            end
+            return "{" .. table.concat(parts, ",") .. "}"
+        end
+        return nil
+    end
+
+    local function copyGraph()
+        local set = setclipboard or toclipboard or (syn and syn.setclipboard)
+        if not set then return false, "no clipboard access" end
+        local ok = pcall(set, "KOFFEEGRAPH" .. enc(CF.Nodes))
+        return ok, ok and "copied" or "copy failed"
+    end
+
+    -- Pasting runs loadstring on clipboard text, so the payload is scrubbed first:
+    -- strip strings and the only call we allow, then reject anything with letters
+    -- left. That leaves no way to smuggle a function call in through a shared graph.
+    local function pasteGraph()
+        local get = getclipboard or (syn and syn.getclipboard)
+        if not get then return false, "no clipboard access" end
+        local ok, txt = pcall(get)
+        if not (ok and type(txt) == "string") then return false, "clipboard empty" end
+        local body = txt:match("KOFFEEGRAPH(.+)$")
+        if not body then return false, "not a koffee graph" end
+        local scrub = body:gsub("\\\"", ""):gsub('"[^"]*"', "")
+        scrub = scrub:gsub("Color3%.new", ""):gsub("true", ""):gsub("false", ""):gsub("nil", "")
+        if scrub:find("%a") then return false, "graph looks tampered with" end
+        local ldr = loadstring or load
+        local fn = ldr and ldr("return " .. body)
+        if not fn then return false, "graph is malformed" end
+        local ok2, data = pcall(fn)
+        if not (ok2 and type(data) == "table") then return false, "graph is malformed" end
+        local base = 0
+        for _, n in ipairs(CF.Nodes) do if n.id > base then base = n.id end end
+        local map = {}
+        for _, n in ipairs(data) do
+            if type(n) == "table" and tonumber(n.id) and KINDS[n.kind] then
+                base = base + 1
+                map[n.id] = base
+            end
+        end
+        local added = 0
+        for _, n in ipairs(data) do
+            if map[n.id] then
+                local w = {}
+                for k, ref in pairs(n.wires or {}) do w[k] = map[ref] end
+                local o = {}
+                for k, v in pairs(KINDS[n.kind].opts or {}) do o[k] = v end
+                for k, v in pairs(n.opts or {}) do o[k] = v end
+                table.insert(CF.Nodes, { id = map[n.id], kind = n.kind, opts = o, wires = w,
+                    x = (tonumber(n.x) or 24) + 26, y = (tonumber(n.y) or 24) + 26 })
+                added = added + 1
+            end
+        end
+        return added > 0, added > 0 and ("pasted " .. added) or "nothing to paste"
+    end
+
     local function removeNode(id)
         for i, n in ipairs(CF.Nodes) do
             if n.id == id then table.remove(CF.Nodes, i); break end
@@ -14100,7 +14197,7 @@ registerConfig("custom", Koffee.Custom)
 
     -- analytic node geometry: port centres never wait on a layout pass
     local NODE_W, HEAD_H, ROW_H, WIRE_SEG = 172, 24, 20, 12
-    local TOOL_H, INSP_W, CANVAS_W, CANVAS_H = 34, 202, 2600, 1800
+    local TOOL_H, INSP_W, CANVAS_W, CANVAS_H = 62, 202, 2600, 1800
     local function nodeH(K) return HEAD_H + math.max(#K.ins, 1) * ROW_H + 6 end
     local function bez(x1, y1, ax, ay, bx, by, x2, y2, t)
         local u = 1 - t
@@ -14166,6 +14263,7 @@ registerConfig("custom", Koffee.Custom)
                 SortOrder = Enum.SortOrder.LayoutOrder }) })
 
         local sel, pending, dragId = nil, nil, nil
+        local note, noteAt = nil, 0
         local panning, lastMX, lastMY = false, 0, 0
         local nodeFrames, wirePool = {}, {}
         local rebuildAll
@@ -14357,6 +14455,7 @@ registerConfig("custom", Koffee.Custom)
         end
 
         rebuildAll = function()
+            migrate()
             buildNodes()
             redrawWires()
             buildInspector()
@@ -14364,6 +14463,8 @@ registerConfig("custom", Koffee.Custom)
                 local s = nodeById(pending)
                 hint.Text = "connecting from " .. (s and s.kind:lower() or "?")
                     .. " -- click a matching input dot"
+            elseif note and os.clock() - noteAt < 3 then
+                hint.Text = note
             elseif #CF.Nodes == 0 then
                 hint.Text = "add a block above to start"
             else
@@ -14387,12 +14488,15 @@ registerConfig("custom", Koffee.Custom)
             return 24, 24
         end
 
-        local bar = new("Frame", {
-            Position = UDim2.new(0, 6, 0, 5), Size = UDim2.new(1, -12, 0, 24),
-            BackgroundTransparency = 1, ZIndex = 35, Parent = parent,
-        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
-            Padding = UDim.new(0, 5), VerticalAlignment = Enum.VerticalAlignment.Center,
-            SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local function barAt(y)
+            return new("Frame", {
+                Position = UDim2.new(0, 6, 0, y), Size = UDim2.new(1, -12, 0, 24),
+                BackgroundTransparency = 1, ZIndex = 35, Parent = parent,
+            }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+                Padding = UDim.new(0, 5), VerticalAlignment = Enum.VerticalAlignment.Center,
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
+        end
+        local bar, bar2 = barAt(5), barAt(33)
         for i, kind in ipairs(ORDER) do
             toolBtn(bar, kind:lower(), 70, i, function()
                 local x, y = freeSpot()
@@ -14400,7 +14504,32 @@ registerConfig("custom", Koffee.Custom)
                 rebuildAll()
             end)
         end
-        if extra then toolBtn(bar, extra.text, 74, 99, extra.fn) end
+        local function say(msg) note, noteAt = msg, os.clock() end
+        toolBtn(bar2, "duplicate", 78, 1, function()
+            local n = sel and nodeById(sel)
+            if not n then say("select a block first"); rebuildAll(); return end
+            local id = 1
+            for _, m in ipairs(CF.Nodes) do if m.id >= id then id = m.id + 1 end end
+            local o, w = {}, {}
+            for k, v in pairs(n.opts or {}) do o[k] = v end
+            for k, v in pairs(n.wires or {}) do w[k] = v end
+            table.insert(CF.Nodes, { id = id, kind = n.kind, opts = o, wires = w,
+                x = (n.x or 24) + 22, y = (n.y or 24) + 22 })
+            sel = id
+            rebuildAll()
+        end)
+        toolBtn(bar2, "copy graph", 84, 2, function()
+            local _, msg = copyGraph(); say(msg); rebuildAll()
+        end)
+        toolBtn(bar2, "paste", 60, 3, function()
+            local _, msg = pasteGraph(); say(msg); rebuildAll()
+        end)
+        toolBtn(bar2, "clear", 58, 4, function()
+            for i = #CF.Nodes, 1, -1 do CF.Nodes[i] = nil end
+            sel, pending = nil, nil
+            say("cleared"); rebuildAll()
+        end)
+        if extra then toolBtn(bar2, extra.text, 74, 99, extra.fn) end
 
         canvas.InputBegan:Connect(function(inp)
             if inp.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
