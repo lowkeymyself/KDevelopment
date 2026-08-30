@@ -1,9 +1,9 @@
--- koffee v0.7.0
+-- koffee v0.7.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.7.0"
+Koffee.Version = "0.7.1"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -10005,9 +10005,13 @@ local Combat = {
         -- knobs (color, scale, duration, attach part).
         local HFX_PRESETS = { "Ring", "Sparks", "Flash", "Shockwave" }
         local HFX_ATTACH  = { "Head", "HRP", "Torso" }
+        -- v0.7.1 fix: attachSingleSwatch is a chunk-local declared BELOW the
+        -- Combat IIFE (line ~10272) so the upvalue captured here is nil at
+        -- addTab call time. Combat IIFE ships its own equivalent `attachSwatch`
+        -- local (line ~9572) with the same colorSwatch-in-a-wrap shape.
         local heHitRow = configCheckbox(soundCard, "Hit Effect", Combat.HitEffects.Hit.Enabled,
             function(v) Combat.HitEffects.Hit.Enabled = v end)
-        attachSingleSwatch(heHitRow.row, Combat.HitEffects.Hit.Color,
+        attachSwatch(heHitRow.row, Combat.HitEffects.Hit.Color,
             function(c) Combat.HitEffects.Hit.Color = c end)
         rightClickSettings(heHitRow.row, "hit effect", function(popup)
             popup:dropdown("Preset", HFX_PRESETS, Combat.HitEffects.Hit.Preset,
@@ -10019,7 +10023,7 @@ local Combat = {
         end)
         local heKillRow = configCheckbox(soundCard, "Kill Effect", Combat.HitEffects.Kill.Enabled,
             function(v) Combat.HitEffects.Kill.Enabled = v end)
-        attachSingleSwatch(heKillRow.row, Combat.HitEffects.Kill.Color,
+        attachSwatch(heKillRow.row, Combat.HitEffects.Kill.Color,
             function(c) Combat.HitEffects.Kill.Color = c end)
         rightClickSettings(heKillRow.row, "kill effect", function(popup)
             popup:dropdown("Preset", HFX_PRESETS, Combat.HitEffects.Kill.Preset,
