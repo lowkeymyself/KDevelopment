@@ -1,9 +1,9 @@
--- koffee v0.7.1
+-- koffee v0.8.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.7.1"
+Koffee.Version = "0.8.0"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -4309,9 +4309,17 @@ local Crosshair = {
     OffsetY       = 0,
     Rotation      = 0,                             -- static deg
     CurveAngle    = 0,                             -- per-arm tilt (0=perpendicular, +45=pinwheel)
+    -- v0.8.0: CurvierAngle bends each arm into an ARC (total sweep across the
+    -- arm's length). 0=straight; 90=quarter-circle; 180=half-circle. Renders
+    -- by walking the arm in N=14 short segments, each rotated slightly from
+    -- the last. Independent of CurveAngle (which just tilts the arm heading).
+    CurvierAngle  = 0,
     Spin          = false,
     SpinSpeed     = 90,                            -- deg/sec
     SpinDir       = "CW",                          -- "CW" | "CCW"
+    -- v0.8.0: Crosshair follows ESP.Config.Gradient (same toggle + same
+    -- ColorA2/B2/Speed/Rotation/Spacing/Reverse tuning). One gradient master
+    -- toggle across features -- no separate crosshair state.
     Follow = {
         Enabled    = false,
         Part       = "HumanoidRootPart",           -- follows aim target's part of this name
@@ -10319,24 +10327,54 @@ end
         Position = UDim2.new(0.5, 0, 0.5, 0),
         BackgroundTransparency = 1, GroupTransparency = 1, Visible = false,
         ZIndex = 15, Parent = layer,
+    }, {
+        -- v0.8.0: KGrad UIGradient piggybacks the ESP Gradient master toggle
+        -- (ESP.Config.Gradient + GradientColorA2/B2/Speed/Rotation/Spacing/
+        -- Reverse). drawCrosshair enables + refreshes it each frame from the
+        -- same lineGradSeq / gradOffset helpers ESP uses. When on, arm/dot/
+        -- outer BackgroundColor gets forced to white so the gradient shows
+        -- pure (multiplies against white cleanly).
+        new("UIGradient", { Name = "KGrad", Enabled = false }),
     })
 
-    -- v0.5.0: each arm anchors at its "gap-side" edge so Rotation pivots there,
-    -- giving a proper curve/spin look instead of the arm rotating around its
-    -- own center (which would jut into the crosshair core).
-    local function mkArm(name, anchorX, anchorY)
-        return new("Frame", {
-            Name = name, AnchorPoint = Vector2.new(anchorX, anchorY),
+    -- v0.8.0: segmented arms. Each arm is a container Frame holding N small
+    -- segment Frames. Walking the segments along a heading (start heading = arm
+    -- perpendicular + CurveAngle, per-segment turn = CurvierAngle / N) produces
+    -- straight arms (Curvier=0), tilted arms (CurveAngle only), or curved arcs
+    -- (CurvierAngle > 0). This replaces the v0.5 single-Frame-per-arm approach
+    -- which couldn't render arcs no matter the rotation.
+    local ARM_SEG = 14
+    local function mkArm(name)
+        local c = new("Frame", {
+            Name = name, AnchorPoint = Vector2.new(0.5, 0.5),
             Position = UDim2.new(0.5, 0, 0.5, 0),
-            Size = UDim2.new(0, 2, 0, 8), BorderSizePixel = 0,
+            -- full-size container so segments' (0.5, x, 0.5, y) positions land
+            -- at (canvas_center + x, canvas_center + y) cleanly.
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
             ZIndex = 15, Parent = xhCanvas,
-        }, { new("UIStroke", { Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-            Enabled = false, LineJoinMode = Enum.LineJoinMode.Miter }) })
+        })
+        local segs = {}
+        for i = 1, ARM_SEG do
+            segs[i] = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(0, 2, 0, 4), BorderSizePixel = 0,
+                BackgroundColor3 = Color3.new(1, 1, 1),
+                ZIndex = 15, Parent = c,
+            }, { new("UIStroke", { Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+                Enabled = false, LineJoinMode = Enum.LineJoinMode.Miter }) })
+        end
+        c._segs = segs
+        return c
     end
-    local armU = mkArm("U", 0.5, 1)   -- anchors at bottom-center (near crosshair core)
-    local armD = mkArm("D", 0.5, 0)   -- anchors at top-center
-    local armL = mkArm("L", 1, 0.5)   -- anchors at right-center
-    local armR = mkArm("R", 0, 0.5)   -- anchors at left-center
+    -- The armU/D/L/R names are kept for the STYLE_ARMS visibility mask; the
+    -- old per-arm anchor trick isn't needed anymore since segments position
+    -- absolutely within the container.
+    local armU = mkArm("U")
+    local armD = mkArm("D")
+    local armL = mkArm("L")
+    local armR = mkArm("R")
 
     local dotFrame = new("Frame", {
         Name = "Dot", AnchorPoint = Vector2.new(0.5, 0.5),
@@ -10355,17 +10393,40 @@ end
     }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }),
          new("UIStroke", { Thickness = 2, Enabled = true }) })
 
-    -- helper: paint arm color + outline + thickness + rotation
-    local function paintArm(f, thickness, length, color, outline, outlineCol, outlineThick, rotation)
-        f.BackgroundColor3 = color
-        f.BackgroundTransparency = 0
-        f.Size = (f == armL or f == armR) and UDim2.new(0, length, 0, thickness) or UDim2.new(0, thickness, 0, length)
-        f.Rotation = rotation
-        local s = f:FindFirstChildOfClass("UIStroke")
-        if s then
-            s.Thickness = outlineThick
-            s.Color = outlineCol
-            s.Enabled = outline and outlineThick > 0
+    -- v0.8.0: paint one segmented arm. thetaArm (radians) = arm base heading
+    -- from "up" (0=up, pi/2=right, pi=down, 3pi/2=left); measured clockwise so
+    -- Frame.Rotation matches directly. curveDeg = initial tilt (applied once,
+    -- shifts arm heading). curvierDeg = total sweep across arm, split evenly
+    -- across ARM_SEG segments.
+    local function paintArm(container, thetaArm, thickness, length, gap, color, outline, ocol, othick, curveDeg, curvierDeg)
+        local segs = container._segs
+        local segLen = length / ARM_SEG
+        local theta = thetaArm + math.rad(curveDeg or 0)
+        local turn = math.rad(curvierDeg or 0) / ARM_SEG
+        -- start position: gap distance from center in the arm's base direction
+        local x = math.sin(thetaArm) * gap
+        local y = -math.cos(thetaArm) * gap
+        for i = 1, ARM_SEG do
+            local seg = segs[i]
+            -- step half a segment forward
+            local dx = math.sin(theta) * segLen * 0.5
+            local dy = -math.cos(theta) * segLen * 0.5
+            x = x + dx; y = y + dy
+            seg.Position = UDim2.new(0.5, x, 0.5, y)
+            -- +1px overlap kills seams between segments; still reads as a solid line
+            seg.Size = UDim2.new(0, thickness, 0, segLen + 1)
+            seg.Rotation = math.deg(theta)
+            seg.BackgroundColor3 = color
+            seg.BackgroundTransparency = 0
+            local s = seg:FindFirstChildOfClass("UIStroke")
+            if s then
+                s.Thickness = othick
+                s.Color = ocol
+                s.Enabled = outline and othick > 0
+            end
+            -- step remaining half, then turn heading for next segment
+            x = x + dx; y = y + dy
+            theta = theta + turn
         end
     end
 
@@ -10478,8 +10539,11 @@ end
             end
         end
 
-        -- position + spin + rotation on the wrap canvas
-        local baseSize = math.max(Crosshair.Length * 2 + Crosshair.Gap * 2 + 16, 24) * pulseScale
+        -- position + spin + rotation on the wrap canvas. sqrt(2) factor covers
+        -- the rotated diagonal so nothing clips when Rotation != 0; extra 32px
+        -- margin cushions curvier arm bulge and outline thickness.
+        local reach = (Crosshair.Length + Crosshair.Gap) * 2 + 32
+        local baseSize = math.max(reach * 1.42, 24) * pulseScale
         xhCanvas.Size = UDim2.new(0, baseSize, 0, baseSize)
         xhCanvas.Position = UDim2.new(0, cx, 0, cy)
         xhCanvas.GroupTransparency = 1 - math.clamp(Crosshair.Opacity, 0, 1)
@@ -10492,6 +10556,26 @@ end
         end
         xhCanvas.Rotation = (Crosshair.Rotation or 0) + spinDeg
 
+        -- v0.8.0: gradient master (shared with ESP.Config.Gradient). When on,
+        -- the KGrad UIGradient on xhCanvas animates with the same colors + speed
+        -- + rotation ESP features use; arm/dot/outer paint white so the gradient
+        -- shows pure. Off: KGrad disabled, colors from Crosshair.* fields.
+        local gradOn = ESP.Config.Gradient == true
+        do
+            local kg = xhCanvas:FindFirstChild("KGrad")
+            if kg then
+                kg.Enabled = gradOn
+                if gradOn then
+                    kg.Color = lineGradSeq(ESP.Config.GradientColorA2,
+                        ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
+                    kg.Rotation = ESP.Config.GradientRotation
+                    kg.Offset = gradOffset()
+                end
+            end
+        end
+        local armColor = gradOn and Color3.new(1, 1, 1) or Crosshair.Color
+        local dotColor = gradOn and Color3.new(1, 1, 1) or (Crosshair.Style == "Dot" and Crosshair.Color or Crosshair.Dot.Color)
+
         -- style dispatch
         local mask = STYLE_ARMS[Crosshair.Style] or STYLE_ARMS.Cross
         armU.Visible = mask.U; armD.Visible = mask.D
@@ -10499,34 +10583,28 @@ end
         outerFrame.Visible = mask.outer
         dotFrame.Visible = mask.dot or Crosshair.Dot.Enabled
 
-        -- arms
+        -- arms -- segmented walker (v0.8.0). thetaArm = arm's base heading from
+        -- "up" measured CW: U=0, R=pi/2, D=pi, L=3pi/2.
         if mask.U or mask.D or mask.L or mask.R then
             local gap = (Crosshair.Style == "Plus") and 0 or Crosshair.Gap
             local thickness = Crosshair.Thickness
             local length    = Crosshair.Length
-            local color     = Crosshair.Color
             local outline   = Crosshair.Outline
             local ocol      = Crosshair.OutlineColor
             local othick    = Crosshair.OutlineThickness
             local curve     = Crosshair.CurveAngle or 0
-            -- each arm sits at (0.5 +- (gap/canvas)) with its own anchor pinning
-            -- the "core-side" edge. Position offsets are done in offset units
-            -- (px) so the wrap size doesn't need to change per arm.
-            armU.Position = UDim2.new(0.5, 0, 0.5, -gap)
-            armD.Position = UDim2.new(0.5, 0, 0.5,  gap)
-            armL.Position = UDim2.new(0.5, -gap, 0.5, 0)
-            armR.Position = UDim2.new(0.5,  gap, 0.5, 0)
-            paintArm(armU, thickness, length, color, outline, ocol, othick,  curve)
-            paintArm(armD, thickness, length, color, outline, ocol, othick,  curve)
-            paintArm(armL, thickness, length, color, outline, ocol, othick,  curve)
-            paintArm(armR, thickness, length, color, outline, ocol, othick,  curve)
+            local curvier   = Crosshair.CurvierAngle or 0
+            paintArm(armU, 0,           thickness, length, gap, armColor, outline, ocol, othick, curve, curvier)
+            paintArm(armR, math.pi / 2, thickness, length, gap, armColor, outline, ocol, othick, curve, curvier)
+            paintArm(armD, math.pi,     thickness, length, gap, armColor, outline, ocol, othick, curve, curvier)
+            paintArm(armL, math.pi * 1.5, thickness, length, gap, armColor, outline, ocol, othick, curve, curvier)
         end
 
         -- center dot (visible when style==Dot OR user opted in on any style)
         if dotFrame.Visible then
             local dsz = (Crosshair.Style == "Dot") and math.max(Crosshair.Length, 2) or Crosshair.Dot.Size
             dotFrame.Size = UDim2.new(0, dsz * 2, 0, dsz * 2)
-            dotFrame.BackgroundColor3 = (Crosshair.Style == "Dot") and Crosshair.Color or Crosshair.Dot.Color
+            dotFrame.BackgroundColor3 = dotColor
             local ds = dotFrame:FindFirstChildOfClass("UIStroke")
             if ds then
                 ds.Thickness = Crosshair.OutlineThickness
@@ -10544,7 +10622,7 @@ end
             local os_ = outerFrame:FindFirstChildOfClass("UIStroke")
             if os_ then
                 os_.Thickness = math.max(Crosshair.Thickness, 1)
-                os_.Color = Crosshair.Color
+                os_.Color = armColor
                 os_.Enabled = true
             end
         end
@@ -11850,8 +11928,11 @@ addTab("Visuals", function(root)
     local xhStyleDd = dropdown(xhCard, "Style", { "Cross", "T-Cross", "Plus", "Dot", "Circle", "Square" },
         Crosshair.Style, function(v) Crosshair.Style = v end)
     rightClickSettings(xhStyleDd.frame, "style", function(popup)
-        -- per-arm tilt; +/- for pinwheel vs starfish look. Only visible on Cross/T-Cross/Plus.
-        popup:slider("Curve Angle", -45, 45, Crosshair.CurveAngle, 0, function(v) Crosshair.CurveAngle = v end)
+        -- per-arm tilt (initial heading offset). +/- pinwheels each arm.
+        popup:slider("Curve Angle", -180, 180, Crosshair.CurveAngle, 0, function(v) Crosshair.CurveAngle = v end)
+        -- v0.8.0: bends each arm into an arc (total sweep across the arm).
+        -- 0=straight; 90=quarter-circle; 180=half-circle; up to 360.
+        popup:slider("Curvier Angle", -360, 360, Crosshair.CurvierAngle, 0, function(v) Crosshair.CurvierAngle = v end)
     end)
 
     -- v0.5.2: base origin (Center | Mouse). Follow Target still leads when on --
@@ -11865,17 +11946,20 @@ addTab("Visuals", function(root)
         popup:slider("Thickness", 0, 6, Crosshair.OutlineThickness, 0, function(v) Crosshair.OutlineThickness = v end)
     end)
 
-    slider(xhCard, "Thickness", 1, 10, Crosshair.Thickness, 0, function(v) Crosshair.Thickness = v end)
-    slider(xhCard, "Length",    2, 40, Crosshair.Length,    0, function(v) Crosshair.Length    = v end)
-    slider(xhCard, "Gap",       0, 30, Crosshair.Gap,       0, function(v) Crosshair.Gap       = v end)
+    -- v0.8.0: ranges opened way up per user request. Sane defaults still land
+    -- in the low end; sliders reach far enough for weird / stylistic setups.
+    slider(xhCard, "Thickness", 1, 40, Crosshair.Thickness, 0, function(v) Crosshair.Thickness = v end)
+    slider(xhCard, "Length",    2, 1000, Crosshair.Length,  0, function(v) Crosshair.Length    = v end)
+    slider(xhCard, "Gap",       0, 800, Crosshair.Gap,      0, function(v) Crosshair.Gap       = v end)
     slider(xhCard, "Opacity",   0, 1,  Crosshair.Opacity,   2, function(v) Crosshair.Opacity   = v end)
-    slider(xhCard, "Offset X",  -200, 200, Crosshair.OffsetX, 0, function(v) Crosshair.OffsetX = v end)
-    slider(xhCard, "Offset Y",  -200, 200, Crosshair.OffsetY, 0, function(v) Crosshair.OffsetY = v end)
+    slider(xhCard, "Offset X",  -2000, 2000, Crosshair.OffsetX, 0, function(v) Crosshair.OffsetX = v end)
+    slider(xhCard, "Offset Y",  -2000, 2000, Crosshair.OffsetY, 0, function(v) Crosshair.OffsetY = v end)
     slider(xhCard, "Rotation",  0, 360, Crosshair.Rotation, 0, function(v) Crosshair.Rotation = v end)
 
     local xhSpinRow = configCheckbox(xhCard, "Spin", Crosshair.Spin, function(v) Crosshair.Spin = v end)
     rightClickSettings(xhSpinRow.row, "spin", function(popup)
-        popup:slider("Speed (deg/s)", 0, 720, Crosshair.SpinSpeed, 0, function(v) Crosshair.SpinSpeed = v end)
+        -- v0.8.0: 12x the old cap (720 -> 8640 deg/s ~= 24 turns/s).
+        popup:slider("Speed (deg/s)", 0, 8640, Crosshair.SpinSpeed, 0, function(v) Crosshair.SpinSpeed = v end)
         popup:dropdown("Direction", { "CW", "CCW" }, Crosshair.SpinDir, function(v) Crosshair.SpinDir = v end)
     end)
 
