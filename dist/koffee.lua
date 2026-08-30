@@ -1,9 +1,9 @@
--- koffee v0.6.0
+-- koffee v0.7.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.6.0"
+Koffee.Version = "0.7.0"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -6112,6 +6112,19 @@ registerConfig("world_time", World.Time)
 registerConfig("world_cc", World.CC)
 registerConfig("world_light", World.Light)
 
+-- v0.7.0 WORLD FX -- always-on client-side visuals (no server hook).
+-- Each entry runs its own particle/overlay path in the World FX IIFE below.
+World.FX = {
+    Snow     = { Enabled = false, Density = 60, Speed = 1.0, Size = 3,
+                 Color = Color3.fromRGB(255, 253, 248) },
+    Rain     = { Enabled = false, Density = 90, Speed = 4.0, Streak = 14,
+                 Color = Color3.fromRGB(180, 200, 240) },
+    Vignette = { Enabled = false, Intensity = 0.55, Color = Color3.new(0, 0, 0) },
+    FogTint  = { Enabled = false, Density = 0.35,
+                 Color = Color3.fromRGB(200, 205, 215) },
+}
+registerConfig("world_fx", World.FX)
+
 registerModule("fullbright", "Fullbright",
     function()
         World.Fullbright.Saved = {
@@ -7568,6 +7581,27 @@ local Combat = {
         -- Slider 1..500. Handles input lag / roundtrip / game processing gaps.
         BeforeClick = 100,
     },
+    -- v0.7.0 HIT / KILL EFFECTS -- client-side visuals that fire on attributed
+    -- hits. Shares HitSounds attribution (recentTargets + AttrWindow), so only
+    -- YOUR hits/kills trigger them. Presets: Ring / Sparks / Flash / Shockwave.
+    HitEffects = {
+        Hit = {
+            Enabled  = false,
+            Preset   = "Ring",
+            Color    = Color3.fromRGB(255, 220, 120),
+            Scale    = 1.0,
+            Duration = 0.35,
+            Attach   = "Head",   -- "Head" | "HRP" | "Torso"
+        },
+        Kill = {
+            Enabled  = false,
+            Preset   = "Shockwave",
+            Color    = Color3.fromRGB(255, 120, 90),
+            Scale    = 1.5,
+            Duration = 0.55,
+            Attach   = "Head",
+        },
+    },
 }
 
     -- one FOV config per context (aimbot + silent). Both can be active at once;
@@ -7615,6 +7649,8 @@ local Combat = {
     registerConfig("combat_trigger", Combat.Trigger)
     registerConfig("combat_misc",    Combat.Misc)
     registerConfig("combat_sounds",  Combat.HitSounds)
+    -- v0.7.0 hit/kill visual effects. Rides HitSounds attribution.
+    registerConfig("combat_hiteffects", Combat.HitEffects)
 
     --== math helpers ==--
     local function shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
@@ -9163,6 +9199,11 @@ local Combat = {
                 if victim then Shared.spawnHitNumber(victim, dropped, nowZero) end
             end
             if Shared.crosshairPulse then Shared.crosshairPulse() end
+            -- v0.7.0 hit / kill visual effect. Shares attribution + preset lookup.
+            if Shared.spawnHitEffect then
+                local cfg = nowZero and Combat.HitEffects.Kill or Combat.HitEffects.Hit
+                Shared.spawnHitEffect(char, cfg)
+            end
         end
     end
     local function bindHumanoid(plr, char)
@@ -9957,6 +9998,37 @@ local Combat = {
         configCheckbox(soundCard, "Overlap Sounds", Combat.HitSounds.Overlap, function(v) Combat.HitSounds.Overlap = v end)
         slider(soundCard, "Attr Window (s)", 0.5, 5, Combat.HitSounds.AttrWindow, 2, function(v) Combat.HitSounds.AttrWindow = v end)
         slider(soundCard, "Before Click (ms)", 1, 500, Combat.HitSounds.BeforeClick, 0, function(v) Combat.HitSounds.BeforeClick = math.floor(v) end)
+
+        -- v0.7.0 hit / kill VISUAL effects. Same attribution as the sounds.
+        -- Both rows sit inside the Sounds card (kept together in the UI even
+        -- though they draw pixels, not audio). Right-click each for the deep
+        -- knobs (color, scale, duration, attach part).
+        local HFX_PRESETS = { "Ring", "Sparks", "Flash", "Shockwave" }
+        local HFX_ATTACH  = { "Head", "HRP", "Torso" }
+        local heHitRow = configCheckbox(soundCard, "Hit Effect", Combat.HitEffects.Hit.Enabled,
+            function(v) Combat.HitEffects.Hit.Enabled = v end)
+        attachSingleSwatch(heHitRow.row, Combat.HitEffects.Hit.Color,
+            function(c) Combat.HitEffects.Hit.Color = c end)
+        rightClickSettings(heHitRow.row, "hit effect", function(popup)
+            popup:dropdown("Preset", HFX_PRESETS, Combat.HitEffects.Hit.Preset,
+                function(v) Combat.HitEffects.Hit.Preset = v end)
+            popup:slider("Scale",     0.2, 4, Combat.HitEffects.Hit.Scale,    2, function(v) Combat.HitEffects.Hit.Scale = v end)
+            popup:slider("Duration",  0.05, 2, Combat.HitEffects.Hit.Duration, 2, function(v) Combat.HitEffects.Hit.Duration = v end)
+            popup:dropdown("Attach",  HFX_ATTACH, Combat.HitEffects.Hit.Attach,
+                function(v) Combat.HitEffects.Hit.Attach = v end)
+        end)
+        local heKillRow = configCheckbox(soundCard, "Kill Effect", Combat.HitEffects.Kill.Enabled,
+            function(v) Combat.HitEffects.Kill.Enabled = v end)
+        attachSingleSwatch(heKillRow.row, Combat.HitEffects.Kill.Color,
+            function(c) Combat.HitEffects.Kill.Color = c end)
+        rightClickSettings(heKillRow.row, "kill effect", function(popup)
+            popup:dropdown("Preset", HFX_PRESETS, Combat.HitEffects.Kill.Preset,
+                function(v) Combat.HitEffects.Kill.Preset = v end)
+            popup:slider("Scale",     0.2, 4, Combat.HitEffects.Kill.Scale,    2, function(v) Combat.HitEffects.Kill.Scale = v end)
+            popup:slider("Duration",  0.05, 2, Combat.HitEffects.Kill.Duration, 2, function(v) Combat.HitEffects.Kill.Duration = v end)
+            popup:dropdown("Attach",  HFX_ATTACH, Combat.HitEffects.Kill.Attach,
+                function(v) Combat.HitEffects.Kill.Attach = v end)
+        end)
 
         --== v0.0.97 TARGET LOCK -- type a name, arm the toggle, hit the keybind to
         -- engage. While engaged, only that named player is a valid target for aimbot /
@@ -11266,6 +11338,282 @@ end)()
     end)
 end)()
 
+-- v0.7.0 WORLD FX + HIT / KILL EFFECTS render layer. Own IIFE (chunk 200-local
+-- ceiling); shares one full-screen Frame in `screen` at ZIndex 8 (under ESP=12+
+-- and Koffee window=30+). Exposes Shared.spawnHitEffect(char, cfg).
+;(function()
+    local layer = new("Frame", {
+        Name = KID.name("fx"), Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 8,
+        Parent = screen,
+    })
+
+    -------------------------------------------------------------------- vignette
+    -- Four dark corner Frames whose transparency inverses along the axis toward
+    -- center. Cheap approximation of a real radial vignette without needing a
+    -- SurfaceGui or ImageLabel with a gradient image.
+    local vignette = new("Frame", {
+        Name = "Vignette", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        ZIndex = 9, Visible = false, Parent = layer,
+    })
+    local vTop = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 240), BackgroundTransparency = 1, BorderSizePixel = 0,
+        ZIndex = 9, Parent = vignette,
+    }, { new("UIGradient", { Rotation = 90,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
+    local vBot = new("Frame", {
+        Position = UDim2.new(0, 0, 1, -240), Size = UDim2.new(1, 0, 0, 240),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        ZIndex = 9, Parent = vignette,
+    }, { new("UIGradient", { Rotation = 270,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
+    local vLeft = new("Frame", {
+        Size = UDim2.new(0, 240, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+        ZIndex = 9, Parent = vignette,
+    }, { new("UIGradient", { Rotation = 0,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
+    local vRight = new("Frame", {
+        Position = UDim2.new(1, -240, 0, 0), Size = UDim2.new(0, 240, 1, 0),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        ZIndex = 9, Parent = vignette,
+    }, { new("UIGradient", { Rotation = 180,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
+
+    --------------------------------------------------------------------- fogtint
+    -- Flat colored haze full-screen; Density = BackgroundTransparency inversion.
+    local fogTint = new("Frame", {
+        Name = "FogTint", Size = UDim2.new(1, 0, 1, 0), BorderSizePixel = 0,
+        BackgroundColor3 = Color3.fromRGB(200, 205, 215), BackgroundTransparency = 1,
+        ZIndex = 8, Visible = false, Parent = layer,
+    })
+
+    --------------------------------------------------------------------- particles
+    -- Snow + Rain share a pool factory. Each particle: Frame in `layer` at
+    -- ZIndex 10. Density gates the target pool size; recycled when off-screen.
+    local snowPool, rainPool = {}, {}
+    local function makeParticle(name, w, h, cornerRadius)
+        return new("Frame", {
+            Name = name, Size = UDim2.new(0, w, 0, h), BorderSizePixel = 0,
+            BackgroundColor3 = Color3.new(1, 1, 1), Visible = false,
+            ZIndex = 10, Parent = layer,
+        }, cornerRadius and { new("UICorner", { CornerRadius = UDim.new(1, 0) }) } or {})
+    end
+    local function vp()
+        local cam = Workspace.CurrentCamera
+        if cam then return cam.ViewportSize end
+        return Vector2.new(1280, 720)
+    end
+    local function ensureCount(pool, want, name, w, h, roundCorners)
+        while #pool < want do
+            local f = makeParticle(name, w, h, roundCorners)
+            table.insert(pool, { f = f, x = 0, y = -9999, vx = 0, vy = 0, life = 0 })
+        end
+        for i = want + 1, #pool do pool[i].f.Visible = false end
+    end
+    local function stepSnow(dt)
+        local cfg = World.FX.Snow
+        if not cfg.Enabled then
+            for _, p in ipairs(snowPool) do p.f.Visible = false end
+            return
+        end
+        local size = vp()
+        ensureCount(snowPool, cfg.Density, "Snow", cfg.Size, cfg.Size, true)
+        for _, p in ipairs(snowPool) do
+            if p.y < -20 or p.y > size.Y + 20 or p.x < -20 or p.x > size.X + 20 then
+                p.x = math.random() * size.X
+                p.y = -math.random(1, 40)
+                p.vx = (math.random() - 0.5) * 20
+                p.vy = 20 + math.random() * 40
+            end
+            p.x = p.x + p.vx * dt * cfg.Speed
+            p.y = p.y + p.vy * dt * cfg.Speed
+            p.f.Position = UDim2.new(0, p.x, 0, p.y)
+            p.f.Size = UDim2.new(0, cfg.Size, 0, cfg.Size)
+            p.f.BackgroundColor3 = cfg.Color
+            p.f.BackgroundTransparency = 0.15
+            p.f.Visible = true
+        end
+    end
+    local function stepRain(dt)
+        local cfg = World.FX.Rain
+        if not cfg.Enabled then
+            for _, p in ipairs(rainPool) do p.f.Visible = false end
+            return
+        end
+        local size = vp()
+        ensureCount(rainPool, cfg.Density, "Rain", 1, cfg.Streak, false)
+        for _, p in ipairs(rainPool) do
+            if p.y > size.Y + cfg.Streak then
+                p.x = math.random() * size.X
+                p.y = -math.random(1, size.Y // 2)
+                p.vy = 400 + math.random() * 300
+            end
+            p.y = p.y + p.vy * dt * cfg.Speed
+            p.f.Position = UDim2.new(0, p.x, 0, p.y)
+            p.f.Size = UDim2.new(0, 1, 0, cfg.Streak)
+            p.f.BackgroundColor3 = cfg.Color
+            p.f.BackgroundTransparency = 0.3
+            p.f.Visible = true
+        end
+    end
+    local function stepVignette()
+        local cfg = World.FX.Vignette
+        vignette.Visible = cfg.Enabled
+        if not cfg.Enabled then return end
+        local baseTrans = 1 - cfg.Intensity
+        for _, side in ipairs({ vTop, vBot, vLeft, vRight }) do
+            side.BackgroundColor3 = cfg.Color
+            side.BackgroundTransparency = baseTrans
+        end
+    end
+    local function stepFogTint()
+        local cfg = World.FX.FogTint
+        fogTint.Visible = cfg.Enabled
+        if not cfg.Enabled then return end
+        fogTint.BackgroundColor3 = cfg.Color
+        fogTint.BackgroundTransparency = 1 - math.clamp(cfg.Density, 0, 0.95)
+    end
+
+    ------------------------------------------------------------------ hit effects
+    -- One live-effect pool. Each entry animates over Duration and returns to the
+    -- pool. Preset governs shape:
+    --   Ring       -- expanding ring (UIStroke, growing size)
+    --   Sparks     -- 8 short lines radiating outward
+    --   Flash      -- solid filled disc that fades
+    --   Shockwave  -- ring but faster + larger + no fade halfway
+    local hitFxPool = {}
+    local function newHitFx()
+        local root = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+            Size = UDim2.new(0, 40, 0, 40), Visible = false, ZIndex = 11, Parent = layer,
+        })
+        -- Ring/Shockwave/Flash core: Frame with UICorner(1,0) so it's circular.
+        local core = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ZIndex = 11, Parent = root,
+        }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
+             new("UIStroke", { Thickness = 3, Enabled = false }) })
+        -- Sparks: 8 line children (rotated per-instance at spawn)
+        local sparks = {}
+        for i = 1, 8 do
+            local ln = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(0, 2, 0, 14), BorderSizePixel = 0, Visible = false,
+                Rotation = (i - 1) * 45, ZIndex = 12, Parent = root,
+            })
+            sparks[i] = ln
+        end
+        return { root = root, core = core, sparks = sparks, _alive = false }
+    end
+    local function acquireHitFx()
+        for _, e in ipairs(hitFxPool) do if not e._alive then return e end end
+        local e = newHitFx()
+        table.insert(hitFxPool, e)
+        return e
+    end
+    local function spawnHitEffect(char, cfg)
+        if not cfg.Enabled then return end
+        local partName = cfg.Attach == "HRP" and "HumanoidRootPart"
+            or cfg.Attach == "Torso" and (char:FindFirstChild("UpperTorso") and "UpperTorso" or "Torso")
+            or "Head"
+        local victim = char:FindFirstChild(partName)
+            or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+        if not victim then return end
+        local e = acquireHitFx()
+        e._alive = true
+        e._victim = victim
+        e._preset = cfg.Preset
+        e._color = cfg.Color
+        e._scale = cfg.Scale
+        e._duration = math.max(cfg.Duration, 0.05)
+        e._startAt = os.clock()
+        e.root.Visible = true
+        -- prime style
+        for i, ln in ipairs(e.sparks) do
+            ln.Visible = (cfg.Preset == "Sparks")
+            ln.BackgroundColor3 = cfg.Color
+            ln.Rotation = (i - 1) * 45
+        end
+        local stroke = e.core:FindFirstChildOfClass("UIStroke")
+        if cfg.Preset == "Sparks" then
+            e.core.BackgroundTransparency = 1
+            if stroke then stroke.Enabled = false end
+        elseif cfg.Preset == "Flash" then
+            e.core.BackgroundColor3 = cfg.Color
+            e.core.BackgroundTransparency = 0.15
+            if stroke then stroke.Enabled = false end
+        else
+            e.core.BackgroundTransparency = 1
+            if stroke then stroke.Enabled = true; stroke.Color = cfg.Color; stroke.Thickness = 3 end
+        end
+    end
+    Shared.spawnHitEffect = spawnHitEffect
+    local function drawHitFx()
+        local cam = Workspace.CurrentCamera
+        for _, e in ipairs(hitFxPool) do
+            if e._alive then
+                local age = os.clock() - e._startAt
+                local t = age / e._duration
+                if t >= 1 or not (e._victim and e._victim.Parent) then
+                    e._alive = false
+                    e.root.Visible = false
+                else
+                    if cam then
+                        local sp = cam:WorldToViewportPoint(e._victim.Position)
+                        if sp.Z > 0 then
+                            e.root.Position = UDim2.new(0, sp.X, 0, sp.Y)
+                            e.root.Visible = true
+                        else
+                            e.root.Visible = false
+                        end
+                    end
+                    -- per-preset animation
+                    local baseSize = 40 * e._scale
+                    if e._preset == "Ring" then
+                        local d = baseSize * (0.4 + 1.6 * t)
+                        e.root.Size = UDim2.new(0, d, 0, d)
+                        local s = e.core:FindFirstChildOfClass("UIStroke")
+                        if s then s.Transparency = t end
+                    elseif e._preset == "Shockwave" then
+                        local d = baseSize * (0.3 + 3.2 * t)
+                        e.root.Size = UDim2.new(0, d, 0, d)
+                        local s = e.core:FindFirstChildOfClass("UIStroke")
+                        if s then
+                            s.Thickness = math.max(1, 4 * (1 - t))
+                            s.Transparency = t * 0.9
+                        end
+                    elseif e._preset == "Flash" then
+                        local d = baseSize * (0.8 + 0.7 * t)
+                        e.root.Size = UDim2.new(0, d, 0, d)
+                        e.core.BackgroundTransparency = 0.15 + t * 0.85
+                    elseif e._preset == "Sparks" then
+                        for i, ln in ipairs(e.sparks) do
+                            local reach = baseSize * (0.4 + 1.5 * t)
+                            ln.Position = UDim2.new(0.5, 0, 0.5, 0)
+                            ln.Size = UDim2.new(0, math.max(1, 3 * (1 - t)), 0, reach)
+                            ln.BackgroundTransparency = t
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    ---------------------------------------------------------------------- render
+    RunService.RenderStepped:Connect(function(dt)
+        stepSnow(dt)
+        stepRain(dt)
+        stepVignette()
+        stepFogTint()
+        drawHitFx()
+    end)
+end)()
+
 addTab("Visuals", function(root)
     -- v0.0.21: two-column layout to match Matcha.
     --   left:  esp / box / name      right: indicators / health / tracer
@@ -11611,6 +11959,41 @@ addTab("World", function(root)
     moduleCheckbox(fx, "Remove Sky",     "removesky")
     moduleCheckbox(fx, "Disable Clouds", "noclouds")
     moduleCheckbox(fx, "Low Graphics",   "lowgfx")
+
+    -- v0.7.0 WORLD FX -- always-on client-side screen effects (independent of
+    -- the koffee menu state, unlike the loader snow). Rendered by the wave-4
+    -- IIFE. Right-click each row for the deep knobs.
+    local fx2 = panel(W.Effects, "World FX")
+    local snowRow = configCheckbox(fx2, "Snow", World.FX.Snow.Enabled,
+        function(v) World.FX.Snow.Enabled = v end)
+    attachSingleSwatch(snowRow.row, World.FX.Snow.Color, function(c) World.FX.Snow.Color = c end)
+    rightClickSettings(snowRow.row, "snow", function(popup)
+        popup:slider("Density", 10, 300, World.FX.Snow.Density, 0, function(v) World.FX.Snow.Density = math.floor(v) end)
+        popup:slider("Speed",   0.2, 3, World.FX.Snow.Speed,    2, function(v) World.FX.Snow.Speed = v end)
+        popup:slider("Size",    1, 8,   World.FX.Snow.Size,     0, function(v) World.FX.Snow.Size = math.floor(v) end)
+    end)
+    local rainRow = configCheckbox(fx2, "Rain", World.FX.Rain.Enabled,
+        function(v) World.FX.Rain.Enabled = v end)
+    attachSingleSwatch(rainRow.row, World.FX.Rain.Color, function(c) World.FX.Rain.Color = c end)
+    rightClickSettings(rainRow.row, "rain", function(popup)
+        popup:slider("Density", 10, 300, World.FX.Rain.Density, 0, function(v) World.FX.Rain.Density = math.floor(v) end)
+        popup:slider("Speed",   0.5, 8,  World.FX.Rain.Speed,   2, function(v) World.FX.Rain.Speed = v end)
+        popup:slider("Streak",  4, 40,   World.FX.Rain.Streak,  0, function(v) World.FX.Rain.Streak = math.floor(v) end)
+    end)
+    local vigRow = configCheckbox(fx2, "Vignette", World.FX.Vignette.Enabled,
+        function(v) World.FX.Vignette.Enabled = v end)
+    attachSingleSwatch(vigRow.row, World.FX.Vignette.Color, function(c) World.FX.Vignette.Color = c end)
+    rightClickSettings(vigRow.row, "vignette", function(popup)
+        popup:slider("Intensity", 0, 1, World.FX.Vignette.Intensity, 2,
+            function(v) World.FX.Vignette.Intensity = v end)
+    end)
+    local fogRow = configCheckbox(fx2, "Fog Tint", World.FX.FogTint.Enabled,
+        function(v) World.FX.FogTint.Enabled = v end)
+    attachSingleSwatch(fogRow.row, World.FX.FogTint.Color, function(c) World.FX.FogTint.Color = c end)
+    rightClickSettings(fogRow.row, "fog tint", function(popup)
+        popup:slider("Density", 0, 0.95, World.FX.FogTint.Density, 2,
+            function(v) World.FX.FogTint.Density = v end)
+    end)
 
     -- v0.6.0: RULES sub-tab. Plus button + list of rule rows (name + delete).
     -- Clicking the name opens a rename popup. Plus opens the rule-type picker.
