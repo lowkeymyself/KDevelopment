@@ -1,9 +1,9 @@
--- koffee v0.5.3
+-- koffee v0.6.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.5.3"
+Koffee.Version = "0.6.0"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -10330,9 +10330,10 @@ end
         if not Crosshair.Enabled then xhCanvas.Visible = false; return end
         xhCanvas.Visible = true
 
-        -- v0.5.2: base center from Origin (Center | Mouse) + user Offset.
-        -- Follow Target overrides (and later LockToPart in wave 3) -- those are
-        -- the "leading" modes; Origin is the resting position when nothing leads.
+        -- v0.5.2/v0.6.0: base center from Origin (Center | Mouse) + user Offset.
+        -- Priority chain: LockToPart > Follow Target > Origin. LockToPart is a
+        -- hard set (no lerp, no offset); Follow Target lerps; Origin is the
+        -- resting default.
         local size = vp()
         local cx, cy
         if Crosshair.Origin == "Mouse" then
@@ -10341,7 +10342,31 @@ end
         else
             cx, cy = size.X * 0.5 + Crosshair.OffsetX, size.Y * 0.5 + Crosshair.OffsetY
         end
-        if Crosshair.Follow.Enabled then
+        -- v0.6.0: LockToPart -- highest-priority center. Resolves late-bound
+        -- target via Shared.resolvePath (config reloads populate InstancePath
+        -- but not the live Instance).
+        local locked = false
+        if Crosshair.LockToPart.Enabled then
+            if not Crosshair.LockToPart._target and Crosshair.LockToPart.InstancePath then
+                Crosshair.LockToPart._target = Shared.resolvePath
+                    and Shared.resolvePath(Crosshair.LockToPart.InstancePath) or nil
+            end
+            local lt = Crosshair.LockToPart._target
+            local pos
+            if lt and lt:IsA("BasePart") then pos = lt.Position
+            elseif lt and lt:IsA("Model") then
+                local ok, cf = pcall(function() return lt:GetPivot().Position end)
+                if ok then pos = cf end
+            end
+            if pos then
+                local cam = Workspace.CurrentCamera
+                if cam then
+                    local sp = cam:WorldToViewportPoint(pos)
+                    if sp.Z > 0 then cx, cy = sp.X, sp.Y; locked = true end
+                end
+            end
+        end
+        if not locked and Crosshair.Follow.Enabled then
             local part = crosshairFollowPart()
             local tx, ty = cx, cy
             if part then
@@ -10560,6 +10585,684 @@ end
     RunService.RenderStepped:Connect(function(dt)
         drawCrosshair(dt)
         drawHitNumbers()
+    end)
+end)()
+
+-- v0.6.0 WORLD RULES + INSTANCE PICKER. Own IIFE so its many locals don't touch
+-- the chunk register ceiling (learned the hard way in v0.5.1). Exposes via
+-- Shared: openInstancePicker, addRule, removeRule, renameRule, WorldRules.
+;(function()
+    local WorldRules = { List = {}, _nextId = 1 }
+    registerConfig("world_rules", WorldRules)
+    Shared.WorldRules = WorldRules
+
+    ------------------------------------------------------------- path helpers
+    -- Serialize an Instance to a "game.workspace.Folder.Part" style string so
+    -- rules survive configs. Only stops at `game`; anything above is a no-op.
+    local function pathOf(inst)
+        if not inst then return nil end
+        local parts = {}
+        local n = inst
+        while n and n ~= game do
+            table.insert(parts, 1, n.Name)
+            n = n.Parent
+        end
+        return "game." .. table.concat(parts, ".")
+    end
+    local function resolvePath(path)
+        if not path or type(path) ~= "string" then return nil end
+        local n = game
+        local first = true
+        for name in path:gmatch("[^%.]+") do
+            if first and name == "game" then
+                first = false
+            else
+                first = false
+                if not n then return nil end
+                local nxt = n:FindFirstChild(name)
+                if not nxt then return nil end
+                n = nxt
+            end
+        end
+        return n ~= game and n or nil
+    end
+    Shared.pathOf = pathOf
+    Shared.resolvePath = resolvePath
+
+    ------------------------------------------------------------- filter/icons
+    local function isPhysical(inst)
+        return inst:IsA("BasePart") or inst:IsA("Model") or inst:IsA("UnionOperation")
+            or inst:IsA("MeshPart") or inst:IsA("NegateOperation") or inst:IsA("IntersectOperation")
+    end
+    local function containsPhysical(inst)
+        -- Cap depth so expansion cost stays bounded on big trees. 6 is enough
+        -- for typical roblox game layouts (workspace.folder.folder.model.part).
+        local function scan(node, depth)
+            if depth <= 0 then return false end
+            for _, d in ipairs(node:GetChildren()) do
+                if isPhysical(d) then return true end
+                if d:IsA("ScriptBase") or d:IsA("ModuleScript")
+                   or d:IsA("ValueBase") then
+                    -- skip: scripts + values never hold physicals we care about
+                else
+                    if scan(d, depth - 1) then return true end
+                end
+            end
+            return false
+        end
+        return scan(inst, 6)
+    end
+    local function iconColor(inst)
+        if inst:IsA("MeshPart")       then return Color3.fromRGB(160, 130, 220) end  -- purple
+        if inst:IsA("UnionOperation") or inst:IsA("NegateOperation")
+           or inst:IsA("IntersectOperation") then return Color3.fromRGB(240, 160, 90) end -- orange
+        if inst:IsA("BasePart")       then return Color3.fromRGB(140, 210, 150) end  -- green
+        if inst:IsA("Model")          then return Color3.fromRGB(130, 200, 240) end  -- cyan
+        return Color3.fromRGB(235, 200, 120) -- yellow: folder/service
+    end
+    local function isSelectableAsTarget(inst)
+        return inst:IsA("BasePart") or inst:IsA("Model") or inst:IsA("MeshPart")
+            or inst:IsA("UnionOperation") or inst:IsA("NegateOperation")
+            or inst:IsA("IntersectOperation")
+    end
+    local function shouldShow(inst)
+        -- Physical always. Anything else only if it holds a physical descendant.
+        -- Cheap descent through any container class -- Player/Backpack/PlayerScripts
+        -- included so LocalPlayer.Character surfaces under Players.
+        if isPhysical(inst) then return true end
+        if #inst:GetChildren() == 0 then return false end
+        return containsPhysical(inst)
+    end
+
+    -------------------------------------------------------- modal helper (dim)
+    -- Center a modal on popupScreen with a scale-in animation. Returns
+    -- { root, dim, box, close } where `close` fades everything out + destroys.
+    local function openModal(width, height)
+        local dim = new("Frame", {
+            Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            ZIndex = 200, Parent = popupScreen,
+        })
+        tween(dim, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            { BackgroundTransparency = 0.5 })
+        local box = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0, width, 0, height),
+            BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0,
+            ZIndex = 201, Parent = dim,
+        }, { corner(Theme.Radius.Medium), stroke(Theme.Palette.BorderSubtle) })
+        local uscale = new("UIScale", { Scale = 0.94, Parent = box })
+        tween(uscale, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+            { Scale = 1 })
+        local function close()
+            tween(dim, TweenInfo.new(0.16), { BackgroundTransparency = 1 })
+            tween(uscale, TweenInfo.new(0.16), { Scale = 0.94 })
+            task.delay(0.18, function() if dim then dim:Destroy() end end)
+        end
+        return { dim = dim, box = box, close = close }
+    end
+
+    ---------------------------------------------------------- instance picker
+    -- Modal explorer. Roots list = common containers people target. Lazy
+    -- expansion; filtered to physical instances + containers with physical
+    -- descendants. Color-coded 8px square icon next to each row.
+    local function openInstancePicker(onSelect, opts)
+        opts = opts or {}
+        local m = openModal(520, 460)
+        -- header
+        new("TextLabel", {
+            Text = opts.title or "select an instance", FontFace = Theme.Fonts.Bold,
+            TextSize = Theme.Text.Header, TextColor3 = Theme.Palette.Text,
+            BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
+            ZIndex = 202, Parent = m.box,
+        })
+        new("TextLabel", {
+            Text = opts.subtitle or "expand a container, click a physical instance, submit.",
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 16, 0, 34), Size = UDim2.new(1, -32, 0, 14),
+            ZIndex = 202, Parent = m.box,
+        })
+        -- scroll body
+        local scroll = new("ScrollingFrame", {
+            Position = UDim2.new(0, 12, 0, 56), Size = UDim2.new(1, -24, 1, -104),
+            BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.35,
+            BorderSizePixel = 0, ScrollBarThickness = 4,
+            ScrollBarImageColor3 = Theme.Palette.TextFaint,
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ZIndex = 202, Parent = m.box,
+        }, { corner(6), new("UIListLayout", { Padding = UDim.new(0, 2),
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        local selected = nil     -- current selected Instance
+        local selectedRow = nil  -- current selected row Frame
+        local ROOTS = {
+            game:GetService("Workspace"),
+            game:GetService("Players"),
+            game:GetService("ReplicatedStorage"),
+            game:GetService("StarterPack"),
+            game:GetService("StarterGui"),
+            game:GetService("StarterPlayer"),
+            game:GetService("Lighting"),
+        }
+
+        local buildRow -- forward-decl
+        local function pickRow(row, inst)
+            if selectedRow then
+                selectedRow.BackgroundColor3 = Theme.Palette.PanelElevated
+                selectedRow.BackgroundTransparency = 1
+            end
+            selectedRow = row
+            selected = inst
+            row.BackgroundTransparency = 0.15
+            row.BackgroundColor3 = Theme.Palette.Accent
+        end
+
+        buildRow = function(inst, depth, parentContainer)
+            local expandable = (inst:IsA("Folder") or inst:IsA("Configuration") or inst:IsA("Model")
+                or inst == game:GetService("Workspace")
+                or inst:IsA("ServiceProvider") or inst.ClassName:find("Service", 1, true))
+                and #inst:GetChildren() > 0
+            local row = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 20),
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 1,
+                BorderSizePixel = 0, ZIndex = 203, Parent = parentContainer,
+            }, { corner(4) })
+            local x = depth * 14
+            local btn = new("TextButton", {
+                Text = "", BackgroundTransparency = 1, AutoButtonColor = false,
+                Size = UDim2.new(1, 0, 1, 0), ZIndex = 204, Parent = row,
+            })
+            local isOpen = false
+            local caret = new("TextLabel", {
+                Text = expandable and "+" or " ", FontFace = Theme.Fonts.Mono,
+                TextSize = 11, TextColor3 = Theme.Palette.TextMuted,
+                BackgroundTransparency = 1,
+                Position = UDim2.new(0, x + 2, 0, 0), Size = UDim2.new(0, 12, 1, 0),
+                TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 205, Parent = row,
+            })
+            new("Frame", {
+                Position = UDim2.new(0, x + 18, 0.5, -4), Size = UDim2.new(0, 8, 0, 8),
+                BackgroundColor3 = iconColor(inst), BorderSizePixel = 0,
+                ZIndex = 205, Parent = row,
+            }, { corner(2) })
+            new("TextLabel", {
+                Text = inst.Name, FontFace = Theme.Fonts.Medium,
+                TextSize = Theme.Text.Body, TextColor3 = Theme.Palette.Text,
+                BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                Position = UDim2.new(0, x + 32, 0, 0), Size = UDim2.new(1, -x - 100, 1, 0),
+                TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 205, Parent = row,
+            })
+            new("TextLabel", {
+                Text = inst.ClassName, FontFace = Theme.Fonts.Mono,
+                TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
+                BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Right,
+                Position = UDim2.new(1, -60, 0, 0), Size = UDim2.new(0, 55, 1, 0),
+                ZIndex = 205, Parent = row,
+            })
+
+            local childContainer  -- lazy
+            local function expand()
+                if childContainer then return end
+                childContainer = new("Frame", {
+                    Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundTransparency = 1, LayoutOrder = row.LayoutOrder + 1,
+                    ZIndex = 203, Parent = parentContainer,
+                }, { new("UIListLayout", { Padding = UDim.new(0, 2),
+                    SortOrder = Enum.SortOrder.LayoutOrder }) })
+                -- collect children, filter, sort (folders first, then physicals, alphabetic)
+                local kids = {}
+                for _, c in ipairs(inst:GetChildren()) do
+                    if shouldShow(c) then table.insert(kids, c) end
+                end
+                table.sort(kids, function(a, b) return a.Name:lower() < b.Name:lower() end)
+                for _, c in ipairs(kids) do buildRow(c, depth + 1, childContainer) end
+            end
+            local function collapse()
+                if childContainer then childContainer:Destroy(); childContainer = nil end
+            end
+
+            btn.MouseButton1Click:Connect(function()
+                if expandable then
+                    isOpen = not isOpen
+                    caret.Text = isOpen and "-" or "+"
+                    if isOpen then expand() else collapse() end
+                end
+                if isSelectableAsTarget(inst) then pickRow(row, inst) end
+            end)
+        end
+
+        for _, r in ipairs(ROOTS) do buildRow(r, 0, scroll) end
+
+        -- footer buttons
+        local cancel = new("TextButton", {
+            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -108, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        local submit = new("TextButton", {
+            Text = "submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        cancel.MouseButton1Click:Connect(function() m.close() end)
+        submit.MouseButton1Click:Connect(function()
+            if selected then onSelect(selected, pathOf(selected)) end
+            m.close()
+        end)
+    end
+    Shared.openInstancePicker = openInstancePicker
+
+    ----------------------------------------------------------------- text popup
+    -- Compact TextBox modal (used by rename + anti-animation asset input).
+    local function openTextPopup(title, initial, placeholder, onSubmit)
+        local m = openModal(340, 156)
+        new("TextLabel", {
+            Text = title, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
+            ZIndex = 202, Parent = m.box,
+        })
+        local tb = new("TextBox", {
+            Text = initial or "", PlaceholderText = placeholder or "",
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+            BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.25,
+            BorderSizePixel = 0, ClearTextOnFocus = false,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 16, 0, 44), Size = UDim2.new(1, -32, 0, 32),
+            ZIndex = 202, Parent = m.box,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
+        local cancel = new("TextButton", {
+            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -108, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        local submit = new("TextButton", {
+            Text = "submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        cancel.MouseButton1Click:Connect(function() m.close() end)
+        submit.MouseButton1Click:Connect(function()
+            local val = tb.Text
+            m.close()
+            onSubmit(val)
+        end)
+        tb.FocusLost:Connect(function(enter)
+            if enter then
+                local val = tb.Text; m.close(); onSubmit(val)
+            end
+        end)
+    end
+    Shared.openTextPopup = openTextPopup
+
+    ---------------------------------------------------------- Object Offset apply
+    -- Snapshot { part -> { Anchored, Material, Color, CFrame, TextureID, decals={} } }
+    local function snapshotPart(rule, part)
+        rule._snap = rule._snap or {}
+        if rule._snap[part] then return end
+        local s = { Anchored = part.Anchored, Material = part.Material, Color = part.Color,
+            CFrame = part.CFrame, decals = {}, sa = {} }
+        if part:IsA("MeshPart") then s.TextureID = part.TextureID end
+        for _, ch in ipairs(part:GetChildren()) do
+            if ch:IsA("Decal") or ch:IsA("Texture") then
+                table.insert(s.decals, { d = ch, parent = ch.Parent })
+                ch.Parent = nil
+            elseif ch:IsA("SurfaceAppearance") then
+                table.insert(s.sa, { d = ch, parent = ch.Parent })
+                ch.Parent = nil
+            end
+        end
+        if part:IsA("MeshPart") and part.TextureID ~= "" then part.TextureID = "" end
+        rule._snap[part] = s
+    end
+    local function restorePart(rule, part)
+        local s = rule._snap and rule._snap[part]; if not s then return end
+        pcall(function() part.Anchored = s.Anchored end)
+        pcall(function() part.Material = s.Material end)
+        pcall(function() part.Color = s.Color end)
+        pcall(function() part.CFrame = s.CFrame end)
+        if s.TextureID ~= nil then pcall(function() part.TextureID = s.TextureID end) end
+        for _, e in ipairs(s.decals) do pcall(function() e.d.Parent = e.parent end) end
+        for _, e in ipairs(s.sa)     do pcall(function() e.d.Parent = e.parent end) end
+        rule._snap[part] = nil
+    end
+    local function partsOf(rule)
+        local out = {}
+        local t = rule._target
+        if not t then return out end
+        if t:IsA("BasePart") then table.insert(out, t)
+        else
+            for _, d in ipairs(t:GetDescendants()) do
+                if d:IsA("BasePart") then table.insert(out, d) end
+            end
+        end
+        return out
+    end
+    local function stepObjectOffset(rule, dt)
+        if not (rule._target and rule._target.Parent) then return end
+        local st = rule.settings
+        rule._spinAcc = (rule._spinAcc or 0) + (st.Spin and st.SpinSpeed * dt or 0)
+        local ax = st.SpinAxis == "X" and Vector3.new(1,0,0)
+                or st.SpinAxis == "Z" and Vector3.new(0,0,1)
+                or Vector3.new(0,1,0)
+        local spinCF = st.Spin and CFrame.fromAxisAngle(ax, math.rad(rule._spinAcc)) or CFrame.new()
+        local offCF = CFrame.new(st.OffsetX, st.OffsetY, st.OffsetZ)
+            * CFrame.Angles(math.rad(st.RotX), math.rad(st.RotY), math.rad(st.RotZ))
+            * spinCF
+        local matEnum
+        if st.MaterialOverride then
+            local ok, m = pcall(function() return Enum.Material[st.Material] end)
+            matEnum = (ok and m) or nil
+        end
+        for _, p in ipairs(partsOf(rule)) do
+            snapshotPart(rule, p)
+            p.Anchored = true
+            if matEnum then p.Material = matEnum end
+            local base = rule._snap[p].CFrame
+            p.CFrame = base * offCF
+        end
+    end
+    local function restoreObjectOffset(rule)
+        if not rule._snap then return end
+        for p, _ in pairs(rule._snap) do restorePart(rule, p) end
+        rule._snap = nil
+    end
+
+    ---------------------------------------------------------- AntiAnimation apply
+    -- One-shot LocalPlayer.Character hook that watches all AnimationTracks and
+    -- stops any whose Animation.AnimationId matches a blocked id from any active
+    -- AntiAnimation rule. Handles respawn.
+    local antiState = { hooked = false, conns = {} }
+    local function blockedIds()
+        local ids = {}
+        for _, r in ipairs(WorldRules.List) do
+            if r.type == "AntiAnimation" and r.settings and r.settings.AnimId then
+                local id = tostring(r.settings.AnimId):match("(%d+)")
+                if id then ids[id] = true end
+            end
+        end
+        return ids
+    end
+    local function stopBlockedInAnimator(anim)
+        if not anim then return end
+        local set = blockedIds()
+        local ok, list = pcall(function() return anim:GetPlayingAnimationTracks() end)
+        if not ok or not list then return end
+        for _, tr in ipairs(list) do
+            local id = tr.Animation and tr.Animation.AnimationId or ""
+            local num = id:match("(%d+)")
+            if num and set[num] then pcall(function() tr:Stop() end) end
+        end
+    end
+    local function bindAntiAnim()
+        for _, c in ipairs(antiState.conns) do pcall(function() c:Disconnect() end) end
+        antiState.conns = {}
+        local char = LocalPlayer.Character; if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return end
+        local anim = hum:FindFirstChildOfClass("Animator") or char:FindFirstChildOfClass("Animator")
+        if not anim then return end
+        table.insert(antiState.conns, anim.AnimationPlayed:Connect(function(track)
+            local id = track.Animation and track.Animation.AnimationId or ""
+            local num = id:match("(%d+)")
+            if num and blockedIds()[num] then pcall(function() track:Stop() end) end
+        end))
+    end
+    local function startAntiAnimEngine()
+        if antiState.hooked then return end
+        antiState.hooked = true
+        LocalPlayer.CharacterAdded:Connect(function() task.wait(0.2); bindAntiAnim() end)
+        bindAntiAnim()
+        RunService.Heartbeat:Connect(function()
+            -- polling backstop: some games play tracks before the AnimationPlayed
+            -- signal fires (or bypass Animator). This catches them within a frame.
+            local anyAnti = false
+            for _, r in ipairs(WorldRules.List) do
+                if r.type == "AntiAnimation" then anyAnti = true; break end
+            end
+            if not anyAnti then return end
+            local char = LocalPlayer.Character; if not char then return end
+            local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return end
+            local anim = hum:FindFirstChildOfClass("Animator") or char:FindFirstChildOfClass("Animator")
+            stopBlockedInAnimator(anim)
+        end)
+    end
+
+    ---------------------------------------------------------- rule apply dispatcher
+    local function applyRule(rule)
+        if rule.type == "AntiAnimation" then startAntiAnimEngine() end
+        -- ObjectOffset apply happens each frame via stepObjectOffset
+    end
+    local function restoreRule(rule)
+        if rule.type == "ObjectOffset" then restoreObjectOffset(rule) end
+    end
+
+    ------------------------------------------------------------- render loop
+    RunService.RenderStepped:Connect(function(dt)
+        for _, r in ipairs(WorldRules.List) do
+            if r.type == "ObjectOffset" then
+                if not r._target and r.targetPath then r._target = resolvePath(r.targetPath) end
+                stepObjectOffset(r, dt)
+            end
+        end
+    end)
+
+    ------------------------------------------------------------- CRUD
+    function Shared.addRule(rule)
+        rule.id = "r_" .. tostring(WorldRules._nextId)
+        WorldRules._nextId = WorldRules._nextId + 1
+        rule.name = rule.name or "Rule " .. tostring(#WorldRules.List + 1)
+        table.insert(WorldRules.List, rule)
+        applyRule(rule)
+        if Shared._rulesListRefresh then Shared._rulesListRefresh() end
+    end
+    function Shared.removeRule(id)
+        for i, r in ipairs(WorldRules.List) do
+            if r.id == id then
+                restoreRule(r)
+                table.remove(WorldRules.List, i)
+                if Shared._rulesListRefresh then Shared._rulesListRefresh() end
+                return
+            end
+        end
+    end
+    function Shared.renameRule(id, newName)
+        for _, r in ipairs(WorldRules.List) do
+            if r.id == id then
+                r.name = (newName ~= "" and newName) or r.name
+                if Shared._rulesListRefresh then Shared._rulesListRefresh() end
+                return
+            end
+        end
+    end
+
+    ---------------------------------------------- Object Offset settings popup
+    -- Reused for BOTH "creating a new rule" (rule is a temp table) AND future
+    -- "editing an existing rule". Live preview: temp rule is added to
+    -- WorldRules.List while the popup is open so the render loop drives it;
+    -- Cancel removes it, Submit keeps it.
+    local function openObjectOffsetPopup(targetInst, targetPath, existingRule)
+        local m = openModal(360, 480)
+        local temp = existingRule or {
+            type = "ObjectOffset", name = ("Offset: " .. targetInst.Name),
+            targetPath = targetPath, _target = targetInst,
+            settings = {
+                MaterialOverride = false, Material = "Neon",
+                OffsetX = 0, OffsetY = 0, OffsetZ = 0,
+                RotX = 0, RotY = 0, RotZ = 0,
+                Spin = false, SpinSpeed = 45, SpinAxis = "Y",
+            },
+        }
+        -- add early so the render loop drives live preview
+        if not existingRule then Shared.addRule(temp) end
+
+        new("TextLabel", {
+            Text = "object offset -- " .. targetInst.Name,
+            FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
+            ZIndex = 202, Parent = m.box,
+        })
+        local body = new("ScrollingFrame", {
+            Position = UDim2.new(0, 12, 0, 40), Size = UDim2.new(1, -24, 1, -90),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.TextFaint,
+            ZIndex = 202, Parent = m.box,
+        }, { new("UIListLayout", { Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        -- material override toggle + material dropdown
+        configCheckbox(body, "Override Material", temp.settings.MaterialOverride,
+            function(v) temp.settings.MaterialOverride = v end)
+        dropdown(body, "Material", MATERIALS, temp.settings.Material,
+            function(v) temp.settings.Material = v end)
+
+        -- offsets
+        slider(body, "Offset X", -100, 100, temp.settings.OffsetX, 2, function(v) temp.settings.OffsetX = v end)
+        slider(body, "Offset Y", -100, 100, temp.settings.OffsetY, 2, function(v) temp.settings.OffsetY = v end)
+        slider(body, "Offset Z", -100, 100, temp.settings.OffsetZ, 2, function(v) temp.settings.OffsetZ = v end)
+        -- rotations
+        slider(body, "Rotation X", -180, 180, temp.settings.RotX, 0, function(v) temp.settings.RotX = v end)
+        slider(body, "Rotation Y", -180, 180, temp.settings.RotY, 0, function(v) temp.settings.RotY = v end)
+        slider(body, "Rotation Z", -180, 180, temp.settings.RotZ, 0, function(v) temp.settings.RotZ = v end)
+        -- spin
+        configCheckbox(body, "Spin", temp.settings.Spin, function(v) temp.settings.Spin = v end)
+        slider(body, "Spin Speed (deg/s)", 0, 720, temp.settings.SpinSpeed, 0, function(v) temp.settings.SpinSpeed = v end)
+        dropdown(body, "Spin Axis", { "X", "Y", "Z" }, temp.settings.SpinAxis, function(v) temp.settings.SpinAxis = v end)
+
+        local cancel = new("TextButton", {
+            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -108, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        local submit = new("TextButton", {
+            Text = "submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        cancel.MouseButton1Click:Connect(function()
+            m.close()
+            if not existingRule then Shared.removeRule(temp.id) end
+        end)
+        submit.MouseButton1Click:Connect(function() m.close() end)
+    end
+    Shared.openObjectOffsetPopup = openObjectOffsetPopup
+
+    ----------------------------------------------- rule TYPE picker (first popup)
+    local RULE_TYPES = {
+        { key = "ObjectOffset",  label = "Object Offset",
+          desc = "material + position + rotation + spin on a target instance." },
+        { key = "AntiAnimation", label = "Anti-animation",
+          desc = "block a specific animation id from ever playing on you." },
+    }
+    local function openRuleTypePicker()
+        local m = openModal(360, 220)
+        new("TextLabel", {
+            Text = "new rule", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
+            ZIndex = 202, Parent = m.box,
+        })
+        local pick = nil
+        local buttons = {}
+        for i, rt in ipairs(RULE_TYPES) do
+            local b = new("TextButton", {
+                Text = "  " .. rt.label .. "  --  " .. rt.desc,
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, TextXAlignment = Enum.TextXAlignment.Left,
+                AutoButtonColor = false,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.3,
+                BorderSizePixel = 0,
+                Position = UDim2.new(0, 16, 0, 40 + (i - 1) * 42),
+                Size = UDim2.new(1, -32, 0, 34),
+                ZIndex = 202, Parent = m.box,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            buttons[i] = b
+            b.MouseButton1Click:Connect(function()
+                pick = rt.key
+                for _, bb in ipairs(buttons) do
+                    bb.BackgroundColor3 = Theme.Palette.PanelElevated
+                    bb.BackgroundTransparency = 0.3
+                end
+                b.BackgroundColor3 = Theme.Palette.Accent
+                b.BackgroundTransparency = 0.15
+            end)
+        end
+        local cancel = new("TextButton", {
+            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -108, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        local submit = new("TextButton", {
+            Text = "submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        cancel.MouseButton1Click:Connect(function() m.close() end)
+        submit.MouseButton1Click:Connect(function()
+            m.close()
+            if pick == "ObjectOffset" then
+                openInstancePicker(function(inst, path)
+                    openObjectOffsetPopup(inst, path, nil)
+                end, { title = "select target for object offset" })
+            elseif pick == "AntiAnimation" then
+                openTextPopup("anti-animation", "", "rbxassetid (numbers or full url)",
+                    function(id)
+                        local num = tostring(id):match("(%d+)")
+                        if not num then return end
+                        Shared.addRule({ type = "AntiAnimation", name = "Anti-anim " .. num,
+                            settings = { AnimId = num } })
+                    end)
+            end
+        end)
+    end
+    Shared.openRuleTypePicker = openRuleTypePicker
+
+    ------------------------------------------ rehydrate rules on config load
+    -- Configs restore WorldRules.List with just plain data (targetPath strings,
+    -- settings). Underscore fields (_target, _snap, _spinAcc) start nil and
+    -- resolve/get populated on the first render tick. AntiAnim engine kicks in
+    -- automatically once startAntiAnimEngine sees an active rule.
+    task.spawn(function()
+        task.wait(0.5)
+        for _, r in ipairs(WorldRules.List) do
+            if r.type == "AntiAnimation" then startAntiAnimEngine() end
+        end
     end)
 end)()
 
@@ -10846,10 +11549,45 @@ addTab("Visuals", function(root)
         popup:slider("Scale",        1, 3, Crosshair.Pulse.Scale, 2, function(v) Crosshair.Pulse.Scale = v end)
         popup:slider("Duration (s)", 0.05, 1, Crosshair.Pulse.Duration, 2, function(v) Crosshair.Pulse.Duration = v end)
     end)
+
+    -- v0.6.0: Lock To Part -- picks a specific instance via the wave-3 explorer.
+    -- Overrides Follow Target + Origin. "Open" button reopens the picker to
+    -- change or clear the selection. Empty state shows an inline hint.
+    local xhLockRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
+        ZIndex = 33, Parent = xhCard,
+    })
+    local xhLockCB = configCheckbox(xhLockRow, "Lock To Part", Crosshair.LockToPart.Enabled,
+        function(v)
+            Crosshair.LockToPart.Enabled = v
+            if not v then Crosshair.LockToPart._target = nil end
+        end)
+    local xhOpenBtn = new("TextButton", {
+        Text = "open", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+        AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+        BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.new(0, 60, 0, 20),
+        ZIndex = 38, Parent = xhLockCB.row,
+    }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+    xhOpenBtn.MouseButton1Click:Connect(function()
+        if not Shared.openInstancePicker then return end
+        Shared.openInstancePicker(function(inst, path)
+            Crosshair.LockToPart.InstancePath = path
+            Crosshair.LockToPart._target = inst
+        end, { title = "lock crosshair to part", subtitle = "pick any physical instance." })
+    end)
 end)
 
 addTab("World", function(root)
-    local lighting = panel(root, "World Lighting")
+    -- v0.6.0: World is now subtab-driven. Same content as before goes into the
+    -- Lighting / Effects sub-tabs; new Rules sub-tab is a full list UI with
+    -- plus/delete/rename + rule creation flow (type picker -> per-type popups).
+    local wCard = panel(root)
+    local W = Shared.subTabs and Shared.subTabs(wCard, { "Lighting", "Effects", "Rules" })
+        or { Lighting = root, Effects = root, Rules = root }
+
+    local lighting = panel(W.Lighting, "World Lighting")
     moduleCheckbox(lighting, "Fullbright",  "fullbright")
     moduleCheckbox(lighting, "No Fog",      "nofog")
     moduleCheckbox(lighting, "Custom Time", "customtime")
@@ -10861,7 +11599,7 @@ addTab("World", function(root)
     end)
 
     -- v0.0.100: effects batch
-    local fx = panel(root, "Effects")
+    local fx = panel(W.Effects, "Effects")
     local cc = moduleCheckbox(fx, "Color Correction", "colorcorrection")
     attachSingleSwatch(cc.row, World.CC.Tint, function(c) World.CC.Tint = c end)
     slider(fx, "Saturation", -1, 1, World.CC.Saturation, 2, function(v) World.CC.Saturation = v end)
@@ -10873,6 +11611,95 @@ addTab("World", function(root)
     moduleCheckbox(fx, "Remove Sky",     "removesky")
     moduleCheckbox(fx, "Disable Clouds", "noclouds")
     moduleCheckbox(fx, "Low Graphics",   "lowgfx")
+
+    -- v0.6.0: RULES sub-tab. Plus button + list of rule rows (name + delete).
+    -- Clicking the name opens a rename popup. Plus opens the rule-type picker.
+    local rulesCard = panel(W.Rules, "Rules")
+    local headerRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
+        ZIndex = 33, Parent = rulesCard,
+    })
+    new("TextLabel", {
+        Text = "your rules apply live, and save with your config.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.new(0, 0, 0, 4), Size = UDim2.new(1, -34, 0, 16),
+        ZIndex = 34, Parent = headerRow,
+    })
+    local plusBtn = new("TextButton", {
+        Text = "+", FontFace = Theme.Fonts.Bold, TextSize = 16,
+        AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+        BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
+        BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, 0, 0, 0), Size = UDim2.new(0, 26, 0, 20),
+        ZIndex = 34, Parent = headerRow,
+    }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+    plusBtn.MouseButton1Click:Connect(function()
+        if Shared.openRuleTypePicker then Shared.openRuleTypePicker() end
+    end)
+
+    local rulesList = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, ZIndex = 33, Parent = rulesCard,
+    }, { new("UIListLayout", { Padding = UDim.new(0, 4),
+        SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local emptyLabel = new("TextLabel", {
+        Text = "no rules yet -- click + to add one.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Size = UDim2.new(1, 0, 0, 20), ZIndex = 34, Parent = rulesList,
+    })
+
+    local function refreshRules()
+        for _, ch in ipairs(rulesList:GetChildren()) do
+            if ch:IsA("Frame") and ch ~= emptyLabel then ch:Destroy() end
+        end
+        emptyLabel.Visible = (#Shared.WorldRules.List == 0)
+        for i, rule in ipairs(Shared.WorldRules.List) do
+            local row = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 26),
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.3,
+                BorderSizePixel = 0, LayoutOrder = i, ZIndex = 34, Parent = rulesList,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            -- type badge
+            new("TextLabel", {
+                Text = (rule.type == "AntiAnimation" and "anti-anim" or "offset"),
+                FontFace = Theme.Fonts.Mono, TextSize = 10,
+                TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                Position = UDim2.new(0, 8, 0, 0), Size = UDim2.new(0, 64, 1, 0),
+                TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = row,
+            })
+            -- name -- clicking opens rename popup
+            local nameBtn = new("TextButton", {
+                Text = rule.name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+                TextColor3 = Theme.Palette.Text, AutoButtonColor = false,
+                BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                Position = UDim2.new(0, 76, 0, 0), Size = UDim2.new(1, -110, 1, 0),
+                TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 35, Parent = row,
+            })
+            nameBtn.MouseButton1Click:Connect(function()
+                if Shared.openTextPopup then
+                    Shared.openTextPopup("rename rule", rule.name, "new name",
+                        function(newName) Shared.renameRule(rule.id, newName) end)
+                end
+            end)
+            -- delete icon
+            local delBtn = new("TextButton", {
+                Text = "x", FontFace = Theme.Fonts.Bold, TextSize = 14,
+                AutoButtonColor = false, TextColor3 = Theme.Palette.Danger or Color3.fromRGB(220, 90, 90),
+                BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.35,
+                BorderSizePixel = 0,
+                AnchorPoint = Vector2.new(1, 0.5),
+                Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.new(0, 22, 0, 20),
+                ZIndex = 35, Parent = row,
+            }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+            delBtn.MouseButton1Click:Connect(function() Shared.removeRule(rule.id) end)
+        end
+    end
+    Shared._rulesListRefresh = refreshRules
+    refreshRules()
 end)
 
 addTab("Character", function(root) Koffee._characterTab(root) end)
