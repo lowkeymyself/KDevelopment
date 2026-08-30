@@ -1,9 +1,70 @@
--- koffee v0.9.0
+-- koffee v0.10.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.9.0"
+Koffee.Version = "0.10.0"
+
+-- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Hooks the anti-cheat's
+-- Detected/Kill paths to no-ops. Fully guarded: if the runtime lacks any required
+-- global (getgc, hookfunction, setthreadidentity, getrenv) the whole block pcalls
+-- out and the suite loads normally.
+-- v0.10.0: runs FIRST and SYNCHRONOUSLY -- moved above the asset preloader, and
+-- both the v0.1.1 task.spawn deferral and the v0.3.8 presence gate are gone. The
+-- hooks are in place before any other Koffee code executes, with no window where
+-- the AC is live and we are not. Cost is the getgc(true) walk on every load,
+-- Adonis server or not: a visible hitch on heavy games.
+pcall(function()
+    if not (getgc and hookfunction and setthreadidentity and getrenv) then return end
+    local dbg = false          -- flip true to see what the AC tried to do
+    local held = {}            -- keep hook refs alive
+    local flagged, killer
+
+    setthreadidentity(2)
+    for _, v in getgc(true) do
+        if typeof(v) == "table" then
+            local det = rawget(v, "Detected")
+            local kil = rawget(v, "Kill")
+            if typeof(det) == "function" and not flagged then
+                flagged = det
+                pcall(function()
+                    hookfunction(flagged, function(method, info)
+                        if dbg and method ~= "_" then
+                            warn(("Adonis AntiCheat flagged\nMethod: %s\nInfo: %s"):format(tostring(method), tostring(info)))
+                        end
+                        return true
+                    end)
+                    table.insert(held, flagged)
+                end)
+            end
+            if rawget(v, "Variables") and rawget(v, "Process") and typeof(kil) == "function" and not killer then
+                killer = kil
+                pcall(function()
+                    hookfunction(killer, function(reason)
+                        if dbg then warn("adonis tried to kill (fb): " .. tostring(reason)) end
+                    end)
+                    table.insert(held, killer)
+                end)
+            end
+        end
+    end
+
+    -- defeat debug.info-based detection of the flagged-fn hook
+    pcall(function()
+        local realInfo = getrenv().debug.info
+        local wrapper  = newcclosure or function(f) return f end
+        local o; o = hookfunction(realInfo, wrapper(function(...)
+            local a = ...
+            if flagged and a == flagged then
+                if dbg then warn("zyn | adonis gone") end
+                return coroutine.yield(coroutine.running())
+            end
+            return o(...)
+        end))
+    end)
+
+    setthreadidentity(7)
+end)
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -18,6 +79,23 @@ do
         "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
         "minecraft orb", "neverlose", "rust", "skeet",
     }
+    -- v0.10.0: second sound pack, pulled from the Takurin repo's fx/ folder.
+    -- display name -> path under fx/. These land as .ogg beside the .mp3 pack; the
+    -- resolver probes both extensions.
+    local TK = "https://raw.githubusercontent.com/lowkeymyself/Takurin/main/fx/"
+    local TK_SOUNDS = {
+        { "bonk", "bonk" }, { "bring", "bring" }, { "magic squash", "magic_squash" },
+        { "meow", "meow" }, { "nya", "nya" }, { "pop", "pop" }, { "soft", "soft" },
+        { "squash", "squash" }, { "tung", "tung" }, { "uwu", "uwu" },
+    }
+    for i = 1, 6 do TK_SOUNDS[#TK_SOUNDS + 1] = { "boykisser " .. i, "boykisser/boykisser-" .. i } end
+    for i = 1, 3 do TK_SOUNDS[#TK_SOUNDS + 1] = { "click " .. i,     "click/click-" .. i } end
+    for i = 1, 3 do TK_SOUNDS[#TK_SOUNDS + 1] = { "glass " .. i,     "glass/glass-" .. i } end
+    for i = 1, 4 do TK_SOUNDS[#TK_SOUNDS + 1] = { "moan " .. i,      "moan/moan-" .. i } end
+    -- v0.10.0: particle art for the 3D world FX + hit effects. Tiny (1-4KB each)
+    -- and needed the moment any of those features is switched on, so they ride the
+    -- blocking prefetch rather than downloading mid-fight.
+    local FXTEX = { "fx_dot", "fx_flake", "fx_petal", "fx_shard", "fx_star", "fx_streak" }
     local MANIFEST = {
         { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
         { name = "font: minecraft bold",   path = "Koffee/fonts/MinecraftBold.otf",     url = BASE .. "MinecraftBold.otf",     min = 512 },
@@ -32,6 +110,22 @@ do
             path = "Koffee/sounds/" .. s .. ".mp3",
             url  = BASE .. "sounds/" .. string.gsub(s, " ", "%%20") .. ".mp3",
             min  = 512,
+        })
+    end
+    for _, e in ipairs(TK_SOUNDS) do
+        table.insert(MANIFEST, {
+            name = "sound: " .. e[1],
+            path = "Koffee/sounds/" .. e[1] .. ".ogg",
+            url  = TK .. e[2] .. ".ogg",
+            min  = 512,
+        })
+    end
+    for _, t in ipairs(FXTEX) do
+        table.insert(MANIFEST, {
+            name = "fx: " .. t,
+            path = "Koffee/fx/" .. t .. ".png",
+            url  = BASE .. t .. ".png",
+            min  = 256,
         })
     end
 
@@ -215,6 +309,8 @@ do
             pcall(makefolder, "Koffee")
             pcall(makefolder, "Koffee/sounds")
             pcall(makefolder, "Koffee/fonts")
+            pcall(makefolder, "Koffee/fx")
+            pcall(makefolder, "Koffee/sky")
 
             local function settle(entry)
                 for attempt = 1, 2 do
@@ -283,95 +379,6 @@ do
         Koffee._assetsReady = true
     end
 end
-
--- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Hooks the anti-cheat's
--- Detected/Kill paths to no-ops. Fully guarded: if the runtime lacks any required
--- global (getgc, hookfunction, setthreadidentity, getrenv) the whole block pcalls
--- out and the suite loads normally.
--- v0.1.1: DEFERRED to task.spawn. The getgc(true) walk is O(N) over every live GC
--- object -- on populated games (busy Adonis servers, dev-console builds) this
--- crossed the "game freezes on load" threshold. Deferring means the AC hooks
--- install one frame after script load instead of before the first line of user
--- code runs; Adonis doesn't fire in that window in any observed game. Still
--- pcall'd -- errors here must never take the suite down.
--- v0.3.8: PRESENCE GATE. High-quality games (big worlds, heavy modules) can
--- hit a 100k+ live GC-object heap where getgc(true) itself is the freezer,
--- even when the game runs no Adonis at all. Cheap presence check up-front:
--- look for the client-side Adonis loader in ReplicatedStorage / PlayerScripts
--- (both cheap FindFirstChild calls) and the getgenv/_G markers Adonis
--- typically leaves. If none are present, skip the walk entirely -- the whole
--- bypass is Adonis-specific and does nothing useful on non-Adonis servers.
--- (Retry once ~5s in for late-loading Adonis clients before giving up.)
-local function adonisLikelyPresent()
-    local RS = game:GetService("ReplicatedStorage")
-    if RS:FindFirstChild("Adonis_Client") then return true end
-    if RS:FindFirstChild("Adonis") then return true end
-    -- LocalPlayer is resolved further down the file, so grab it fresh here.
-    local lp = game:GetService("Players").LocalPlayer
-    local ps = lp and lp:FindFirstChild("PlayerScripts")
-    if ps and ps:FindFirstChild("Adonis_Client") then return true end
-    local genv = (getgenv and getgenv()) or {}
-    if genv.Adonis or genv.Adonis_Loader or genv["Adonis Cache"] then return true end
-    if rawget(_G, "Adonis") or rawget(_G, "Adonis_Loader") then return true end
-    return false
-end
-task.spawn(function()
-pcall(function()
-    if not (getgc and hookfunction and setthreadidentity and getrenv) then return end
-    if not adonisLikelyPresent() then
-        task.wait(5)
-        if not adonisLikelyPresent() then return end
-    end
-    local dbg = false          -- flip true to see what the AC tried to do
-    local held = {}            -- keep hook refs alive
-    local flagged, killer
-
-    setthreadidentity(2)
-    for _, v in getgc(true) do
-        if typeof(v) == "table" then
-            local det = rawget(v, "Detected")
-            local kil = rawget(v, "Kill")
-            if typeof(det) == "function" and not flagged then
-                flagged = det
-                pcall(function()
-                    hookfunction(flagged, function(method, info)
-                        if dbg and method ~= "_" then
-                            warn(("Adonis AntiCheat flagged\nMethod: %s\nInfo: %s"):format(tostring(method), tostring(info)))
-                        end
-                        return true
-                    end)
-                    table.insert(held, flagged)
-                end)
-            end
-            if rawget(v, "Variables") and rawget(v, "Process") and typeof(kil) == "function" and not killer then
-                killer = kil
-                pcall(function()
-                    hookfunction(killer, function(reason)
-                        if dbg then warn("adonis tried to kill (fb): " .. tostring(reason)) end
-                    end)
-                    table.insert(held, killer)
-                end)
-            end
-        end
-    end
-
-    -- defeat debug.info-based detection of the flagged-fn hook
-    pcall(function()
-        local realInfo = getrenv().debug.info
-        local wrapper  = newcclosure or function(f) return f end
-        local o; o = hookfunction(realInfo, wrapper(function(...)
-            local a = ...
-            if flagged and a == flagged then
-                if dbg then warn("zyn | adonis gone") end
-                return coroutine.yield(coroutine.running())
-            end
-            return o(...)
-        end))
-    end)
-
-    setthreadidentity(7)
-end)
-end)
 
 -- v0.0.96 EXECUTOR PROFILING + SAFE MODE PROMPT. Weak executors crash when
 -- silent aim installs the full __namecall hook (newcclosure+hookmetamethod is a
@@ -3245,6 +3252,9 @@ local function chevron(parent, sizePx)
 end
 
 local function dropdown(parent, label, options, initial, onChange)
+    -- v0.10.0: never let a nil/absent option list take the whole tab down with it.
+    -- An empty dropdown is a visible, reportable bug; a stack trace is a dead UI.
+    options = options or {}
     local wrap = new("Frame", {
         Size = UDim2.new(1, 0, 0, 48),
         BackgroundTransparency = 1,
@@ -6133,7 +6143,11 @@ local World = {
     Time       = { Saved = nil, Target = 14, Conn = nil },
     -- v0.0.100: effects batch
     CC     = { Saved = nil, Conn = nil, Owned = nil, Saturation = 0, Contrast = 0, Brightness = 0, Tint = Color3.fromRGB(255, 255, 255) },
-    Light  = { Saved = nil, Conn = nil, Color = Color3.fromRGB(255, 255, 255), Intensity = 1 },
+    -- v0.10.0: Split swaps Color for the Indoor/Outdoor pair (Lighting.Ambient vs
+    -- Lighting.OutdoorAmbient). Off by default so old configs are unchanged.
+    Light  = { Saved = nil, Conn = nil, Color = Color3.fromRGB(255, 255, 255), Intensity = 1,
+               Split = false, Indoor = Color3.fromRGB(120, 130, 170),
+               Outdoor = Color3.fromRGB(255, 240, 210) },
     Sky    = { Saved = nil, Conn = nil },
     Clouds = { Saved = nil, Conn = nil },
     Gfx    = { Saved = nil },
@@ -6157,16 +6171,116 @@ World.FX = {
     -- defaults are chosen against LIVE particle count, not the rate alone: a rate of
     -- N with a lifetime of L keeps N*L alive at once, so slow effects need a much
     -- lower rate than fast ones to land in the same ~1-1.5k budget.
-    Snow   = { Enabled = false, Density = 100, Speed = 1.0, Size = 0.35, Wind = 1.5,
+    -- v0.10.0: Wind defaults to 0 -- these fall, they don't blow sideways. Sway is
+    -- the emission spread that gives the wobble without any net drift.
+    Snow   = { Enabled = false, Density = 100, Speed = 1.0, Size = 0.35, Wind = 0,
+               Sway = 16, Style = "Soft",   -- "Soft" | "Flake"
                Color = Color3.fromRGB(255, 253, 248) },
-    Rain   = { Enabled = false, Density = 500, Speed = 1.0, Streak = 14, Wind = 1.0,
+    Rain   = { Enabled = false, Density = 500, Speed = 1.0, Streak = 14, Wind = 0,
                Color = Color3.fromRGB(180, 200, 240) },
-    -- v0.9.0: slow, heavily rotating petals with real lateral drift. Sparse on
-    -- purpose -- and at a ~22s lifetime a small rate is already a full sky.
-    Sakura = { Enabled = false, Density = 40, Speed = 1.0, Size = 0.5, Wind = 4.0,
-               Spin = 140, Color = Color3.fromRGB(255, 183, 210) },
+    -- v0.9.0: slow, heavily tumbling petals. Sparse on purpose -- at a ~20s
+    -- lifetime a small rate is already a full sky.
+    Sakura = { Enabled = false, Density = 40, Speed = 1.0, Size = 0.5, Wind = 0,
+               Sway = 34, Spin = 160, Color = Color3.fromRGB(255, 183, 210) },
 }
 registerConfig("world_fx", World.FX)
+
+-- v0.10.0 CUSTOM SKYBOXES. Faces come from the Takurin repo (topsky/<Name>/
+-- sky512_*.tex). The full set is ~60MB, so these are the one asset class that does
+-- NOT ride the loader's blocking prefetch -- a sky downloads the first time it is
+-- picked and is cached on disk from then on. Own IIFE for the register budget.
+World.SkyBox = { Name = "None" }
+registerConfig("world_skybox", World.SkyBox)
+;(function()
+    local SKY_BASE = "https://raw.githubusercontent.com/lowkeymyself/Takurin/main/topsky/"
+    local FACES = { "bk", "dn", "ft", "lf", "rt", "up" }
+    Shared._skyNames = { "None", "Aurora", "Emo", "Goodnight", "Hades", "Hazy",
+        "Moonlight", "Overcast", "Pink Sunrise", "Space Blue", "Spooky", "Universe" }
+
+    local ownSky, hidden, applied, busy = nil, nil, "None", false
+
+    local function httpGet(url)
+        local req = (syn and syn.request) or (http and http.request) or http_request or request
+        if req then
+            local ok, r = pcall(req, { Url = url, Method = "GET" })
+            if ok and r and r.Body and #r.Body > 1024 then return r.Body end
+        end
+        local ok, b = pcall(function() return game:HttpGetAsync(url) end)
+        if ok and b and #b > 1024 then return b end
+        return nil
+    end
+
+    -- download (once) + resolve all six faces. Returns nil on any failure so a
+    -- half-downloaded sky never gets applied as a set of broken faces.
+    local function ensureFaces(name)
+        if not (writefile and isfile and getcustomasset) then return nil end
+        if makefolder then
+            pcall(makefolder, "Koffee/sky")
+            pcall(makefolder, "Koffee/sky/" .. name)
+        end
+        local ids = {}
+        for _, f in ipairs(FACES) do
+            local path = "Koffee/sky/" .. name .. "/sky512_" .. f .. ".tex"
+            if not isfile(path) then
+                local body = httpGet(SKY_BASE .. name:gsub(" ", "%%20") .. "/sky512_" .. f .. ".tex")
+                if not body then return nil end
+                if not pcall(writefile, path, body) then return nil end
+            end
+            local ok, id = pcall(getcustomasset, path)
+            if not (ok and type(id) == "string" and #id > 0) then return nil end
+            ids[f] = id
+        end
+        return ids
+    end
+
+    local function apply(name)
+        if name == "None" then
+            if ownSky then ownSky:Destroy(); ownSky = nil end
+            for _, e in ipairs(hidden or {}) do
+                if e.sky and not e.sky.Parent then pcall(function() e.sky.Parent = e.parent end) end
+            end
+            hidden = nil
+            applied = "None"
+            return
+        end
+        if busy then return end
+        busy = true
+        task.spawn(function()
+            local ids = ensureFaces(name)
+            busy = false
+            -- mark it applied even on failure: the heartbeat is edge-triggered on
+            -- (Name ~= applied), and leaving them mismatched would re-attempt the
+            -- download every single frame. Switch away and back to retry.
+            applied = name
+            if not ids then return end
+            -- the user may have changed the dropdown while we were downloading
+            if World.SkyBox.Name ~= name then return end
+            if not hidden then
+                hidden = {}
+                for _, s in ipairs(Lighting:GetChildren()) do
+                    if s:IsA("Sky") then
+                        table.insert(hidden, { sky = s, parent = s.Parent })
+                        s.Parent = nil
+                    end
+                end
+            end
+            if ownSky then ownSky:Destroy() end
+            ownSky = KID.track(Instance.new("Sky"))
+            ownSky.Name = KID.name("sky")
+            ownSky.SkyboxBk, ownSky.SkyboxDn = ids.bk, ids.dn
+            ownSky.SkyboxFt, ownSky.SkyboxLf = ids.ft, ids.lf
+            ownSky.SkyboxRt, ownSky.SkyboxUp = ids.rt, ids.up
+            ownSky.Parent = Lighting
+        end)
+    end
+
+    -- Driven off state rather than the dropdown's callback, so a loaded config
+    -- applies its sky too (rebuildConfigTabs repaints widgets without firing them).
+    RunService.Heartbeat:Connect(function()
+        if Koffee._unloaded then return end
+        if World.SkyBox.Name ~= applied and not busy then apply(World.SkyBox.Name) end
+    end)
+end)()
 
 registerModule("fullbright", "Fullbright",
     function()
@@ -6310,6 +6424,11 @@ registerModule("colorcorrection", "Color Correction",
     end
 )
 
+-- v0.10.0: indoor and outdoor ambient are separate colours now. They were pinned to
+-- one swatch driving both, which throws away the only interesting thing about the
+-- pair -- Ambient lifts shadowed/indoor surfaces, OutdoorAmbient lifts sky-lit ones,
+-- and splitting them is how you get a lit interior under a cold sky (or the reverse).
+-- Split defaults to off so existing configs keep the single-colour behaviour.
 registerModule("ambientcolor", "Ambient Color",
     function()
         World.Light.Saved = {
@@ -6317,9 +6436,15 @@ registerModule("ambientcolor", "Ambient Color",
             OutdoorAmbient = Lighting.OutdoorAmbient,
         }
         World.Light.Conn = RunService.Heartbeat:Connect(function()
-            local c = World.Light.Color * World.Light.Intensity
-            Lighting.Ambient = c
-            Lighting.OutdoorAmbient = c
+            local i = World.Light.Intensity
+            if World.Light.Split then
+                Lighting.Ambient        = World.Light.Indoor * i
+                Lighting.OutdoorAmbient = World.Light.Outdoor * i
+            else
+                local c = World.Light.Color * i
+                Lighting.Ambient = c
+                Lighting.OutdoorAmbient = c
+            end
         end)
     end,
     function()
@@ -7312,6 +7437,13 @@ end)
 local MATERIALS = { "Plastic", "SmoothPlastic", "Neon", "ForceField", "Static", "Glass", "Metal",
     "DiamondPlate", "Foil", "Wood", "WoodPlanks", "Marble", "Granite", "Slate", "Concrete",
     "Brick", "Cobblestone", "Ice", "Grass", "Sand", "Fabric", "Pebble", "CorrodedMetal" }
+-- v0.10.0: MATERIALS is a local of the character IIFE, so the World Rules IIFE's
+-- object-offset popup was reading a nil GLOBAL and dying on `#options` inside
+-- dropdown(). Publish it instead of hoisting -- a chunk-level local would eat one
+-- of the 200 registers this file is already close to. Underscored because Shared is
+-- a registered config table and a bare key would serialize 23 strings into every
+-- saved config.
+Shared._materials = MATERIALS
 
 -- v0.0.58: expandable material preview -- click the small preview to open a mac-styled
 -- (Koffee-coloured) floating window: drag the title bar to move, hold right-click on the
@@ -9118,10 +9250,20 @@ local Combat = {
     -- type; suppressed while the menu is open. Presets are <exec>/Koffee/sounds/
     -- mp3 names (getcustomasset per play; CustomId > 0 overrides with a
     -- rbxassetid://). Sound silently no-ops on executors without the API.
+    -- v0.10.0: one list, two packs. The koffee-assets mp3s came first; everything
+    -- from "bonk" down is the Takurin fx/ pack (ogg). Both prefetch in the loader
+    -- manifest and resolveSoundId probes either extension, so the split is invisible
+    -- from the dropdown. Was duplicated as SND_PRESETS_LIST in the tab builder.
     local SND_PRESETS = {
         "12", "agpa2", "basshit", "bell", "blizzard", "bubble", "chockpro",
         "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
         "minecraft orb", "neverlose", "rust", "skeet",
+        "bonk", "bring", "magic squash", "meow", "nya", "pop", "soft",
+        "squash", "tung", "uwu",
+        "boykisser 1", "boykisser 2", "boykisser 3", "boykisser 4", "boykisser 5", "boykisser 6",
+        "click 1", "click 2", "click 3",
+        "glass 1", "glass 2", "glass 3",
+        "moan 1", "moan 2", "moan 3", "moan 4",
     }
     local SoundService = game:GetService("SoundService")
     local hitSnd = Instance.new("Sound"); hitSnd.Name = "KHitSnd"; hitSnd.Parent = SoundService
@@ -9135,8 +9277,16 @@ local Combat = {
             return "rbxassetid://" .. tostring(cfg.CustomId)
         end
         if cfg.Preset and cfg.Preset ~= "" and getcustomasset then
-            local ok, id = pcall(getcustomasset, "Koffee/sounds/" .. cfg.Preset .. ".mp3")
-            if ok and type(id) == "string" and #id > 0 then return id end
+            -- v0.10.0: koffee-assets ships mp3, the Takurin pack ships ogg. Probe
+            -- both, and check isfile first so a missing file doesn't hand back a
+            -- bogus content id that plays silence forever.
+            for _, ext in ipairs({ ".mp3", ".ogg" }) do
+                local path = "Koffee/sounds/" .. cfg.Preset .. ext
+                if (not isfile) or isfile(path) then
+                    local ok, id = pcall(getcustomasset, path)
+                    if ok and type(id) == "string" and #id > 0 then return id end
+                end
+            end
         end
         return nil
     end
@@ -9454,7 +9604,6 @@ local Combat = {
             end
         end
     end)
-
 
     --== input: rebind capture + activation ==--
     UserInputService.InputBegan:Connect(function(input, gpe)
@@ -10046,11 +10195,7 @@ local Combat = {
         -- shared Mouse Radius slider that tunes the mouse-target lock threshold.
         -- v0.0.89: preset list = filenames from <exec>/Koffee/sounds/*.mp3.
         -- Loader ships these files (or user copies once). See getcustomasset resolver.
-        local SND_PRESETS_LIST = {
-            "12", "agpa2", "basshit", "bell", "blizzard", "bubble", "chockpro",
-            "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
-            "minecraft orb", "neverlose", "rust", "skeet",
-        }
+        local SND_PRESETS_LIST = SND_PRESETS   -- v0.10.0: single source, see above
         local soundCard = panel(leftCol, "Sounds")
         configCheckbox(soundCard, "Hit Sound", Combat.HitSounds.Hit.Enabled, function(v) Combat.HitSounds.Hit.Enabled = v end)
         dropdown(soundCard, "Hit Preset", SND_PRESETS_LIST, Combat.HitSounds.Hit.Preset, function(v) Combat.HitSounds.Hit.Preset = v end)
@@ -10072,9 +10217,11 @@ local Combat = {
         -- Both rows sit inside the Sounds card (kept together in the UI even
         -- though they draw pixels, not audio). Right-click each for the deep
         -- knobs (color, scale, duration, attach part).
-        -- v0.9.0: six 3D presets (was four flavours of the same expanding circle).
-        -- Old configs naming Ring / Flash fall through to Impact.
-        local HFX_PRESETS = { "Impact", "Sparks", "Blood", "Shockwave", "Nova", "Ember" }
+        -- v0.9.0: 3D presets (was four flavours of the same expanding circle).
+        -- v0.10.0: textured art + four more. Old configs naming Ring / Flash fall
+        -- through to Impact.
+        local HFX_PRESETS = { "Impact", "Sparks", "Blood", "Shockwave", "Nova", "Ember",
+            "Snowburst", "Confetti", "Glass", "Starfall" }
         local HFX_ATTACH  = { "Head", "HRP", "Torso" }
         -- v0.7.1 fix: attachSingleSwatch is a chunk-local declared BELOW the
         -- Combat IIFE (line ~10272) so the upvalue captured here is nil at
@@ -10984,8 +11131,11 @@ end)()
 
     ------------------------------------------------------------- filter/icons
     local function isPhysical(inst)
+        -- v0.10.0: Tool counts. A held weapon is the single most common offset
+        -- target and it was invisible to the explorer before.
         return inst:IsA("BasePart") or inst:IsA("Model") or inst:IsA("UnionOperation")
-            or inst:IsA("MeshPart") or inst:IsA("NegateOperation") or inst:IsA("IntersectOperation")
+            or inst:IsA("MeshPart") or inst:IsA("NegateOperation")
+            or inst:IsA("IntersectOperation") or inst:IsA("Tool")
     end
     local function containsPhysical(inst)
         -- Cap depth so expansion cost stays bounded on big trees. 6 is enough
@@ -11016,7 +11166,7 @@ end)()
     local function isSelectableAsTarget(inst)
         return inst:IsA("BasePart") or inst:IsA("Model") or inst:IsA("MeshPart")
             or inst:IsA("UnionOperation") or inst:IsA("NegateOperation")
-            or inst:IsA("IntersectOperation")
+            or inst:IsA("IntersectOperation") or inst:IsA("Tool")
     end
     local function shouldShow(inst)
         -- Physical always. Anything else only if it holds a physical descendant.
@@ -11035,6 +11185,13 @@ end)()
             Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0),
             BackgroundTransparency = 1, BorderSizePixel = 0,
             ZIndex = 200, Parent = popupScreen,
+        })
+        -- v0.10.0: a Frame doesn't absorb input, so clicks landed on the window
+        -- behind the modal -- you could drive the UI underneath a dialog. A
+        -- full-bleed transparent button under the box eats everything that misses.
+        new("TextButton", {
+            Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 1, 0), ZIndex = 200, Parent = dim,
         })
         tween(dim, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
             { BackgroundTransparency = 0.5 })
@@ -11133,6 +11290,7 @@ end)()
         -- physically live inside the parent entry, so they cannot land anywhere else.
         buildRow = function(inst, depth, parentContainer)
             local expandable = (inst:IsA("Folder") or inst:IsA("Configuration") or inst:IsA("Model")
+                or inst:IsA("Tool") or inst:IsA("Backpack")
                 or inst == game:GetService("Workspace")
                 or inst:IsA("ServiceProvider") or inst.ClassName:find("Service", 1, true))
                 and #inst:GetChildren() > 0
@@ -11299,20 +11457,24 @@ end)()
             if not cam then return end
             screen.Enabled = false
             popupScreen.Enabled = false
+            -- v0.10.0: hiding the ScreenGuis doesn't touch the BlurEffect or the
+            -- dim -- they live on the camera and on `screen` respectively, driven by
+            -- the window-open state. Picking a part through a blurred, dimmed world
+            -- is useless, so drop the whole background treatment for the duration.
+            setBackgroundActive(false)
             local hud = KID.track(new("ScreenGui", {
                 Name = KID.name("worldpick"), ResetOnSpawn = false, IgnoreGuiInset = true,
                 ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
                 DisplayOrder = popupScreen.DisplayOrder + 1, Parent = guiParent(),
             }))
             protectGuiSafe(hud)
-            -- full-screen sink so the selecting click never reaches the game
-            local sink = new("TextButton", {
-                Text = "", AutoButtonColor = false, Modal = false,
-                BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
-                ZIndex = 1, Parent = hud,
-            })
+            -- v0.10.0: NO full-screen sink button. A GuiButton covering the screen
+            -- swallows right-click too, which kills the camera drag -- you could not
+            -- turn around to find the thing you wanted to click. ContextActionService
+            -- sinks MouseButton1 ONLY, at high priority, so the selecting click never
+            -- reaches the game while RMB camera control stays completely untouched.
             local hint = new("TextLabel", {
-                Text = "hover a part -- left click to select, right click to cancel",
+                Text = "left click to select   right click drag to look   esc to cancel",
                 FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.Text, TextTruncate = Enum.TextTruncate.AtEnd,
                 BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.15,
@@ -11329,37 +11491,60 @@ end)()
             hl.Parent = cam
             local conns = {}
             local hover = nil
+            local CAS = game:GetService("ContextActionService")
+            local ACT = KID.name("pickact")
             local function finish(inst)
                 for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+                pcall(function() CAS:UnbindAction(ACT) end)
                 hl:Destroy(); hud:Destroy()
                 screen.Enabled = true
                 popupScreen.Enabled = true
+                setBackgroundActive(true)
                 if inst then revealInstance(inst) end
             end
             local rp = RaycastParams.new()
             rp.FilterType = Enum.RaycastFilterType.Exclude
-            rp.FilterDescendantsInstances = { cam, LocalPlayer.Character }
+            -- v0.10.0: exclude our own camera-parented FX hosts too, or a snow slab
+            -- floating over your head is the first thing every ray hits.
+            local ignore = { cam, LocalPlayer.Character }
+            for _, c in ipairs(cam:GetChildren()) do
+                if c:IsA("BasePart") then table.insert(ignore, c) end
+            end
+            rp.FilterDescendantsInstances = ignore
             conns[#conns + 1] = RunService.RenderStepped:Connect(function()
                 local mp = UserInputService:GetMouseLocation()
                 local ray = cam:ViewportPointToRay(mp.X, mp.Y)
                 local hit = Workspace:Raycast(ray.Origin, ray.Direction * 5000, rp)
                 hover = hit and hit.Instance or nil
-                -- adorn the whole model when the part belongs to one -- that is
-                -- almost always the thing someone means by "that object".
-                local adorn = hover and (hover:FindFirstAncestorOfClass("Model") or hover) or nil
+                -- v0.10.0: adorn (and select) the TOOL when the part belongs to one,
+                -- then the Model, then the bare part. Clicking a held weapon should
+                -- offset the weapon, not the single mesh you happened to hit.
+                local adorn = nil
+                if hover then
+                    local tool = hover:FindFirstAncestorOfClass("Tool")
+                    -- Highlight only adorns Models and BaseParts, so a Tool shows
+                    -- through its Handle rather than losing the hover feedback.
+                    adorn = (tool and (tool:FindFirstChild("Handle") or hover))
+                        or hover:FindFirstAncestorOfClass("Model") or hover
+                end
                 hl.Adornee = adorn
-                hint.Text = hover and ("click to select   " .. hover:GetFullName())
-                    or "hover a part -- left click to select, right click to cancel"
+                hint.Text = hover and (hover:GetFullName())
+                    or "left click to select   right click drag to look   esc to cancel"
             end)
             conns[#conns + 1] = UserInputService.InputBegan:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                    finish(hover)
-                elseif input.UserInputType == Enum.UserInputType.MouseButton2
-                    or input.KeyCode == Enum.KeyCode.Escape then
-                    finish(nil)
-                end
+                if input.KeyCode == Enum.KeyCode.Escape then finish(nil) end
             end)
-            sink.MouseButton1Click:Connect(function() end)
+            CAS:BindActionAtPriority(ACT, function(_, state)
+                if state == Enum.UserInputState.Begin then
+                    local pick = hover
+                    if pick then
+                        pick = pick:FindFirstAncestorOfClass("Tool") or pick
+                    end
+                    finish(pick)
+                end
+                return Enum.ContextActionResult.Sink
+            end, false, Enum.ContextActionPriority.High.Value + 1000,
+                Enum.UserInputType.MouseButton1)
         end)
 
         local cancel = new("TextButton", {
@@ -11497,6 +11682,21 @@ end)()
             local ok, m = pcall(function() return Enum.Material[st.Material] end)
             matEnum = (ok and m) or nil
         end
+        -- v0.10.0: TOOLS drive Grip, not part CFrames. Anchoring a welded Handle
+        -- pins it in world space and you walk away from your own weapon; Grip is the
+        -- CFrame that actually positions a tool in the hand, so offsetting it moves
+        -- the weapon with you and reverts cleanly. Material still applies per-part.
+        if rule._target:IsA("Tool") then
+            rule._gripSnap = rule._gripSnap or rule._target.Grip
+            rule._target.Grip = rule._gripSnap * offCF
+            if matEnum then
+                for _, p in ipairs(partsOf(rule)) do
+                    snapshotPart(rule, p)
+                    p.Material = matEnum
+                end
+            end
+            return
+        end
         for _, p in ipairs(partsOf(rule)) do
             snapshotPart(rule, p)
             p.Anchored = true
@@ -11506,6 +11706,12 @@ end)()
         end
     end
     local function restoreObjectOffset(rule)
+        -- v0.10.0: tool Grip restores independently of the part snapshot -- a
+        -- material-free tool rule never takes a part snapshot at all.
+        if rule._gripSnap and rule._target and rule._target.Parent then
+            pcall(function() rule._target.Grip = rule._gripSnap end)
+        end
+        rule._gripSnap = nil
         if not rule._snap then return end
         for p, _ in pairs(rule._snap) do restorePart(rule, p) end
         rule._snap = nil
@@ -11659,7 +11865,7 @@ end)()
         -- material override toggle + material dropdown
         configCheckbox(body, "Override Material", temp.settings.MaterialOverride,
             function(v) temp.settings.MaterialOverride = v end)
-        dropdown(body, "Material", MATERIALS, temp.settings.Material,
+        dropdown(body, "Material", Shared._materials, temp.settings.Material,
             function(v) temp.settings.Material = v end)
 
         -- offsets
@@ -11892,88 +12098,155 @@ end)()
         NumberSequenceKeypoint.new(1, 1),
     })
 
+    -- v0.10.0: particle art shipped by the loader (Koffee/fx/*.png). Untextured
+    -- emitters draw hard white squares, which is most of why v0.9's effects read as
+    -- cheap. getcustomasset hands out per-session ids, so resolve once and cache;
+    -- "" falls back to the engine default on executors with no file API.
+    local texCache = {}
+    local function tex(name)
+        if texCache[name] ~= nil then return texCache[name] end
+        local id, path = "", "Koffee/fx/" .. name .. ".png"
+        if getcustomasset and ((not isfile) or isfile(path)) then
+            local ok, r = pcall(getcustomasset, path)
+            if ok and type(r) == "string" then id = r end
+        end
+        texCache[name] = id
+        return id
+    end
+
+    -- v0.10.0: weather LANDS. Lifetimes used to be a flat guess, so flakes sank
+    -- through the floor and kept going. One downward ray from the camera gives the
+    -- real drop to the ground; sizing lifetime to it means particles die exactly
+    -- where the floor is. Throttled -- it is a single ray, but the answer only
+    -- changes as you move, and excluding `cam` also excludes our own FX host slabs.
+    -- Measured from the CAMERA, not from each effect's slab: all three effects share
+    -- this cache, and taking the reading from whichever ran first that tick would
+    -- silently apply one slab's height to the others. Callers add their own slab
+    -- offset. Quantized to 10 studs so walking around doesn't re-push every emitter
+    -- property several times a second for a change nobody can see.
+    local groundDrop, groundAt = 60, 0
+    local function dropToGround(cam)
+        local now = os.clock()
+        if now - groundAt >= 0.4 and cam then
+            groundAt = now
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Exclude
+            rp.FilterDescendantsInstances = { cam, LocalPlayer.Character }
+            local hit = Workspace:Raycast(cam.CFrame.Position, Vector3.new(0, -500, 0), rp)
+            local d = hit and math.clamp(hit.Distance, 10, 400) or 140
+            groundDrop = math.floor(d / 10) * 10
+        end
+        return groundDrop
+    end
+
+    -- v0.10.0 SNOW, rebuilt to match the menu-background snow.
+    -- The UI version is what everyone actually likes: soft radial flakes drifting
+    -- straight down with a small side-to-side wobble. v0.9 instead pushed a constant
+    -- lateral Acceleration, so the whole field slid sideways like a blizzard.
+    -- Wind defaults to 0 now; the wobble comes from Sway (an emission spread) plus
+    -- high Drag, which bleeds the sideways velocity off and leaves a vertical fall.
+    -- Lifetime is sized to the real ground distance, so flakes land instead of
+    -- sinking through the floor.
     local SNOW_SLAB = Vector3.new(280, 6, 280)
+    local SNOW_UP = 48
     local function stepSnow()
         local cfg = World.FX.Snow
         local em, h = emitterFor("snow", SNOW_SLAB)
         if not em then return end
         if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
         if not cfg.Enabled then return end
-        parkAbove(h, 48)
+        parkAbove(h, SNOW_UP)
+        local drop = dropToGround(Workspace.CurrentCamera)
         if not dirty("snow", table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind,
-            tostring(cfg.Color) }, "|")) then return end
+            cfg.Sway, cfg.Style, drop, tostring(cfg.Color) }, "|")) then return end
         local fall = 6 * math.max(cfg.Speed, 0.05)
+        em.Texture = tex(cfg.Style == "Flake" and "fx_flake" or "fx_dot")
         em.Rate = cfg.Density
         em.EmissionDirection = Enum.NormalId.Bottom
         em.Speed = NumberRange.new(fall * 0.8, fall * 1.2)
-        em.Lifetime = NumberRange.new(70 / fall * 0.85, 70 / fall)   -- slab -> below cam
+        em.Lifetime = NumberRange.new((drop + SNOW_UP) / fall * 0.9, (drop + SNOW_UP) / fall)
         em.Acceleration = Vector3.new(cfg.Wind, -0.4, cfg.Wind * 0.6)
-        em.Drag = 0.4
+        em.Drag = 1.6                              -- kills sideways drift, keeps the fall
         em.Size = NumberSequence.new(cfg.Size)
         em.Color = ColorSequence.new(cfg.Color)
         em.Transparency = FADE
-        em.SpreadAngle = Vector2.new(14, 14)
+        em.SpreadAngle = Vector2.new(cfg.Sway, cfg.Sway)
         em.Rotation = NumberRange.new(0, 360)
-        em.RotSpeed = NumberRange.new(-40, 40)
-        em.LightEmission = 0.25
+        em.RotSpeed = NumberRange.new(-25, 25)
+        em.LightEmission = 0.35
         pcall(function() em.Squash = NumberSequence.new(0) end)
     end
 
     local RAIN_SLAB = Vector3.new(190, 4, 190)
+    local RAIN_UP = 75
     local function stepRain()
         local cfg = World.FX.Rain
         local em, h = emitterFor("rain", RAIN_SLAB)
         if not em then return end
         if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
         if not cfg.Enabled then return end
-        parkAbove(h, 75)
+        parkAbove(h, RAIN_UP)
+        local drop = dropToGround(Workspace.CurrentCamera)
         if not dirty("rain", table.concat({ cfg.Density, cfg.Speed, cfg.Streak, cfg.Wind,
-            tostring(cfg.Color) }, "|")) then return end
+            drop, tostring(cfg.Color) }, "|")) then return end
         local fall = 55 * math.max(cfg.Speed, 0.05)
+        em.Texture = tex("fx_streak")
         em.Rate = cfg.Density
         em.EmissionDirection = Enum.NormalId.Bottom
         em.Speed = NumberRange.new(fall, fall * 1.15)
-        em.Lifetime = NumberRange.new(150 / fall * 0.9, 150 / fall)
+        em.Lifetime = NumberRange.new((drop + RAIN_UP) / fall * 0.95, (drop + RAIN_UP) / fall)
         em.Acceleration = Vector3.new(cfg.Wind * 2, -22, cfg.Wind)
         em.Drag = 0
-        em.Size = NumberSequence.new(0.18)
+        em.Size = NumberSequence.new(0.22)
         em.Color = ColorSequence.new(cfg.Color)
         em.Transparency = NumberSequence.new(0.45)
         em.SpreadAngle = Vector2.new(3, 3)
         em.Rotation = NumberRange.new(0)
         em.RotSpeed = NumberRange.new(0)
         em.LightEmission = 0.15
-        -- Squash stretches along travel -- what turns a dot into a raindrop streak.
-        -- pcall'd: comparatively recent property.
-        pcall(function() em.Squash = NumberSequence.new(cfg.Streak * 0.5) end)
+        -- Squash stretches along travel -- with the streak texture already
+        -- elongated, this is what sets how hard the rain is falling.
+        pcall(function() em.Squash = NumberSequence.new(cfg.Streak * 0.35) end)
     end
 
+    -- v0.10.0 SAKURA, given an actual design. Real notched petal art instead of a
+    -- tinted blob, a two-tone ramp (pale edge into deeper pink) so a drift reads as
+    -- many petals rather than one pink cloud, hard tumble on RotSpeed, and the same
+    -- land-on-the-ground lifetime as snow. Sway replaces the constant sideways push.
     local SAKURA_SLAB = Vector3.new(240, 6, 240)
+    local SAKURA_UP = 42
     local function stepSakura()
         local cfg = World.FX.Sakura
         local em, h = emitterFor("sakura", SAKURA_SLAB)
         if not em then return end
         if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
         if not cfg.Enabled then return end
-        parkAbove(h, 42)
+        parkAbove(h, SAKURA_UP)
+        local drop = dropToGround(Workspace.CurrentCamera)
         if not dirty("sakura", table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind,
-            cfg.Spin, tostring(cfg.Color) }, "|")) then return end
+            cfg.Sway, cfg.Spin, drop, tostring(cfg.Color) }, "|")) then return end
         local fall = 3.2 * math.max(cfg.Speed, 0.05)
+        local pale = cfg.Color:Lerp(Color3.new(1, 1, 1), 0.55)
+        local deep = cfg.Color:Lerp(Color3.fromRGB(150, 40, 80), 0.35)
+        em.Texture = tex("fx_petal")
         em.Rate = cfg.Density
         em.EmissionDirection = Enum.NormalId.Bottom
         em.Speed = NumberRange.new(fall * 0.7, fall * 1.3)
-        em.Lifetime = NumberRange.new(70 / fall * 0.8, 70 / fall)
-        -- petals drift more than they fall; Drag gives the fluttery settle
+        em.Lifetime = NumberRange.new((drop + SAKURA_UP) / fall * 0.9, (drop + SAKURA_UP) / fall)
         em.Acceleration = Vector3.new(cfg.Wind, -0.3, cfg.Wind * 0.7)
-        em.Drag = 1.2
+        em.Drag = 1.4                              -- the fluttery settle
         em.Size = NumberSequence.new(cfg.Size)
-        em.Color = ColorSequence.new(cfg.Color)
+        em.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, pale),
+            ColorSequenceKeypoint.new(0.45, cfg.Color),
+            ColorSequenceKeypoint.new(1, deep),
+        })
         em.Transparency = FADE
-        em.SpreadAngle = Vector2.new(40, 40)
+        em.SpreadAngle = Vector2.new(cfg.Sway, cfg.Sway)
         em.Rotation = NumberRange.new(0, 360)
         em.RotSpeed = NumberRange.new(-cfg.Spin, cfg.Spin)
-        em.LightEmission = 0.1
-        pcall(function() em.Squash = NumberSequence.new(0.6) end)
+        em.LightEmission = 0.08
+        pcall(function() em.Squash = NumberSequence.new(0) end)
     end
 
     ------------------------------------------------------------------ hit effects
@@ -12026,6 +12299,7 @@ end)()
 
     -- full reset between presets so nothing inherits the last one's shape.
     local function resetEm(em, col)
+        em.Texture = tex("fx_dot")
         em.Color = ColorSequence.new(col)
         em.Rotation = NumberRange.new(0, 360)
         em.RotSpeed = NumberRange.new(0)
@@ -12056,6 +12330,7 @@ end)()
         resetEm(core, col); resetEm(spray, col)
         local p = cfg.Preset
         if p == "Sparks" then
+            spray.Texture = tex("fx_streak")
             spray.Size = shrink(0.16 * s, 0)
             spray.Transparency = fadeOut(0)
             spray.Lifetime = NumberRange.new(dur * 0.7, dur * 1.2)
@@ -12065,6 +12340,76 @@ end)()
             spray.LightEmission = 1
             pcall(function() spray.Squash = NumberSequence.new(6) end)
             return 0, 26, dur * 1.2
+        elseif p == "Snowburst" then
+            -- exploding snow: a hard outward burst of tumbling crystals that gravity
+            -- immediately takes over, plus a soft powder puff at the impact point.
+            core.Texture = tex("fx_dot")
+            core.Size = shrink(1.3 * s, 2.4 * s)
+            core.Transparency = fadeOut(0.45)
+            core.Lifetime = NumberRange.new(dur * 0.9, dur * 1.3)
+            core.Speed = NumberRange.new(1.5 * s, 4 * s)
+            core.Drag = 3
+            core.LightEmission = 0.5
+            spray.Texture = tex("fx_flake")
+            spray.Size = shrink(0.30 * s, 0.16 * s)
+            spray.Transparency = fadeOut(0)
+            spray.Lifetime = NumberRange.new(dur * 1.2, dur * 2.0)
+            spray.Speed = NumberRange.new(10 * s, 26 * s)
+            spray.Acceleration = Vector3.new(0, -38, 0)   -- the gravity he asked for
+            spray.Drag = 1.1                              -- air resistance on flakes
+            spray.RotSpeed = NumberRange.new(-260, 260)   -- tumble on the way down
+            spray.LightEmission = 0.7
+            return 5, 34, dur * 2.0
+        elseif p == "Confetti" then
+            -- tumbling paper. one emitter, but a many-stop ColorSequence means each
+            -- particle is showing a different colour at any given moment, which is
+            -- as close to per-particle random as an emitter gets.
+            spray.Texture = tex("fx_shard")
+            spray.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 90, 120)),
+                ColorSequenceKeypoint.new(0.25, Color3.fromRGB(255, 210, 80)),
+                ColorSequenceKeypoint.new(0.50, Color3.fromRGB(110, 230, 150)),
+                ColorSequenceKeypoint.new(0.75, Color3.fromRGB(110, 180, 255)),
+                ColorSequenceKeypoint.new(1.00, Color3.fromRGB(210, 130, 255)),
+            })
+            spray.Size = shrink(0.34 * s, 0.22 * s)
+            spray.Transparency = fadeOut(0)
+            spray.Lifetime = NumberRange.new(dur * 1.4, dur * 2.4)
+            spray.Speed = NumberRange.new(12 * s, 30 * s)
+            spray.Acceleration = Vector3.new(0, -30, 0)
+            spray.Drag = 2.2
+            spray.RotSpeed = NumberRange.new(-400, 400)
+            spray.LightEmission = 0.2
+            return 0, 40, dur * 2.4
+        elseif p == "Glass" then
+            core.Texture = tex("fx_dot")
+            core.Size = shrink(1.0 * s, 0)
+            core.Transparency = fadeOut(0)
+            core.Lifetime = NumberRange.new(dur * 0.25)
+            core.Speed = NumberRange.new(0)
+            core.LightEmission = 1
+            spray.Texture = tex("fx_shard")
+            spray.Size = shrink(0.34 * s, 0.10 * s)
+            spray.Transparency = fadeOut(0)
+            spray.Lifetime = NumberRange.new(dur * 0.8, dur * 1.4)
+            spray.Speed = NumberRange.new(26 * s, 52 * s)
+            spray.Acceleration = Vector3.new(0, -55, 0)
+            spray.Drag = 0.6
+            spray.RotSpeed = NumberRange.new(-180, 180)
+            spray.LightEmission = 0.9
+            pcall(function() spray.Squash = NumberSequence.new(1.5) end)
+            return 1, 30, dur * 1.4
+        elseif p == "Starfall" then
+            spray.Texture = tex("fx_star")
+            spray.Size = shrink(0.55 * s, 0.1 * s)
+            spray.Transparency = fadeOut(0)
+            spray.Lifetime = NumberRange.new(dur * 1.3, dur * 2.1)
+            spray.Speed = NumberRange.new(9 * s, 20 * s)
+            spray.Acceleration = Vector3.new(0, -22, 0)   -- arc up, then fall
+            spray.Drag = 1.4
+            spray.RotSpeed = NumberRange.new(-120, 120)
+            spray.LightEmission = 1
+            return 0, 16, dur * 2.1
         elseif p == "Blood" then
             core.Size = shrink(1.1 * s, 2.0 * s)
             core.Transparency = fadeOut(0.35)
@@ -12095,6 +12440,7 @@ end)()
             core.Transparency = fadeOut(0)
             core.Lifetime = NumberRange.new(dur)
             core.Speed = NumberRange.new(30 * s, 34 * s)
+            core.Texture = tex("fx_streak")
             core.LightEmission = 1
             pcall(function() core.Squash = NumberSequence.new(3) end)
             return 60, 0, dur
@@ -12112,6 +12458,7 @@ end)()
             spray.LightEmission = 1
             return 60, 1, dur * 1.3
         elseif p == "Ember" then
+            core.Texture = tex("fx_star")
             core.Size = shrink(0.4 * s, 0.05 * s)
             core.Transparency = fadeOut(0.1)
             core.Lifetime = NumberRange.new(dur * 1.4, dur * 2.2)
@@ -12129,6 +12476,7 @@ end)()
         core.Lifetime = NumberRange.new(dur * 0.35)
         core.Speed = NumberRange.new(0)
         core.LightEmission = 1
+        spray.Texture = tex("fx_shard")
         spray.Size = shrink(0.22 * s, 0)
         spray.Transparency = fadeOut(0)
         spray.Lifetime = NumberRange.new(dur * 0.5, dur * 0.8)
@@ -12574,7 +12922,17 @@ addTab("World", function(root)
     slider(fx, "Brightness", -1, 1, World.CC.Brightness, 2, function(v) World.CC.Brightness = v end)
     local amb = moduleCheckbox(fx, "Ambient Color", "ambientcolor")
     attachSingleSwatch(amb.row, World.Light.Color, function(c) World.Light.Color = c end)
+    -- v0.10.0: split indoor / outdoor ambient. The row swatch stays the single
+    -- colour used while Split is off.
+    rightClickSettings(amb.row, "ambient color", function(popup)
+        popup:toggle("Split Indoor / Outdoor", World.Light.Split, function(v) World.Light.Split = v end)
+        popup:swatch("Indoor Ambient",  World.Light.Indoor,  function(c) World.Light.Indoor = c end)
+        popup:swatch("Outdoor Ambient", World.Light.Outdoor, function(c) World.Light.Outdoor = c end)
+    end)
     slider(fx, "Ambient Intensity", 0, 2, World.Light.Intensity, 2, function(v) World.Light.Intensity = v end)
+    -- v0.10.0: custom skybox. Downloads on first pick (~6MB a set), cached after.
+    dropdown(fx, "Skybox", Shared._skyNames, World.SkyBox.Name,
+        function(v) World.SkyBox.Name = v end)
     moduleCheckbox(fx, "Remove Sky",     "removesky")
     moduleCheckbox(fx, "Disable Clouds", "noclouds")
     moduleCheckbox(fx, "Low Graphics",   "lowgfx")
@@ -12588,9 +12946,13 @@ addTab("World", function(root)
         function(v) World.FX.Snow.Enabled = v end)
     attachSingleSwatch(snowRow.row, World.FX.Snow.Color, function(c) World.FX.Snow.Color = c end)
     rightClickSettings(snowRow.row, "snow", function(popup)
+        -- v0.10.0: Soft matches the menu-background flakes; Flake is a drawn crystal.
+        popup:dropdown("Style", { "Soft", "Flake" }, World.FX.Snow.Style, function(v) World.FX.Snow.Style = v end)
         popup:slider("Density", 20, 900, World.FX.Snow.Density, 0, function(v) World.FX.Snow.Density = math.floor(v) end)
         popup:slider("Speed",   0.2, 4,  World.FX.Snow.Speed,   2, function(v) World.FX.Snow.Speed = v end)
         popup:slider("Size",    0.05, 2, World.FX.Snow.Size,    2, function(v) World.FX.Snow.Size = v end)
+        -- Sway = wobble with no net drift. Wind = an actual sideways push.
+        popup:slider("Sway",    0, 60,   World.FX.Snow.Sway,    0, function(v) World.FX.Snow.Sway = v end)
         popup:slider("Wind",   -12, 12,  World.FX.Snow.Wind,    1, function(v) World.FX.Snow.Wind = v end)
     end)
     local rainRow = configCheckbox(fx2, "Rain", World.FX.Rain.Enabled,
@@ -12610,6 +12972,7 @@ addTab("World", function(root)
         popup:slider("Density", 10, 600, World.FX.Sakura.Density, 0, function(v) World.FX.Sakura.Density = math.floor(v) end)
         popup:slider("Speed",   0.2, 3,  World.FX.Sakura.Speed,   2, function(v) World.FX.Sakura.Speed = v end)
         popup:slider("Size",    0.1, 3,  World.FX.Sakura.Size,    2, function(v) World.FX.Sakura.Size = v end)
+        popup:slider("Sway",    0, 80,   World.FX.Sakura.Sway,    0, function(v) World.FX.Sakura.Sway = v end)
         popup:slider("Wind",   -16, 16,  World.FX.Sakura.Wind,    1, function(v) World.FX.Sakura.Wind = v end)
         popup:slider("Spin",    0, 400,  World.FX.Sakura.Spin,    0, function(v) World.FX.Sakura.Spin = v end)
     end)
