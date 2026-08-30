@@ -1,9 +1,9 @@
--- koffee v0.12.1
+-- koffee v0.12.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.12.1"
+Koffee.Version = "0.12.2"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -11698,7 +11698,7 @@ end)()
             -- sinks MouseButton1 ONLY, at high priority, so the selecting click never
             -- reaches the game while RMB camera control stays completely untouched.
             local hint = new("TextLabel", {
-                Text = "left click to select   right click drag to look   esc to cancel",
+                Text = "left click select   rmb drag to look   shift for your own gear   esc cancel",
                 FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.Text, TextTruncate = Enum.TextTruncate.AtEnd,
                 BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.15,
@@ -11730,16 +11730,56 @@ end)()
             rp.FilterType = Enum.RaycastFilterType.Exclude
             -- v0.10.0: exclude our own camera-parented FX hosts too, or a snow slab
             -- floating over your head is the first thing every ray hits.
-            local ignore = { cam, LocalPlayer.Character }
+            local baseIgnore = { cam }
             for _, c in ipairs(cam:GetChildren()) do
-                if c:IsA("BasePart") then table.insert(ignore, c) end
+                if c:IsA("BasePart") then table.insert(baseIgnore, c) end
             end
-            rp.FilterDescendantsInstances = ignore
+            rp.FilterDescendantsInstances = baseIgnore
+            -- v0.12.2: your own character is pickable now. Excluding it wholesale
+            -- also excluded any equipped Tool (tools parent under the character), so
+            -- your own weapon could never be selected. First person still sits the
+            -- camera inside your head, so only YOUR parts hugging the lens are
+            -- skipped and the ray carries on past them.
+            local function pickRay(origin, dir)
+                rp.FilterDescendantsInstances = baseIgnore
+                local myChar = LocalPlayer.Character
+                for _ = 1, 6 do
+                    local hit = Workspace:Raycast(origin, dir, rp)
+                    if not hit then return nil end
+                    if not (myChar and hit.Distance < 1.2
+                            and hit.Instance:IsDescendantOf(myChar)) then
+                        return hit
+                    end
+                    local list = rp.FilterDescendantsInstances
+                    table.insert(list, hit.Instance)
+                    rp.FilterDescendantsInstances = list
+                end
+                return nil
+            end
             conns[#conns + 1] = RunService.RenderStepped:Connect(function()
                 local mp = UserInputService:GetMouseLocation()
                 local ray = cam:ViewportPointToRay(mp.X, mp.Y)
-                local hit = Workspace:Raycast(ray.Origin, ray.Direction * 5000, rp)
+                local hit = pickRay(ray.Origin, ray.Direction * 5000)
                 hover = hit and hit.Instance or nil
+                -- Tool handles and viewmodel parts are routinely CanQuery=false, which
+                -- makes them unraycastable no matter what the filter says. Hold shift
+                -- to pick your own gear by screen distance instead; also used when the
+                -- ray hits nothing at all (pointing at your tool against the sky).
+                local myChar = LocalPlayer.Character
+                if myChar and (not hover
+                    or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)) then
+                    local best, bestD = nil, 70
+                    for _, d in ipairs(myChar:GetDescendants()) do
+                        if d:IsA("BasePart") then
+                            local sp, on = cam:WorldToViewportPoint(d.Position)
+                            if on and sp.Z > 0 then
+                                local dd = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
+                                if dd < bestD then best, bestD = d, dd end
+                            end
+                        end
+                    end
+                    hover = best or hover
+                end
                 -- v0.10.0: adorn (and select) the TOOL when the part belongs to one,
                 -- then the Model, then the bare part. Clicking a held weapon should
                 -- offset the weapon, not the single mesh you happened to hit.
@@ -11753,7 +11793,7 @@ end)()
                 end
                 hl.Adornee = adorn
                 hint.Text = hover and (hover:GetFullName())
-                    or "left click to select   right click drag to look   esc to cancel"
+                    or "left click select   rmb drag to look   shift for your own gear   esc cancel"
             end)
             conns[#conns + 1] = UserInputService.InputBegan:Connect(function(input)
                 if input.KeyCode == Enum.KeyCode.Escape then finish(nil) end
