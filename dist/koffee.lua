@@ -1,9 +1,9 @@
--- koffee v0.12.0
+-- koffee v0.12.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.12.0"
+Koffee.Version = "0.12.1"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -948,9 +948,33 @@ local LocalPlayer = Players.LocalPlayer
 -- Workspace.CurrentCamera fresh, so games that swap CurrentCamera (custom
 -- camera systems) don't leave us projecting through a dead camera.
 
+-- v0.12.1 palette role tagging. The colour changer used to repaint by matching
+-- VALUES, which dies the moment two roles hold the same colour: the first role in
+-- the list claims every instance and the later one can never repaint again. Roles
+-- are stamped as attributes at construction instead, so the repaint is exact.
+-- Hung off Theme rather than chunk locals -- the file is near Luau's register cap.
+Theme._roleKeys = { "Accent", "Background", "Panel", "PanelElevated", "Border",
+                    "Text", "TextMuted" }
+Theme._roleProps = { BackgroundColor3 = true, TextColor3 = true, ImageColor3 = true,
+                     ScrollBarImageColor3 = true, PlaceholderColor3 = true, Color = true }
+function Theme._roleOf(c)
+    for _, r in ipairs(Theme._roleKeys) do
+        if Theme.Palette[r] == c then return r end
+    end
+    return nil
+end
+
 local function new(class, props, children)
     local inst = Instance.new(class)
-    if props then for k, v in pairs(props) do inst[k] = v end end
+    if props then
+        for k, v in pairs(props) do
+            inst[k] = v
+            if Theme._roleProps[k] and typeof(v) == "Color3" then
+                local r = Theme._roleOf(v)
+                if r then inst:SetAttribute("KR" .. k, r) end
+            end
+        end
+    end
     if children then for _, c in ipairs(children) do c.Parent = inst end end
     return inst
 end
@@ -6254,7 +6278,12 @@ local World = {
     -- Lighting.OutdoorAmbient). Off by default so old configs are unchanged.
     Light  = { Saved = nil, Conn = nil, Color = Color3.fromRGB(255, 255, 255), Intensity = 1,
                Split = false, Indoor = Color3.fromRGB(120, 130, 170),
-               Outdoor = Color3.fromRGB(255, 240, 210) },
+               Outdoor = Color3.fromRGB(255, 240, 210),
+               -- v0.12.1: fog + exposure ride the same module. Off by default so
+               -- Ambient Color alone behaves exactly as before.
+               Fog = false, FogStart = 0, FogEnd = 500,
+               FogColor = Color3.fromRGB(160, 165, 175),
+               Exposure = 0, Brightness = 2 },
     Sky    = { Saved = nil, Conn = nil },
     Clouds = { Saved = nil, Conn = nil },
     Gfx    = { Saved = nil },
@@ -6572,16 +6601,29 @@ registerModule("ambientcolor", "Ambient Color",
         World.Light.Saved = {
             Ambient = Lighting.Ambient,
             OutdoorAmbient = Lighting.OutdoorAmbient,
+            FogStart = Lighting.FogStart, FogEnd = Lighting.FogEnd,
+            FogColor = Lighting.FogColor, Brightness = Lighting.Brightness,
+            Exposure = Lighting.ExposureCompensation,
         }
         World.Light.Conn = RunService.Heartbeat:Connect(function()
-            local i = World.Light.Intensity
-            if World.Light.Split then
-                Lighting.Ambient        = World.Light.Indoor * i
-                Lighting.OutdoorAmbient = World.Light.Outdoor * i
+            local L = World.Light
+            local i = L.Intensity
+            if L.Split then
+                Lighting.Ambient        = L.Indoor * i
+                Lighting.OutdoorAmbient = L.Outdoor * i
             else
-                local c = World.Light.Color * i
+                local c = L.Color * i
                 Lighting.Ambient = c
                 Lighting.OutdoorAmbient = c
+            end
+            Lighting.Brightness = L.Brightness
+            Lighting.ExposureCompensation = L.Exposure
+            -- fog is opt-in: the No Fog module also writes these, so leaving it off
+            -- keeps the two from fighting over the same properties every frame.
+            if L.Fog then
+                Lighting.FogStart = math.min(L.FogStart, L.FogEnd)
+                Lighting.FogEnd   = L.FogEnd
+                Lighting.FogColor = L.FogColor
             end
         end)
     end,
@@ -6591,6 +6633,13 @@ registerModule("ambientcolor", "Ambient Color",
         if not s then return end
         Lighting.Ambient = s.Ambient
         Lighting.OutdoorAmbient = s.OutdoorAmbient
+        Lighting.Brightness = s.Brightness
+        Lighting.ExposureCompensation = s.Exposure
+        if World.Light.Fog then
+            Lighting.FogStart = s.FogStart
+            Lighting.FogEnd   = s.FogEnd
+            Lighting.FogColor = s.FogColor
+        end
         World.Light.Saved = nil
     end
 )
@@ -9021,13 +9070,14 @@ local Combat = {
         end
 
         if Combat.Aim.PerfectLock then
-            -- v0.11.1: moves NOTHING. Publishing the redirect point makes the game's
-            -- own Mouse.Hit/Target/UnitRay reads resolve onto the target, so there is
-            -- no travel to converge. The old paths both had drag: camera aim had to
-            -- rotate, and mousemoverel is relative + sensitivity-scaled, so it walked
-            -- the cursor over several frames.
+            -- v0.12.1: publish the redirect AND aim at full alpha. v0.11.1 published
+            -- only, which moved nothing -- so in any game that doesn't read Mouse.Hit
+            -- the aimbot looked dead and prediction had nothing to show. Alpha 1 is
+            -- still zero drag (one frame, no sensitivity/smoothness curve).
             plPos, plPart = tpos, part
-        elseif Combat.Aim.ThirdPerson then
+            aX, aY = 1, 1
+        end
+        if Combat.Aim.ThirdPerson then
             -- v0.0.36.1: drive the REAL mouse onto the target's screen point. Measured
             -- live: WorldToViewportPoint INCLUDES the 58px GUI inset but PlayerMouse.X/Y
             -- does NOT -- mixing them aimed a constant ~58px low (whole-body error at
@@ -13123,6 +13173,12 @@ addTab("World", function(root)
         popup:toggle("Split Indoor / Outdoor", World.Light.Split, function(v) World.Light.Split = v end)
         popup:swatch("Indoor Ambient",  World.Light.Indoor,  function(c) World.Light.Indoor = c end)
         popup:swatch("Outdoor Ambient", World.Light.Outdoor, function(c) World.Light.Outdoor = c end)
+        popup:slider("Brightness", 0, 10, World.Light.Brightness, 1, function(v) World.Light.Brightness = v end)
+        popup:slider("Exposure", -3, 3, World.Light.Exposure, 2, function(v) World.Light.Exposure = v end)
+        popup:toggle("Custom Fog", World.Light.Fog, function(v) World.Light.Fog = v end)
+        popup:swatch("Fog Color", World.Light.FogColor, function(c) World.Light.FogColor = c end)
+        popup:slider("Fog Start", 0, 2000, World.Light.FogStart, 0, function(v) World.Light.FogStart = v end)
+        popup:slider("Fog End", 0, 5000, World.Light.FogEnd, 0, function(v) World.Light.FogEnd = v end)
     end)
     slider(fx, "Ambient Intensity", 0, 2, World.Light.Intensity, 2, function(v) World.Light.Intensity = v end)
     -- v0.10.0: custom skybox. Downloads on first pick (~6MB a set), cached after.
@@ -13291,38 +13347,39 @@ registerConfig("options", KoffeeOptions)
     local live, lastAt = {}, 0
     for _, r in ipairs(ROLES) do live[r] = Theme.Palette[r] end
 
-    -- v0.11.2: ONE pass, matching every instance against the palette as it was
-    -- BEFORE this repaint. The old version swapped role by role, so if the new
-    -- Accent happened to equal the old Panel, the Panel pass then re-swapped
-    -- everything Accent had just painted -- roles bled into each other.
+    -- v0.12.1: repaint by ROLE TAG (stamped in new()), not by value. Value matching
+    -- collided as soon as two roles shared a colour -- set Panel to white and every
+    -- near-white label was claimed by Panel, so Text could never repaint again.
+    -- Untagged instances (colour assigned after construction) get matched by value
+    -- ONCE and tagged, so they're exact from then on.
     -- KUserColor marks instances whose colour is the user's DATA (swatch previews,
-    -- picker chips), not chrome. Repainting those desynced the preview from the
-    -- value behind it, which was most of the visible breakage.
-    local function mapped(c)
-        for _, r in ipairs(ROLES) do
-            if c == live[r] then return KoffeeOptions.UIColors[r] end
+    -- picker chips), not chrome -- repainting those desynced preview from value.
+    local function paint(d, prop)
+        local role = d:GetAttribute("KR" .. prop)
+        if not role then
+            local cur = d[prop]
+            for _, r in ipairs(ROLES) do
+                if cur == live[r] then role = r; d:SetAttribute("KR" .. prop, r); break end
+            end
+            if not role then return end
         end
-        return nil
+        local c = KoffeeOptions.UIColors[role]
+        if c and d[prop] ~= c then d[prop] = c end
     end
     local function repaint(root)
         for _, d in ipairs(root:GetDescendants()) do
             if d:GetAttribute("KUserColor") then
                 -- data, not chrome -- leave it alone
             elseif d:IsA("GuiObject") then
-                local n = mapped(d.BackgroundColor3)
-                if n then d.BackgroundColor3 = n end
+                paint(d, "BackgroundColor3")
                 if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
-                    n = mapped(d.TextColor3); if n then d.TextColor3 = n end
+                    paint(d, "TextColor3")
+                    if d:IsA("TextBox") then paint(d, "PlaceholderColor3") end
                 end
-                if d:IsA("ImageLabel") or d:IsA("ImageButton") then
-                    n = mapped(d.ImageColor3); if n then d.ImageColor3 = n end
-                end
-                if d:IsA("ScrollingFrame") then
-                    n = mapped(d.ScrollBarImageColor3)
-                    if n then d.ScrollBarImageColor3 = n end
-                end
+                if d:IsA("ImageLabel") or d:IsA("ImageButton") then paint(d, "ImageColor3") end
+                if d:IsA("ScrollingFrame") then paint(d, "ScrollBarImageColor3") end
             elseif d:IsA("UIStroke") then
-                local n = mapped(d.Color); if n then d.Color = n end
+                paint(d, "Color")
             end
         end
     end
