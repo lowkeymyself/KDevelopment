@@ -1,9 +1,9 @@
--- koffee v0.12.3
+-- koffee v0.13.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.12.3"
+Koffee.Version = "0.13.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -48,7 +48,7 @@ pcall(function()
         local o; o = hookfunction(realInfo, wrapper(function(...)
             local a = ...
             if flagged and a == flagged then
-                if dbg then warn("zyn | adonis gone") end
+                if dbg then warn("[koffee] adonis gone") end
                 return coroutine.yield(coroutine.running())
             end
             return o(...)
@@ -2432,7 +2432,7 @@ local function rebuildTabPanel(name)
 end
 rebuildConfigTabs = function()
     for _, m in pairs(Modules) do m.Watchers = {} end
-    for _, n in ipairs({ "Visuals", "Combat", "World", "Character", "Options" }) do
+    for _, n in ipairs({ "Visuals", "Combat", "World", "Character", "Custom", "Options" }) do
         rebuildTabPanel(n)
     end
 end
@@ -3738,7 +3738,9 @@ end
 -- dropdowns / colour picker, positioned inset-safe, closes on outside click.
 local openSettingsPopups = {}   -- frame -> close fn
 
-local function rightClickSettings(row, title, buildFn)
+-- v0.13.0: `alsoLeft` additionally opens on LEFT click. Used by Custom Features,
+-- where the button IS the options button and hiding it behind RMB is a trap.
+local function rightClickSettings(row, title, buildFn, alsoLeft)
     local btn
     for _, c in ipairs(row:GetDescendants()) do
         if c:IsA("TextButton") then btn = c break end
@@ -3785,6 +3787,30 @@ local function rightClickSettings(row, title, buildFn)
         end
         function api:dropdown(label, options, initial, onChange)
             return dropdown(popupFrame, label, options, initial, onChange)
+        end
+        -- v0.13.0: free-text row (Custom Features' Text / Switch blocks)
+        function api:text(label, initial, onChange)
+            local r = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1,
+                ZIndex = 211, Parent = popupFrame,
+            })
+            new("TextLabel", {
+                Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 212, Parent = r,
+            })
+            local box = new("TextBox", {
+                Text = tostring(initial or ""), ClearTextOnFocus = false,
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+                TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.PanelElevated,
+                BackgroundTransparency = 0.2, BorderSizePixel = 0,
+                Position = UDim2.new(0, 0, 0, 18), Size = UDim2.new(1, 0, 0, 24),
+                TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 212, Parent = r,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle),
+                new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+            box.FocusLost:Connect(function() onChange(box.Text) end)
+            return box
         end
         -- v0.0.28: colour control inside a settings popup (label + right swatch).
         -- v0.0.32: optional `sopts` (alpha etc) forwarded to colorSwatch.
@@ -3850,9 +3876,11 @@ local function rightClickSettings(row, title, buildFn)
         tween(psc, Theme.Animation.Menu, { Scale = 1 })
     end
 
-    btn.MouseButton2Click:Connect(function()
+    local function toggle()
         if isOpen then closePopup() else openPopup() end
-    end)
+    end
+    btn.MouseButton2Click:Connect(toggle)
+    if alsoLeft then btn.MouseButton1Click:Connect(toggle) end
 end
 
 -- outside-click closer for the settings popups (own handler since openSettingsPopups
@@ -4053,7 +4081,9 @@ end
 -- the same reason the whole loader applies in place.
 -- Deep-merge stays the default: every other registered table is a fixed schema
 -- where a missing key means "this config predates the field", not "unset it".
-local REPLACE_TABLES = { MyTeams = true }
+-- v0.13.0: Custom Features' node array is REPLACE too -- it's a list, so merging
+-- would resurrect every node the user deleted since the config was written.
+local REPLACE_TABLES = { MyTeams = true, Nodes = true }
 local function applyInto(target, src)
     for k, v in pairs(src) do
         if type(v) == "table" and type(target[k]) == "table" then
@@ -13740,6 +13770,423 @@ addTab("Options", function(root)
 end)
 
 -- CONFIGS TAB (v0.0.34) -- save / load / delete / auto-load per game
+-- CUSTOM FEATURES (v0.13.0). User-wired node graph: blocks read game state,
+-- transform it, draw it. Read-only and depth-capped, so a bad graph is a visual
+-- bug, never a crash.
+Koffee.Custom = { Enabled = true, Nodes = {} }
+registerConfig("custom", Koffee.Custom)
+;(function()
+    local CF = Koffee.Custom
+    local layer, labels, spins = nil, {}, {}
+
+    local function ensureLayer()
+        if layer and layer.Parent then return layer end
+        layer = new("Frame", {
+            Name = "CustomLayer", Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            ZIndex = 16, Parent = screen,
+        })
+        return layer
+    end
+
+    local function nodeById(id)
+        for _, n in ipairs(CF.Nodes) do if n.id == id then return n end end
+        return nil
+    end
+    local function playerAt(plr)
+        local ch = plr and plr.Character
+        local part = ch and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Head"))
+        local cam = Workspace.CurrentCamera
+        if not (part and cam) then return nil, nil end
+        return (part.Position - cam.CFrame.Position).Magnitude, part
+    end
+
+    -- ins = ordered input slots, outs = value types produced (drives wiring).
+    -- Sinks have no eval; they get their resolved inputs back and render.
+    local KINDS = {}
+    local ORDER = { "Target", "Visible", "Info", "Compare", "Switch", "Text" }
+
+    KINDS.Target = {
+        blurb = "finds a player",
+        ins = {}, outs = { player = true },
+        opts = { Source = "Aimbot Target", Filter = "Any", MaxDistance = 0 },
+        eval = function(o)
+            local C, s, plr = Shared.Combat, o.Source, nil
+            if s == "Aimbot Target" then plr = C and (C.Aim._rageLock or C.Aim._target)
+            elseif s == "Silent Aim Target" then plr = C and C.Silent._target
+            elseif s == "Crosshair Target" then
+                plr = Shared.crosshairTarget and Shared.crosshairTarget("Aim") or nil
+            elseif s == "Closest Player" then
+                local bd = math.huge
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= LocalPlayer then
+                        local d = playerAt(p)
+                        if d and d < bd then plr, bd = p, d end
+                    end
+                end
+            end
+            if plr and o.Filter ~= "Any" then
+                local ally = isTeammate and isTeammate(plr) or false
+                if o.Filter == "Enemies Only" and ally then plr = nil end
+                if o.Filter == "Team Only" and not ally then plr = nil end
+            end
+            if plr and (o.MaxDistance or 0) > 0 then
+                local d = playerAt(plr)
+                if not d or d > o.MaxDistance then plr = nil end
+            end
+            return { player = plr }
+        end,
+        ui = function(api, o)
+            api:dropdown("Source", { "Aimbot Target", "Silent Aim Target",
+                "Crosshair Target", "Closest Player" }, o.Source, function(v) o.Source = v end)
+            api:dropdown("Filter", { "Any", "Enemies Only", "Team Only" }, o.Filter,
+                function(v) o.Filter = v end)
+            api:slider("Max Distance", 0, 5000, o.MaxDistance, 0, function(v) o.MaxDistance = v end)
+        end,
+    }
+
+    KINDS.Visible = {
+        blurb = "can you see them?",
+        ins = { { key = "player", type = "player", label = "Player" } },
+        outs = { bool = true, number = true },
+        opts = { MaxDistance = 0, Invert = false },
+        eval = function(o, ins)
+            local plr = ins.player and ins.player.player
+            local d, part = playerAt(plr)
+            -- no target answers false even under Invert, or an empty graph would
+            -- sit there permanently reading VISIBLE
+            if not part then return { bool = false, number = 0 } end
+            local cam = Workspace.CurrentCamera
+            local seen
+            if (o.MaxDistance or 0) > 0 and d > o.MaxDistance then
+                seen = false
+            else
+                local rp = RaycastParams.new()
+                rp.FilterType = Enum.RaycastFilterType.Exclude
+                rp.FilterDescendantsInstances = { plr.Character, LocalPlayer.Character, cam }
+                local from = cam.CFrame.Position
+                seen = Workspace:Raycast(from, part.Position - from, rp) == nil
+            end
+            if o.Invert then seen = not seen end
+            return { bool = seen, number = d }
+        end,
+        ui = function(api, o)
+            api:slider("Max Distance", 0, 5000, o.MaxDistance, 0, function(v) o.MaxDistance = v end)
+            api:toggle("Invert", o.Invert, function(v) o.Invert = v end)
+        end,
+    }
+
+    KINDS.Info = {
+        blurb = "reads a detail off a player",
+        ins = { { key = "player", type = "player", label = "Player" } },
+        outs = { text = true, number = true },
+        opts = { Field = "Name", Decimals = 0, Prefix = "", Suffix = "" },
+        eval = function(o, ins)
+            local plr = ins.player and ins.player.player
+            if not plr then return { text = "", number = 0 } end
+            local ch = plr.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            local f, num, txt = o.Field, nil, nil
+            if f == "Name" then txt = plr.Name
+            elseif f == "Display Name" then txt = plr.DisplayName
+            elseif f == "Distance" then num = (playerAt(plr)) or 0
+            elseif f == "Health" then num = hum and hum.Health or 0
+            elseif f == "Health %" then
+                local mh = hum and hum.MaxHealth or 0
+                num = (hum and mh > 0) and (hum.Health / mh * 100) or 0
+            end
+            if num then
+                local m = 10 ^ math.max(math.floor(o.Decimals or 0), 0)
+                txt = tostring(math.floor(num * m + 0.5) / m)
+            end
+            return { text = (o.Prefix or "") .. (txt or "") .. (o.Suffix or ""), number = num or 0 }
+        end,
+        ui = function(api, o)
+            api:dropdown("Field", { "Name", "Display Name", "Distance", "Health", "Health %" },
+                o.Field, function(v) o.Field = v end)
+            api:slider("Decimals", 0, 3, o.Decimals, 0, function(v) o.Decimals = v end)
+        end,
+    }
+
+    KINDS.Compare = {
+        blurb = "turns a number into yes / no",
+        ins = { { key = "number", type = "number", label = "Number" } },
+        outs = { bool = true },
+        opts = { Op = "less than", Value = 50 },
+        eval = function(o, ins)
+            local n = (ins.number and ins.number.number) or 0
+            local v = o.Value or 0
+            if o.Op == "less than" then return { bool = n < v } end
+            if o.Op == "more than" then return { bool = n > v } end
+            return { bool = math.abs(n - v) < 0.001 }
+        end,
+        ui = function(api, o)
+            api:dropdown("Test", { "less than", "more than", "equal to" }, o.Op,
+                function(v) o.Op = v end)
+            api:slider("Value", 0, 5000, o.Value, 1, function(v) o.Value = v end)
+        end,
+    }
+
+    KINDS.Switch = {
+        blurb = "picks one of two answers",
+        ins = { { key = "bool", type = "bool", label = "Yes / No" } },
+        outs = { text = true, color = true, bool = true },
+        opts = { TrueText = "VISIBLE", FalseText = "NOT VISIBLE",
+                 TrueColor = Color3.fromRGB(122, 220, 134),
+                 FalseColor = Color3.fromRGB(232, 92, 92) },
+        eval = function(o, ins)
+            if ins.bool and ins.bool.bool then
+                return { text = o.TrueText, color = o.TrueColor, bool = true }
+            end
+            return { text = o.FalseText, color = o.FalseColor, bool = false }
+        end,
+        ui = function(api, o)
+            api:text("Text when yes", o.TrueText, function(v) o.TrueText = v end)
+            api:swatch("Colour when yes", o.TrueColor, function(c) o.TrueColor = c end)
+            api:text("Text when no", o.FalseText, function(v) o.FalseText = v end)
+            api:swatch("Colour when no", o.FalseColor, function(c) o.FalseColor = c end)
+        end,
+    }
+
+    KINDS.Text = {
+        blurb = "draws words on your screen",
+        sink = true,
+        ins = { { key = "text",  type = "text",  label = "Text" },
+                { key = "color", type = "color", label = "Colour" },
+                { key = "show",  type = "bool",  label = "Show When" } },
+        outs = {},
+        opts = { Text = "KOFFEE", Color = Color3.fromRGB(238, 238, 238),
+                 X = 50, Y = 50, Size = 22, Font = "None", Rotation = 0,
+                 Spin = false, SpinSpeed = 90, Opacity = 1,
+                 Outline = true, OutlineThickness = 2,
+                 OutlineColor = Color3.fromRGB(0, 0, 0) },
+        ui = function(api, o)
+            api:text("Text", o.Text, function(v) o.Text = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            api:dropdown("Font", Theme.FontNames, o.Font, function(v) o.Font = v end)
+            api:slider("Size", 8, 96, o.Size, 0, function(v) o.Size = v end)
+            api:slider("X %", 0, 100, o.X, 1, function(v) o.X = v end)
+            api:slider("Y %", 0, 100, o.Y, 1, function(v) o.Y = v end)
+            api:slider("Rotation", -180, 180, o.Rotation, 0, function(v) o.Rotation = v end)
+            api:toggle("Spin", o.Spin, function(v) o.Spin = v end)
+            api:slider("Spin Speed", -720, 720, o.SpinSpeed, 0, function(v) o.SpinSpeed = v end)
+            api:slider("Opacity", 0, 1, o.Opacity, 2, function(v) o.Opacity = v end)
+            api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
+            api:slider("Outline Thickness", 0, 8, o.OutlineThickness, 1,
+                function(v) o.OutlineThickness = v end)
+            api:swatch("Outline Colour", o.OutlineColor, function(c) o.OutlineColor = c end)
+        end,
+    }
+
+    -- memoized (a block feeding three consumers runs once) and depth-capped so a
+    -- wire loop returns empty instead of hanging the client
+    local function evalNode(node, cache, depth)
+        local hit = cache[node.id]
+        if hit ~= nil then return hit end
+        if depth > 12 then return {} end
+        local K = KINDS[node.kind]
+        if not K then return {} end
+        cache[node.id] = {}
+        local ins = {}
+        for _, slot in ipairs(K.ins) do
+            local ref = node.wires and node.wires[slot.key]
+            local src = ref and nodeById(ref)
+            if src then ins[slot.key] = evalNode(src, cache, depth + 1) end
+        end
+        local out = ins
+        if K.eval then
+            local ok, r = pcall(K.eval, node.opts, ins)
+            out = (ok and type(r) == "table") and r or {}
+        end
+        cache[node.id] = out
+        return out
+    end
+
+    local function drawText(node, ins, dt)
+        local o = node.opts
+        local lb = labels[node.id]
+        if not lb or not lb.Parent then
+            lb = new("TextLabel", {
+                Name = "cf" .. node.id, BackgroundTransparency = 1,
+                AnchorPoint = Vector2.new(0.5, 0.5), AutomaticSize = Enum.AutomaticSize.XY,
+                Size = UDim2.new(0, 0, 0, 0), ZIndex = 17, Parent = ensureLayer(),
+            })
+            lb:SetAttribute("KUserColor", true)   -- user data, not chrome
+            local st = new("UIStroke", {
+                ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual, Parent = lb,
+            })
+            st:SetAttribute("KUserColor", true)
+            labels[node.id] = lb
+        end
+        -- a wired input wins; the block's own value is the unwired fallback
+        local wired = node.wires or {}
+        if wired.show and not (ins.show and ins.show.bool) then lb.Visible = false; return end
+        lb.Visible = true
+        lb.Text = (wired.text and (ins.text and ins.text.text or "")) or o.Text or ""
+        lb.TextColor3 = (wired.color and ins.color and ins.color.color) or o.Color
+        lb.TextSize = o.Size
+        lb.FontFace = (Theme.loadFeiFont and Theme.loadFeiFont(o.Font)) or Theme.Fonts.Bold
+        lb.Position = UDim2.new(math.clamp(o.X, 0, 100) / 100, 0, math.clamp(o.Y, 0, 100) / 100, 0)
+        lb.TextTransparency = 1 - math.clamp(o.Opacity or 1, 0, 1)
+        local rot = o.Rotation or 0
+        if o.Spin then
+            spins[node.id] = ((spins[node.id] or 0) + (o.SpinSpeed or 0) * dt) % 360
+            rot = rot + spins[node.id]
+        else
+            spins[node.id] = nil
+        end
+        lb.Rotation = rot
+        local st = lb:FindFirstChildOfClass("UIStroke")
+        if st then
+            st.Enabled = o.Outline == true and (o.OutlineThickness or 0) > 0
+            st.Thickness = o.OutlineThickness or 0
+            st.Color = o.OutlineColor
+            st.Transparency = lb.TextTransparency
+        end
+    end
+
+    RunService.RenderStepped:Connect(function(dt)
+        if Koffee._unloaded then return end
+        local alive = {}
+        if CF.Enabled then
+            local cache = {}
+            for _, node in ipairs(CF.Nodes) do
+                local K = KINDS[node.kind]
+                if K and K.sink then
+                    alive[node.id] = true
+                    pcall(drawText, node, evalNode(node, cache, 0), dt)
+                end
+            end
+        end
+        for id, lb in pairs(labels) do
+            if not alive[id] then lb:Destroy(); labels[id] = nil; spins[id] = nil end
+        end
+    end)
+
+    local function addNode(kind)
+        local K = KINDS[kind]
+        if not K then return end
+        local id = 1
+        for _, n in ipairs(CF.Nodes) do if n.id >= id then id = n.id + 1 end end
+        local o = {}
+        for k, v in pairs(K.opts or {}) do o[k] = v end
+        table.insert(CF.Nodes, { id = id, kind = kind, opts = o, wires = {} })
+    end
+    local function removeNode(id)
+        for i, n in ipairs(CF.Nodes) do
+            if n.id == id then table.remove(CF.Nodes, i); break end
+        end
+        for _, n in ipairs(CF.Nodes) do          -- drop wires pointing at it
+            for k, ref in pairs(n.wires or {}) do
+                if ref == id then n.wires[k] = nil end
+            end
+        end
+    end
+    local function tagOf(node) return "#" .. node.id .. " " .. node.kind end
+
+    addTab("Custom", function(root)
+        local card = panel(root, "Custom Features")
+        configCheckbox(card, "Enabled", CF.Enabled, function(v) CF.Enabled = v end)
+
+        local listHolder = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1, LayoutOrder = 50, ZIndex = 34, Parent = root,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+            Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        local function smallBtn(parent, text, width, onClick)
+            local b = new("TextButton", {
+                Text = text, AutoButtonColor = false,
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextMuted,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, Size = UDim2.new(0, width, 0, 26),
+                ZIndex = 36, Parent = parent,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            b.MouseEnter:Connect(function()
+                tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
+            end)
+            b.MouseLeave:Connect(function()
+                tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+            end)
+            if onClick then b.MouseButton1Click:Connect(onClick) end
+            return b
+        end
+
+        local rebuildList
+        rebuildList = function()
+            for _, c in ipairs(listHolder:GetChildren()) do
+                if not c:IsA("UIListLayout") then c:Destroy() end
+            end
+            if #CF.Nodes == 0 then
+                new("TextLabel", {
+                    Text = "no blocks yet -- add a Target to start.",
+                    FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                    TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, 18), TextXAlignment = Enum.TextXAlignment.Left,
+                    ZIndex = 34, Parent = listHolder,
+                })
+                return
+            end
+            for idx, node in ipairs(CF.Nodes) do
+                local K = KINDS[node.kind]
+                if K then
+                    local nc = panel(listHolder, tagOf(node) .. "  --  " .. K.blurb)
+                    nc.LayoutOrder = idx
+                    for _, slot in ipairs(K.ins) do
+                        local names, byName = { "nothing" }, {}
+                        for _, other in ipairs(CF.Nodes) do
+                            local OK = KINDS[other.kind]
+                            if other.id ~= node.id and OK and OK.outs[slot.type] then
+                                local t = tagOf(other)
+                                names[#names + 1] = t
+                                byName[t] = other.id
+                            end
+                        end
+                        local cur = "nothing"
+                        local ref = node.wires and node.wires[slot.key]
+                        if ref then
+                            local src = nodeById(ref)
+                            if src then cur = tagOf(src) end
+                        end
+                        dropdown(nc, slot.label .. "  <-", names, cur, function(v)
+                            node.wires = node.wires or {}
+                            node.wires[slot.key] = byName[v]
+                        end)
+                    end
+                    local row = new("Frame", {
+                        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+                        LayoutOrder = 90, ZIndex = 35, Parent = nc,
+                    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+                        Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+                        SortOrder = Enum.SortOrder.LayoutOrder }) })
+                    smallBtn(row, "options", 82).LayoutOrder = 1
+                    smallBtn(row, "remove", 78, function()
+                        removeNode(node.id); rebuildList()
+                    end).LayoutOrder = 2
+                    rightClickSettings(row, node.kind:lower(), function(api)
+                        if K.ui then K.ui(api, node.opts) end
+                    end, true)
+                end
+            end
+        end
+
+        local addWrap = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+            ZIndex = 35, Parent = card,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+        for i, kind in ipairs(ORDER) do
+            smallBtn(addWrap, kind:lower(), 74, function()
+                addNode(kind); rebuildList()
+            end).LayoutOrder = i
+        end
+
+        rebuildList()
+    end)
+end)()
+
 addTab("Configs", function(root)
     local CIO = Koffee.Config
 
