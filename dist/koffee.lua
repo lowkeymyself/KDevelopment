@@ -1,9 +1,9 @@
--- koffee v0.4.0
+-- koffee v0.5.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.4.0"
+Koffee.Version = "0.5.0"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -4225,6 +4225,26 @@ local ESP = {
         HeadDot        = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Size = 6 },       -- dot at head
         -- v0.0.28: right-click Profile Picture for Size / Outline Thickness / Y Offset.
         ProfilePicture = { Enabled = false, Size = 40, OutlineThickness = 1, YOffset = 0 },          -- avatar above name
+        -- v0.5.0: HitNumbers -- floating damage text above hit target. Merges stacked
+        -- damage on the same victim within Window (12 -> 24 -> 36) or spawns literal
+        -- copies (12, 12, 12 stacked). Uses HitSounds attribution so any game that
+        -- clears Humanoid.Health via the standard path lights it up.
+        HitNumbers = {
+            Enabled          = false,
+            Stack            = "Merged",   -- "Merged" (accumulate on victim) | "Literal" (stack copies)
+            Window           = 0.6,        -- s -- merge window on the same victim
+            RiseDistance     = 40,         -- px the number rises during life
+            HoldTime         = 0.8,        -- s -- total lifetime
+            TextSize         = 16,
+            OutlineThickness = 1,
+            Color            = Color3.fromRGB(255, 255, 255),
+            CritColor        = Color3.fromRGB(255, 110, 90),
+            CritThreshold    = 50,         -- dmg >= this shows CritColor
+            ShowKill         = true,       -- extra "KILL" tag on kill hits
+            KillColor        = Color3.fromRGB(255, 180, 60),
+            _pool = nil,   -- lazy: {slot, victim, total, startAt, y0}[]
+            _layer = nil,  -- lazy: parent Frame
+        },
     },
     -- v0.0.21: Health -- vertical bar on the character's left, full body height.
     Health = {
@@ -4262,6 +4282,54 @@ registerConfig("esp_health",     ESP.Health)
 registerConfig("esp_tracer",     ESP.Tracer)
 registerConfig("esp_colors",     ESP.Colors)
 registerConfig("shared",         Shared)
+
+-- v0.5.0: Crosshair -- custom on-screen crosshair renderer, sits between world
+-- and Koffee UI. GUI-based (not Drawing.new) so it respects the ScreenGui
+-- ZIndex hierarchy on kernel-driver runtimes. State stays flat here; the
+-- container + arm/dot/outer frames are created lazily by ensureCrosshairLayer.
+-- All render math (position, spin, follow-target lerp, pulse) runs in the
+-- RenderStepped bound near the end of this file, right before addTab("Visuals").
+local Crosshair = {
+    Enabled       = false,
+    Style         = "Cross",                       -- "Cross" | "T-Cross" | "Plus" | "Dot" | "Circle" | "Square"
+    Color         = Color3.new(1, 1, 1),
+    Opacity       = 1,                             -- global 0..1
+    Outline       = true,
+    OutlineColor  = Color3.new(0, 0, 0),
+    OutlineThickness = 1,
+    Thickness     = 2,
+    Length        = 8,
+    Gap           = 4,
+    OffsetX       = 0,
+    OffsetY       = 0,
+    Rotation      = 0,                             -- static deg
+    CurveAngle    = 0,                             -- per-arm tilt (0=perpendicular, +45=pinwheel)
+    Spin          = false,
+    SpinSpeed     = 90,                            -- deg/sec
+    SpinDir       = "CW",                          -- "CW" | "CCW"
+    Follow = {
+        Enabled    = false,
+        Part       = "HumanoidRootPart",           -- follows aim target's part of this name
+        Smoothness = 0.15,
+        _screenX   = nil,
+        _screenY   = nil,
+    },
+    Dot = {
+        Enabled = false,
+        Size    = 2,
+        Color   = Color3.new(1, 1, 1),
+    },
+    Pulse = {                                      -- expand-then-recover on hit
+        Enabled  = false,
+        Scale    = 1.4,
+        Duration = 0.18,
+        _startedAt = 0,
+    },
+    -- wave 3 stub: locks the crosshair to a specific instance chosen via the
+    -- Rules explorer. Wired later; keeps the shape stable in configs meanwhile.
+    LockToPart = { Enabled = false, InstancePath = nil },
+}
+registerConfig("crosshair", Crosshair)
 
 -- v0.0.19: applyGlobalOutline removed. Outline is purely a box thickness accent now;
 -- the arraylist accent line stays at its default transparency (0.15) permanently.
@@ -7507,6 +7575,12 @@ local Combat = {
             -- right-click popup ("Hide Visual"). Independent of Enabled -- turning
             -- HideVisual on while Enabled is on means "invisible FOV, still gated".
             HideVisual = false,
+            -- v0.5.0: Follow the current target. Smoothness 0=snap, 0.98=very slow.
+            -- Lerp advances once per frame in stepFovFollow (called from the same
+            -- RenderStepped that drives drawFov). fovCenter reads _screenX/_screenY
+            -- straight out of this table so many-call sites don't over-step the lerp.
+            -- Underscores keep them out of the config serializer.
+            Follow = { Enabled = false, Smoothness = 0.15, _screenX = nil, _screenY = nil },
             Style = "Smooth", Color = Color3.new(1, 1, 1), FillColor = Color3.fromRGB(212, 145, 90),
             FillTransparency = 0.5, Thickness = 1, DotSize = 4, DotGap = 18,
             Fill = {
@@ -7554,13 +7628,24 @@ local Combat = {
     end
 
     --== targeting engine (shared by aimbot / trigger / silent) ==--
+    -- v0.5.0: when cfg.Follow.Enabled, fovCenter returns the lerped follow-cache
+    -- (updated once per frame in stepFovFollow) instead of the plain Center/Mouse
+    -- origin. Falls back to origin when the cache is empty (first frame / no
+    -- target yet). Targeting also uses this center so the FOV gate follows the
+    -- visual ring consistently.
     local function fovCenter(cfg)
         local vp = viewport()
+        local defX, defY = vp.X * 0.5, vp.Y * 0.5
         if cfg and cfg.Origin == "Mouse" then
             local m = UserInputService:GetMouseLocation()
-            return Vector2.new(m.X, m.Y)
+            defX, defY = m.X, m.Y
         end
-        return Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+        if cfg and cfg.Follow and cfg.Follow.Enabled then
+            local cx = cfg.Follow._screenX or defX
+            local cy = cfg.Follow._screenY or defY
+            return Vector2.new(cx, cy)
+        end
+        return Vector2.new(defX, defY)
     end
 
     -- friendly hit-part name -> candidate real part names (R15 first, R6 fallback)
@@ -8737,8 +8822,50 @@ local Combat = {
         applyLineGradient(snapLine, ESP.Config.Gradient)
     end
 
+    -- v0.5.0: advance the FOV Follow-target lerp once per frame per cfg. Reads the
+    -- "current target" for the cfg's owner (aim uses _rageLock or _target; silent
+    -- uses the silentTarget part). Falls back to the default origin (Center/Mouse)
+    -- when there's no target. Called BEFORE drawFov so this frame's fovCenter reads
+    -- the freshly-advanced cache.
+    local function stepFovFollow(cfg)
+        if not (cfg and cfg.Follow and cfg.Follow.Enabled) then return end
+        local vp = viewport()
+        local defX, defY = vp.X * 0.5, vp.Y * 0.5
+        if cfg.Origin == "Mouse" then
+            local m = UserInputService:GetMouseLocation()
+            defX, defY = m.X, m.Y
+        end
+        -- resolve the follow target -- a Part, not a Player.
+        local part
+        if cfg == Combat.Aim.FOV then
+            local p = Combat.Aim._rageLock or Combat.Aim._target
+            if p and p.Character then part = aimPart(p.Character, Combat.Aim.HitPart) end
+        elseif cfg == Combat.Silent.FOV then
+            part = silentTarget
+        end
+        local tx, ty = defX, defY
+        if part then
+            local cam = Workspace.CurrentCamera
+            if cam then
+                local sp = cam:WorldToViewportPoint(part.Position)
+                if sp.Z > 0 then tx, ty = sp.X, sp.Y end
+            end
+        end
+        -- smoothness 0=snap; 0.98=very slow. Actual per-frame lerp weight a = 1-s.
+        local s = math.clamp(cfg.Follow.Smoothness or 0, 0, 0.98)
+        local a = 1 - s
+        local cx = cfg.Follow._screenX or defX
+        local cy = cfg.Follow._screenY or defY
+        cx = cx + (tx - cx) * a
+        cy = cy + (ty - cy) * a
+        cfg.Follow._screenX = cx
+        cfg.Follow._screenY = cy
+    end
+
     -- both FOV circles render independently of the aimbot/silent master toggles.
     RunService.RenderStepped:Connect(function()
+        stepFovFollow(Combat.Aim.FOV)
+        stepFovFollow(Combat.Silent.FOV)
         drawFov(aimFov, Combat.Aim.FOV)
         drawFov(silentFov, Combat.Silent.FOV)
         drawSnaplines()
@@ -9022,6 +9149,15 @@ local Combat = {
             SR.recentTargets[char] = nil
             if nowZero then lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
             else lastHitAt = playSound(hitSnd, Combat.HitSounds.Hit, lastHitAt) end
+            -- v0.5.0: hit indicators + crosshair pulse ride the same attribution
+            -- gate as the sounds. Only fires for hits YOU landed (recentTargets +
+            -- AttrWindow), not every game-wide damage event.
+            if Shared.spawnHitNumber then
+                local victim = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+                    or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+                if victim then Shared.spawnHitNumber(victim, dropped, nowZero) end
+            end
+            if Shared.crosshairPulse then Shared.crosshairPulse() end
         end
     end
     local function bindHumanoid(plr, char)
@@ -9643,6 +9779,16 @@ local Combat = {
         slider(parent, "Fill Transparency", 0, 1, F.FillTransparency, 2, function(v) F.FillTransparency = v end)
         slider(parent, "Size", 20, 500, F.Size, 0, function(v) F.Size = v end)
         dropdown(parent, "Origin", { "Center", "Mouse" }, F.Origin, function(v) F.Origin = v end)
+        -- v0.5.0: Follow Target -- ring slides toward the current target's screen
+        -- position. Right-click for Smoothness (0=snap, 0.98=very slow). Targeting
+        -- gate follows the same center so the picker respects what the user sees.
+        local followRow = configCheckbox(parent, "Follow Target", F.Follow.Enabled, function(v)
+            F.Follow.Enabled = v
+            if not v then F.Follow._screenX = nil; F.Follow._screenY = nil end
+        end)
+        rightClickSettings(followRow.row, "follow", function(api)
+            api:slider("Smoothness", 0, 0.98, F.Follow.Smoothness, 2, function(v) F.Follow.Smoothness = v end)
+        end)
         local styleDd = dropdown(parent, "Style", { "Smooth", "Dots" }, F.Style, function(v)
             F.Style = v
         end)
@@ -10016,6 +10162,10 @@ local Combat = {
     -- through Shared so that path sees the same tables, not nil globals.
     Shared.Combat = Combat
     Shared.CombatSounds = { hit = hitSnd, kill = killSnd }
+    -- v0.5.0: expose subTabs so the Visuals tab (and later World/Rules in wave 3)
+    -- can reuse the same pill-switcher builder Combat pioneered. Chunk-scope
+    -- would blow the 200-register ceiling; Shared is the natural handoff.
+    Shared.subTabs = subTabs
 end)()
 
 -- helper: attach two color swatches (visible + hidden) to a Visible Check row
@@ -10061,6 +10211,341 @@ local function attachSingleSwatch(row, initialColor, onChange)
     colorSwatch(wrap, initialColor, 14, { onChange = onChange })
 end
 
+-- v0.5.0: CROSSHAIR + HIT NUMBERS render layer. Container Frame parents both
+-- surfaces; lives directly under `screen` at ZIndex 14 (above ESP/dim but well
+-- below the Koffee window at ZIndex 30+). Everything is GUI-based so kernel-
+-- driver runtimes render it under our own UI, unlike Drawing.new.
+do
+    -- Workspace / RunService already at chunk scope (see line ~923); reusing them
+    -- here saves two of the 200 chunk-local registers.
+
+    -- one shared layer for both crosshair + damage-number pool.
+    local layer = new("Frame", {
+        Name = KID.name("xhair"), Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 14,
+        Parent = screen,
+    })
+
+    ------------------------------------------------------------------ crosshair
+    -- one CanvasGroup wrap so Opacity + Pulse scale drive the whole thing.
+    local xhCanvas = new("CanvasGroup", {
+        Name = "XHair", AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, 64, 0, 64),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundTransparency = 1, GroupTransparency = 1, Visible = false,
+        ZIndex = 15, Parent = layer,
+    })
+
+    -- v0.5.0: each arm anchors at its "gap-side" edge so Rotation pivots there,
+    -- giving a proper curve/spin look instead of the arm rotating around its
+    -- own center (which would jut into the crosshair core).
+    local function mkArm(name, anchorX, anchorY)
+        return new("Frame", {
+            Name = name, AnchorPoint = Vector2.new(anchorX, anchorY),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0, 2, 0, 8), BorderSizePixel = 0,
+            ZIndex = 15, Parent = xhCanvas,
+        }, { new("UIStroke", { Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Enabled = false, LineJoinMode = Enum.LineJoinMode.Miter }) })
+    end
+    local armU = mkArm("U", 0.5, 1)   -- anchors at bottom-center (near crosshair core)
+    local armD = mkArm("D", 0.5, 0)   -- anchors at top-center
+    local armL = mkArm("L", 1, 0.5)   -- anchors at right-center
+    local armR = mkArm("R", 0, 0.5)   -- anchors at left-center
+
+    local dotFrame = new("Frame", {
+        Name = "Dot", AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 4, 0, 4), BorderSizePixel = 0, Visible = false,
+        ZIndex = 16, Parent = xhCanvas,
+    }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
+         new("UIStroke", { Thickness = 1, Enabled = false }) })
+
+    -- outer shape (Circle / Square). Same frame; UICorner drives roundness.
+    local outerFrame = new("Frame", {
+        Name = "Outer", AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 24, 0, 24), BackgroundTransparency = 1,
+        BorderSizePixel = 0, Visible = false, ZIndex = 15, Parent = xhCanvas,
+    }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }),
+         new("UIStroke", { Thickness = 2, Enabled = true }) })
+
+    -- helper: paint arm color + outline + thickness + rotation
+    local function paintArm(f, thickness, length, color, outline, outlineCol, outlineThick, rotation)
+        f.BackgroundColor3 = color
+        f.BackgroundTransparency = 0
+        f.Size = (f == armL or f == armR) and UDim2.new(0, length, 0, thickness) or UDim2.new(0, thickness, 0, length)
+        f.Rotation = rotation
+        local s = f:FindFirstChildOfClass("UIStroke")
+        if s then
+            s.Thickness = outlineThick
+            s.Color = outlineCol
+            s.Enabled = outline and outlineThick > 0
+        end
+    end
+
+    -- resolve the follow target (aim's target part, if any). Used by follow lerp.
+    local function crosshairFollowPart()
+        local combat = Shared.Combat
+        if not combat then return nil end
+        -- prefer rage-locked victim, otherwise the current aimbot pick.
+        local plr = combat.Aim._rageLock or combat.Aim._target
+        if plr and plr.Character then
+            local partName = Crosshair.Follow.Part or "HumanoidRootPart"
+            local p = plr.Character:FindFirstChild(partName)
+                or plr.Character:FindFirstChild("HumanoidRootPart")
+                or plr.Character:FindFirstChild("Head")
+            return p
+        end
+        return nil
+    end
+
+    -- one style -> which pieces are visible
+    local STYLE_ARMS = {
+        Cross   = { U = true,  D = true,  L = true,  R = true,  dot = false, outer = false },
+        Plus    = { U = true,  D = true,  L = true,  R = true,  dot = false, outer = false }, -- same arms; Gap forced 0
+        ["T-Cross"] = { U = false, D = true, L = true, R = true, dot = false, outer = false },
+        Dot     = { U = false, D = false, L = false, R = false, dot = true,  outer = false },
+        Circle  = { U = false, D = false, L = false, R = false, dot = false, outer = true  },
+        Square  = { U = false, D = false, L = false, R = false, dot = false, outer = true  },
+    }
+
+    -- fetch the viewport for follow / offset math.
+    local function vp()
+        local cam = Workspace.CurrentCamera
+        if cam then return cam.ViewportSize end
+        return Vector2.new(1280, 720)
+    end
+
+    local function drawCrosshair(dt)
+        if not Crosshair.Enabled then xhCanvas.Visible = false; return end
+        xhCanvas.Visible = true
+
+        -- resolve center (Follow lerp OR screen-center + user offset).
+        local size = vp()
+        local cx, cy = size.X * 0.5 + Crosshair.OffsetX, size.Y * 0.5 + Crosshair.OffsetY
+        if Crosshair.Follow.Enabled then
+            local part = crosshairFollowPart()
+            local tx, ty = cx, cy
+            if part then
+                local cam = Workspace.CurrentCamera
+                if cam then
+                    local sp = cam:WorldToViewportPoint(part.Position)
+                    if sp.Z > 0 then tx, ty = sp.X, sp.Y end
+                end
+            end
+            local s = math.clamp(Crosshair.Follow.Smoothness or 0, 0, 0.98)
+            local a = 1 - s
+            local lx = Crosshair.Follow._screenX or cx
+            local ly = Crosshair.Follow._screenY or cy
+            lx = lx + (tx - lx) * a
+            ly = ly + (ty - ly) * a
+            Crosshair.Follow._screenX = lx
+            Crosshair.Follow._screenY = ly
+            cx, cy = lx, ly
+        end
+
+        -- pulse scale (expand-then-recover on Pulse._startedAt)
+        local pulseScale = 1
+        if Crosshair.Pulse.Enabled and Crosshair.Pulse._startedAt > 0 then
+            local dur = math.max(Crosshair.Pulse.Duration, 0.01)
+            local t = (os.clock() - Crosshair.Pulse._startedAt) / dur
+            if t >= 1 then
+                pulseScale = 1
+                Crosshair.Pulse._startedAt = 0
+            else
+                -- symmetric ease: 0 -> peak at 0.5 -> 0
+                local wave = 1 - math.abs(0.5 - t) * 2
+                pulseScale = 1 + (Crosshair.Pulse.Scale - 1) * wave
+            end
+        end
+
+        -- position + spin + rotation on the wrap canvas
+        local baseSize = math.max(Crosshair.Length * 2 + Crosshair.Gap * 2 + 16, 24) * pulseScale
+        xhCanvas.Size = UDim2.new(0, baseSize, 0, baseSize)
+        xhCanvas.Position = UDim2.new(0, cx, 0, cy)
+        xhCanvas.GroupTransparency = 1 - math.clamp(Crosshair.Opacity, 0, 1)
+
+        local spinDeg = 0
+        if Crosshair.Spin then
+            local speed = Crosshair.SpinSpeed * (Crosshair.SpinDir == "CCW" and -1 or 1)
+            Crosshair._spinAcc = ((Crosshair._spinAcc or 0) + speed * dt) % 360
+            spinDeg = Crosshair._spinAcc
+        end
+        xhCanvas.Rotation = (Crosshair.Rotation or 0) + spinDeg
+
+        -- style dispatch
+        local mask = STYLE_ARMS[Crosshair.Style] or STYLE_ARMS.Cross
+        armU.Visible = mask.U; armD.Visible = mask.D
+        armL.Visible = mask.L; armR.Visible = mask.R
+        outerFrame.Visible = mask.outer
+        dotFrame.Visible = mask.dot or Crosshair.Dot.Enabled
+
+        -- arms
+        if mask.U or mask.D or mask.L or mask.R then
+            local gap = (Crosshair.Style == "Plus") and 0 or Crosshair.Gap
+            local thickness = Crosshair.Thickness
+            local length    = Crosshair.Length
+            local color     = Crosshair.Color
+            local outline   = Crosshair.Outline
+            local ocol      = Crosshair.OutlineColor
+            local othick    = Crosshair.OutlineThickness
+            local curve     = Crosshair.CurveAngle or 0
+            -- each arm sits at (0.5 +- (gap/canvas)) with its own anchor pinning
+            -- the "core-side" edge. Position offsets are done in offset units
+            -- (px) so the wrap size doesn't need to change per arm.
+            armU.Position = UDim2.new(0.5, 0, 0.5, -gap)
+            armD.Position = UDim2.new(0.5, 0, 0.5,  gap)
+            armL.Position = UDim2.new(0.5, -gap, 0.5, 0)
+            armR.Position = UDim2.new(0.5,  gap, 0.5, 0)
+            paintArm(armU, thickness, length, color, outline, ocol, othick,  curve)
+            paintArm(armD, thickness, length, color, outline, ocol, othick,  curve)
+            paintArm(armL, thickness, length, color, outline, ocol, othick,  curve)
+            paintArm(armR, thickness, length, color, outline, ocol, othick,  curve)
+        end
+
+        -- center dot (visible when style==Dot OR user opted in on any style)
+        if dotFrame.Visible then
+            local dsz = (Crosshair.Style == "Dot") and math.max(Crosshair.Length, 2) or Crosshair.Dot.Size
+            dotFrame.Size = UDim2.new(0, dsz * 2, 0, dsz * 2)
+            dotFrame.BackgroundColor3 = (Crosshair.Style == "Dot") and Crosshair.Color or Crosshair.Dot.Color
+            local ds = dotFrame:FindFirstChildOfClass("UIStroke")
+            if ds then
+                ds.Thickness = Crosshair.OutlineThickness
+                ds.Color = Crosshair.OutlineColor
+                ds.Enabled = Crosshair.Outline and Crosshair.OutlineThickness > 0
+            end
+        end
+
+        -- outer (Circle / Square)
+        if outerFrame.Visible then
+            local d = math.max(Crosshair.Length * 2, 8)
+            outerFrame.Size = UDim2.new(0, d, 0, d)
+            local uc = outerFrame:FindFirstChildOfClass("UICorner")
+            if uc then uc.CornerRadius = (Crosshair.Style == "Circle") and UDim.new(1, 0) or UDim.new(0, 4) end
+            local os_ = outerFrame:FindFirstChildOfClass("UIStroke")
+            if os_ then
+                os_.Thickness = math.max(Crosshair.Thickness, 1)
+                os_.Color = Crosshair.Color
+                os_.Enabled = true
+            end
+        end
+    end
+
+    -- Called from the hit hook so the crosshair can pulse on damage.
+    Shared.crosshairPulse = function()
+        if Crosshair.Pulse.Enabled then Crosshair.Pulse._startedAt = os.clock() end
+    end
+
+    ------------------------------------------------------------------- hit nums
+    -- pool: reusable TextLabels for damage numbers. Each entry:
+    --   { lbl, victim, total, startAt, y0 }
+    local hitCfg = ESP.Indicators.HitNumbers
+    hitCfg._pool = {}
+    hitCfg._layer = layer
+
+    local function acquireHitLabel()
+        for _, e in ipairs(hitCfg._pool) do
+            if not e._alive then return e end
+        end
+        local lbl = new("TextLabel", {
+            AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+            FontFace = Theme.Fonts.Bold, TextSize = 16, TextColor3 = Color3.new(1, 1, 1),
+            Text = "", TextTransparency = 1, Visible = false, ZIndex = 17,
+            Size = UDim2.new(0, 120, 0, 24), Parent = layer,
+        }, { new("UIStroke", { Thickness = 1, Color = Color3.new(0, 0, 0), Transparency = 1,
+            LineJoinMode = Enum.LineJoinMode.Miter }) })
+        local e = { lbl = lbl }
+        table.insert(hitCfg._pool, e)
+        return e
+    end
+
+    -- spawn a fresh number OR add to an existing merged one for the same victim.
+    local function spawnHit(victim, dmg, isKill)
+        if not hitCfg.Enabled then return end
+        local now = os.clock()
+        local e
+        if hitCfg.Stack == "Merged" then
+            -- reuse the most recent live entry for this victim within Window
+            for _, cand in ipairs(hitCfg._pool) do
+                if cand._alive and cand.victim == victim
+                   and (now - cand.startAt) <= (hitCfg.Window or 0.6) then
+                    e = cand; break
+                end
+            end
+        end
+        if not e then
+            e = acquireHitLabel()
+            e.victim = victim
+            e.total  = 0
+            e.startAt = now
+            e.y0     = 0
+            e._alive = true
+            e.lbl.Visible = true
+        else
+            -- restart the fade so the merged number sticks around fresh
+            e.startAt = now
+        end
+        e.total = e.total + math.floor(dmg + 0.5)
+        e.isKill = e.isKill or isKill
+        -- text: "-24" or "-24 KILL"
+        local tag = "-" .. e.total
+        if e.isKill and hitCfg.ShowKill then tag = tag .. "  KILL" end
+        e.lbl.Text = tag
+        e.lbl.TextSize = hitCfg.TextSize
+        local col = e.isKill and hitCfg.KillColor
+            or (e.total >= hitCfg.CritThreshold and hitCfg.CritColor or hitCfg.Color)
+        e.lbl.TextColor3 = col
+        local s = e.lbl:FindFirstChildOfClass("UIStroke")
+        if s then
+            s.Thickness = hitCfg.OutlineThickness
+            s.Enabled = hitCfg.OutlineThickness > 0
+        end
+    end
+    Shared.spawnHitNumber = spawnHit
+
+    -- per-frame render for live damage numbers
+    local function drawHitNumbers()
+        if not hitCfg.Enabled then
+            for _, e in ipairs(hitCfg._pool) do
+                if e._alive then e._alive = false; e.lbl.Visible = false end
+            end
+            return
+        end
+        local now = os.clock()
+        local cam = Workspace.CurrentCamera
+        for _, e in ipairs(hitCfg._pool) do
+            if e._alive then
+                local age = now - e.startAt
+                local life = hitCfg.HoldTime or 0.8
+                if age >= life or (e.victim and e.victim.Parent == nil) then
+                    e._alive = false; e.lbl.Visible = false
+                else
+                    local t = age / life
+                    e.lbl.TextTransparency = math.clamp(t, 0, 1)
+                    local s = e.lbl:FindFirstChildOfClass("UIStroke")
+                    if s then s.Transparency = math.clamp(t, 0, 1) end
+                    if cam and e.victim and e.victim.Parent then
+                        local sp = cam:WorldToViewportPoint(e.victim.Position)
+                        if sp.Z > 0 then
+                            local rise = (hitCfg.RiseDistance or 40) * t
+                            e.lbl.Position = UDim2.new(0, sp.X, 0, sp.Y - rise)
+                            e.lbl.Visible = true
+                        else
+                            e.lbl.Visible = false
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    RunService.RenderStepped:Connect(function(dt)
+        drawCrosshair(dt)
+        drawHitNumbers()
+    end)
+end
+
 addTab("Visuals", function(root)
     -- v0.0.21: two-column layout to match Matcha.
     --   left:  esp / box / name      right: indicators / health / tracer
@@ -10098,8 +10583,17 @@ addTab("Visuals", function(root)
     local leftCol  = column(1)
     local rightCol = column(2)
 
+    -- v0.5.0: leftCol wraps a subTabs card so ESP and Crosshair are peer surfaces.
+    -- All existing left panels (ESP / Box / Name) parent to the ESP sub-tab so
+    -- their visual density and headers stay intact; only the pill bar changes.
+    -- Crosshair sub-tab is new (built at the end of this tab).
+    local leftCard = panel(leftCol)
+    local Lsub = Shared.subTabs and Shared.subTabs(leftCard, { "ESP", "Crosshair" })
+        or { ESP = leftCol, Crosshair = leftCol }
+    local espSub, crosshairSub = Lsub["ESP"], Lsub["Crosshair"]
+
     --------------------------------------------------------------- ESP
-    local espPanel = panel(leftCol, "ESP")
+    local espPanel = panel(espSub, "ESP")
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
     -- v0.0.34: ESP ships with NO keybind by default (pill reads "no keybind").
     keybindPill(master.row, "esp", nil)
@@ -10160,7 +10654,7 @@ addTab("Visuals", function(root)
         function(v) ESP.Render.Thickness = v end)
 
     --------------------------------------------------------------- Box
-    local boxesPanel = panel(leftCol, "Box")
+    local boxesPanel = panel(espSub, "Box")
     local boxesMaster = configCheckbox(boxesPanel, "Enabled", ESP.Boxes.Enabled, function(v) ESP.Boxes.Enabled = v end)
     -- v0.0.24: main box line colour + fill colour. Outline colour is its own swatch
     -- on the esp panel's Outline row (separate now).
@@ -10200,7 +10694,7 @@ addTab("Visuals", function(root)
     slider(boxesPanel, "Corner Length", 0.05, 0.5, ESP.Boxes.CornerLength, 2, function(v) ESP.Boxes.CornerLength = v end)
 
     --------------------------------------------------------------- Name
-    local namePanel = panel(leftCol, "Name")
+    local namePanel = panel(espSub, "Name")
     local nameMaster = configCheckbox(namePanel, "Enabled", ESP.Names.Enabled, function(v) ESP.Names.Enabled = v end)
     attachSingleSwatch(nameMaster.row, ESP.Names.Color, function(c) ESP.Names.Color = c end)
     -- v0.0.28: right-click Name for text size + outline thickness (all text does this).
@@ -10238,6 +10732,23 @@ addTab("Visuals", function(root)
         popup:slider("Outline Thickness", 0, 6, ESP.Indicators.ProfilePicture.OutlineThickness, 1, function(v) ESP.Indicators.ProfilePicture.OutlineThickness = v end)
         popup:slider("Y Offset", -80, 80, ESP.Indicators.ProfilePicture.YOffset, 0, function(v) ESP.Indicators.ProfilePicture.YOffset = v end)
     end)
+    -- v0.5.0: Hit Numbers -- floating damage text on attributed hits. Right-click
+    -- for stack mode, timing, colors, crit threshold, kill tag.
+    local hitCfgUI = ESP.Indicators.HitNumbers
+    local hitRow = configCheckbox(indPanel, "Hit Numbers", hitCfgUI.Enabled, function(v) hitCfgUI.Enabled = v end)
+    attachSingleSwatch(hitRow.row, hitCfgUI.Color, function(c) hitCfgUI.Color = c end)
+    rightClickSettings(hitRow.row, "hit numbers", function(popup)
+        popup:dropdown("Stack Mode", { "Merged", "Literal" }, hitCfgUI.Stack, function(v) hitCfgUI.Stack = v end)
+        popup:slider("Merge Window (s)", 0.1, 3, hitCfgUI.Window, 2, function(v) hitCfgUI.Window = v end)
+        popup:slider("Rise Distance", 0, 200, hitCfgUI.RiseDistance, 0, function(v) hitCfgUI.RiseDistance = v end)
+        popup:slider("Hold Time (s)", 0.1, 3, hitCfgUI.HoldTime, 2, function(v) hitCfgUI.HoldTime = v end)
+        popup:slider("Text Size", 8, 40, hitCfgUI.TextSize, 0, function(v) hitCfgUI.TextSize = v end)
+        popup:slider("Outline", 0, 6, hitCfgUI.OutlineThickness, 0, function(v) hitCfgUI.OutlineThickness = v end)
+        popup:slider("Crit Threshold", 1, 500, hitCfgUI.CritThreshold, 0, function(v) hitCfgUI.CritThreshold = v end)
+        popup:swatch("Crit Color", hitCfgUI.CritColor, function(c) hitCfgUI.CritColor = c end)
+        popup:toggle("Show KILL", hitCfgUI.ShowKill, function(v) hitCfgUI.ShowKill = v end)
+        popup:swatch("Kill Color", hitCfgUI.KillColor, function(c) hitCfgUI.KillColor = c end)
+    end)
 
     --------------------------------------------------------------- Health
     local healthPanel = panel(rightCol, "Health")
@@ -10253,6 +10764,66 @@ addTab("Visuals", function(root)
     attachSingleSwatch(trRow.row, ESP.Tracer.Color, function(c) ESP.Tracer.Color = c end)
     dropdown(tracerPanel, "Origin", { "Mouse", "Bottom", "Middle", "Top" }, ESP.Tracer.Origin, function(v) ESP.Tracer.Origin = v end)
     dropdown(tracerPanel, "Location", { "Below", "Middle", "Above" }, ESP.Tracer.Location, function(v) ESP.Tracer.Location = v end)
+
+    --------------------------------------------------------------- Crosshair
+    -- v0.5.0: custom crosshair. Live-rendered by the chunk-level render layer
+    -- above; this tab is purely wiring. Styles (Cross/T-Cross/Plus/Dot/Circle/
+    -- Square) plus rich modifiers -- follow-target with smoothness, spin, pulse
+    -- on hit, per-arm curve, center dot, opacity, offsets. Deep tunes hide in
+    -- right-click popups so the base surface stays dense but calm.
+    local xhCard = panel(crosshairSub, "Crosshair")
+    local xhEnRow = configCheckbox(xhCard, "Enabled", Crosshair.Enabled, function(v) Crosshair.Enabled = v end)
+    attachSingleSwatch(xhEnRow.row, Crosshair.Color, function(c) Crosshair.Color = c end)
+
+    local xhStyleDd = dropdown(xhCard, "Style", { "Cross", "T-Cross", "Plus", "Dot", "Circle", "Square" },
+        Crosshair.Style, function(v) Crosshair.Style = v end)
+    rightClickSettings(xhStyleDd.frame, "style", function(popup)
+        -- per-arm tilt; +/- for pinwheel vs starfish look. Only visible on Cross/T-Cross/Plus.
+        popup:slider("Curve Angle", -45, 45, Crosshair.CurveAngle, 0, function(v) Crosshair.CurveAngle = v end)
+    end)
+
+    local xhOutRow = configCheckbox(xhCard, "Outline", Crosshair.Outline, function(v) Crosshair.Outline = v end)
+    attachSingleSwatch(xhOutRow.row, Crosshair.OutlineColor, function(c) Crosshair.OutlineColor = c end)
+    rightClickSettings(xhOutRow.row, "outline", function(popup)
+        popup:slider("Thickness", 0, 6, Crosshair.OutlineThickness, 0, function(v) Crosshair.OutlineThickness = v end)
+    end)
+
+    slider(xhCard, "Thickness", 1, 10, Crosshair.Thickness, 0, function(v) Crosshair.Thickness = v end)
+    slider(xhCard, "Length",    2, 40, Crosshair.Length,    0, function(v) Crosshair.Length    = v end)
+    slider(xhCard, "Gap",       0, 30, Crosshair.Gap,       0, function(v) Crosshair.Gap       = v end)
+    slider(xhCard, "Opacity",   0, 1,  Crosshair.Opacity,   2, function(v) Crosshair.Opacity   = v end)
+    slider(xhCard, "Offset X",  -200, 200, Crosshair.OffsetX, 0, function(v) Crosshair.OffsetX = v end)
+    slider(xhCard, "Offset Y",  -200, 200, Crosshair.OffsetY, 0, function(v) Crosshair.OffsetY = v end)
+    slider(xhCard, "Rotation",  0, 360, Crosshair.Rotation, 0, function(v) Crosshair.Rotation = v end)
+
+    local xhSpinRow = configCheckbox(xhCard, "Spin", Crosshair.Spin, function(v) Crosshair.Spin = v end)
+    rightClickSettings(xhSpinRow.row, "spin", function(popup)
+        popup:slider("Speed (deg/s)", 0, 720, Crosshair.SpinSpeed, 0, function(v) Crosshair.SpinSpeed = v end)
+        popup:dropdown("Direction", { "CW", "CCW" }, Crosshair.SpinDir, function(v) Crosshair.SpinDir = v end)
+    end)
+
+    local xhFollowRow = configCheckbox(xhCard, "Follow Target", Crosshair.Follow.Enabled, function(v)
+        Crosshair.Follow.Enabled = v
+        if not v then Crosshair.Follow._screenX = nil; Crosshair.Follow._screenY = nil end
+    end)
+    rightClickSettings(xhFollowRow.row, "follow", function(popup)
+        popup:slider("Smoothness", 0, 0.98, Crosshair.Follow.Smoothness, 2, function(v) Crosshair.Follow.Smoothness = v end)
+        popup:dropdown("Body Part", { "Head", "HumanoidRootPart", "UpperTorso", "Torso",
+            "LeftHand", "RightHand", "LeftFoot", "RightFoot" }, Crosshair.Follow.Part,
+            function(v) Crosshair.Follow.Part = v end)
+    end)
+
+    local xhDotRow = configCheckbox(xhCard, "Center Dot", Crosshair.Dot.Enabled, function(v) Crosshair.Dot.Enabled = v end)
+    attachSingleSwatch(xhDotRow.row, Crosshair.Dot.Color, function(c) Crosshair.Dot.Color = c end)
+    rightClickSettings(xhDotRow.row, "center dot", function(popup)
+        popup:slider("Size", 1, 12, Crosshair.Dot.Size, 0, function(v) Crosshair.Dot.Size = v end)
+    end)
+
+    local xhPulseRow = configCheckbox(xhCard, "Pulse on Hit", Crosshair.Pulse.Enabled, function(v) Crosshair.Pulse.Enabled = v end)
+    rightClickSettings(xhPulseRow.row, "pulse", function(popup)
+        popup:slider("Scale",        1, 3, Crosshair.Pulse.Scale, 2, function(v) Crosshair.Pulse.Scale = v end)
+        popup:slider("Duration (s)", 0.05, 1, Crosshair.Pulse.Duration, 2, function(v) Crosshair.Pulse.Duration = v end)
+    end)
 end)
 
 addTab("World", function(root)
