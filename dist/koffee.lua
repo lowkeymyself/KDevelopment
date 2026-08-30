@@ -1,9 +1,9 @@
--- koffee v0.10.0
+-- koffee v0.10.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.10.0"
+Koffee.Version = "0.10.1"
 
 -- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Hooks the anti-cheat's
 -- Detected/Kill paths to no-ops. Fully guarded: if the runtime lacks any required
@@ -3301,8 +3301,16 @@ local function dropdown(parent, label, options, initial, onChange)
     -- popup lives in the dedicated popup ScreenGui, above everything -- ZIndex 260
     -- so it clears the settings popup (210) AND the colour picker (250) when a
     -- dropdown is opened from inside one of them.
-    local list = new("Frame", {
-        Size = UDim2.new(0, 100, 0, #options * 26),
+    -- v0.10.1: ScrollingFrame, not Frame. The sound catalog is 43 entries -- at 26px
+    -- a row that is a 1118px list, taller than most screens, and the tail was simply
+    -- unreachable. Capped at LIST_MAX with the full height as CanvasSize.
+    local LIST_MAX = 260
+    local list = new("ScrollingFrame", {
+        Size = UDim2.new(0, 100, 0, math.min(#options * 26, LIST_MAX)),
+        CanvasSize = UDim2.new(0, 0, 0, #options * 26),
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = Theme.Palette.TextFaint,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
         BackgroundColor3 = Theme.Palette.Panel,
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
@@ -3326,7 +3334,8 @@ local function dropdown(parent, label, options, initial, onChange)
         local siz = btn.AbsoluteSize
         if siz.X <= 0 or siz.Y <= 0 then return end
         local vp = viewport()
-        local listH = #options * 26
+        -- v0.10.1: the RENDERED height is capped; CanvasSize keeps the rest reachable.
+        local listH = math.min(#options * 26, LIST_MAX)
         list.AnchorPoint = Vector2.new(0, 0)
         -- desired TOP-LEFT in the button's screen space.
         local desX = abs.X
@@ -6233,6 +6242,32 @@ registerConfig("world_skybox", World.SkyBox)
         return ids
     end
 
+    -- v0.10.1: park EVERYTHING that contributes to the sky, not just Lighting's Sky.
+    -- A leftover Atmosphere hazes a custom skybox into mush, Clouds sit in front of
+    -- it, and plenty of games keep their Sky under Workspace or re-add one at
+    -- runtime. Parked (Parent = nil) rather than destroyed so "None" restores the
+    -- game's own look exactly.
+    local function purgeSky()
+        hidden = hidden or {}
+        local function park(inst)
+            if inst == ownSky then return end
+            table.insert(hidden, { sky = inst, parent = inst.Parent })
+            inst.Parent = nil
+        end
+        for _, s in ipairs(Lighting:GetChildren()) do
+            if s:IsA("Sky") or s:IsA("Atmosphere") then park(s) end
+        end
+        for _, s in ipairs(Workspace:GetChildren()) do
+            if s:IsA("Sky") or s:IsA("Atmosphere") then park(s) end
+        end
+        local terrain = Workspace:FindFirstChildOfClass("Terrain")
+        if terrain then
+            for _, c in ipairs(terrain:GetChildren()) do
+                if c:IsA("Clouds") then park(c) end
+            end
+        end
+    end
+
     local function apply(name)
         if name == "None" then
             if ownSky then ownSky:Destroy(); ownSky = nil end
@@ -6255,15 +6290,7 @@ registerConfig("world_skybox", World.SkyBox)
             if not ids then return end
             -- the user may have changed the dropdown while we were downloading
             if World.SkyBox.Name ~= name then return end
-            if not hidden then
-                hidden = {}
-                for _, s in ipairs(Lighting:GetChildren()) do
-                    if s:IsA("Sky") then
-                        table.insert(hidden, { sky = s, parent = s.Parent })
-                        s.Parent = nil
-                    end
-                end
-            end
+            purgeSky()
             if ownSky then ownSky:Destroy() end
             ownSky = KID.track(Instance.new("Sky"))
             ownSky.Name = KID.name("sky")
@@ -6278,7 +6305,20 @@ registerConfig("world_skybox", World.SkyBox)
     -- applies its sky too (rebuildConfigTabs repaints widgets without firing them).
     RunService.Heartbeat:Connect(function()
         if Koffee._unloaded then return end
-        if World.SkyBox.Name ~= applied and not busy then apply(World.SkyBox.Name) end
+        if World.SkyBox.Name ~= applied and not busy then apply(World.SkyBox.Name); return end
+        -- v0.10.1: keep it ours. Games re-add a Sky (day/night cycles, region
+        -- triggers) and it would render straight over the custom one, so re-park
+        -- anything new while a custom sky is active. Also survives our own Sky being
+        -- stripped by a game that clears Lighting.
+        if applied ~= "None" and ownSky and not busy then
+            if ownSky.Parent ~= Lighting then ownSky.Parent = Lighting end
+            for _, s in ipairs(Lighting:GetChildren()) do
+                if s ~= ownSky and (s:IsA("Sky") or s:IsA("Atmosphere")) then
+                    table.insert(hidden, { sky = s, parent = s.Parent })
+                    s.Parent = nil
+                end
+            end
+        end
     end)
 end)()
 
@@ -10971,7 +11011,7 @@ end
 
     local function acquireHitLabel()
         for _, e in ipairs(hitCfg._pool) do
-            if not e._alive then return e end
+            if not e._alive then e.isKill = false; return e end
         end
         local lbl = new("TextLabel", {
             AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
@@ -11005,6 +11045,11 @@ end
             e.total  = 0
             e.startAt = now
             e.y0     = 0
+            -- v0.10.1: RESET isKill. Labels come from a pool and nothing cleared
+            -- this on reuse, so the first kill of the round permanently poisoned
+            -- that slot -- every later hit it was recycled for rendered "KILL" on a
+            -- target standing there at full health.
+            e.isKill = false
             e._alive = true
             e.lbl.Visible = true
         else
