@@ -1,9 +1,9 @@
--- koffee v0.5.0
+-- koffee v0.5.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.5.0"
+Koffee.Version = "0.5.1"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -10215,9 +10215,13 @@ end
 -- surfaces; lives directly under `screen` at ZIndex 14 (above ESP/dim but well
 -- below the Koffee window at ZIndex 30+). Everything is GUI-based so kernel-
 -- driver runtimes render it under our own UI, unlike Drawing.new.
-do
+-- v0.5.1: WRAPPED IN IIFE (was a do-block). Luau's 200-local ceiling is
+-- per FUNCTION; a do-block shares the chunk's register pool and this block
+-- pushed the chunk over the limit at STYLE_ARMS. IIFE = own budget, same
+-- trick Combat uses. Nothing inside changed.
+;(function()
     -- Workspace / RunService already at chunk scope (see line ~923); reusing them
-    -- here saves two of the 200 chunk-local registers.
+    -- here saves two of the IIFE's local registers.
 
     -- one shared layer for both crosshair + damage-number pool.
     local layer = new("Frame", {
@@ -10544,7 +10548,7 @@ do
         drawCrosshair(dt)
         drawHitNumbers()
     end)
-end
+end)()
 
 addTab("Visuals", function(root)
     -- v0.0.21: two-column layout to match Matcha.
