@@ -1,9 +1,9 @@
--- koffee v0.13.0
+-- koffee v0.13.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.13.0"
+Koffee.Version = "0.13.1"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -3787,30 +3787,6 @@ local function rightClickSettings(row, title, buildFn, alsoLeft)
         end
         function api:dropdown(label, options, initial, onChange)
             return dropdown(popupFrame, label, options, initial, onChange)
-        end
-        -- v0.13.0: free-text row (Custom Features' Text / Switch blocks)
-        function api:text(label, initial, onChange)
-            local r = new("Frame", {
-                Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1,
-                ZIndex = 211, Parent = popupFrame,
-            })
-            new("TextLabel", {
-                Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
-                ZIndex = 212, Parent = r,
-            })
-            local box = new("TextBox", {
-                Text = tostring(initial or ""), ClearTextOnFocus = false,
-                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
-                TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.PanelElevated,
-                BackgroundTransparency = 0.2, BorderSizePixel = 0,
-                Position = UDim2.new(0, 0, 0, 18), Size = UDim2.new(1, 0, 0, 24),
-                TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 212, Parent = r,
-            }, { corner(5), stroke(Theme.Palette.BorderSubtle),
-                new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
-            box.FocusLost:Connect(function() onChange(box.Text) end)
-            return box
         end
         -- v0.0.28: colour control inside a settings popup (label + right swatch).
         -- v0.0.32: optional `sopts` (alpha etc) forwarded to colorSwatch.
@@ -14063,14 +14039,16 @@ registerConfig("custom", Koffee.Custom)
         end
     end)
 
-    local function addNode(kind)
+    local function addNode(kind, x, y)
         local K = KINDS[kind]
-        if not K then return end
+        if not K then return nil end
         local id = 1
         for _, n in ipairs(CF.Nodes) do if n.id >= id then id = n.id + 1 end end
         local o = {}
         for k, v in pairs(K.opts or {}) do o[k] = v end
-        table.insert(CF.Nodes, { id = id, kind = kind, opts = o, wires = {} })
+        table.insert(CF.Nodes, { id = id, kind = kind, opts = o, wires = {},
+                                 x = x or 24, y = y or 24 })
+        return id
     end
     local function removeNode(id)
         for i, n in ipairs(CF.Nodes) do
@@ -14082,93 +14060,352 @@ registerConfig("custom", Koffee.Custom)
             end
         end
     end
-    local function tagOf(node) return "#" .. node.id .. " " .. node.kind end
+    -- inline option rows: the inspector renders options directly, no popups
+    local function textRow(parent, label, initial, onChange)
+        local r = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 42), BackgroundTransparency = 1,
+            ZIndex = 41, Parent = parent,
+        })
+        new("TextLabel", {
+            Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 42, Parent = r,
+        })
+        local box = new("TextBox", {
+            Text = tostring(initial or ""), ClearTextOnFocus = false,
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = 0.2, BorderSizePixel = 0,
+            Position = UDim2.new(0, 0, 0, 17), Size = UDim2.new(1, 0, 0, 24),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = r,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        box.FocusLost:Connect(function() onChange(box.Text) end)
+    end
+    local function swatchRow(parent, label, initial, onChange)
+        local r = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
+            ZIndex = 41, Parent = parent,
+        })
+        new("TextLabel", {
+            Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            Size = UDim2.new(1, -22, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 42, Parent = r,
+        })
+        attachSingleSwatch(r, initial, onChange)
+    end
+
+    -- analytic node geometry: port centres never wait on a layout pass
+    local NODE_W, HEAD_H, ROW_H, WIRE_SEG = 172, 24, 20, 12
+    local function nodeH(K) return HEAD_H + math.max(#K.ins, 1) * ROW_H + 6 end
+    local function bez(x1, y1, ax, ay, bx, by, x2, y2, t)
+        local u = 1 - t
+        local a, b, c, d = u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t
+        return a * x1 + b * ax + c * bx + d * x2, a * y1 + b * ay + c * by + d * y2
+    end
+
+    local conns = {}   -- UIS listeners, dropped when the tab rebuilds
 
     addTab("Custom", function(root)
+        for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+        conns = {}
+
         local card = panel(root, "Custom Features")
         configCheckbox(card, "Enabled", CF.Enabled, function(v) CF.Enabled = v end)
 
-        local listHolder = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-            BackgroundTransparency = 1, LayoutOrder = 50, ZIndex = 34, Parent = root,
-        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
-            Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local editor = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 452), BackgroundColor3 = Theme.Palette.Background,
+            BackgroundTransparency = 0.2, BorderSizePixel = 0, ClipsDescendants = true,
+            Active = true, LayoutOrder = 50, ZIndex = 33, Parent = root,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        local canvas = new("Frame", {
+            Size = UDim2.new(0, 4000, 0, 4000), Position = UDim2.new(0, 0, 0, 0),
+            BackgroundTransparency = 1, ZIndex = 33, Parent = editor,
+        })
+        local wireLayer = new("Frame", {
+            Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+            ZIndex = 34, Parent = canvas,
+        })
 
-        local function smallBtn(parent, text, width, onClick)
-            local b = new("TextButton", {
-                Text = text, AutoButtonColor = false,
-                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-                TextColor3 = Theme.Palette.TextMuted,
-                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
-                BorderSizePixel = 0, Size = UDim2.new(0, width, 0, 26),
-                ZIndex = 36, Parent = parent,
-            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
-            b.MouseEnter:Connect(function()
-                tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
-            end)
-            b.MouseLeave:Connect(function()
-                tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
-            end)
-            if onClick then b.MouseButton1Click:Connect(onClick) end
-            return b
+        local sel, pending, dragId, dragDX, dragDY = nil, nil, nil, 0, 0
+        local panning, panMX, panMY, panOX, panOY = false, 0, 0, 0, 0
+        local nodeFrames, wirePool = {}, {}
+        local rebuildAll
+
+        local hint = new("TextLabel", {
+            Text = "", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 1, -20), Size = UDim2.new(1, -220, 0, 14),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 39, Parent = editor,
+        })
+
+        local insp = new("ScrollingFrame", {
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 8),
+            Size = UDim2.new(0, 202, 1, -16),
+            BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.02,
+            BorderSizePixel = 0, ScrollBarThickness = 4,
+            ScrollBarImageColor3 = Theme.Palette.Border,
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+            ZIndex = 40, Parent = editor,
+        }, { corner(6), stroke(Theme.Palette.Border),
+            new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
+                PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }),
+            new("UIListLayout", { Padding = UDim.new(0, 6),
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        local function inspApi(parent)
+            local a = {}
+            function a:slider(l, mn, mx, i, p, cb) slider(parent, l, mn, mx, i, p, cb) end
+            function a:toggle(l, i, cb) configCheckbox(parent, l, i, cb) end
+            function a:dropdown(l, o, i, cb) dropdown(parent, l, o, i, cb) end
+            function a:text(l, i, cb) textRow(parent, l, i, cb) end
+            function a:swatch(l, i, cb) swatchRow(parent, l, i, cb) end
+            return a
         end
 
-        local rebuildList
-        rebuildList = function()
-            for _, c in ipairs(listHolder:GetChildren()) do
-                if not c:IsA("UIListLayout") then c:Destroy() end
+        local function buildInspector()
+            for _, c in ipairs(insp:GetChildren()) do
+                if c:IsA("GuiObject") then c:Destroy() end
             end
-            if #CF.Nodes == 0 then
+            local node = sel and nodeById(sel)
+            if not node or not KINDS[node.kind] then
                 new("TextLabel", {
-                    Text = "no blocks yet -- add a Target to start.",
-                    FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-                    TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
-                    Size = UDim2.new(1, 0, 0, 18), TextXAlignment = Enum.TextXAlignment.Left,
-                    ZIndex = 34, Parent = listHolder,
+                    Text = "click a block to edit it", FontFace = Theme.Fonts.Regular,
+                    TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
+                    BackgroundTransparency = 1, TextWrapped = true,
+                    Size = UDim2.new(1, 0, 0, 30), TextXAlignment = Enum.TextXAlignment.Left,
+                    ZIndex = 41, Parent = insp,
                 })
                 return
             end
-            for idx, node in ipairs(CF.Nodes) do
+            local K = KINDS[node.kind]
+            new("TextLabel", {
+                Text = node.kind:lower() .. " #" .. node.id, FontFace = Theme.Fonts.Bold,
+                TextSize = Theme.Text.Header, TextColor3 = Theme.Palette.Text,
+                BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18),
+                TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 41, Parent = insp,
+            })
+            new("TextLabel", {
+                Text = K.blurb, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+                TextWrapped = true, AutomaticSize = Enum.AutomaticSize.Y,
+                Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 41, Parent = insp,
+            })
+            if K.ui then K.ui(inspApi(insp), node.opts) end
+        end
+
+        local function seg(i)
+            local f = wirePool[i]
+            if not f then
+                f = new("Frame", {
+                    BackgroundColor3 = Theme.Palette.Accent, BorderSizePixel = 0,
+                    AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 34, Parent = wireLayer,
+                })
+                wirePool[i] = f
+            end
+            return f
+        end
+        local function redrawWires()
+            local n = 0
+            for _, node in ipairs(CF.Nodes) do
                 local K = KINDS[node.kind]
                 if K then
-                    local nc = panel(listHolder, tagOf(node) .. "  --  " .. K.blurb)
-                    nc.LayoutOrder = idx
-                    for _, slot in ipairs(K.ins) do
-                        local names, byName = { "nothing" }, {}
-                        for _, other in ipairs(CF.Nodes) do
-                            local OK = KINDS[other.kind]
-                            if other.id ~= node.id and OK and OK.outs[slot.type] then
-                                local t = tagOf(other)
-                                names[#names + 1] = t
-                                byName[t] = other.id
+                    for i, slot in ipairs(K.ins) do
+                        local src = node.wires and node.wires[slot.key]
+                        src = src and nodeById(src)
+                        if src and KINDS[src.kind] then
+                            local x2 = node.x
+                            local y2 = node.y + HEAD_H + (i - 0.5) * ROW_H
+                            local x1 = src.x + NODE_W
+                            local y1 = src.y + HEAD_H + 0.5 * ROW_H
+                            local off = math.max(40, math.abs(x2 - x1) * 0.5)
+                            local px, py = x1, y1
+                            for s = 1, WIRE_SEG do
+                                local qx, qy = bez(x1, y1, x1 + off, y1, x2 - off, y2, x2, y2,
+                                                   s / WIRE_SEG)
+                                n = n + 1
+                                local f = seg(n)
+                                local dx, dy = qx - px, qy - py
+                                f.Size = UDim2.new(0, math.sqrt(dx * dx + dy * dy) + 1.5, 0, 2)
+                                f.Position = UDim2.new(0, (px + qx) * 0.5, 0, (py + qy) * 0.5)
+                                f.Rotation = math.deg(math.atan2(dy, dx))
+                                f.Visible = true
+                                px, py = qx, qy
                             end
                         end
-                        local cur = "nothing"
-                        local ref = node.wires and node.wires[slot.key]
-                        if ref then
-                            local src = nodeById(ref)
-                            if src then cur = tagOf(src) end
-                        end
-                        dropdown(nc, slot.label .. "  <-", names, cur, function(v)
-                            node.wires = node.wires or {}
-                            node.wires[slot.key] = byName[v]
-                        end)
                     end
-                    local row = new("Frame", {
-                        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
-                        LayoutOrder = 90, ZIndex = 35, Parent = nc,
-                    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
-                        Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
-                        SortOrder = Enum.SortOrder.LayoutOrder }) })
-                    smallBtn(row, "options", 82).LayoutOrder = 1
-                    smallBtn(row, "remove", 78, function()
-                        removeNode(node.id); rebuildList()
-                    end).LayoutOrder = 2
-                    rightClickSettings(row, node.kind:lower(), function(api)
-                        if K.ui then K.ui(api, node.opts) end
-                    end, true)
                 end
             end
+            for i = n + 1, #wirePool do wirePool[i].Visible = false end
+        end
+
+        local function buildNodes()
+            for _, f in pairs(nodeFrames) do f:Destroy() end
+            nodeFrames = {}
+            for _, node in ipairs(CF.Nodes) do
+                local K = KINDS[node.kind]
+                if K then
+                    node.x, node.y = node.x or 24, node.y or 24
+                    local picked = (sel == node.id)
+                    local f = new("Frame", {
+                        Position = UDim2.new(0, node.x, 0, node.y),
+                        Size = UDim2.new(0, NODE_W, 0, nodeH(K)),
+                        BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.02,
+                        BorderSizePixel = 0, Active = true, ZIndex = 35, Parent = canvas,
+                    }, { corner(6),
+                        stroke(picked and Theme.Palette.Accent or Theme.Palette.Border) })
+                    nodeFrames[node.id] = f
+
+                    local head = new("TextButton", {
+                        Text = "  " .. node.kind:lower(), AutoButtonColor = false,
+                        FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+                        TextColor3 = picked and Theme.Palette.Accent or Theme.Palette.Text,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        BackgroundColor3 = Theme.Palette.PanelElevated,
+                        BackgroundTransparency = 0.15, BorderSizePixel = 0,
+                        Size = UDim2.new(1, 0, 0, HEAD_H), ZIndex = 36, Parent = f,
+                    }, { corner(6) })
+                    local del = new("TextButton", {
+                        Text = "x", AutoButtonColor = false, FontFace = Theme.Fonts.Bold,
+                        TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
+                        BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, -5, 0.5, 0), Size = UDim2.new(0, 16, 0, 16),
+                        ZIndex = 37, Parent = head,
+                    })
+                    del.MouseButton1Click:Connect(function()
+                        removeNode(node.id)
+                        if sel == node.id then sel = nil end
+                        if pending == node.id then pending = nil end
+                        rebuildAll()
+                    end)
+                    head.MouseButton1Click:Connect(function() sel = node.id; rebuildAll() end)
+                    head.InputBegan:Connect(function(inp)
+                        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                            local m = UserInputService:GetMouseLocation()
+                            dragId = node.id
+                            dragDX = m.X - (canvas.AbsolutePosition.X + node.x)
+                            dragDY = m.Y - (canvas.AbsolutePosition.Y + node.y)
+                        end
+                    end)
+
+                    for i, slot in ipairs(K.ins) do
+                        local y = HEAD_H + (i - 1) * ROW_H
+                        new("TextLabel", {
+                            Text = slot.label, FontFace = Theme.Fonts.Regular,
+                            TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+                            BackgroundTransparency = 1, Position = UDim2.new(0, 13, 0, y),
+                            Size = UDim2.new(1, -26, 0, ROW_H),
+                            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 36, Parent = f,
+                        })
+                        local lit = node.wires and node.wires[slot.key] ~= nil
+                        local p = new("TextButton", {
+                            Text = "", AutoButtonColor = false, BorderSizePixel = 0,
+                            BackgroundColor3 = lit and Theme.Palette.Accent
+                                or Theme.Palette.PanelElevated,
+                            AnchorPoint = Vector2.new(0.5, 0.5),
+                            Position = UDim2.new(0, 0, 0, y + ROW_H * 0.5),
+                            Size = UDim2.new(0, 11, 0, 11), ZIndex = 38, Parent = f,
+                        }, { pillCorner(), stroke(Theme.Palette.Border) })
+                        p.MouseButton1Click:Connect(function()
+                            node.wires = node.wires or {}
+                            if pending then
+                                local src = nodeById(pending)
+                                local SK = src and KINDS[src.kind]
+                                if src and SK and SK.outs[slot.type] and src.id ~= node.id then
+                                    node.wires[slot.key] = pending
+                                end
+                                pending = nil
+                            else
+                                node.wires[slot.key] = nil   -- click a wired dot to unplug
+                            end
+                            rebuildAll()
+                        end)
+                    end
+
+                    if next(K.outs) then
+                        local op = new("TextButton", {
+                            Text = "", AutoButtonColor = false, BorderSizePixel = 0,
+                            BackgroundColor3 = (pending == node.id) and Theme.Palette.Accent
+                                or Theme.Palette.PanelElevated,
+                            AnchorPoint = Vector2.new(0.5, 0.5),
+                            Position = UDim2.new(1, 0, 0, HEAD_H + ROW_H * 0.5),
+                            Size = UDim2.new(0, 11, 0, 11), ZIndex = 38, Parent = f,
+                        }, { pillCorner(), stroke(Theme.Palette.Border) })
+                        op.MouseButton1Click:Connect(function()
+                            pending = (pending == node.id) and nil or node.id
+                            sel = node.id
+                            rebuildAll()
+                        end)
+                    end
+                end
+            end
+        end
+
+        rebuildAll = function()
+            buildNodes()
+            redrawWires()
+            buildInspector()
+            if pending then
+                local s = nodeById(pending)
+                hint.Text = "connecting from " .. (s and s.kind:lower() or "?")
+                    .. " -- click a matching input dot"
+            elseif #CF.Nodes == 0 then
+                hint.Text = "add a block above to start"
+            else
+                hint.Text = "drag headers to move  --  output dot, then input dot, to connect"
+            end
+        end
+
+        editor.InputBegan:Connect(function(inp)
+            if inp.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            local m = UserInputService:GetMouseLocation()
+            panning, panMX, panMY = true, m.X, m.Y
+            panOX, panOY = canvas.Position.X.Offset, canvas.Position.Y.Offset
+            if pending or sel then pending, sel = nil, nil; rebuildAll() end
+        end)
+        conns[#conns + 1] = UserInputService.InputChanged:Connect(function(inp)
+            if inp.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            if not editor.Parent then return end
+            local m = UserInputService:GetMouseLocation()
+            if dragId then
+                local node = nodeById(dragId)
+                if node then
+                    node.x = m.X - dragDX - canvas.AbsolutePosition.X
+                    node.y = m.Y - dragDY - canvas.AbsolutePosition.Y
+                    local f = nodeFrames[dragId]
+                    if f then f.Position = UDim2.new(0, node.x, 0, node.y) end
+                    redrawWires()
+                end
+            elseif panning then
+                canvas.Position = UDim2.new(0, panOX + (m.X - panMX), 0, panOY + (m.Y - panMY))
+            end
+        end)
+        conns[#conns + 1] = UserInputService.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragId, panning = nil, false
+            end
+        end)
+
+        local function freeSpot()
+            for row = 0, 20 do
+                for col = 0, 1 do
+                    local x, y = 24 + col * 210, 24 + row * 104
+                    local taken = false
+                    for _, n in ipairs(CF.Nodes) do
+                        if n.x and math.abs(n.x - x) < 8 and math.abs(n.y - y) < 8 then
+                            taken = true; break
+                        end
+                    end
+                    if not taken then return x, y end
+                end
+            end
+            return 24, 24
         end
 
         local addWrap = new("Frame", {
@@ -14178,12 +14415,28 @@ registerConfig("custom", Koffee.Custom)
             Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
             SortOrder = Enum.SortOrder.LayoutOrder }) })
         for i, kind in ipairs(ORDER) do
-            smallBtn(addWrap, kind:lower(), 74, function()
-                addNode(kind); rebuildList()
-            end).LayoutOrder = i
+            local b = new("TextButton", {
+                Text = kind:lower(), AutoButtonColor = false,
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextMuted,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, Size = UDim2.new(0, 74, 0, 26),
+                LayoutOrder = i, ZIndex = 36, Parent = addWrap,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            b.MouseEnter:Connect(function()
+                tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
+            end)
+            b.MouseLeave:Connect(function()
+                tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+            end)
+            b.MouseButton1Click:Connect(function()
+                local x, y = freeSpot()
+                sel = addNode(kind, x, y)
+                rebuildAll()
+            end)
         end
 
-        rebuildList()
+        rebuildAll()
     end)
 end)()
 
