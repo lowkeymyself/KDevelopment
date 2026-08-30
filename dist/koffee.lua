@@ -1,9 +1,9 @@
--- koffee v0.5.1
+-- koffee v0.5.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.5.1"
+Koffee.Version = "0.5.2"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -4292,6 +4292,7 @@ registerConfig("shared",         Shared)
 local Crosshair = {
     Enabled       = false,
     Style         = "Cross",                       -- "Cross" | "T-Cross" | "Plus" | "Dot" | "Circle" | "Square"
+    Origin        = "Center",                      -- "Center" | "Mouse". Follow Target / LockToPart still override.
     Color         = Color3.new(1, 1, 1),
     Opacity       = 1,                             -- global 0..1
     Outline       = true,
@@ -10325,9 +10326,17 @@ end
         if not Crosshair.Enabled then xhCanvas.Visible = false; return end
         xhCanvas.Visible = true
 
-        -- resolve center (Follow lerp OR screen-center + user offset).
+        -- v0.5.2: base center from Origin (Center | Mouse) + user Offset.
+        -- Follow Target overrides (and later LockToPart in wave 3) -- those are
+        -- the "leading" modes; Origin is the resting position when nothing leads.
         local size = vp()
-        local cx, cy = size.X * 0.5 + Crosshair.OffsetX, size.Y * 0.5 + Crosshair.OffsetY
+        local cx, cy
+        if Crosshair.Origin == "Mouse" then
+            local m = UserInputService:GetMouseLocation()
+            cx, cy = m.X + Crosshair.OffsetX, m.Y + Crosshair.OffsetY
+        else
+            cx, cy = size.X * 0.5 + Crosshair.OffsetX, size.Y * 0.5 + Crosshair.OffsetY
+        end
         if Crosshair.Follow.Enabled then
             local part = crosshairFollowPart()
             local tx, ty = cx, cy
@@ -10785,6 +10794,11 @@ addTab("Visuals", function(root)
         -- per-arm tilt; +/- for pinwheel vs starfish look. Only visible on Cross/T-Cross/Plus.
         popup:slider("Curve Angle", -45, 45, Crosshair.CurveAngle, 0, function(v) Crosshair.CurveAngle = v end)
     end)
+
+    -- v0.5.2: base origin (Center | Mouse). Follow Target still leads when on --
+    -- Origin is where the crosshair rests when nothing's being followed.
+    dropdown(xhCard, "Origin", { "Center", "Mouse" }, Crosshair.Origin,
+        function(v) Crosshair.Origin = v end)
 
     local xhOutRow = configCheckbox(xhCard, "Outline", Crosshair.Outline, function(v) Crosshair.Outline = v end)
     attachSingleSwatch(xhOutRow.row, Crosshair.OutlineColor, function(c) Crosshair.OutlineColor = c end)
