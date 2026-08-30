@@ -1,9 +1,9 @@
--- koffee v0.3.8
+-- koffee v0.4.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.3.8"
+Koffee.Version = "0.4.0"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -67,34 +67,39 @@ do
             root.BorderSizePixel = 0
             root.Parent = gui
 
+            -- v0.4.0: subtler loader. Smaller brand, thinner bar, quieter text,
+            -- slower fade. Same functional shape (brand + sub + bar + status +
+            -- retry/skip row + pct), just quieter so it doesn't scream on load.
             local brand = Instance.new("TextLabel")
             brand.AnchorPoint = Vector2.new(0.5, 0)
-            brand.Position = UDim2.new(0.5, 0, 0.5, -58)
-            brand.Size = UDim2.new(0, 300, 0, 42)
+            brand.Position = UDim2.new(0.5, 0, 0.5, -34)
+            brand.Size = UDim2.new(0, 220, 0, 24)
             brand.BackgroundTransparency = 1
             brand.Text = "koffee"
-            brand.Font = Enum.Font.GothamBold
-            brand.TextSize = 34
+            brand.Font = Enum.Font.GothamMedium
+            brand.TextSize = 20
             brand.TextColor3 = TEXT
+            brand.TextTransparency = 0.15
             brand.Parent = root
 
             local sub = Instance.new("TextLabel")
             sub.AnchorPoint = Vector2.new(0.5, 0)
-            sub.Position = UDim2.new(0.5, 0, 0.5, -18)
-            sub.Size = UDim2.new(0, 300, 0, 16)
+            sub.Position = UDim2.new(0.5, 0, 0.5, -8)
+            sub.Size = UDim2.new(0, 240, 0, 12)
             sub.BackgroundTransparency = 1
-            sub.Text = "v" .. Koffee.Version .. " -- warming up"
+            sub.Text = "v" .. Koffee.Version
             sub.Font = Enum.Font.Gotham
-            sub.TextSize = 12
+            sub.TextSize = 10
             sub.TextColor3 = MUTED
-            sub.TextTransparency = 0.2
+            sub.TextTransparency = 0.4
             sub.Parent = root
 
             local track = Instance.new("Frame")
             track.AnchorPoint = Vector2.new(0.5, 0)
-            track.Position = UDim2.new(0.5, 0, 0.5, 12)
-            track.Size = UDim2.new(0, 280, 0, 4)
+            track.Position = UDim2.new(0.5, 0, 0.5, 14)
+            track.Size = UDim2.new(0, 160, 0, 2)
             track.BackgroundColor3 = PANEL
+            track.BackgroundTransparency = 0.35
             track.BorderSizePixel = 0
             track.Parent = root
             local tCorner = Instance.new("UICorner")
@@ -104,6 +109,7 @@ do
             local fill = Instance.new("Frame")
             fill.Size = UDim2.new(0, 0, 1, 0)
             fill.BackgroundColor3 = ACCENT
+            fill.BackgroundTransparency = 0.1
             fill.BorderSizePixel = 0
             fill.Parent = track
             local fCorner = Instance.new("UICorner")
@@ -112,20 +118,21 @@ do
 
             local status = Instance.new("TextLabel")
             status.AnchorPoint = Vector2.new(0.5, 0)
-            status.Position = UDim2.new(0.5, 0, 0.5, 26)
-            status.Size = UDim2.new(0, 340, 0, 16)
+            status.Position = UDim2.new(0.5, 0, 0.5, 24)
+            status.Size = UDim2.new(0, 260, 0, 12)
             status.BackgroundTransparency = 1
-            status.Text = "checking cache"
+            status.Text = ""
             status.Font = Enum.Font.Gotham
-            status.TextSize = 11
+            status.TextSize = 10
             status.TextColor3 = MUTED
+            status.TextTransparency = 0.35
             status.TextTruncate = Enum.TextTruncate.AtEnd
             status.Parent = root
 
             local btnRow = Instance.new("Frame")
             btnRow.AnchorPoint = Vector2.new(0.5, 0)
-            btnRow.Position = UDim2.new(0.5, 0, 0.5, 52)
-            btnRow.Size = UDim2.new(0, 280, 0, 28)
+            btnRow.Position = UDim2.new(0.5, 0, 0.5, 46)
+            btnRow.Size = UDim2.new(0, 240, 0, 26)
             btnRow.BackgroundTransparency = 1
             btnRow.Visible = false
             btnRow.Parent = root
@@ -136,29 +143,31 @@ do
                 b.Position = UDim2.new(0, x, 0.5, 0)
                 b.Size = UDim2.new(0, w, 1, 0)
                 b.BackgroundColor3 = PANEL
+                b.BackgroundTransparency = 0.15
                 b.BorderSizePixel = 0
                 b.Text = label
                 b.Font = Enum.Font.Gotham
-                b.TextSize = 12
+                b.TextSize = 11
                 b.TextColor3 = color
                 b.Parent = btnRow
                 local bc = Instance.new("UICorner")
-                bc.CornerRadius = UDim.new(0, 6)
+                bc.CornerRadius = UDim.new(0, 5)
                 bc.Parent = b
                 return b
             end
-            local retryBtn = mkBtn(0, 134, "retry", TEXT)
-            local skipBtn  = mkBtn(146, 134, "skip", MUTED)
+            local retryBtn = mkBtn(0, 114, "retry", TEXT)
+            local skipBtn  = mkBtn(126, 114, "skip", MUTED)
 
             local pctLabel = Instance.new("TextLabel")
             pctLabel.AnchorPoint = Vector2.new(0.5, 0)
-            pctLabel.Position = UDim2.new(0.5, 0, 0.5, -80)
-            pctLabel.Size = UDim2.new(0, 300, 0, 14)
+            pctLabel.Position = UDim2.new(0.5, 0, 0.5, -54)
+            pctLabel.Size = UDim2.new(0, 200, 0, 12)
             pctLabel.BackgroundTransparency = 1
             pctLabel.Text = ""
             pctLabel.Font = Enum.Font.Gotham
-            pctLabel.TextSize = 10
+            pctLabel.TextSize = 9
             pctLabel.TextColor3 = MUTED
+            pctLabel.TextTransparency = 0.5
             pctLabel.Parent = root
 
             local function setBar(done, total)
@@ -170,7 +179,9 @@ do
 
             local function close()
                 Koffee._assetsReady = true
-                local out = TweenService:Create(root, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                -- v0.4.0: gentler fade -- 0.22 -> 0.36, Sine easing reads softer than
+                -- Quart at these low starting-opacity values.
+                local out = TweenService:Create(root, TweenInfo.new(0.36, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
                     BackgroundTransparency = 1,
                 })
                 for _, l in ipairs({ brand, sub, status, pctLabel }) do
@@ -738,6 +749,26 @@ do
             url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProggyClean.ttf",
             file = "Koffee/fonts/ProggyClean.ttf",
         },
+        -- v0.4.0: built-in roblox font families -- zero download, register a single
+        -- Font.new pointing at the rbxasset family JSON. Roblox ships all of these.
+        -- Curated for a real range: aaa game (Sarpanch), clean chrome (Ubuntu / Roboto),
+        -- rounded sans (Nunito / Fredoka), serif (Merriweather), display (Luckiest Guy /
+        -- Bangers / Permanent Marker / Creepster / Indie Flower), technical (Michroma),
+        -- default roblox (Source Sans Pro), + the two monos.
+        ["Sarpanch"]         = { builtin = "rbxasset://fonts/families/Sarpanch.json" },
+        ["Ubuntu"]           = { builtin = "rbxasset://fonts/families/Ubuntu.json" },
+        ["Roboto"]           = { builtin = "rbxasset://fonts/families/Roboto.json" },
+        ["Roboto Mono"]      = { builtin = "rbxasset://fonts/families/RobotoMono.json" },
+        ["Nunito"]           = { builtin = "rbxasset://fonts/families/Nunito.json" },
+        ["Source Sans Pro"]  = { builtin = "rbxasset://fonts/families/SourceSansPro.json" },
+        ["Merriweather"]     = { builtin = "rbxasset://fonts/families/Merriweather.json" },
+        ["Fredoka One"]      = { builtin = "rbxasset://fonts/families/FredokaOne.json" },
+        ["Luckiest Guy"]     = { builtin = "rbxasset://fonts/families/LuckiestGuy.json" },
+        ["Bangers"]          = { builtin = "rbxasset://fonts/families/Bangers.json" },
+        ["Permanent Marker"] = { builtin = "rbxasset://fonts/families/PermanentMarker.json" },
+        ["Michroma"]         = { builtin = "rbxasset://fonts/families/Michroma.json" },
+        ["Creepster"]        = { builtin = "rbxasset://fonts/families/Creepster.json" },
+        ["Indie Flower"]     = { builtin = "rbxasset://fonts/families/IndieFlower.json" },
     }
 
     -- cached Font.new handles so re-selecting a font doesn't re-download / re-register.
@@ -747,6 +778,15 @@ do
         if feiFontCache[name] then return feiFontCache[name] end
         local spec = FONTS_CATALOG[name]
         if not spec then return nil end
+        -- v0.4.0: built-in roblox families (rbxasset://fonts/families/*.json) skip
+        -- the download + family-json build flow entirely. One Font.new, cache, done.
+        if spec.builtin then
+            local ok, f = pcall(function()
+                return Font.new(spec.builtin, Enum.FontWeight.Regular)
+            end)
+            if ok and f then feiFontCache[name] = f; return f end
+            return nil
+        end
         local ok, res = pcall(function()
             local getasset = getcustomasset or getsynasset
                 or (syn and syn.getcustomasset)
@@ -6758,6 +6798,7 @@ registerModule("antifling", "Antifling", function() end, function() end)   -- no
 --   Character Material: force Material + Color on every BasePart; snapshot+restore.
 local Visual = {
     Arms     = { X = 0, Y = 0, Z = 0, RX = 0, RY = 0, RZ = 0 },
+    Head     = { X = 0, Y = 0, Z = 0, RX = 0, RY = 0, RZ = 0 },
     Material = { Name = "Neon", Color = Color3.fromRGB(212, 145, 90) },
 }
 -- CustomAnim config reused from CFG so the pill/held system drives it
@@ -6766,14 +6807,20 @@ registerConfig("character_visual", Visual)
 
 local SHOULDER = { ["Right Shoulder"] = true, ["Left Shoulder"] = true,
                    ["RightShoulder"]  = true, ["LeftShoulder"]  = true }
-local armState = { char = nil, joints = nil }
+-- v0.4.0: Head Offset -- mirrors Arms Offset but drives the Neck Motor6D. The
+-- joint is named "Neck" on both R6 (Torso.Neck) and R15 (UpperTorso.Neck), so
+-- one name-set covers both rigs.
+local NECK = { ["Neck"] = true }
+local armState  = { char = nil, joints = nil }
+local headState = { char = nil, joints = nil }
 -- v0.0.76: force re-cache on every respawn so the offset reapplies after death.
 -- CharacterAdded fires before the shoulders exist on the new rig, so we ALSO
 -- rebuild whenever the joints table is empty on a tick where the module is on
 -- (the shoulders show up a few frames later; the render loop keeps retrying).
+-- v0.4.0: same rule extended to headState (Neck).
 LocalPlayer.CharacterAdded:Connect(function()
-    armState.char = nil
-    armState.joints = nil
+    armState.char  = nil; armState.joints  = nil
+    headState.char = nil; headState.joints = nil
 end)
 local function applyArms()
     local c = char()
@@ -6799,6 +6846,34 @@ local function restoreArms()
         end
     end
     armState.char = nil; armState.joints = nil
+end
+
+-- v0.4.0: Head Offset. Same recipe as applyArms/restoreArms -- snapshot the
+-- Neck's original C0 on first touch (or after respawn), then multiply an offset
+-- CFrame in every frame while the module is on. restoreHead puts the original
+-- C0 back so disabling / respawn is fully reversible.
+local function applyHead()
+    local c = char()
+    if not c then return end
+    if headState.char ~= c or not headState.joints or next(headState.joints) == nil then
+        headState.char = c; headState.joints = {}
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("Motor6D") and NECK[d.Name] then headState.joints[d] = d.C0 end
+        end
+    end
+    local H = Visual.Head
+    local off = CFrame.new(H.X, H.Y, H.Z) * CFrame.Angles(math.rad(H.RX), math.rad(H.RY), math.rad(H.RZ))
+    for j, orig in pairs(headState.joints) do
+        if j.Parent then j.C0 = off * orig end
+    end
+end
+local function restoreHead()
+    if headState.joints then
+        for j, orig in pairs(headState.joints) do
+            if j.Parent then pcall(function() j.C0 = orig end) end
+        end
+    end
+    headState.char = nil; headState.joints = nil
 end
 
 -- v0.0.55: Material was tinting (Color worked) but not changing Material because a
@@ -6984,6 +7059,7 @@ RunService:BindToRenderStep("KThirdPerson", Enum.RenderPriority.Camera.Value, fu
 end)
 
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
+registerModule("headoffset",   "Head Offset",       function() end, function() restoreHead() end)
 registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
 ANIM_IDS = {
     ["Orbit 1"] = "118314972618293", ["Orbit 2"] = "133811691098518", ["Orbit 3"] = "138488217385385", ["Orbit 4"] = "91729309021707",
@@ -7089,6 +7165,7 @@ registerModule("bodyremoval",  "Body Removal",      function() end, function() r
 registerModule("thirdperson",  "3rd Person",        function() tpOnEnable() end, function() tpOnDisable() end)
 RunService.RenderStepped:Connect(function()
     if Modules.armsoffset   and Modules.armsoffset.Enabled   then pcall(applyArms) end
+    if Modules.headoffset   and Modules.headoffset.Enabled   then pcall(applyHead) end
     if Modules.charmaterial and Modules.charmaterial.Enabled then pcall(applyMaterial) end
     if Modules.staticff     and Modules.staticff.Enabled     then pcall(applyFF) end
     if Modules.bodyremoval  and Modules.bodyremoval.Enabled  then pcall(applyBodyRemoval) end
@@ -7273,6 +7350,15 @@ Koffee._characterTab = function(root)
     slider(vis, "Arm Rot Y", -180, 180, Visual.Arms.RY, 0, function(v) Visual.Arms.RY = v end)
     slider(vis, "Arm Rot Z", -180, 180, Visual.Arms.RZ, 0, function(v) Visual.Arms.RZ = v end)
 
+    -- v0.4.0: Head Offset -- same shape as Arms, drives the Neck Motor6D.
+    moduleCheckbox(vis, "Head Offset", "headoffset")
+    slider(vis, "Head X", -50, 50, Visual.Head.X, 1, function(v) Visual.Head.X = v end)
+    slider(vis, "Head Y", -50, 50, Visual.Head.Y, 1, function(v) Visual.Head.Y = v end)
+    slider(vis, "Head Z", -50, 50, Visual.Head.Z, 1, function(v) Visual.Head.Z = v end)
+    slider(vis, "Head Rot X", -180, 180, Visual.Head.RX, 0, function(v) Visual.Head.RX = v end)
+    slider(vis, "Head Rot Y", -180, 180, Visual.Head.RY, 0, function(v) Visual.Head.RY = v end)
+    slider(vis, "Head Rot Z", -180, 180, Visual.Head.RZ, 0, function(v) Visual.Head.RZ = v end)
+
     -- Custom Anim
     local animRow = moduleCheckbox(vis, "Custom Anim", "customanim")
     activationPill(animRow.row, CFG.customanim)
@@ -7416,6 +7502,11 @@ local Combat = {
     local function defaultFovCfg()
         return {
             Enabled = false, Size = 100, Origin = "Center", Filled = false, Spin = false,
+            -- v0.4.0: HideVisual keeps the FOV size gate active for targeting but
+            -- suppresses the circle/outline/dots/fill entirely. Set via the Filled
+            -- right-click popup ("Hide Visual"). Independent of Enabled -- turning
+            -- HideVisual on while Enabled is on means "invisible FOV, still gated".
+            HideVisual = false,
             Style = "Smooth", Color = Color3.new(1, 1, 1), FillColor = Color3.fromRGB(212, 145, 90),
             FillTransparency = 0.5, Thickness = 1, DotSize = 4, DotGap = 18,
             Fill = {
@@ -8524,8 +8615,16 @@ local Combat = {
     end
 
     -- draw one FOV circle from its config. Both aimbot + silent circles use this.
+    -- v0.4.0: HideVisual hides everything the ring draws (circle, stroke, dots,
+    -- fill, gradient) while leaving cfg.Enabled + cfg.Size intact for the
+    -- targeting gate in getBestTarget. Effectively "invisible FOV".
     local function drawFov(h, cfg)
-        if not cfg.Enabled then h.circle.Visible = false; return end
+        if (not cfg.Enabled) or cfg.HideVisual then
+            h.circle.Visible = false
+            if h.dotContainer then h.dotContainer.Visible = false end
+            if h.stroke then h.stroke.Enabled = false end
+            return
+        end
         local size = cfg.Size
         local c = fovCenter(cfg)
         h.circle.Visible = true
@@ -9514,6 +9613,8 @@ local Combat = {
         -- restores it without a re-toggle.
         local fillRow = configCheckbox(parent, "Filled", F.Filled, function(v) F.Filled = v end)
         rightClickSettings(fillRow.row, "fill", function(api)
+            -- v0.4.0: kill the visual entirely while keeping FOV as a targeting gate.
+            api:toggle("Hide Visual", F.HideVisual, function(v) F.HideVisual = v end)
             api:toggle("Remove Outline", F.Fill.RemoveOutline, function(v) F.Fill.RemoveOutline = v end)
             api:toggle("Spin", F.Fill.Spin, function(v) F.Fill.Spin = v end)
             local cg = F.Fill.Custom
@@ -10210,7 +10311,16 @@ addTab("Options", function(root)
     -- FONTS_CATALOG); right-click the row to tune the global text size used while
     -- the custom font is on -- so the pixel fonts don't render too big / small.
     -- Default off + "None" -- feature interface looks exactly like before.
-    local fontOptions = { "None", "Minecraft Bold", "Minecraft Regular", "ImGui" }
+    -- v0.4.0: expanded font catalog. "None" reverts to Theme.Fonts. The rest split
+    -- into: external assets (downloaded via koffee-assets) + roblox stock families
+    -- (zero-cost, resolved via rbxasset://fonts/families/*.json inside loadFeiFont).
+    local fontOptions = {
+        "None",
+        "Minecraft Bold", "Minecraft Regular", "ImGui",
+        "Sarpanch", "Ubuntu", "Roboto", "Roboto Mono", "Nunito",
+        "Source Sans Pro", "Merriweather", "Fredoka One", "Luckiest Guy",
+        "Bangers", "Permanent Marker", "Michroma", "Creepster", "Indie Flower",
+    }
     -- user-dropped fonts land in the workspace as koffee_<name>.otf; surface any
     -- extra cached entries the catalog doesn't know so they're selectable too.
     local fontRow = configCheckbox(uiPanel, "Custom Font", KoffeeOptions.CustomFontOn, function(v)
