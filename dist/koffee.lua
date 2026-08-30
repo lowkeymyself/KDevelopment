@@ -1,9 +1,9 @@
--- koffee v0.8.2
+-- koffee v0.9.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.8.2"
+Koffee.Version = "0.9.0"
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
 -- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
@@ -23,6 +23,8 @@ do
         { name = "font: minecraft bold",   path = "Koffee/fonts/MinecraftBold.otf",     url = BASE .. "MinecraftBold.otf",     min = 512 },
         { name = "font: minecraft regular",path = "Koffee/fonts/MinecraftRegular.otf",  url = BASE .. "MinecraftRegular.otf",  min = 512 },
         { name = "font: imgui",            path = "Koffee/fonts/ProggyClean.ttf",       url = BASE .. "ProggyClean.ttf",       min = 512 },
+        { name = "font: fortnite",         path = "Koffee/fonts/BurbankBigCondensed-Black.otf",
+          url = BASE .. "BurbankBigCondensed-Black.otf", min = 512 },
     }
     for _, s in ipairs(SOUNDS) do
         table.insert(MANIFEST, {
@@ -749,6 +751,11 @@ do
             url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProggyClean.ttf",
             file = "Koffee/fonts/ProggyClean.ttf",
         },
+        -- v0.9.0: Burbank Big Condensed Black -- the Fortnite HUD face.
+        ["Fortnite"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/BurbankBigCondensed-Black.otf",
+            file = "Koffee/fonts/BurbankBigCondensed-Black.otf",
+        },
         -- v0.4.0: built-in roblox font families -- zero download, register a single
         -- Font.new pointing at the rbxasset family JSON. Roblox ships all of these.
         -- Curated for a real range: aaa game (Sarpanch), clean chrome (Ubuntu / Roboto),
@@ -769,6 +776,17 @@ do
         ["Michroma"]         = { builtin = "rbxasset://fonts/families/Michroma.json" },
         ["Creepster"]        = { builtin = "rbxasset://fonts/families/Creepster.json" },
         ["Indie Flower"]     = { builtin = "rbxasset://fonts/families/IndieFlower.json" },
+    }
+
+    -- v0.9.0: one ordered name list for every font dropdown in the suite. Explicit
+    -- rather than pairs(FONTS_CATALOG) -- dict order is undefined, so the dropdown
+    -- would reshuffle itself between sessions.
+    Theme.FontNames = {
+        "None",
+        "Minecraft Bold", "Minecraft Regular", "ImGui", "Fortnite",
+        "Sarpanch", "Ubuntu", "Roboto", "Roboto Mono", "Nunito",
+        "Source Sans Pro", "Merriweather", "Fredoka One", "Luckiest Guy",
+        "Bangers", "Permanent Marker", "Michroma", "Creepster", "Indie Flower",
     }
 
     -- cached Font.new handles so re-selecting a font doesn't re-download / re-register.
@@ -4241,7 +4259,11 @@ local ESP = {
             HoldTime         = 0.8,        -- s -- total lifetime
             TextSize         = 16,
             OutlineThickness = 1,
+            Font             = "None",     -- v0.9.0: any face from Theme.FontNames
             Color            = Color3.fromRGB(255, 255, 255),
+            -- v0.9.0: own switch. With only a threshold, high-damage games painted
+            -- every hit crit-coloured and the sole escape was maxing the slider.
+            Crits            = true,
             CritColor        = Color3.fromRGB(255, 110, 90),
             CritThreshold    = 50,         -- dmg >= this shows CritColor
             ShowKill         = true,       -- extra "KILL" tag on kill hits
@@ -4308,39 +4330,43 @@ local Crosshair = {
     OffsetX       = 0,
     OffsetY       = 0,
     Rotation      = 0,                             -- static deg
-    CurveAngle    = 0,                             -- per-arm tilt (0=perpendicular, +45=pinwheel)
-    -- v0.8.0: CurvierAngle bends each arm into an ARC (total sweep across the
-    -- arm's length). 0=straight; 90=quarter-circle; 180=half-circle. Renders
-    -- by walking the arm in N=14 short segments, each rotated slightly from
-    -- the last. Independent of CurveAngle (which just tilts the arm heading).
+    -- v0.9.0: tilts each arm SEGMENT about its own centre, leaving the arm's heading
+    -- alone. v0.8 folded it into the heading, which turned all four arms equally --
+    -- i.e. a duplicate of Rotation. Per-segment gives the v0.5 slanted-blade look.
+    CurveAngle    = 0,
+    -- v0.8.0: bends each arm into an ARC (total sweep across the arm's length).
+    -- 0=straight; 90=quarter-circle; 180=half-circle. v0.9.0: segment count is
+    -- derived, not fixed at 14 -- see segmentsFor().
     CurvierAngle  = 0,
+    CornerSmoothing = 0,                           -- 0=square segments, 1=fully rounded
     Spin          = false,
     SpinSpeed     = 90,                            -- deg/sec
     SpinDir       = "CW",                          -- "CW" | "CCW"
     -- v0.8.0: Crosshair follows ESP.Config.Gradient (same toggle + same
     -- ColorA2/B2/Speed/Rotation/Spacing/Reverse tuning). One gradient master
     -- toggle across features -- no separate crosshair state.
+    -- v0.9.0: run the ramp outward from the centre along every arm at once instead
+    -- of as one linear sweep across the canvas -- symmetric under spin.
+    DoubleGradient = false,
     Follow = {
         Enabled    = false,
-        Part       = "HumanoidRootPart",           -- follows aim target's part of this name
+        Part       = "HumanoidRootPart",           -- follows the target's part of this name
         Smoothness = 0.15,
         _screenX   = nil,
         _screenY   = nil,
     },
+    MouseSmoothness = 0,                           -- Origin "Mouse" trail; 0 = snap
+    _mouseX = nil,
+    _mouseY = nil,
     Dot = {
         Enabled = false,
         Size    = 2,
         Color   = Color3.new(1, 1, 1),
     },
-    Pulse = {                                      -- expand-then-recover on hit
-        Enabled  = false,
-        Scale    = 1.4,
-        Duration = 0.18,
-        _startedAt = 0,
-    },
-    -- wave 3 stub: locks the crosshair to a specific instance chosen via the
-    -- Rules explorer. Wired later; keeps the shape stable in configs meanwhile.
-    LockToPart = { Enabled = false, InstancePath = nil },
+    -- v0.6.0: locks the crosshair to an instance chosen via the explorer.
+    -- v0.9.0: ClampOffscreen pins to the screen edge when the part is behind the
+    -- camera or out of frame, instead of freezing where it last was.
+    LockToPart = { Enabled = false, InstancePath = nil, ClampOffscreen = true },
 }
 registerConfig("crosshair", Crosshair)
 
@@ -6122,14 +6148,23 @@ registerConfig("world_light", World.Light)
 
 -- v0.7.0 WORLD FX -- always-on client-side visuals (no server hook).
 -- Each entry runs its own particle/overlay path in the World FX IIFE below.
+-- v0.9.0: world-space ParticleEmitters now, not screen Frames (see the World FX
+-- IIFE). Density is particles/second, not a Frame-pool size, so these numbers are
+-- ~10x the v0.7 values and still cost less. Size / Wind are in studs. Vignette and
+-- Fog Tint are gone -- full-screen colour washes, the one kind of "world effect"
+-- that can never sit in the world. Old configs carrying those keys land harmlessly.
 World.FX = {
-    Snow     = { Enabled = false, Density = 60, Speed = 1.0, Size = 3,
-                 Color = Color3.fromRGB(255, 253, 248) },
-    Rain     = { Enabled = false, Density = 90, Speed = 4.0, Streak = 14,
-                 Color = Color3.fromRGB(180, 200, 240) },
-    Vignette = { Enabled = false, Intensity = 0.55, Color = Color3.new(0, 0, 0) },
-    FogTint  = { Enabled = false, Density = 0.35,
-                 Color = Color3.fromRGB(200, 205, 215) },
+    -- defaults are chosen against LIVE particle count, not the rate alone: a rate of
+    -- N with a lifetime of L keeps N*L alive at once, so slow effects need a much
+    -- lower rate than fast ones to land in the same ~1-1.5k budget.
+    Snow   = { Enabled = false, Density = 100, Speed = 1.0, Size = 0.35, Wind = 1.5,
+               Color = Color3.fromRGB(255, 253, 248) },
+    Rain   = { Enabled = false, Density = 500, Speed = 1.0, Streak = 14, Wind = 1.0,
+               Color = Color3.fromRGB(180, 200, 240) },
+    -- v0.9.0: slow, heavily rotating petals with real lateral drift. Sparse on
+    -- purpose -- and at a ~22s lifetime a small rate is already a full sky.
+    Sakura = { Enabled = false, Density = 40, Speed = 1.0, Size = 0.5, Wind = 4.0,
+               Spin = 140, Color = Color3.fromRGB(255, 183, 210) },
 }
 registerConfig("world_fx", World.FX)
 
@@ -7599,11 +7634,12 @@ local Combat = {
     },
     -- v0.7.0 HIT / KILL EFFECTS -- client-side visuals that fire on attributed
     -- hits. Shares HitSounds attribution (recentTargets + AttrWindow), so only
-    -- YOUR hits/kills trigger them. Presets: Ring / Sparks / Flash / Shockwave.
+    -- YOUR hits/kills trigger them. v0.9.0 presets: Impact / Sparks / Blood /
+    -- Shockwave / Nova / Ember, all world-space (occluded by geometry).
     HitEffects = {
         Hit = {
             Enabled  = false,
-            Preset   = "Ring",
+            Preset   = "Impact",
             Color    = Color3.fromRGB(255, 220, 120),
             Scale    = 1.0,
             Duration = 0.35,
@@ -7790,6 +7826,24 @@ local Combat = {
             end
         end
         return best, bestPart
+    end
+
+    -- v0.9.0: entry point for the crosshair's Follow Target, so it can pick a target
+    -- with the aimbot switched off. Radius = the LARGEST FOV that's actually on
+    -- (both rings can be live at different sizes; honouring the smaller one would
+    -- drop targets sitting plainly inside a ring on screen). With neither enabled,
+    -- fall back to the bigger of the two sizes. cfg follows whichever ring won, so
+    -- team / distance / visible checks match it.
+    function Shared.crosshairTarget()
+        local aF, sF = Combat.Aim.FOV, Combat.Silent.FOV
+        local cfg, r = Combat.Aim, -1
+        if aF.Enabled and aF.Size > r then cfg, r = Combat.Aim, aF.Size end
+        if sF.Enabled and sF.Size > r then cfg, r = Combat.Silent, sF.Size end
+        if r < 0 then
+            if sF.Size > aF.Size then cfg, r = Combat.Silent, sF.Size
+            else cfg, r = Combat.Aim, aF.Size end
+        end
+        return getBestTarget(cfg, r, fovCenter(cfg.FOV))
     end
 
     local function predicted(plr, part, pr)
@@ -9214,7 +9268,6 @@ local Combat = {
                     or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
                 if victim then Shared.spawnHitNumber(victim, dropped, nowZero) end
             end
-            if Shared.crosshairPulse then Shared.crosshairPulse() end
             -- v0.7.0 hit / kill visual effect. Shares attribution + preset lookup.
             if Shared.spawnHitEffect then
                 local cfg = nowZero and Combat.HitEffects.Kill or Combat.HitEffects.Hit
@@ -10019,7 +10072,9 @@ local Combat = {
         -- Both rows sit inside the Sounds card (kept together in the UI even
         -- though they draw pixels, not audio). Right-click each for the deep
         -- knobs (color, scale, duration, attach part).
-        local HFX_PRESETS = { "Ring", "Sparks", "Flash", "Shockwave" }
+        -- v0.9.0: six 3D presets (was four flavours of the same expanding circle).
+        -- Old configs naming Ring / Flash fall through to Impact.
+        local HFX_PRESETS = { "Impact", "Sparks", "Blood", "Shockwave", "Nova", "Ember" }
         local HFX_ATTACH  = { "Head", "HRP", "Torso" }
         -- v0.7.1 fix: attachSingleSwatch is a chunk-local declared BELOW the
         -- Combat IIFE (line ~10272) so the upvalue captured here is nil at
@@ -10350,46 +10405,58 @@ end
         new("UIGradient", { Name = "KGrad", Enabled = false }),
     })
 
-    -- v0.8.0: segmented arms. Each arm is a container Frame holding N small
-    -- segment Frames. Walking the segments along a heading (start heading = arm
-    -- perpendicular + CurveAngle, per-segment turn = CurvierAngle / N) produces
-    -- straight arms (Curvier=0), tilted arms (CurveAngle only), or curved arcs
-    -- (CurvierAngle > 0). This replaces the v0.5 single-Frame-per-arm approach
-    -- which couldn't render arcs no matter the rotation.
-    local ARM_SEG = 14
-    -- v0.8.1: Roblox Frames reject arbitrary properties (`_segs` isn't a valid
-    -- member), so instead of hanging the segment list off the container Frame
-    -- we keep a side-table keyed by the container. Simpler than a wrapper
-    -- struct and works with the existing armU/D/L/R Instance references used
-    -- by STYLE_ARMS visibility gating.
-    local armSegs = {}
-    local function mkArm(name)
-        local c = new("Frame", {
-            Name = name, AnchorPoint = Vector2.new(0.5, 0.5),
+    -- v0.8.0: segmented arms. Each arm walks outward as a chain of small Frames, so
+    -- it can render straight (Curvier=0) or bend into a real arc (Curvier>0) --
+    -- something the v0.5 single-Frame-per-arm approach could never do.
+    --
+    -- v0.9.0 OUTLINE REBUILD. v0.8 put a Border UIStroke on every segment. A stroke
+    -- traces all FOUR sides of its box, so a 14-box arm drew 14 rectangles and came
+    -- out looking like a ladder. No stroke mode means "perimeter of the union only",
+    -- so the outline is its own geometry: a second segment chain, each piece othick
+    -- wider/longer than its fill twin, flat-filled in the outline colour under a
+    -- lower-ZIndex root. Interior edges hide inside their neighbours, the fill chain
+    -- covers the middle, and an edge survives only where the arm actually ends.
+    -- Two ROOTS, not per-arm layers: Sibling ZIndex breaks ties by ancestry, so
+    -- per-arm layering would let one arm's outline paint over another's fill at Gap 0.
+    local ARM_SEG_MAX = 96
+    local outlineRoot = new("Frame", {
+        Name = "Outline", Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 14, Parent = xhCanvas,
+    })
+    local fillRoot = new("Frame", {
+        Name = "Fill", Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 15, Parent = xhCanvas,
+    })
+    -- v0.8.1: Frames reject arbitrary properties (`_segs` isn't a valid member), so
+    -- an arm is a plain Lua record. v0.9.0 adds the outline chain beside the fill.
+    local function mkSeg(parent, z, col)
+        return new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
             Position = UDim2.new(0.5, 0, 0.5, 0),
-            -- full-size container so segments' (0.5, x, 0.5, y) positions land
-            -- at (canvas_center + x, canvas_center + y) cleanly.
-            Size = UDim2.new(1, 0, 1, 0),
-            BackgroundTransparency = 1, BorderSizePixel = 0,
-            ZIndex = 15, Parent = xhCanvas,
-        })
-        local segs = {}
-        for i = 1, ARM_SEG do
-            segs[i] = new("Frame", {
-                AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.new(0.5, 0, 0.5, 0),
-                Size = UDim2.new(0, 2, 0, 4), BorderSizePixel = 0,
-                BackgroundColor3 = Color3.new(1, 1, 1),
-                ZIndex = 15, Parent = c,
-            }, { new("UIStroke", { Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-                Enabled = false, LineJoinMode = Enum.LineJoinMode.Miter }) })
-        end
-        armSegs[c] = segs
-        return c
+            Size = UDim2.new(0, 2, 0, 4), BorderSizePixel = 0, Visible = false,
+            BackgroundColor3 = col, ZIndex = z, Parent = parent,
+        }, { new("UICorner", { CornerRadius = UDim.new(0, 0) }) })
     end
-    -- The armU/D/L/R names are kept for the STYLE_ARMS visibility mask; the
-    -- old per-arm anchor trick isn't needed anymore since segments position
-    -- absolutely within the container.
+    local function mkArm(name)
+        local a = {
+            out  = new("Frame", { Name = name .. "O", Size = UDim2.new(1, 0, 1, 0),
+                     BackgroundTransparency = 1, BorderSizePixel = 0,
+                     ZIndex = 14, Parent = outlineRoot }),
+            fill = new("Frame", { Name = name, Size = UDim2.new(1, 0, 1, 0),
+                     BackgroundTransparency = 1, BorderSizePixel = 0,
+                     ZIndex = 15, Parent = fillRoot }),
+            fills = {}, outs = {},
+        }
+        return a
+    end
+    -- grown on demand -- 96 x 2 x 4 = 768 Frames up front is real cost for a
+    -- crosshair most people leave straight.
+    local function growArm(a, want)
+        for i = #a.fills + 1, math.min(want, ARM_SEG_MAX) do
+            a.outs[i]  = mkSeg(a.out,  14, Color3.new(0, 0, 0))
+            a.fills[i] = mkSeg(a.fill, 15, Color3.new(1, 1, 1))
+        end
+    end
     local armU = mkArm("U")
     local armD = mkArm("D")
     local armL = mkArm("L")
@@ -10412,57 +10479,115 @@ end
     }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }),
          new("UIStroke", { Thickness = 2, Enabled = true }) })
 
-    -- v0.8.0: paint one segmented arm. thetaArm (radians) = arm base heading
-    -- from "up" (0=up, pi/2=right, pi=down, 3pi/2=left); measured clockwise so
-    -- Frame.Rotation matches directly. curveDeg = initial tilt (applied once,
-    -- shifts arm heading). curvierDeg = total sweep across arm, split evenly
-    -- across ARM_SEG segments.
-    local function paintArm(container, thetaArm, thickness, length, gap, color, outline, ocol, othick, curveDeg, curvierDeg)
-        local segs = armSegs[container]
-        if not segs then return end
-        local segLen = length / ARM_SEG
-        local theta = thetaArm + math.rad(curveDeg or 0)
-        local turn = math.rad(curvierDeg or 0) / ARM_SEG
-        -- start position: gap distance from center in the arm's base direction
+    -- v0.9.0: segment count follows the geometry instead of sitting at 14.
+    -- Straight arms get ONE segment (a subdivided straight line buys nothing, and it
+    -- turned CurveAngle's per-segment tilt into hatching instead of a slanted bar).
+    -- Curved arms: neighbouring segments sit sweep/n apart, so on the outside of a
+    -- bend they gap by ~(thickness/2)*(sweep/n) -- which is why more Thickness meant
+    -- less smooth. Budget that notch at ~0.5px and solve for n. The sweep*6 term
+    -- keeps a full circle round at Thickness 1.
+    local function segmentsFor(thickness, curvierDeg)
+        local sweep = math.rad(math.abs(curvierDeg or 0))
+        if sweep <= 0 then return 1 end
+        local n = math.ceil(thickness * sweep) + math.ceil(sweep * 6)
+        return math.clamp(n, 10, ARM_SEG_MAX)
+    end
+
+    -- v0.9.0 double-sided gradient sampler: colour for a segment `dist` px out from
+    -- centre, folded A -> B -> A so every arm carries the same outward ramp. `off` is
+    -- the shared ESP gradient offset, so the two animate in step.
+    local function segColorAt(dist, reach, a, b, spacing, off)
+        local t = ((dist / math.max(reach, 1)) - off) % 1
+        local f
+        if t <= spacing then f = t / math.max(spacing, 0.01)
+        else f = 1 - (t - spacing) / math.max(1 - spacing, 0.01) end
+        return a:Lerp(b, math.clamp(f, 0, 1))
+    end
+
+    -- Paint one arm. thetaArm (rad) = outward heading from "up", measured CW so it
+    -- maps straight onto Frame.Rotation. v0.9.0: curveDeg goes on the segment's
+    -- rotation, never the walk heading -- see the CurveAngle note on the config.
+    local function paintArm(a, thetaArm, thickness, length, gap, color, outline, ocol,
+                            othick, curveDeg, curvierDeg, smoothing, segN, grad)
+        growArm(a, segN)
+        local segLen = length / segN
+        local theta  = thetaArm
+        local turn   = math.rad(curvierDeg or 0) / segN
+        -- start `gap` px out from the centre along the arm's base direction
         local x = math.sin(thetaArm) * gap
         local y = -math.cos(thetaArm) * gap
-        for i = 1, ARM_SEG do
-            local seg = segs[i]
-            -- step half a segment forward
+        local drawOutline = outline and othick > 0
+        -- outline twin: othick wider per side, othick longer per end, so the fill
+        -- sits centred inside it with an even margin.
+        local ow = thickness + othick * 2
+        local ol = segLen + 1 + othick * 2
+        local fillR = math.floor(thickness * 0.5 * smoothing + 0.5)
+        local outR  = math.floor(ow * 0.5 * smoothing + 0.5)
+        local dist  = gap
+        for i = 1, segN do
             local dx = math.sin(theta) * segLen * 0.5
             local dy = -math.cos(theta) * segLen * 0.5
             x = x + dx; y = y + dy
-            seg.Position = UDim2.new(0.5, x, 0.5, y)
+            local pos = UDim2.new(0.5, x, 0.5, y)
+            local rot = math.deg(theta) + curveDeg
+            local f = a.fills[i]
+            f.Visible = true
+            f.Position = pos
             -- +1px overlap kills seams between segments; still reads as a solid line
-            seg.Size = UDim2.new(0, thickness, 0, segLen + 1)
-            seg.Rotation = math.deg(theta)
-            seg.BackgroundColor3 = color
-            seg.BackgroundTransparency = 0
-            local s = seg:FindFirstChildOfClass("UIStroke")
-            if s then
-                s.Thickness = othick
-                s.Color = ocol
-                s.Enabled = outline and othick > 0
+            f.Size = UDim2.new(0, thickness, 0, segLen + 1)
+            f.Rotation = rot
+            f.BackgroundColor3 = grad and grad(dist + segLen * 0.5) or color
+            f.BackgroundTransparency = 0
+            local fc = f:FindFirstChildOfClass("UICorner")
+            if fc then fc.CornerRadius = UDim.new(0, fillR) end
+            local o = a.outs[i]
+            o.Visible = drawOutline
+            if drawOutline then
+                o.Position = pos
+                o.Size = UDim2.new(0, ow, 0, ol)
+                o.Rotation = rot
+                o.BackgroundColor3 = ocol
+                local oc = o:FindFirstChildOfClass("UICorner")
+                if oc then oc.CornerRadius = UDim.new(0, outR) end
             end
-            -- step remaining half, then turn heading for next segment
             x = x + dx; y = y + dy
+            dist = dist + segLen
             theta = theta + turn
+        end
+        -- retire the tail of the pool when the count shrinks (Curvier turned down)
+        for i = segN + 1, #a.fills do
+            a.fills[i].Visible = false
+            a.outs[i].Visible = false
         end
     end
 
-    -- resolve the follow target (aim's target part, if any). Used by follow lerp.
+    -- v0.9.0: this only ever read Combat.Aim._rageLock / _target, which exist solely
+    -- while the aimbot is enabled AND held -- so Follow Target did nothing at all for
+    -- anyone not running an aimbot. Falls through to its own search now, gated by the
+    -- largest configured FOV (Shared.crosshairTarget). Throttled to 20Hz: that search
+    -- walks every player and raycasts, and the lerp smooths between picks anyway.
+    local followCache, followAt = nil, 0
     local function crosshairFollowPart()
-        local combat = Shared.Combat
-        if not combat then return nil end
-        -- prefer rage-locked victim, otherwise the current aimbot pick.
-        local plr = combat.Aim._rageLock or combat.Aim._target
-        if plr and plr.Character then
-            local partName = Crosshair.Follow.Part or "HumanoidRootPart"
-            local p = plr.Character:FindFirstChild(partName)
-                or plr.Character:FindFirstChild("HumanoidRootPart")
-                or plr.Character:FindFirstChild("Head")
-            return p
+        local partName = Crosshair.Follow.Part or "HumanoidRootPart"
+        local function partOf(plr)
+            local ch = plr and plr.Character
+            if not ch then return nil end
+            return ch:FindFirstChild(partName)
+                or ch:FindFirstChild("HumanoidRootPart")
+                or ch:FindFirstChild("Head")
         end
+        local combat = Shared.Combat
+        if combat then
+            local p = partOf(combat.Aim._rageLock or combat.Aim._target)
+            if p then followCache = p; return p end
+        end
+        local now = os.clock()
+        if now - followAt >= 0.05 then
+            followAt = now
+            followCache = Shared.crosshairTarget and partOf(Shared.crosshairTarget()) or nil
+        end
+        if followCache and followCache.Parent then return followCache end
+        followCache = nil
         return nil
     end
 
@@ -10492,11 +10617,26 @@ end
         -- hard set (no lerp, no offset); Follow Target lerps; Origin is the
         -- resting default.
         local size = vp()
+        -- v0.9.0: framerate-independent lerp. `s` = fraction of the gap left after
+        -- one 60Hz frame, so 144Hz and 60Hz feel the same. Collapses to the old
+        -- (1 - s) at exactly 60fps, so saved Smoothness values don't change meaning.
+        local function lerpF(s)
+            if s <= 0 then return 1 end
+            return 1 - s ^ (math.max(dt, 0.0001) * 60)
+        end
         local cx, cy
         if Crosshair.Origin == "Mouse" then
             local m = UserInputService:GetMouseLocation()
-            cx, cy = m.X + Crosshair.OffsetX, m.Y + Crosshair.OffsetY
+            local tx, ty = m.X + Crosshair.OffsetX, m.Y + Crosshair.OffsetY
+            -- v0.9.0: trail the cursor instead of being welded to it. 0 = old snap.
+            local a = lerpF(math.clamp(Crosshair.MouseSmoothness or 0, 0, 0.98))
+            local lx = Crosshair._mouseX or tx
+            local ly = Crosshair._mouseY or ty
+            cx = lx + (tx - lx) * a
+            cy = ly + (ty - ly) * a
+            Crosshair._mouseX, Crosshair._mouseY = cx, cy
         else
+            Crosshair._mouseX, Crosshair._mouseY = nil, nil
             cx, cy = size.X * 0.5 + Crosshair.OffsetX, size.Y * 0.5 + Crosshair.OffsetY
         end
         -- v0.6.0: LockToPart -- highest-priority center. Resolves late-bound
@@ -10519,7 +10659,22 @@ end
                 local cam = Workspace.CurrentCamera
                 if cam then
                     local sp = cam:WorldToViewportPoint(pos)
-                    if sp.Z > 0 then cx, cy = sp.X, sp.Y; locked = true end
+                    -- v0.9.0: occlusion was never the problem (WorldToViewportPoint
+                    -- doesn't raycast, so parts behind walls always projected fine).
+                    -- Behind the CAMERA was: Z <= 0 made this a no-op and the
+                    -- crosshair froze. The projection is mirrored through the origin
+                    -- there, so flip it back, then clamp to the viewport edge.
+                    if sp.Z > 0 then
+                        cx, cy = sp.X, sp.Y
+                        locked = true
+                    elseif Crosshair.LockToPart.ClampOffscreen then
+                        cx, cy = size.X - sp.X, size.Y - sp.Y
+                        locked = true
+                    end
+                    if locked and Crosshair.LockToPart.ClampOffscreen then
+                        cx = math.clamp(cx, 2, math.max(2, size.X - 2))
+                        cy = math.clamp(cy, 2, math.max(2, size.Y - 2))
+                    end
                 end
             end
         end
@@ -10533,8 +10688,7 @@ end
                     if sp.Z > 0 then tx, ty = sp.X, sp.Y end
                 end
             end
-            local s = math.clamp(Crosshair.Follow.Smoothness or 0, 0, 0.98)
-            local a = 1 - s
+            local a = lerpF(math.clamp(Crosshair.Follow.Smoothness or 0, 0, 0.98))
             local lx = Crosshair.Follow._screenX or cx
             local ly = Crosshair.Follow._screenY or cy
             lx = lx + (tx - lx) * a
@@ -10544,26 +10698,13 @@ end
             cx, cy = lx, ly
         end
 
-        -- pulse scale (expand-then-recover on Pulse._startedAt)
-        local pulseScale = 1
-        if Crosshair.Pulse.Enabled and Crosshair.Pulse._startedAt > 0 then
-            local dur = math.max(Crosshair.Pulse.Duration, 0.01)
-            local t = (os.clock() - Crosshair.Pulse._startedAt) / dur
-            if t >= 1 then
-                pulseScale = 1
-                Crosshair.Pulse._startedAt = 0
-            else
-                -- symmetric ease: 0 -> peak at 0.5 -> 0
-                local wave = 1 - math.abs(0.5 - t) * 2
-                pulseScale = 1 + (Crosshair.Pulse.Scale - 1) * wave
-            end
-        end
-
-        -- position + spin + rotation on the wrap canvas. sqrt(2) factor covers
-        -- the rotated diagonal so nothing clips when Rotation != 0; extra 32px
-        -- margin cushions curvier arm bulge and outline thickness.
-        local reach = (Crosshair.Length + Crosshair.Gap) * 2 + 32
-        local baseSize = math.max(reach * 1.42, 24) * pulseScale
+        -- position + spin + rotation on the wrap canvas. sqrt(2) covers the rotated
+        -- diagonal. v0.9.0: Thickness / OutlineThickness join the margin budget -- a
+        -- fat outlined arm at a big Curvier sweep bulged past the old flat 32px and
+        -- got clipped by the CanvasGroup.
+        local reach = (Crosshair.Length + Crosshair.Gap) * 2
+            + Crosshair.Thickness * 2 + Crosshair.OutlineThickness * 4 + 32
+        local baseSize = math.max(reach * 1.42, 24)
         xhCanvas.Size = UDim2.new(0, baseSize, 0, baseSize)
         xhCanvas.Position = UDim2.new(0, cx, 0, cy)
         xhCanvas.GroupTransparency = 1 - math.clamp(Crosshair.Opacity, 0, 1)
@@ -10581,11 +10722,16 @@ end
         -- + rotation ESP features use; arm/dot/outer paint white so the gradient
         -- shows pure. Off: KGrad disabled, colors from Crosshair.* fields.
         local gradOn = ESP.Config.Gradient == true
+        -- v0.9.0: two exclusive gradient paths. Canvas mode = one UIGradient over the
+        -- CanvasGroup. Double-sided = per-segment colour by distance from centre. A
+        -- UIGradient can't do the latter: one linear sweep puts opposite arms on
+        -- opposite halves of the ramp, which reads lopsided the moment it spins.
+        local doubleGrad = gradOn and Crosshair.DoubleGradient == true
         do
             local kg = xhCanvas:FindFirstChild("KGrad")
             if kg then
-                kg.Enabled = gradOn
-                if gradOn then
+                kg.Enabled = gradOn and not doubleGrad
+                if kg.Enabled then
                     kg.Color = lineGradSeq(ESP.Config.GradientColorA2,
                         ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
                     kg.Rotation = ESP.Config.GradientRotation
@@ -10593,13 +10739,26 @@ end
                 end
             end
         end
-        local armColor = gradOn and Color3.new(1, 1, 1) or Crosshair.Color
-        local dotColor = gradOn and Color3.new(1, 1, 1) or (Crosshair.Style == "Dot" and Crosshair.Color or Crosshair.Dot.Color)
+        local armGrad = nil
+        if doubleGrad then
+            local ga = ESP.Config.GradientColorA2
+            local gb = ESP.Config.GradientColorB2
+            local gs = math.clamp(ESP.Config.GradientSpacing or 0.5, 0.05, 0.95)
+            local goff = gradOffset().X
+            local span = math.max(Crosshair.Length + Crosshair.Gap, 1)
+            armGrad = function(d) return segColorAt(d, span, ga, gb, gs, goff) end
+        end
+        local armColor = (gradOn and not doubleGrad) and Color3.new(1, 1, 1) or Crosshair.Color
+        local dotBase = (Crosshair.Style == "Dot") and Crosshair.Color or Crosshair.Dot.Color
+        local dotColor = (gradOn and not doubleGrad) and Color3.new(1, 1, 1)
+            or (armGrad and armGrad(0) or dotBase)
 
         -- style dispatch
         local mask = STYLE_ARMS[Crosshair.Style] or STYLE_ARMS.Cross
-        armU.Visible = mask.U; armD.Visible = mask.D
-        armL.Visible = mask.L; armR.Visible = mask.R
+        armU.fill.Visible = mask.U; armU.out.Visible = mask.U
+        armD.fill.Visible = mask.D; armD.out.Visible = mask.D
+        armL.fill.Visible = mask.L; armL.out.Visible = mask.L
+        armR.fill.Visible = mask.R; armR.out.Visible = mask.R
         outerFrame.Visible = mask.outer
         dotFrame.Visible = mask.dot or Crosshair.Dot.Enabled
 
@@ -10614,10 +10773,12 @@ end
             local othick    = Crosshair.OutlineThickness
             local curve     = Crosshair.CurveAngle or 0
             local curvier   = Crosshair.CurvierAngle or 0
-            paintArm(armU, 0,           thickness, length, gap, armColor, outline, ocol, othick, curve, curvier)
-            paintArm(armR, math.pi / 2, thickness, length, gap, armColor, outline, ocol, othick, curve, curvier)
-            paintArm(armD, math.pi,     thickness, length, gap, armColor, outline, ocol, othick, curve, curvier)
-            paintArm(armL, math.pi * 1.5, thickness, length, gap, armColor, outline, ocol, othick, curve, curvier)
+            local smooth    = math.clamp(Crosshair.CornerSmoothing or 0, 0, 1)
+            local segN      = segmentsFor(thickness, curvier)
+            paintArm(armU, 0,             thickness, length, gap, armColor, outline, ocol, othick, curve, curvier, smooth, segN, armGrad)
+            paintArm(armR, math.pi / 2,   thickness, length, gap, armColor, outline, ocol, othick, curve, curvier, smooth, segN, armGrad)
+            paintArm(armD, math.pi,       thickness, length, gap, armColor, outline, ocol, othick, curve, curvier, smooth, segN, armGrad)
+            paintArm(armL, math.pi * 1.5, thickness, length, gap, armColor, outline, ocol, othick, curve, curvier, smooth, segN, armGrad)
         end
 
         -- center dot (visible when style==Dot OR user opted in on any style)
@@ -10648,10 +10809,9 @@ end
         end
     end
 
-    -- Called from the hit hook so the crosshair can pulse on damage.
-    Shared.crosshairPulse = function()
-        if Crosshair.Pulse.Enabled then Crosshair.Pulse._startedAt = os.clock() end
-    end
+    -- v0.9.0: "Pulse on Hit" removed -- state, render branch, UI row and the
+    -- Shared.crosshairPulse hook. The scale rode on the CanvasGroup, so it resized
+    -- the same canvas Follow Target lerps across and the crosshair lurched on hits.
 
     ------------------------------------------------------------------- hit nums
     -- pool: reusable TextLabels for damage numbers. Each entry:
@@ -10659,6 +10819,8 @@ end
     local hitCfg = ESP.Indicators.HitNumbers
     hitCfg._pool = {}
     hitCfg._layer = layer
+    -- v0.9.0: resolved font + the name it was resolved from (see spawnHit).
+    local hitNumFont, hitNumFontName = nil, nil
 
     local function acquireHitLabel()
         for _, e in ipairs(hitCfg._pool) do
@@ -10710,8 +10872,25 @@ end
         e.lbl.Text = tag
         e.lbl.TextSize = hitCfg.TextSize
         local col = e.isKill and hitCfg.KillColor
-            or (e.total >= hitCfg.CritThreshold and hitCfg.CritColor or hitCfg.Color)
+            or ((hitCfg.Crits and e.total >= hitCfg.CritThreshold) and hitCfg.CritColor
+                or hitCfg.Color)
         e.lbl.TextColor3 = col
+        -- v0.9.0: per-feature font. Resolved OFF this thread -- loadFeiFont can
+        -- download and this runs inside the damage handler, which must never block.
+        -- Falls back to Bold for the frame or two before the face lands (usually
+        -- zero, since the preloader already cached every catalog font).
+        local fname = hitCfg.Font or "None"
+        if fname ~= hitNumFontName then
+            hitNumFontName = fname
+            hitNumFont = Theme.Fonts.Bold
+            if fname ~= "None" and Theme.loadFeiFont then
+                task.spawn(function()
+                    local f = Theme.loadFeiFont(fname)
+                    if f and hitNumFontName == fname then hitNumFont = f end
+                end)
+            end
+        end
+        if hitNumFont then e.lbl.FontFace = hitNumFont end
         local s = e.lbl:FindFirstChildOfClass("UIStroke")
         if s then
             s.Thickness = hitCfg.OutlineThickness
@@ -10864,6 +11043,9 @@ end)()
             Position = UDim2.new(0.5, 0, 0.5, 0),
             Size = UDim2.new(0, width, 0, height),
             BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0,
+            -- v0.9.0: modal contents stay inside the modal. Frames don't clip by
+            -- default, so any over-wide label silently drew past the popup edge.
+            ClipsDescendants = true,
             ZIndex = 201, Parent = dim,
         }, { corner(Theme.Radius.Medium), stroke(Theme.Palette.BorderSubtle) })
         local uscale = new("UIScale", { Scale = 0.94, Parent = box })
@@ -10914,6 +11096,10 @@ end)()
 
         local selected = nil     -- current selected Instance
         local selectedRow = nil  -- current selected row Frame
+        -- v0.9.0: Instance -> { expand, pick, wrapper } for every row built so far.
+        -- Click Part needs to walk down to an arbitrary instance and open the tree
+        -- on the way; `force` lets that walk surface a node shouldShow would filter.
+        local nodes, force = {}, {}
         local ROOTS = {
             game:GetService("Workspace"),
             game:GetService("Players"),
@@ -10926,7 +11112,8 @@ end)()
 
         local buildRow -- forward-decl
         local function pickRow(row, inst)
-            if selectedRow then
+            -- v0.9.0: the previous row may have been destroyed by a collapse.
+            if selectedRow and selectedRow.Parent then
                 selectedRow.BackgroundColor3 = Theme.Palette.PanelElevated
                 selectedRow.BackgroundTransparency = 1
             end
@@ -10936,24 +11123,48 @@ end)()
             row.BackgroundColor3 = Theme.Palette.Accent
         end
 
+        -- v0.9.0 TREE RESTRUCTURE. Each entry is now a WRAPPER holding its own row
+        -- plus its own children container, instead of the row and the children being
+        -- flat siblings ordered by LayoutOrder. The old shape was the "expanding a
+        -- folder drops its contents at the bottom of the list" bug: no row was ever
+        -- assigned a LayoutOrder, so every sibling sat at 0 while the child container
+        -- was created at 0 + 1 -- which sorted it after every row in the list rather
+        -- than under its own parent. Nesting makes the ordering structural: children
+        -- physically live inside the parent entry, so they cannot land anywhere else.
         buildRow = function(inst, depth, parentContainer)
             local expandable = (inst:IsA("Folder") or inst:IsA("Configuration") or inst:IsA("Model")
                 or inst == game:GetService("Workspace")
                 or inst:IsA("ServiceProvider") or inst.ClassName:find("Service", 1, true))
                 and #inst:GetChildren() > 0
+            local wrapper = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundTransparency = 1, BorderSizePixel = 0,
+                ZIndex = 203, Parent = parentContainer,
+            }, { new("UIListLayout", { Padding = UDim.new(0, 2),
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
             local row = new("Frame", {
-                Size = UDim2.new(1, 0, 0, 20),
+                Size = UDim2.new(1, 0, 0, 22), LayoutOrder = 1,
                 BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 1,
-                BorderSizePixel = 0, ZIndex = 203, Parent = parentContainer,
+                BorderSizePixel = 0, ZIndex = 203, Parent = wrapper,
             }, { corner(4) })
             local x = depth * 14
             local btn = new("TextButton", {
                 Text = "", BackgroundTransparency = 1, AutoButtonColor = false,
                 Size = UDim2.new(1, 0, 1, 0), ZIndex = 204, Parent = row,
             })
+            -- depth guide: a hairline at each ancestor level so deep trees stay
+            -- readable instead of being a wall of indented text.
+            for d = 1, depth do
+                new("Frame", {
+                    Position = UDim2.new(0, (d - 1) * 14 + 7, 0, 0),
+                    Size = UDim2.new(0, 1, 1, 0),
+                    BackgroundColor3 = Theme.Palette.BorderSubtle, BackgroundTransparency = 0.55,
+                    BorderSizePixel = 0, ZIndex = 204, Parent = row,
+                })
+            end
             local isOpen = false
             local caret = new("TextLabel", {
-                Text = expandable and "+" or " ", FontFace = Theme.Fonts.Mono,
+                Text = expandable and "\u{25B8}" or "", FontFace = Theme.Fonts.Medium,
                 TextSize = 11, TextColor3 = Theme.Palette.TextMuted,
                 BackgroundTransparency = 1,
                 Position = UDim2.new(0, x + 2, 0, 0), Size = UDim2.new(0, 12, 1, 0),
@@ -10968,51 +11179,189 @@ end)()
                 Text = inst.Name, FontFace = Theme.Fonts.Medium,
                 TextSize = Theme.Text.Body, TextColor3 = Theme.Palette.Text,
                 BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-                Position = UDim2.new(0, x + 32, 0, 0), Size = UDim2.new(1, -x - 100, 1, 0),
+                Position = UDim2.new(0, x + 32, 0, 0), Size = UDim2.new(1, -x - 108, 1, 0),
                 TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 205, Parent = row,
             })
+            -- class as a quiet pill on the right rather than loose text
             new("TextLabel", {
                 Text = inst.ClassName, FontFace = Theme.Fonts.Mono,
                 TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
-                BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Right,
-                Position = UDim2.new(1, -60, 0, 0), Size = UDim2.new(0, 55, 1, 0),
+                BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.55,
+                BorderSizePixel = 0, TextTruncate = Enum.TextTruncate.AtEnd,
+                AnchorPoint = Vector2.new(1, 0.5),
+                Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.new(0, 68, 0, 15),
                 ZIndex = 205, Parent = row,
-            })
+            }, { corner(3) })
 
-            local childContainer  -- lazy
+            local kidsBox            -- lazy
+            local builtKids = {}     -- what this node put into `nodes`
+            local collapse           -- fwd-decl (nodes[inst].dispose recurses through it)
             local function expand()
-                if childContainer then return end
-                childContainer = new("Frame", {
+                if kidsBox then return end
+                isOpen = true
+                caret.Text = "\u{25BE}"
+                kidsBox = new("Frame", {
                     Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-                    BackgroundTransparency = 1, LayoutOrder = row.LayoutOrder + 1,
-                    ZIndex = 203, Parent = parentContainer,
+                    BackgroundTransparency = 1, LayoutOrder = 2,
+                    ZIndex = 203, Parent = wrapper,
                 }, { new("UIListLayout", { Padding = UDim.new(0, 2),
                     SortOrder = Enum.SortOrder.LayoutOrder }) })
-                -- collect children, filter, sort (folders first, then physicals, alphabetic)
                 local kids = {}
                 for _, c in ipairs(inst:GetChildren()) do
-                    if shouldShow(c) then table.insert(kids, c) end
+                    if shouldShow(c) or force[c] then table.insert(kids, c) end
                 end
                 table.sort(kids, function(a, b) return a.Name:lower() < b.Name:lower() end)
-                for _, c in ipairs(kids) do buildRow(c, depth + 1, childContainer) end
+                for _, c in ipairs(kids) do
+                    buildRow(c, depth + 1, kidsBox)
+                    table.insert(builtKids, c)
+                end
             end
-            local function collapse()
-                if childContainer then childContainer:Destroy(); childContainer = nil end
+            -- collapse tears the subtree out of `nodes` as well as out of the tree --
+            -- otherwise a later Click Part reveal would expand() through a record
+            -- whose Frames were already destroyed and build orphans.
+            collapse = function()
+                isOpen = false
+                caret.Text = expandable and "\u{25B8}" or ""
+                for _, c in ipairs(builtKids) do
+                    local n = nodes[c]
+                    if n then n.dispose() end
+                    nodes[c] = nil
+                end
+                builtKids = {}
+                if kidsBox then kidsBox:Destroy(); kidsBox = nil end
             end
 
+            btn.MouseEnter:Connect(function()
+                if selectedRow ~= row then row.BackgroundTransparency = 0.75 end
+            end)
+            btn.MouseLeave:Connect(function()
+                if selectedRow ~= row then row.BackgroundTransparency = 1 end
+            end)
             btn.MouseButton1Click:Connect(function()
                 if expandable then
-                    isOpen = not isOpen
-                    caret.Text = isOpen and "-" or "+"
-                    if isOpen then expand() else collapse() end
+                    if isOpen then collapse() else expand() end
                 end
                 if isSelectableAsTarget(inst) then pickRow(row, inst) end
             end)
+
+            nodes[inst] = {
+                expand = expand, wrapper = wrapper, dispose = collapse,
+                pick = function() if isSelectableAsTarget(inst) then pickRow(row, inst) end end,
+            }
         end
 
         for _, r in ipairs(ROOTS) do buildRow(r, 0, scroll) end
 
+        -- v0.9.0: open the tree down to `target` and select it. Ancestors are marked
+        -- `force` first so the shouldShow filter can't hide a link in the chain.
+        local function revealInstance(target)
+            if not target then return false end
+            local chain, cur = {}, target
+            while cur and not nodes[cur] do
+                table.insert(chain, 1, cur)
+                force[cur] = true
+                cur = cur.Parent
+            end
+            if not cur then return false end          -- not under any listed root
+            local node = nodes[cur]
+            for _, step in ipairs(chain) do
+                if not node then return false end
+                node.expand()
+                node = nodes[step]
+            end
+            if not node then return false end
+            node.pick()
+            -- scroll the revealed row into view
+            task.defer(function()
+                if not node.wrapper.Parent then return end
+                local dy = node.wrapper.AbsolutePosition.Y - scroll.AbsolutePosition.Y
+                scroll.CanvasPosition = Vector2.new(0,
+                    math.max(0, scroll.CanvasPosition.Y + dy - 60))
+            end)
+            return true
+        end
+
         -- footer buttons
+        -- v0.9.0 CLICK PART. Hides the whole suite, raycasts through the cursor so
+        -- you can point at the thing in-game, then restores and reveals whatever you
+        -- clicked in this same tree. A raycast (not Mouse.Target) because the click
+        -- sink below is a GUI element, and Mouse.Target goes nil under GUI.
+        local clickPart = new("TextButton", {
+            Text = "click part", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 14, 1, -14),
+            Size = UDim2.new(0, 96, 0, 28), ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        clickPart.MouseButton1Click:Connect(function()
+            local cam = Workspace.CurrentCamera
+            if not cam then return end
+            screen.Enabled = false
+            popupScreen.Enabled = false
+            local hud = KID.track(new("ScreenGui", {
+                Name = KID.name("worldpick"), ResetOnSpawn = false, IgnoreGuiInset = true,
+                ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+                DisplayOrder = popupScreen.DisplayOrder + 1, Parent = guiParent(),
+            }))
+            protectGuiSafe(hud)
+            -- full-screen sink so the selecting click never reaches the game
+            local sink = new("TextButton", {
+                Text = "", AutoButtonColor = false, Modal = false,
+                BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+                ZIndex = 1, Parent = hud,
+            })
+            local hint = new("TextLabel", {
+                Text = "hover a part -- left click to select, right click to cancel",
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, TextTruncate = Enum.TextTruncate.AtEnd,
+                BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.15,
+                BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0), ClipsDescendants = true,
+                Position = UDim2.new(0.5, 0, 0, 24), Size = UDim2.new(0, 520, 0, 30),
+                ZIndex = 2, Parent = hud,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            local hl = Instance.new("Highlight")
+            hl.Name = KID.name("pickhl")
+            hl.FillColor = Theme.Palette.Accent
+            hl.OutlineColor = Theme.Palette.Accent
+            hl.FillTransparency = 0.75
+            pcall(function() hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop end)
+            hl.Parent = cam
+            local conns = {}
+            local hover = nil
+            local function finish(inst)
+                for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+                hl:Destroy(); hud:Destroy()
+                screen.Enabled = true
+                popupScreen.Enabled = true
+                if inst then revealInstance(inst) end
+            end
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Exclude
+            rp.FilterDescendantsInstances = { cam, LocalPlayer.Character }
+            conns[#conns + 1] = RunService.RenderStepped:Connect(function()
+                local mp = UserInputService:GetMouseLocation()
+                local ray = cam:ViewportPointToRay(mp.X, mp.Y)
+                local hit = Workspace:Raycast(ray.Origin, ray.Direction * 5000, rp)
+                hover = hit and hit.Instance or nil
+                -- adorn the whole model when the part belongs to one -- that is
+                -- almost always the thing someone means by "that object".
+                local adorn = hover and (hover:FindFirstAncestorOfClass("Model") or hover) or nil
+                hl.Adornee = adorn
+                hint.Text = hover and ("click to select   " .. hover:GetFullName())
+                    or "hover a part -- left click to select, right click to cancel"
+            end)
+            conns[#conns + 1] = UserInputService.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    finish(hover)
+                elseif input.UserInputType == Enum.UserInputType.MouseButton2
+                    or input.KeyCode == Enum.KeyCode.Escape then
+                    finish(nil)
+                end
+            end)
+            sink.MouseButton1Click:Connect(function() end)
+        end)
+
         local cancel = new("TextButton", {
             Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
@@ -11358,7 +11707,7 @@ end)()
           desc = "block a specific animation id from ever playing on you." },
     }
     local function openRuleTypePicker()
-        local m = openModal(360, 220)
+        local m = openModal(400, 250)
         new("TextLabel", {
             Text = "new rule", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
@@ -11368,18 +11717,35 @@ end)()
         })
         local pick = nil
         local buttons = {}
+        -- v0.9.0: these were ONE unwrapped single-line label -- "Object Offset  --
+        -- material + position + rotation + spin on a target instance." on a 328px
+        -- button with TextWrapped off and nothing clipping it, so the description ran
+        -- straight out past the edge of the popup. Split into a title line and a
+        -- wrapped description, with the button tall enough to hold both.
         for i, rt in ipairs(RULE_TYPES) do
             local b = new("TextButton", {
-                Text = "  " .. rt.label .. "  --  " .. rt.desc,
-                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-                TextColor3 = Theme.Palette.Text, TextXAlignment = Enum.TextXAlignment.Left,
-                AutoButtonColor = false,
+                Text = "", AutoButtonColor = false,
                 BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.3,
-                BorderSizePixel = 0,
-                Position = UDim2.new(0, 16, 0, 40 + (i - 1) * 42),
-                Size = UDim2.new(1, -32, 0, 34),
+                BorderSizePixel = 0, ClipsDescendants = true,
+                Position = UDim2.new(0, 16, 0, 40 + (i - 1) * 58),
+                Size = UDim2.new(1, -32, 0, 50),
                 ZIndex = 202, Parent = m.box,
             }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            new("TextLabel", {
+                Text = rt.label, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Position = UDim2.new(0, 10, 0, 6), Size = UDim2.new(1, -20, 0, 15),
+                ZIndex = 203, Parent = b,
+            })
+            new("TextLabel", {
+                Text = rt.desc, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
+                Position = UDim2.new(0, 10, 0, 22), Size = UDim2.new(1, -20, 0, 24),
+                ZIndex = 203, Parent = b,
+            })
             buttons[i] = b
             b.MouseButton1Click:Connect(function()
                 pick = rt.key
@@ -11444,173 +11810,212 @@ end)()
 -- ceiling); shares one full-screen Frame in `screen` at ZIndex 8 (under ESP=12+
 -- and Koffee window=30+). Exposes Shared.spawnHitEffect(char, cfg).
 ;(function()
-    local layer = new("Frame", {
-        Name = KID.name("fx"), Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 8,
-        Parent = screen,
-    })
+    -- v0.9.0: the full-screen `layer` Frame this IIFE used to own is gone -- nothing
+    -- in here draws into the GUI any more.
 
-    -------------------------------------------------------------------- vignette
-    -- Four dark corner Frames whose transparency inverses along the axis toward
-    -- center. Cheap approximation of a real radial vignette without needing a
-    -- SurfaceGui or ImageLabel with a gradient image.
-    local vignette = new("Frame", {
-        Name = "Vignette", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
-        ZIndex = 9, Visible = false, Parent = layer,
-    })
-    local vTop = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 240), BackgroundTransparency = 1, BorderSizePixel = 0,
-        ZIndex = 9, Parent = vignette,
-    }, { new("UIGradient", { Rotation = 90,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
-    local vBot = new("Frame", {
-        Position = UDim2.new(0, 0, 1, -240), Size = UDim2.new(1, 0, 0, 240),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        ZIndex = 9, Parent = vignette,
-    }, { new("UIGradient", { Rotation = 270,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
-    local vLeft = new("Frame", {
-        Size = UDim2.new(0, 240, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
-        ZIndex = 9, Parent = vignette,
-    }, { new("UIGradient", { Rotation = 0,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
-    local vRight = new("Frame", {
-        Position = UDim2.new(1, -240, 0, 0), Size = UDim2.new(0, 240, 1, 0),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        ZIndex = 9, Parent = vignette,
-    }, { new("UIGradient", { Rotation = 180,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
-
-    --------------------------------------------------------------------- fogtint
-    -- Flat colored haze full-screen; Density = BackgroundTransparency inversion.
-    local fogTint = new("Frame", {
-        Name = "FogTint", Size = UDim2.new(1, 0, 1, 0), BorderSizePixel = 0,
-        BackgroundColor3 = Color3.fromRGB(200, 205, 215), BackgroundTransparency = 1,
-        ZIndex = 8, Visible = false, Parent = layer,
-    })
-
-    --------------------------------------------------------------------- particles
-    -- Snow + Rain share a pool factory. Each particle: Frame in `layer` at
-    -- ZIndex 10. Density gates the target pool size; recycled when off-screen.
-    local snowPool, rainPool = {}, {}
-    local function makeParticle(name, w, h, cornerRadius)
-        return new("Frame", {
-            Name = name, Size = UDim2.new(0, w, 0, h), BorderSizePixel = 0,
-            BackgroundColor3 = Color3.new(1, 1, 1), Visible = false,
-            ZIndex = 10, Parent = layer,
-        }, cornerRadius and { new("UICorner", { CornerRadius = UDim.new(1, 0) }) } or {})
-    end
-    local function vp()
+    --------------------------------------------------------------------- 3D weather
+    -- v0.9.0 REBUILD. v0.7 drew snow and rain as flat Frames in this ScreenGui --
+    -- confetti pasted over the picture: no depth, no parallax, drawn through walls,
+    -- and a few hundred Frames was already the ceiling. Weather is world-space
+    -- ParticleEmitters now: they depth-sort against geometry, shrink with distance,
+    -- and batch, so density went up ~10x for less cost.
+    --
+    -- Hosts are invisible anchored Parts parented to CurrentCamera, NOT Workspace --
+    -- camera children render normally, never replicate, and sit outside the tree
+    -- passive ACs walk (same reasoning as the v0.3.8 BlurEffect move). An emitter on
+    -- a BasePart emits from anywhere in its volume, so a slab held above the camera
+    -- IS the spawn box.
+    local hosts, emitters, sigs = {}, {}, {}
+    local function hostFor(key, size)
         local cam = Workspace.CurrentCamera
-        if cam then return cam.ViewportSize end
-        return Vector2.new(1280, 720)
-    end
-    local function ensureCount(pool, want, name, w, h, roundCorners)
-        while #pool < want do
-            local f = makeParticle(name, w, h, roundCorners)
-            table.insert(pool, { f = f, x = 0, y = -9999, vx = 0, vy = 0, life = 0 })
+        if not cam then return nil end
+        local h = hosts[key]
+        -- custom camera systems swap CurrentCamera; re-home rather than leaving the
+        -- emitter on a dead one.
+        if h and h.Parent ~= cam then h:Destroy(); h = nil end
+        if not h then
+            h = Instance.new("Part")
+            h.Name = KID.name("fx" .. key)
+            h.Anchored = true
+            h.CanCollide = false
+            h.Transparency = 1
+            h.Size = size
+            h.CFrame = CFrame.new(0, 10000, 0)
+            -- newer-only properties; a runtime missing any of them still works.
+            pcall(function()
+                h.CanQuery = false; h.CanTouch = false
+                h.CastShadow = false; h.Locked = true; h.Massless = true
+            end)
+            h.Parent = cam
+            KID.track(h)   -- re-exec / unload tears these down with everything else
+            hosts[key] = h
         end
-        for i = want + 1, #pool do pool[i].f.Visible = false end
+        return h
     end
-    local function stepSnow(dt)
+    local function emitterFor(key, size)
+        local h = hostFor(key, size)
+        if not h then return nil, nil end
+        local em = emitters[key]
+        if not em or em.Parent ~= h then
+            em = Instance.new("ParticleEmitter")
+            em.Name = KID.name("p" .. key)
+            em.Enabled = false
+            em.LightInfluence = 0
+            em.LockedToPart = false
+            em.Parent = h
+            emitters[key] = em
+            -- a fresh emitter has default properties, so the cached signature would
+            -- otherwise skip the push and leave it unconfigured after a camera swap.
+            sigs[key] = nil
+        end
+        return em, h
+    end
+    -- slab stays centred over the camera and axis-aligned, so Wind is a fixed world
+    -- direction instead of swinging with the view.
+    local function parkAbove(h, up)
+        local cam = Workspace.CurrentCamera
+        if not (cam and h) then return end
+        local p = cam.CFrame.Position
+        h.CFrame = CFrame.new(p.X, p.Y + up, p.Z)
+    end
+    -- park the host every frame (one CFrame write); re-push the other ~15 emitter
+    -- properties only when settings actually changed.
+    local function dirty(key, sig)
+        if sigs[key] == sig then return false end
+        sigs[key] = sig
+        return true
+    end
+    local FADE = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.06, 0.2),
+        NumberSequenceKeypoint.new(0.9, 0.2),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+
+    local SNOW_SLAB = Vector3.new(280, 6, 280)
+    local function stepSnow()
         local cfg = World.FX.Snow
-        if not cfg.Enabled then
-            for _, p in ipairs(snowPool) do p.f.Visible = false end
-            return
-        end
-        local size = vp()
-        ensureCount(snowPool, cfg.Density, "Snow", cfg.Size, cfg.Size, true)
-        for _, p in ipairs(snowPool) do
-            if p.y < -20 or p.y > size.Y + 20 or p.x < -20 or p.x > size.X + 20 then
-                p.x = math.random() * size.X
-                p.y = -math.random(1, 40)
-                p.vx = (math.random() - 0.5) * 20
-                p.vy = 20 + math.random() * 40
-            end
-            p.x = p.x + p.vx * dt * cfg.Speed
-            p.y = p.y + p.vy * dt * cfg.Speed
-            p.f.Position = UDim2.new(0, p.x, 0, p.y)
-            p.f.Size = UDim2.new(0, cfg.Size, 0, cfg.Size)
-            p.f.BackgroundColor3 = cfg.Color
-            p.f.BackgroundTransparency = 0.15
-            p.f.Visible = true
-        end
+        local em, h = emitterFor("snow", SNOW_SLAB)
+        if not em then return end
+        if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
+        if not cfg.Enabled then return end
+        parkAbove(h, 48)
+        if not dirty("snow", table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind,
+            tostring(cfg.Color) }, "|")) then return end
+        local fall = 6 * math.max(cfg.Speed, 0.05)
+        em.Rate = cfg.Density
+        em.EmissionDirection = Enum.NormalId.Bottom
+        em.Speed = NumberRange.new(fall * 0.8, fall * 1.2)
+        em.Lifetime = NumberRange.new(70 / fall * 0.85, 70 / fall)   -- slab -> below cam
+        em.Acceleration = Vector3.new(cfg.Wind, -0.4, cfg.Wind * 0.6)
+        em.Drag = 0.4
+        em.Size = NumberSequence.new(cfg.Size)
+        em.Color = ColorSequence.new(cfg.Color)
+        em.Transparency = FADE
+        em.SpreadAngle = Vector2.new(14, 14)
+        em.Rotation = NumberRange.new(0, 360)
+        em.RotSpeed = NumberRange.new(-40, 40)
+        em.LightEmission = 0.25
+        pcall(function() em.Squash = NumberSequence.new(0) end)
     end
-    local function stepRain(dt)
+
+    local RAIN_SLAB = Vector3.new(190, 4, 190)
+    local function stepRain()
         local cfg = World.FX.Rain
-        if not cfg.Enabled then
-            for _, p in ipairs(rainPool) do p.f.Visible = false end
-            return
-        end
-        local size = vp()
-        ensureCount(rainPool, cfg.Density, "Rain", 1, cfg.Streak, false)
-        for _, p in ipairs(rainPool) do
-            if p.y > size.Y + cfg.Streak then
-                p.x = math.random() * size.X
-                p.y = -math.random(1, size.Y // 2)
-                p.vy = 400 + math.random() * 300
-            end
-            p.y = p.y + p.vy * dt * cfg.Speed
-            p.f.Position = UDim2.new(0, p.x, 0, p.y)
-            p.f.Size = UDim2.new(0, 1, 0, cfg.Streak)
-            p.f.BackgroundColor3 = cfg.Color
-            p.f.BackgroundTransparency = 0.3
-            p.f.Visible = true
-        end
-    end
-    local function stepVignette()
-        local cfg = World.FX.Vignette
-        vignette.Visible = cfg.Enabled
+        local em, h = emitterFor("rain", RAIN_SLAB)
+        if not em then return end
+        if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
         if not cfg.Enabled then return end
-        local baseTrans = 1 - cfg.Intensity
-        for _, side in ipairs({ vTop, vBot, vLeft, vRight }) do
-            side.BackgroundColor3 = cfg.Color
-            side.BackgroundTransparency = baseTrans
-        end
+        parkAbove(h, 75)
+        if not dirty("rain", table.concat({ cfg.Density, cfg.Speed, cfg.Streak, cfg.Wind,
+            tostring(cfg.Color) }, "|")) then return end
+        local fall = 55 * math.max(cfg.Speed, 0.05)
+        em.Rate = cfg.Density
+        em.EmissionDirection = Enum.NormalId.Bottom
+        em.Speed = NumberRange.new(fall, fall * 1.15)
+        em.Lifetime = NumberRange.new(150 / fall * 0.9, 150 / fall)
+        em.Acceleration = Vector3.new(cfg.Wind * 2, -22, cfg.Wind)
+        em.Drag = 0
+        em.Size = NumberSequence.new(0.18)
+        em.Color = ColorSequence.new(cfg.Color)
+        em.Transparency = NumberSequence.new(0.45)
+        em.SpreadAngle = Vector2.new(3, 3)
+        em.Rotation = NumberRange.new(0)
+        em.RotSpeed = NumberRange.new(0)
+        em.LightEmission = 0.15
+        -- Squash stretches along travel -- what turns a dot into a raindrop streak.
+        -- pcall'd: comparatively recent property.
+        pcall(function() em.Squash = NumberSequence.new(cfg.Streak * 0.5) end)
     end
-    local function stepFogTint()
-        local cfg = World.FX.FogTint
-        fogTint.Visible = cfg.Enabled
+
+    local SAKURA_SLAB = Vector3.new(240, 6, 240)
+    local function stepSakura()
+        local cfg = World.FX.Sakura
+        local em, h = emitterFor("sakura", SAKURA_SLAB)
+        if not em then return end
+        if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
         if not cfg.Enabled then return end
-        fogTint.BackgroundColor3 = cfg.Color
-        fogTint.BackgroundTransparency = 1 - math.clamp(cfg.Density, 0, 0.95)
+        parkAbove(h, 42)
+        if not dirty("sakura", table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind,
+            cfg.Spin, tostring(cfg.Color) }, "|")) then return end
+        local fall = 3.2 * math.max(cfg.Speed, 0.05)
+        em.Rate = cfg.Density
+        em.EmissionDirection = Enum.NormalId.Bottom
+        em.Speed = NumberRange.new(fall * 0.7, fall * 1.3)
+        em.Lifetime = NumberRange.new(70 / fall * 0.8, 70 / fall)
+        -- petals drift more than they fall; Drag gives the fluttery settle
+        em.Acceleration = Vector3.new(cfg.Wind, -0.3, cfg.Wind * 0.7)
+        em.Drag = 1.2
+        em.Size = NumberSequence.new(cfg.Size)
+        em.Color = ColorSequence.new(cfg.Color)
+        em.Transparency = FADE
+        em.SpreadAngle = Vector2.new(40, 40)
+        em.Rotation = NumberRange.new(0, 360)
+        em.RotSpeed = NumberRange.new(-cfg.Spin, cfg.Spin)
+        em.LightEmission = 0.1
+        pcall(function() em.Squash = NumberSequence.new(0.6) end)
     end
 
     ------------------------------------------------------------------ hit effects
-    -- One live-effect pool. Each entry animates over Duration and returns to the
-    -- pool. Preset governs shape:
-    --   Ring       -- expanding ring (UIStroke, growing size)
-    --   Sparks     -- 8 short lines radiating outward
-    --   Flash      -- solid filled disc that fades
-    --   Shockwave  -- ring but faster + larger + no fade halfway
+    -- v0.9.0 REBUILD. Two things were wrong with v0.7 beyond it being flat. It drew
+    -- into the ScreenGui, so an effect on someone behind a wall painted over the
+    -- wall -- there was no depth to test against, which looks wrong and gives you
+    -- away. And the four presets were one circle Frame with different growth curves:
+    -- Ring and Shockwave were a single outline apart, which is why they read as
+    -- duplicates.
+    --
+    -- Six presets now, each a genuinely different emission shape, all world-space so
+    -- they occlude properly:
+    --   Impact     tight forward cone of hard shards, over in a blink
+    --   Sparks     spherical spray of stretched streaks that fall and drag out
+    --   Blood      heavy droplets under strong gravity + a slow dark puff
+    --   Shockwave  flat expanding ring (Cylinder surface emission)
+    --   Nova       slow wide sphere shell, bright and soft
+    --   Ember      a few big glowing motes drifting upward
     local hitFxPool = {}
     local function newHitFx()
-        local root = new("Frame", {
-            AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
-            Size = UDim2.new(0, 40, 0, 40), Visible = false, ZIndex = 11, Parent = layer,
-        })
-        -- Ring/Shockwave/Flash core: Frame with UICorner(1,0) so it's circular.
-        local core = new("Frame", {
-            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
-            Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
-            ZIndex = 11, Parent = root,
-        }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
-             new("UIStroke", { Thickness = 3, Enabled = false }) })
-        -- Sparks: 8 line children (rotated per-instance at spawn)
-        local sparks = {}
-        for i = 1, 8 do
-            local ln = new("Frame", {
-                AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.5, 0),
-                Size = UDim2.new(0, 2, 0, 14), BorderSizePixel = 0, Visible = false,
-                Rotation = (i - 1) * 45, ZIndex = 12, Parent = root,
-            })
-            sparks[i] = ln
+        local h = Instance.new("Part")
+        h.Name = KID.name("hfx")
+        h.Anchored = true
+        h.CanCollide = false
+        h.Transparency = 1
+        h.Size = Vector3.new(0.2, 0.2, 0.2)   -- effectively a point emitter
+        h.CFrame = CFrame.new(0, 10000, 0)
+        pcall(function()
+            h.CanQuery = false; h.CanTouch = false
+            h.CastShadow = false; h.Locked = true; h.Massless = true
+        end)
+        local function mkEm()
+            local em = Instance.new("ParticleEmitter")
+            em.Name = KID.name("hp")
+            em.Enabled = false          -- burst-only; driven by :Emit()
+            em.LightInfluence = 0
+            em.LockedToPart = false
+            em.Parent = h
+            return em
         end
-        return { root = root, core = core, sparks = sparks, _alive = false }
+        KID.track(h)
+        return { host = h, core = mkEm(), spray = mkEm(), _alive = false }
     end
     local function acquireHitFx()
         for _, e in ipairs(hitFxPool) do if not e._alive then return e end end
@@ -11618,8 +12023,126 @@ end)()
         table.insert(hitFxPool, e)
         return e
     end
+
+    -- full reset between presets so nothing inherits the last one's shape.
+    local function resetEm(em, col)
+        em.Color = ColorSequence.new(col)
+        em.Rotation = NumberRange.new(0, 360)
+        em.RotSpeed = NumberRange.new(0)
+        em.Acceleration = Vector3.new(0, 0, 0)
+        em.Drag = 0
+        em.LightEmission = 0.6
+        em.SpreadAngle = Vector2.new(180, 180)
+        em.EmissionDirection = Enum.NormalId.Top
+        em.ZOffset = 0
+        pcall(function() em.Squash = NumberSequence.new(0) end)
+        pcall(function()
+            em.Shape = Enum.ParticleEmitterShape.Box
+            em.ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume
+            em.ShapeInOut = Enum.ParticleEmitterShapeInOut.Outward
+        end)
+    end
+    local function fadeOut(a) return NumberSequence.new({
+        NumberSequenceKeypoint.new(0, a), NumberSequenceKeypoint.new(1, 1) }) end
+    local function shrink(a, b) return NumberSequence.new({
+        NumberSequenceKeypoint.new(0, a), NumberSequenceKeypoint.new(1, b) }) end
+
+    -- writes both emitters for the preset; returns burst counts + how long the
+    -- effect stays alive (the longest particle lifetime it can produce).
+    local function primeHitFx(e, cfg)
+        local col, s = cfg.Color, math.max(cfg.Scale, 0.05)
+        local dur = math.max(cfg.Duration, 0.05)
+        local core, spray = e.core, e.spray
+        resetEm(core, col); resetEm(spray, col)
+        local p = cfg.Preset
+        if p == "Sparks" then
+            spray.Size = shrink(0.16 * s, 0)
+            spray.Transparency = fadeOut(0)
+            spray.Lifetime = NumberRange.new(dur * 0.7, dur * 1.2)
+            spray.Speed = NumberRange.new(14 * s, 34 * s)
+            spray.Acceleration = Vector3.new(0, -45, 0)
+            spray.Drag = 1.2
+            spray.LightEmission = 1
+            pcall(function() spray.Squash = NumberSequence.new(6) end)
+            return 0, 26, dur * 1.2
+        elseif p == "Blood" then
+            core.Size = shrink(1.1 * s, 2.0 * s)
+            core.Transparency = fadeOut(0.35)
+            core.Lifetime = NumberRange.new(dur * 1.1)
+            core.Speed = NumberRange.new(1, 3)
+            core.LightEmission = 0
+            core.Color = ColorSequence.new(col:Lerp(Color3.new(0, 0, 0), 0.55))
+            spray.Size = shrink(0.2 * s, 0.12 * s)
+            spray.Transparency = fadeOut(0)
+            spray.Lifetime = NumberRange.new(dur * 0.6, dur)
+            spray.Speed = NumberRange.new(8 * s, 22 * s)
+            spray.SpreadAngle = Vector2.new(75, 75)
+            spray.Acceleration = Vector3.new(0, -90, 0)
+            spray.Drag = 0.3
+            spray.LightEmission = 0
+            return 4, 18, dur * 1.1
+        elseif p == "Shockwave" then
+            -- a real ring: emit off the SURFACE of a cylinder, outward. pcall'd --
+            -- if the runtime predates Shape/ShapeStyle it degrades to the spherical
+            -- burst resetEm left behind, which still reads as an impact.
+            pcall(function()
+                core.Shape = Enum.ParticleEmitterShape.Cylinder
+                core.ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface
+                core.ShapeInOut = Enum.ParticleEmitterShapeInOut.Outward
+                core.SpreadAngle = Vector2.new(0, 0)
+            end)
+            core.Size = shrink(0.35 * s, 0.1 * s)
+            core.Transparency = fadeOut(0)
+            core.Lifetime = NumberRange.new(dur)
+            core.Speed = NumberRange.new(30 * s, 34 * s)
+            core.LightEmission = 1
+            pcall(function() core.Squash = NumberSequence.new(3) end)
+            return 60, 0, dur
+        elseif p == "Nova" then
+            core.Size = shrink(0.5 * s, 0)
+            core.Transparency = fadeOut(0.15)
+            core.Lifetime = NumberRange.new(dur, dur * 1.3)
+            core.Speed = NumberRange.new(10 * s, 13 * s)
+            core.Drag = 2.5
+            core.LightEmission = 1
+            spray.Size = shrink(1.4 * s, 2.6 * s)
+            spray.Transparency = fadeOut(0.2)
+            spray.Lifetime = NumberRange.new(dur * 0.4)
+            spray.Speed = NumberRange.new(0)
+            spray.LightEmission = 1
+            return 60, 1, dur * 1.3
+        elseif p == "Ember" then
+            core.Size = shrink(0.4 * s, 0.05 * s)
+            core.Transparency = fadeOut(0.1)
+            core.Lifetime = NumberRange.new(dur * 1.4, dur * 2.2)
+            core.Speed = NumberRange.new(2 * s, 6 * s)
+            core.SpreadAngle = Vector2.new(55, 55)
+            core.Acceleration = Vector3.new(0, 6, 0)
+            core.Drag = 1.5
+            core.RotSpeed = NumberRange.new(-90, 90)
+            core.LightEmission = 1
+            return 9, 0, dur * 2.2
+        end
+        -- Impact (also the landing spot for old configs naming Ring / Flash)
+        core.Size = shrink(0.9 * s, 0)
+        core.Transparency = fadeOut(0)
+        core.Lifetime = NumberRange.new(dur * 0.35)
+        core.Speed = NumberRange.new(0)
+        core.LightEmission = 1
+        spray.Size = shrink(0.22 * s, 0)
+        spray.Transparency = fadeOut(0)
+        spray.Lifetime = NumberRange.new(dur * 0.5, dur * 0.8)
+        spray.Speed = NumberRange.new(16 * s, 30 * s)
+        spray.SpreadAngle = Vector2.new(35, 35)
+        spray.Drag = 3
+        pcall(function() spray.Squash = NumberSequence.new(2) end)
+        return 1, 14, dur * 0.8
+    end
+
     local function spawnHitEffect(char, cfg)
         if not cfg.Enabled then return end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
         local partName = cfg.Attach == "HRP" and "HumanoidRootPart"
             or cfg.Attach == "Torso" and (char:FindFirstChild("UpperTorso") and "UpperTorso" or "Torso")
             or "Head"
@@ -11627,91 +12150,53 @@ end)()
             or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
         if not victim then return end
         local e = acquireHitFx()
+        if e.host.Parent ~= cam then e.host.Parent = cam end
+        -- face the camera so Shockwave's ring reads as a ring rather than edge-on.
+        -- pcall'd: lookAt throws when the two points coincide.
+        local function face(host, pos)
+            local ok = pcall(function()
+                host.CFrame = CFrame.lookAt(pos, Workspace.CurrentCamera.CFrame.Position)
+            end)
+            if not ok then host.CFrame = CFrame.new(pos) end
+        end
+        face(e.host, victim.Position)
+        local nCore, nSpray, life = primeHitFx(e, cfg)
+        if nCore > 0 then e.core:Emit(nCore) end
+        if nSpray > 0 then e.spray:Emit(nSpray) end
         e._alive = true
         e._victim = victim
-        e._preset = cfg.Preset
-        e._color = cfg.Color
-        e._scale = cfg.Scale
-        e._duration = math.max(cfg.Duration, 0.05)
-        e._startAt = os.clock()
-        e.root.Visible = true
-        -- prime style
-        for i, ln in ipairs(e.sparks) do
-            ln.Visible = (cfg.Preset == "Sparks")
-            ln.BackgroundColor3 = cfg.Color
-            ln.Rotation = (i - 1) * 45
-        end
-        local stroke = e.core:FindFirstChildOfClass("UIStroke")
-        if cfg.Preset == "Sparks" then
-            e.core.BackgroundTransparency = 1
-            if stroke then stroke.Enabled = false end
-        elseif cfg.Preset == "Flash" then
-            e.core.BackgroundColor3 = cfg.Color
-            e.core.BackgroundTransparency = 0.15
-            if stroke then stroke.Enabled = false end
-        else
-            e.core.BackgroundTransparency = 1
-            if stroke then stroke.Enabled = true; stroke.Color = cfg.Color; stroke.Thickness = 3 end
-        end
+        e._until = os.clock() + life
     end
     Shared.spawnHitEffect = spawnHitEffect
+
+    -- track the victim while the burst lives so effects ride a moving target.
     local function drawHitFx()
+        local now = os.clock()
         local cam = Workspace.CurrentCamera
         for _, e in ipairs(hitFxPool) do
             if e._alive then
-                local age = os.clock() - e._startAt
-                local t = age / e._duration
-                if t >= 1 or not (e._victim and e._victim.Parent) then
+                if now >= e._until then
                     e._alive = false
-                    e.root.Visible = false
-                else
-                    if cam then
-                        local sp = cam:WorldToViewportPoint(e._victim.Position)
-                        if sp.Z > 0 then
-                            e.root.Position = UDim2.new(0, sp.X, 0, sp.Y)
-                            e.root.Visible = true
-                        else
-                            e.root.Visible = false
-                        end
-                    end
-                    -- per-preset animation
-                    local baseSize = 40 * e._scale
-                    if e._preset == "Ring" then
-                        local d = baseSize * (0.4 + 1.6 * t)
-                        e.root.Size = UDim2.new(0, d, 0, d)
-                        local s = e.core:FindFirstChildOfClass("UIStroke")
-                        if s then s.Transparency = t end
-                    elseif e._preset == "Shockwave" then
-                        local d = baseSize * (0.3 + 3.2 * t)
-                        e.root.Size = UDim2.new(0, d, 0, d)
-                        local s = e.core:FindFirstChildOfClass("UIStroke")
-                        if s then
-                            s.Thickness = math.max(1, 4 * (1 - t))
-                            s.Transparency = t * 0.9
-                        end
-                    elseif e._preset == "Flash" then
-                        local d = baseSize * (0.8 + 0.7 * t)
-                        e.root.Size = UDim2.new(0, d, 0, d)
-                        e.core.BackgroundTransparency = 0.15 + t * 0.85
-                    elseif e._preset == "Sparks" then
-                        for i, ln in ipairs(e.sparks) do
-                            local reach = baseSize * (0.4 + 1.5 * t)
-                            ln.Position = UDim2.new(0.5, 0, 0.5, 0)
-                            ln.Size = UDim2.new(0, math.max(1, 3 * (1 - t)), 0, reach)
-                            ln.BackgroundTransparency = t
-                        end
-                    end
+                    e.host.CFrame = CFrame.new(0, 10000, 0)
+                elseif cam and e._victim and e._victim.Parent then
+                    local pos = e._victim.Position
+                    local ok = pcall(function()
+                        e.host.CFrame = CFrame.lookAt(pos, cam.CFrame.Position)
+                    end)
+                    if not ok then e.host.CFrame = CFrame.new(pos) end
                 end
             end
         end
     end
 
     ---------------------------------------------------------------------- render
-    RunService.RenderStepped:Connect(function(dt)
-        stepSnow(dt)
-        stepRain(dt)
-        stepVignette()
-        stepFogTint()
+    RunService.RenderStepped:Connect(function()
+        -- unlike the GUI layers, these hosts survive `screen:Destroy()` -- without
+        -- this guard the loop would just rebuild them after an unload.
+        if Koffee._unloaded then return end
+        stepSnow()
+        stepRain()
+        stepSakura()
         drawHitFx()
     end)
 end)()
@@ -11914,6 +12399,10 @@ addTab("Visuals", function(root)
         popup:slider("Hold Time (s)", 0.1, 3, hitCfgUI.HoldTime, 2, function(v) hitCfgUI.HoldTime = v end)
         popup:slider("Text Size", 8, 40, hitCfgUI.TextSize, 0, function(v) hitCfgUI.TextSize = v end)
         popup:slider("Outline", 0, 6, hitCfgUI.OutlineThickness, 0, function(v) hitCfgUI.OutlineThickness = v end)
+        -- v0.9.0: same catalog every other font dropdown uses.
+        popup:dropdown("Font", Theme.FontNames, hitCfgUI.Font, function(v) hitCfgUI.Font = v end)
+        -- v0.9.0: crits are a toggle, not an always-on threshold.
+        popup:toggle("Crits", hitCfgUI.Crits, function(v) hitCfgUI.Crits = v end)
         popup:slider("Crit Threshold", 1, 500, hitCfgUI.CritThreshold, 0, function(v) hitCfgUI.CritThreshold = v end)
         popup:swatch("Crit Color", hitCfgUI.CritColor, function(c) hitCfgUI.CritColor = c end)
         popup:toggle("Show KILL", hitCfgUI.ShowKill, function(v) hitCfgUI.ShowKill = v end)
@@ -11948,22 +12437,41 @@ addTab("Visuals", function(root)
     local xhStyleDd = dropdown(xhCard, "Style", { "Cross", "T-Cross", "Plus", "Dot", "Circle", "Square" },
         Crosshair.Style, function(v) Crosshair.Style = v end)
     rightClickSettings(xhStyleDd.frame, "style", function(popup)
-        -- per-arm tilt (initial heading offset). +/- pinwheels each arm.
+        -- v0.9.0: tilts each arm SEGMENT about its own centre, leaving the arm
+        -- pointing where it points. Until now it was folded into the walk heading,
+        -- which rotated all four arms equally -- the same picture as the Rotation
+        -- slider below, just spelled differently.
         popup:slider("Curve Angle", -180, 180, Crosshair.CurveAngle, 0, function(v) Crosshair.CurveAngle = v end)
         -- v0.8.0: bends each arm into an arc (total sweep across the arm).
         -- 0=straight; 90=quarter-circle; 180=half-circle; up to 360.
         popup:slider("Curvier Angle", -360, 360, Crosshair.CurvierAngle, 0, function(v) Crosshair.CurvierAngle = v end)
+        -- v0.9.0: rounds every segment + its outline. Caps the arm tips and hides
+        -- the faceting on tight arcs.
+        popup:slider("Corner Smoothing", 0, 1, Crosshair.CornerSmoothing, 2, function(v) Crosshair.CornerSmoothing = v end)
+        -- v0.9.0: mirrors the shared ESP gradient so it runs outward from the centre
+        -- along every arm at once instead of sweeping across the whole crosshair.
+        popup:toggle("Double-sided Gradient", Crosshair.DoubleGradient, function(v) Crosshair.DoubleGradient = v end)
     end)
 
     -- v0.5.2: base origin (Center | Mouse). Follow Target still leads when on --
     -- Origin is where the crosshair rests when nothing's being followed.
-    dropdown(xhCard, "Origin", { "Center", "Mouse" }, Crosshair.Origin,
+    local xhOriginDd = dropdown(xhCard, "Origin", { "Center", "Mouse" }, Crosshair.Origin,
         function(v) Crosshair.Origin = v end)
+    rightClickSettings(xhOriginDd.frame, "origin", function(popup)
+        -- v0.9.0: trail behind the cursor instead of being welded to it.
+        popup:slider("Mouse Smoothness", 0, 0.98, Crosshair.MouseSmoothness, 2,
+            function(v) Crosshair.MouseSmoothness = v end)
+    end)
 
     local xhOutRow = configCheckbox(xhCard, "Outline", Crosshair.Outline, function(v) Crosshair.Outline = v end)
     attachSingleSwatch(xhOutRow.row, Crosshair.OutlineColor, function(c) Crosshair.OutlineColor = c end)
     rightClickSettings(xhOutRow.row, "outline", function(popup)
-        popup:slider("Thickness", 0, 6, Crosshair.OutlineThickness, 0, function(v) Crosshair.OutlineThickness = v end)
+        -- v0.9.0: decimals. The outline is drawn as geometry now (a wider twin of
+        -- each segment), and its width lands as `Thickness + 2 * this` in a UDim
+        -- offset -- which Roblox stores as an integer. So the honest granularity is
+        -- 0.5, not 0.01: 1.0 and 1.5 differ, 1.50 and 1.52 do not. Two decimals of
+        -- precision so half-steps are actually reachable on the slider.
+        popup:slider("Thickness", 0, 6, Crosshair.OutlineThickness, 2, function(v) Crosshair.OutlineThickness = v end)
     end)
 
     -- v0.8.0: ranges opened way up per user request. Sane defaults still land
@@ -12000,11 +12508,8 @@ addTab("Visuals", function(root)
         popup:slider("Size", 1, 12, Crosshair.Dot.Size, 0, function(v) Crosshair.Dot.Size = v end)
     end)
 
-    local xhPulseRow = configCheckbox(xhCard, "Pulse on Hit", Crosshair.Pulse.Enabled, function(v) Crosshair.Pulse.Enabled = v end)
-    rightClickSettings(xhPulseRow.row, "pulse", function(popup)
-        popup:slider("Scale",        1, 3, Crosshair.Pulse.Scale, 2, function(v) Crosshair.Pulse.Scale = v end)
-        popup:slider("Duration (s)", 0.05, 1, Crosshair.Pulse.Duration, 2, function(v) Crosshair.Pulse.Duration = v end)
-    end)
+    -- v0.9.0: "Pulse on Hit" is gone -- see the note where Shared.crosshairPulse
+    -- used to live.
 
     -- v0.6.0: Lock To Part -- picks a specific instance via the wave-3 explorer.
     -- Overrides Follow Target + Origin. "Open" button reopens the picker to
@@ -12018,6 +12523,12 @@ addTab("Visuals", function(root)
             Crosshair.LockToPart.Enabled = v
             if not v then Crosshair.LockToPart._target = nil end
         end)
+    rightClickSettings(xhLockCB.row, "lock to part", function(popup)
+        -- v0.9.0: keep tracking when the part leaves frame (pinned to the screen
+        -- edge in its direction) instead of freezing where it last was.
+        popup:toggle("Track Off-screen", Crosshair.LockToPart.ClampOffscreen,
+            function(v) Crosshair.LockToPart.ClampOffscreen = v end)
+    end)
     local xhOpenBtn = new("TextButton", {
         Text = "open", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
         AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
@@ -12068,39 +12579,39 @@ addTab("World", function(root)
     moduleCheckbox(fx, "Disable Clouds", "noclouds")
     moduleCheckbox(fx, "Low Graphics",   "lowgfx")
 
-    -- v0.7.0 WORLD FX -- always-on client-side screen effects (independent of
-    -- the koffee menu state, unlike the loader snow). Rendered by the wave-4
-    -- IIFE. Right-click each row for the deep knobs.
+    -- v0.7.0 WORLD FX -- always-on client-side weather (independent of the koffee
+    -- menu state, unlike the loader snow). v0.9.0: 3D ParticleEmitters in world
+    -- space, so Density is particles/second and Size / Wind are studs. Vignette and
+    -- Fog Tint removed. Right-click each row for the deep knobs.
     local fx2 = panel(W.Effects, "World FX")
     local snowRow = configCheckbox(fx2, "Snow", World.FX.Snow.Enabled,
         function(v) World.FX.Snow.Enabled = v end)
     attachSingleSwatch(snowRow.row, World.FX.Snow.Color, function(c) World.FX.Snow.Color = c end)
     rightClickSettings(snowRow.row, "snow", function(popup)
-        popup:slider("Density", 10, 300, World.FX.Snow.Density, 0, function(v) World.FX.Snow.Density = math.floor(v) end)
-        popup:slider("Speed",   0.2, 3, World.FX.Snow.Speed,    2, function(v) World.FX.Snow.Speed = v end)
-        popup:slider("Size",    1, 8,   World.FX.Snow.Size,     0, function(v) World.FX.Snow.Size = math.floor(v) end)
+        popup:slider("Density", 20, 900, World.FX.Snow.Density, 0, function(v) World.FX.Snow.Density = math.floor(v) end)
+        popup:slider("Speed",   0.2, 4,  World.FX.Snow.Speed,   2, function(v) World.FX.Snow.Speed = v end)
+        popup:slider("Size",    0.05, 2, World.FX.Snow.Size,    2, function(v) World.FX.Snow.Size = v end)
+        popup:slider("Wind",   -12, 12,  World.FX.Snow.Wind,    1, function(v) World.FX.Snow.Wind = v end)
     end)
     local rainRow = configCheckbox(fx2, "Rain", World.FX.Rain.Enabled,
         function(v) World.FX.Rain.Enabled = v end)
     attachSingleSwatch(rainRow.row, World.FX.Rain.Color, function(c) World.FX.Rain.Color = c end)
     rightClickSettings(rainRow.row, "rain", function(popup)
-        popup:slider("Density", 10, 300, World.FX.Rain.Density, 0, function(v) World.FX.Rain.Density = math.floor(v) end)
-        popup:slider("Speed",   0.5, 8,  World.FX.Rain.Speed,   2, function(v) World.FX.Rain.Speed = v end)
-        popup:slider("Streak",  4, 40,   World.FX.Rain.Streak,  0, function(v) World.FX.Rain.Streak = math.floor(v) end)
+        popup:slider("Density", 50, 3000, World.FX.Rain.Density, 0, function(v) World.FX.Rain.Density = math.floor(v) end)
+        popup:slider("Speed",   0.2, 3,   World.FX.Rain.Speed,   2, function(v) World.FX.Rain.Speed = v end)
+        popup:slider("Streak",  1, 40,    World.FX.Rain.Streak,  1, function(v) World.FX.Rain.Streak = v end)
+        popup:slider("Wind",   -12, 12,   World.FX.Rain.Wind,    1, function(v) World.FX.Rain.Wind = v end)
     end)
-    local vigRow = configCheckbox(fx2, "Vignette", World.FX.Vignette.Enabled,
-        function(v) World.FX.Vignette.Enabled = v end)
-    attachSingleSwatch(vigRow.row, World.FX.Vignette.Color, function(c) World.FX.Vignette.Color = c end)
-    rightClickSettings(vigRow.row, "vignette", function(popup)
-        popup:slider("Intensity", 0, 1, World.FX.Vignette.Intensity, 2,
-            function(v) World.FX.Vignette.Intensity = v end)
-    end)
-    local fogRow = configCheckbox(fx2, "Fog Tint", World.FX.FogTint.Enabled,
-        function(v) World.FX.FogTint.Enabled = v end)
-    attachSingleSwatch(fogRow.row, World.FX.FogTint.Color, function(c) World.FX.FogTint.Color = c end)
-    rightClickSettings(fogRow.row, "fog tint", function(popup)
-        popup:slider("Density", 0, 0.95, World.FX.FogTint.Density, 2,
-            function(v) World.FX.FogTint.Density = v end)
+    -- v0.9.0
+    local sakRow = configCheckbox(fx2, "Sakura", World.FX.Sakura.Enabled,
+        function(v) World.FX.Sakura.Enabled = v end)
+    attachSingleSwatch(sakRow.row, World.FX.Sakura.Color, function(c) World.FX.Sakura.Color = c end)
+    rightClickSettings(sakRow.row, "sakura", function(popup)
+        popup:slider("Density", 10, 600, World.FX.Sakura.Density, 0, function(v) World.FX.Sakura.Density = math.floor(v) end)
+        popup:slider("Speed",   0.2, 3,  World.FX.Sakura.Speed,   2, function(v) World.FX.Sakura.Speed = v end)
+        popup:slider("Size",    0.1, 3,  World.FX.Sakura.Size,    2, function(v) World.FX.Sakura.Size = v end)
+        popup:slider("Wind",   -16, 16,  World.FX.Sakura.Wind,    1, function(v) World.FX.Sakura.Wind = v end)
+        popup:slider("Spin",    0, 400,  World.FX.Sakura.Spin,    0, function(v) World.FX.Sakura.Spin = v end)
     end)
 
     -- v0.6.0: RULES sub-tab. Plus button + list of rule rows (name + delete).
@@ -12232,13 +12743,8 @@ addTab("Options", function(root)
     -- v0.4.0: expanded font catalog. "None" reverts to Theme.Fonts. The rest split
     -- into: external assets (downloaded via koffee-assets) + roblox stock families
     -- (zero-cost, resolved via rbxasset://fonts/families/*.json inside loadFeiFont).
-    local fontOptions = {
-        "None",
-        "Minecraft Bold", "Minecraft Regular", "ImGui",
-        "Sarpanch", "Ubuntu", "Roboto", "Roboto Mono", "Nunito",
-        "Source Sans Pro", "Merriweather", "Fredoka One", "Luckiest Guy",
-        "Bangers", "Permanent Marker", "Michroma", "Creepster", "Indie Flower",
-    }
+    -- v0.9.0: shared catalog list (see Theme.FontNames) instead of a second literal.
+    local fontOptions = Theme.FontNames
     -- user-dropped fonts land in the workspace as koffee_<name>.otf; surface any
     -- extra cached entries the catalog doesn't know so they're selectable too.
     local fontRow = configCheckbox(uiPanel, "Custom Font", KoffeeOptions.CustomFontOn, function(v)
@@ -12311,6 +12817,15 @@ addTab("Options", function(root)
         pcall(function() screen:Destroy() end)
         pcall(function() popupScreen:Destroy() end)
         pcall(function() blur:Destroy() end)
+        -- v0.9.0: the world-FX / hit-FX hosts live on the Camera, not under
+        -- `screen`, so those three Destroys miss them. Sweep everything KID tracked
+        -- (the same list a re-exec clears) instead of naming surfaces one by one.
+        pcall(function()
+            for _, inst in ipairs(KID.ctx.instances or {}) do
+                pcall(function() inst:Destroy() end)
+            end
+            KID.ctx.instances = {}
+        end)
         -- 5. destroy any sound instances we created
         local combatSounds = Shared.CombatSounds
         pcall(function() if combatSounds then combatSounds.hit:Destroy() end end)
