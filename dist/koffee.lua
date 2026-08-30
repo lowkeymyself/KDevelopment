@@ -1,9 +1,9 @@
--- koffee v0.12.2
+-- koffee v0.12.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.12.2"
+Koffee.Version = "0.12.3"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -4181,6 +4181,23 @@ function ConfigIO.delete(name)
     if fileAPI.isfile(path) then return pcall(fileAPI.delfile, path) end
     return false
 end
+-- v0.12.3: rename = copy the file's bytes to the new name, then drop the old one.
+-- Deliberately NOT a save() under the new name -- that would snapshot whatever is
+-- live right now and silently rewrite the config you were only renaming.
+function ConfigIO.rename(old, newName)
+    if not (filesReady() and fileAPI.delfile) then return false, "no file access" end
+    newName = tostring(newName):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if newName == "" then return false, "name required" end
+    if newName == old then return true, old end
+    local src, dst = CFG_DIR .. "/" .. old .. ".koffee", CFG_DIR .. "/" .. newName .. ".koffee"
+    if not fileAPI.isfile(src) then return false, "not found" end
+    if fileAPI.isfile(dst) then return false, "name already used" end
+    local rok, text = pcall(fileAPI.read, src)
+    if not rok or type(text) ~= "string" then return false, "read failed" end
+    if not pcall(fileAPI.write, dst, text) then return false, "write failed" end
+    pcall(fileAPI.delfile, src)
+    return true, newName
+end
 -- per-place auto-load marker: Koffee/configs/_auto_<PlaceId>.txt holds a name
 local function autoPath() return CFG_DIR .. "/_auto_" .. tostring(game.PlaceId) .. ".txt" end
 function ConfigIO.getAuto()
@@ -4457,6 +4474,9 @@ local Crosshair = {
     -- derived, not fixed at 14 -- see segmentsFor().
     CurvierAngle  = 0,
     CornerSmoothing = 0,                           -- 0=square segments, 1=fully rounded
+    -- Star style: rotation between its two triangles. 60 is the symmetric hexagram;
+    -- anything else slides one triangle around and skews the points.
+    StarOffset    = 60,
     Spin          = false,
     SpinSpeed     = 90,                            -- deg/sec
     SpinDir       = "CW",                          -- "CW" | "CCW"
@@ -6309,15 +6329,19 @@ World.FX = {
     -- lower rate than fast ones to land in the same ~1-1.5k budget.
     -- v0.10.0: Wind defaults to 0 -- these fall, they don't blow sideways. Sway is
     -- the emission spread that gives the wobble without any net drift.
+    -- v0.12.3: Reach scales the emitter slab's footprint, so the weather covers a
+    -- wide area around you instead of only the patch you're standing in. Rate is
+    -- per-second regardless of area, so a big reach wants a matching Density.
     Snow   = { Enabled = false, Density = 100, Speed = 1.0, Size = 0.35, Wind = 0,
-               Sway = 16, Style = "Soft",   -- "Soft" | "Flake"
+               Sway = 16, Style = "Soft", Reach = 1,   -- Style: "Soft" | "Flake"
                Color = Color3.fromRGB(255, 253, 248) },
     Rain   = { Enabled = false, Density = 500, Speed = 1.0, Streak = 14, Wind = 0,
-               Color = Color3.fromRGB(180, 200, 240) },
+               Reach = 1, Color = Color3.fromRGB(180, 200, 240) },
     -- v0.9.0: slow, heavily tumbling petals. Sparse on purpose -- at a ~20s
     -- lifetime a small rate is already a full sky.
     Sakura = { Enabled = false, Density = 40, Speed = 1.0, Size = 0.5, Wind = 0,
-               Sway = 34, Spin = 160, Color = Color3.fromRGB(255, 183, 210) },
+               Sway = 34, Spin = 160, Reach = 1,
+               Color = Color3.fromRGB(255, 183, 210) },
 }
 registerConfig("world_fx", World.FX)
 
@@ -6557,7 +6581,7 @@ registerModule("colorcorrection", "Color Correction",
             World.CC.Owned = true
         end
         World.CC.Saved = {
-            Origin = fx.Origin, Saturation = fx.Saturation,
+            Enabled = fx.Enabled, Saturation = fx.Saturation,
             Contrast = fx.Contrast, Brightness = fx.Brightness, TintColor = fx.TintColor,
         }
         World.CC.Conn = RunService.Heartbeat:Connect(function()
@@ -6582,7 +6606,7 @@ registerModule("colorcorrection", "Color Correction",
             if World.CC.Owned then
                 fx:Destroy()
             else
-                fx.Origin = s.Origin; fx.Saturation = s.Saturation
+                fx.Enabled = s.Enabled; fx.Saturation = s.Saturation
                 fx.Contrast = s.Contrast; fx.Brightness = s.Brightness
                 fx.TintColor = s.TintColor
             end
@@ -6608,11 +6632,18 @@ registerModule("ambientcolor", "Ambient Color",
         World.Light.Conn = RunService.Heartbeat:Connect(function()
             local L = World.Light
             local i = L.Intensity
+            -- Color3 has NO arithmetic metamethods in Roblox, so `Color3 * number`
+            -- throws. Scale the components by hand and clamp (Intensity goes to 2).
+            local function scale(c)
+                return Color3.new(math.clamp(c.R * i, 0, 1),
+                                  math.clamp(c.G * i, 0, 1),
+                                  math.clamp(c.B * i, 0, 1))
+            end
             if L.Split then
-                Lighting.Ambient        = L.Indoor * i
-                Lighting.OutdoorAmbient = L.Outdoor * i
+                Lighting.Ambient        = scale(L.Indoor)
+                Lighting.OutdoorAmbient = scale(L.Outdoor)
             else
-                local c = L.Color * i
+                local c = scale(L.Color)
                 Lighting.Ambient = c
                 Lighting.OutdoorAmbient = c
             end
@@ -11096,6 +11127,14 @@ end
             segN = segmentsFor(cfg.Thickness, cfg.CurvierAngle or 0),
             grad = armGrad,
         }
+        -- Star's two triangles are generated, not table-literal, so StarOffset can
+        -- slide the second one around the ring.
+        local chords = st.chords
+        if cfg.Style == "Star" then
+            local o = cfg.StarOffset or 60
+            chords = { { 0, 120 }, { 120, 240 }, { 240, 360 },
+                       { o, o + 120 }, { o + 120, o + 240 }, { o + 240, o + 360 } }
+        end
         local used = 0
         if st.spokes then
             for _, deg in ipairs(st.spokes) do
@@ -11104,10 +11143,10 @@ end
                 paintArm(g.arms[used], math.sin(th) * gap, -math.cos(th) * gap,
                          th, cfg.Length, gap, P)
             end
-        elseif st.chords then
+        elseif chords then
             -- ring vertices sit at Gap + Length so the shape's size still tracks both
             local R = gap + cfg.Length
-            for _, e in ipairs(st.chords) do
+            for _, e in ipairs(chords) do
                 used = used + 1
                 local a1, a2 = math.rad(e[1]), math.rad(e[2])
                 local x1, y1 = math.sin(a1) * R, -math.cos(a1) * R
@@ -11698,7 +11737,7 @@ end)()
             -- sinks MouseButton1 ONLY, at high priority, so the selecting click never
             -- reaches the game while RMB camera control stays completely untouched.
             local hint = new("TextLabel", {
-                Text = "left click select   rmb drag to look   shift for your own gear   esc cancel",
+                Text = "left click to select   right click drag to look   esc to cancel",
                 FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.Text, TextTruncate = Enum.TextTruncate.AtEnd,
                 BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.15,
@@ -11761,16 +11800,18 @@ end)()
                 local ray = cam:ViewportPointToRay(mp.X, mp.Y)
                 local hit = pickRay(ray.Origin, ray.Direction * 5000)
                 hover = hit and hit.Instance or nil
-                -- Tool handles and viewmodel parts are routinely CanQuery=false, which
-                -- makes them unraycastable no matter what the filter says. Hold shift
-                -- to pick your own gear by screen distance instead; also used when the
-                -- ray hits nothing at all (pointing at your tool against the sky).
+                -- v0.12.3: no modifier. Tool handles and viewmodel parts are routinely
+                -- CanQuery=false, so no raycast can ever reach them. Your own parts get
+                -- a screen-space pass instead, and win only when they're both near the
+                -- cursor AND in front of whatever the ray found -- so pointing past
+                -- yourself at the world still resolves to the world.
                 local myChar = LocalPlayer.Character
-                if myChar and (not hover
-                    or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)) then
-                    local best, bestD = nil, 70
+                if myChar and not (hover and hover:IsDescendantOf(myChar)) then
+                    local best, bestD = nil, 34
+                    local limit = hit and hit.Distance or math.huge
+                    local eye = cam.CFrame.Position
                     for _, d in ipairs(myChar:GetDescendants()) do
-                        if d:IsA("BasePart") then
+                        if d:IsA("BasePart") and (d.Position - eye).Magnitude < limit then
                             local sp, on = cam:WorldToViewportPoint(d.Position)
                             if on and sp.Z > 0 then
                                 local dd = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
@@ -11793,7 +11834,7 @@ end)()
                 end
                 hl.Adornee = adorn
                 hint.Text = hover and (hover:GetFullName())
-                    or "left click select   rmb drag to look   shift for your own gear   esc cancel"
+                    or "left click to select   right click drag to look   esc to cancel"
             end)
             conns[#conns + 1] = UserInputService.InputBegan:Connect(function(input)
                 if input.KeyCode == Enum.KeyCode.Escape then finish(nil) end
@@ -12319,6 +12360,8 @@ end)()
             h.Parent = cam
             KID.track(h)   -- re-exec / unload tears these down with everything else
             hosts[key] = h
+        elseif h.Size ~= size then
+            h.Size = size          -- Reach changed: resize the slab in place
         end
         return h
     end
@@ -12388,6 +12431,17 @@ end)()
     -- silently apply one slab's height to the others. Callers add their own slab
     -- offset. Quantized to 10 studs so walking around doesn't re-push every emitter
     -- property several times a second for a change nobody can see.
+    -- v0.12.3: Reach widens the emitter slab's footprint (height is untouched --
+    -- that's the spawn ceiling, driven by the *_UP constants). Quantized to 5 studs
+    -- so dragging the slider doesn't rewrite Part.Size on every frame.
+    local function reachOf(cfg)
+        local r = math.clamp(cfg.Reach or 1, 0.25, 6)
+        return math.floor(r * 20 + 0.5) / 20
+    end
+    local function slab(base, r)
+        return Vector3.new(base.X * r, base.Y, base.Z * r)
+    end
+
     local groundDrop, groundAt = 60, 0
     local function dropToGround(cam)
         local now = os.clock()
@@ -12396,8 +12450,10 @@ end)()
             local rp = RaycastParams.new()
             rp.FilterType = Enum.RaycastFilterType.Exclude
             rp.FilterDescendantsInstances = { cam, LocalPlayer.Character }
-            local hit = Workspace:Raycast(cam.CFrame.Position, Vector3.new(0, -500, 0), rp)
-            local d = hit and math.clamp(hit.Distance, 10, 400) or 140
+            local hit = Workspace:Raycast(cam.CFrame.Position, Vector3.new(0, -2000, 0), rp)
+            -- v0.12.3: ceiling raised from 400. On a tall map the old clamp killed
+            -- particles in mid-air well above the floor.
+            local d = hit and math.clamp(hit.Distance, 10, 1500) or 200
             groundDrop = math.floor(d / 10) * 10
         end
         return groundDrop
@@ -12415,22 +12471,31 @@ end)()
     local SNOW_UP = 48
     local function stepSnow()
         local cfg = World.FX.Snow
-        local em, h = emitterFor("snow", SNOW_SLAB)
+        local rr = reachOf(cfg)
+        local em, h = emitterFor("snow", slab(SNOW_SLAB, rr))
         if not em then return end
         if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
         if not cfg.Enabled then return end
         parkAbove(h, SNOW_UP)
         local drop = dropToGround(Workspace.CurrentCamera)
         if not dirty("snow", table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind,
-            cfg.Sway, cfg.Style, drop, tostring(cfg.Color) }, "|")) then return end
+            cfg.Sway, cfg.Style, rr, drop, tostring(cfg.Color) }, "|")) then return end
         local fall = 6 * math.max(cfg.Speed, 0.05)
+        local DRAG = 1.6
         em.Texture = tex(cfg.Style == "Flake" and "fx_flake" or "fx_dot")
         em.Rate = cfg.Density
         em.EmissionDirection = Enum.NormalId.Bottom
         em.Speed = NumberRange.new(fall * 0.8, fall * 1.2)
-        em.Lifetime = NumberRange.new((drop + SNOW_UP) / fall * 0.9, (drop + SNOW_UP) / fall)
-        em.Acceleration = Vector3.new(cfg.Wind, -0.4, cfg.Wind * 0.6)
-        em.Drag = 1.6                              -- kills sideways drift, keeps the fall
+        -- lifetime sized off the SLOWEST flake so every one of them reaches the floor;
+        -- the quicker ones overshoot slightly and are hidden under it.
+        em.Lifetime = NumberRange.new((drop + SNOW_UP) / (fall * 0.8),
+                                      (drop + SNOW_UP) / (fall * 0.8) * 1.1)
+        -- v0.12.3: gravity must be Drag * fall, or Drag bleeds the launch speed off
+        -- and terminal velocity lands at 0.25 studs/s -- flakes fell ~4 studs and then
+        -- hung in the air. Matching it makes `fall` the true steady descent rate, which
+        -- is also the speed the lifetime above assumes.
+        em.Acceleration = Vector3.new(cfg.Wind, -(fall * DRAG), cfg.Wind * 0.6)
+        em.Drag = DRAG                             -- kills sideways drift, keeps the fall
         em.Size = NumberSequence.new(cfg.Size)
         em.Color = ColorSequence.new(cfg.Color)
         em.Transparency = FADE
@@ -12445,21 +12510,24 @@ end)()
     local RAIN_UP = 75
     local function stepRain()
         local cfg = World.FX.Rain
-        local em, h = emitterFor("rain", RAIN_SLAB)
+        local rr = reachOf(cfg)
+        local em, h = emitterFor("rain", slab(RAIN_SLAB, rr))
         if not em then return end
         if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
         if not cfg.Enabled then return end
         parkAbove(h, RAIN_UP)
         local drop = dropToGround(Workspace.CurrentCamera)
         if not dirty("rain", table.concat({ cfg.Density, cfg.Speed, cfg.Streak, cfg.Wind,
-            drop, tostring(cfg.Color) }, "|")) then return end
+            rr, drop, tostring(cfg.Color) }, "|")) then return end
         local fall = 55 * math.max(cfg.Speed, 0.05)
         em.Texture = tex("fx_streak")
         em.Rate = cfg.Density
         em.EmissionDirection = Enum.NormalId.Bottom
         em.Speed = NumberRange.new(fall, fall * 1.15)
-        em.Lifetime = NumberRange.new((drop + RAIN_UP) / fall * 0.95, (drop + RAIN_UP) / fall)
-        em.Acceleration = Vector3.new(cfg.Wind * 2, -22, cfg.Wind)
+        em.Lifetime = NumberRange.new((drop + RAIN_UP) / fall, (drop + RAIN_UP) / fall * 1.1)
+        -- no downward gravity: rain already launches at full speed, and accelerating
+        -- it made the drop faster than the lifetime assumed, so it died early.
+        em.Acceleration = Vector3.new(cfg.Wind * 2, 0, cfg.Wind)
         em.Drag = 0
         em.Size = NumberSequence.new(0.22)
         em.Color = ColorSequence.new(cfg.Color)
@@ -12481,24 +12549,27 @@ end)()
     local SAKURA_UP = 42
     local function stepSakura()
         local cfg = World.FX.Sakura
-        local em, h = emitterFor("sakura", SAKURA_SLAB)
+        local rr = reachOf(cfg)
+        local em, h = emitterFor("sakura", slab(SAKURA_SLAB, rr))
         if not em then return end
         if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
         if not cfg.Enabled then return end
         parkAbove(h, SAKURA_UP)
         local drop = dropToGround(Workspace.CurrentCamera)
         if not dirty("sakura", table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind,
-            cfg.Sway, cfg.Spin, drop, tostring(cfg.Color) }, "|")) then return end
+            cfg.Sway, cfg.Spin, rr, drop, tostring(cfg.Color) }, "|")) then return end
         local fall = 3.2 * math.max(cfg.Speed, 0.05)
+        local DRAG = 1.4
         local pale = cfg.Color:Lerp(Color3.new(1, 1, 1), 0.55)
         local deep = cfg.Color:Lerp(Color3.fromRGB(150, 40, 80), 0.35)
         em.Texture = tex("fx_petal")
         em.Rate = cfg.Density
         em.EmissionDirection = Enum.NormalId.Bottom
         em.Speed = NumberRange.new(fall * 0.7, fall * 1.3)
-        em.Lifetime = NumberRange.new((drop + SAKURA_UP) / fall * 0.9, (drop + SAKURA_UP) / fall)
-        em.Acceleration = Vector3.new(cfg.Wind, -0.3, cfg.Wind * 0.7)
-        em.Drag = 1.4                              -- the fluttery settle
+        em.Lifetime = NumberRange.new((drop + SAKURA_UP) / (fall * 0.7),
+                                      (drop + SAKURA_UP) / (fall * 0.7) * 1.1)
+        em.Acceleration = Vector3.new(cfg.Wind, -(fall * DRAG), cfg.Wind * 0.7)
+        em.Drag = DRAG                             -- the fluttery settle
         em.Size = NumberSequence.new(cfg.Size)
         em.Color = ColorSequence.new({
             ColorSequenceKeypoint.new(0, pale),
@@ -13083,6 +13154,7 @@ addTab("Visuals", function(root)
             popup:slider("Curve Angle", -180, 180, cfg.CurveAngle, 0, function(v) cfg.CurveAngle = v end)
             popup:slider("Curvier Angle", -360, 360, cfg.CurvierAngle, 0, function(v) cfg.CurvierAngle = v end)
             popup:slider("Corner Smoothing", 0, 1, cfg.CornerSmoothing, 2, function(v) cfg.CornerSmoothing = v end)
+            popup:slider("Star Offset", 0, 120, cfg.StarOffset, 0, function(v) cfg.StarOffset = v end)
             popup:toggle("Double-sided Gradient", cfg.DoubleGradient, function(v) cfg.DoubleGradient = v end)
         end)
 
@@ -13245,6 +13317,7 @@ addTab("World", function(root)
         -- Sway = wobble with no net drift. Wind = an actual sideways push.
         popup:slider("Sway",    0, 60,   World.FX.Snow.Sway,    0, function(v) World.FX.Snow.Sway = v end)
         popup:slider("Wind",   -12, 12,  World.FX.Snow.Wind,    1, function(v) World.FX.Snow.Wind = v end)
+        popup:slider("Reach",   0.25, 6, World.FX.Snow.Reach,   2, function(v) World.FX.Snow.Reach = v end)
     end)
     local rainRow = configCheckbox(fx2, "Rain", World.FX.Rain.Enabled,
         function(v) World.FX.Rain.Enabled = v end)
@@ -13254,6 +13327,7 @@ addTab("World", function(root)
         popup:slider("Speed",   0.2, 3,   World.FX.Rain.Speed,   2, function(v) World.FX.Rain.Speed = v end)
         popup:slider("Streak",  1, 40,    World.FX.Rain.Streak,  1, function(v) World.FX.Rain.Streak = v end)
         popup:slider("Wind",   -12, 12,   World.FX.Rain.Wind,    1, function(v) World.FX.Rain.Wind = v end)
+        popup:slider("Reach",   0.25, 6,  World.FX.Rain.Reach,   2, function(v) World.FX.Rain.Reach = v end)
     end)
     -- v0.9.0
     local sakRow = configCheckbox(fx2, "Sakura", World.FX.Sakura.Enabled,
@@ -13266,6 +13340,7 @@ addTab("World", function(root)
         popup:slider("Sway",    0, 80,   World.FX.Sakura.Sway,    0, function(v) World.FX.Sakura.Sway = v end)
         popup:slider("Wind",   -16, 16,  World.FX.Sakura.Wind,    1, function(v) World.FX.Sakura.Wind = v end)
         popup:slider("Spin",    0, 400,  World.FX.Sakura.Spin,    0, function(v) World.FX.Sakura.Spin = v end)
+        popup:slider("Reach",   0.25, 6, World.FX.Sakura.Reach,   2, function(v) World.FX.Sakura.Reach = v end)
     end)
 
     -- v0.6.0: RULES sub-tab. Plus button + list of rule rows (name + delete).
@@ -13769,6 +13844,20 @@ addTab("Configs", function(root)
         if ok then setStatus("overwrote: " .. tostring(selectedName), true)
         else setStatus("overwrite failed: " .. tostring(msg), false) end
     end).LayoutOrder = 2
+    mkBtn(actionRow, "rename", 72, function()
+        if not needSel() then return end
+        if not Shared.openTextPopup then return end
+        local from = selectedName
+        Shared.openTextPopup("rename config", from, "new name", function(txt)
+            local ok, msg = CIO.rename(from, txt)
+            if not ok then setStatus("rename failed: " .. tostring(msg), false); return end
+            -- carry the auto-load marker across, or it points at a file that is gone
+            if CIO.getAuto() == from then CIO.setAuto(msg) end
+            selectedName = msg
+            rebuildManager()
+            setStatus("renamed: " .. from .. " -> " .. msg, true)
+        end)
+    end).LayoutOrder = 3
     mkBtn(actionRow, "delete", 66, function()
         if not needSel() then return end
         local nm = selectedName
@@ -13784,14 +13873,14 @@ addTab("Configs", function(root)
         rebuildManager()
         if ok then setStatus("deleted: " .. nm, true)
         else setStatus("delete failed: " .. nm, false) end
-    end).LayoutOrder = 3
+    end).LayoutOrder = 4
     autoBtn = mkBtn(actionRow, "auto", 58, function()
         if not needSel() then return end
         if CIO.getAuto() == selectedName then CIO.setAuto(nil); setStatus("auto-load cleared", true)
         else CIO.setAuto(selectedName); setStatus("auto-load: " .. selectedName, true) end
         refreshAutoLabel()
     end)
-    autoBtn.LayoutOrder = 4
+    autoBtn.LayoutOrder = 5
 
     -- new-config actions
     mkBtn(newRow, "create", 66, function()
