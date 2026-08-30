@@ -1,9 +1,9 @@
--- koffee v0.11.1
+-- koffee v0.12.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.11.1"
+Koffee.Version = "0.12.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -3116,6 +3116,10 @@ local function colorSwatch(parent, initialColor, size, opts)
         ZIndex = 38,
         Parent = parent,
     }, { corner(3), stroke(Theme.Palette.Border, 1) })
+    -- v0.11.2: this square shows the USER'S colour, not a theme role. Marked so the
+    -- Options colour sweep skips it -- repainting it desynced the preview from the
+    -- value behind it whenever a feature colour happened to equal a palette colour.
+    sw:SetAttribute("KUserColor", true)
     popFx(sw)   -- v0.0.98: swatches squash on press
 
     -- v0.0.17: tooltip parented to popupScreen (not the swatch) so it
@@ -3140,6 +3144,7 @@ local function colorSwatch(parent, initialColor, size, opts)
         ZIndex = 101,
         Parent = tip,
     }, { corner(3) })
+    chip:SetAttribute("KUserColor", true)   -- v0.11.2: user data, not chrome
     local hexLbl = new("TextLabel", {
         Text = colorToHex(currentColor),
         FontFace = Theme.Fonts.Bold,
@@ -4457,6 +4462,19 @@ local Crosshair = {
     -- camera or out of frame, instead of freezing where it last was.
     LockToPart = { Enabled = false, InstancePath = nil, ClampOffscreen = true },
 }
+-- v0.11.2 DOUBLE CROSSHAIRS. S is a deep copy of A's defaults, nested under A so it
+-- rides the same registered config key (and costs no chunk register). A follows the
+-- aimbot's FOV rules, S follows Silent Aim's. _sync is consumed by the render loop.
+Crosshair.S = (function()
+    local function copy(t)
+        local o = {}
+        for k, v in pairs(t) do o[k] = (type(v) == "table") and copy(v) or v end
+        return o
+    end
+    return copy(Crosshair)
+end)()
+Crosshair.Double = false
+Crosshair._sync = nil
 registerConfig("crosshair", Crosshair)
 
 -- v0.0.19: applyGlobalOutline removed. Outline is purely a box thickness accent now;
@@ -8090,16 +8108,13 @@ local Combat = {
     -- drop targets sitting plainly inside a ring on screen). With neither enabled,
     -- fall back to the bigger of the two sizes. cfg follows whichever ring won, so
     -- team / distance / visible checks match it.
-    function Shared.crosshairTarget()
-        local aF, sF = Combat.Aim.FOV, Combat.Silent.FOV
-        local cfg, r = Combat.Aim, -1
-        if aF.Enabled and aF.Size > r then cfg, r = Combat.Aim, aF.Size end
-        if sF.Enabled and sF.Size > r then cfg, r = Combat.Silent, sF.Size end
-        if r < 0 then
-            if sF.Size > aF.Size then cfg, r = Combat.Silent, sF.Size
-            else cfg, r = Combat.Aim, aF.Size end
-        end
-        return getBestTarget(cfg, r, fovCenter(cfg.FOV))
+    -- v0.11.2: per-source, and an unchecked FOV means NO radius gate at all. It used
+    -- to fall back to the slider value with the ring switched off, which quietly
+    -- imposed an FOV nobody had asked for.
+    function Shared.crosshairTarget(which)
+        local cfg = (which == "Silent") and Combat.Silent or Combat.Aim
+        local F = cfg.FOV
+        return getBestTarget(cfg, F.Enabled and F.Size or math.huge, fovCenter(F))
     end
 
     local function predicted(plr, part, pr)
@@ -10677,47 +10692,13 @@ end
     })
 
     ------------------------------------------------------------------ crosshair
-    -- one CanvasGroup wrap so Opacity + Pulse scale drive the whole thing.
-    local xhCanvas = new("CanvasGroup", {
-        Name = "XHair", AnchorPoint = Vector2.new(0.5, 0.5),
-        Size = UDim2.new(0, 64, 0, 64),
-        Position = UDim2.new(0.5, 0, 0.5, 0),
-        BackgroundTransparency = 1, GroupTransparency = 1, Visible = false,
-        ZIndex = 15, Parent = layer,
-    }, {
-        -- v0.8.0: KGrad UIGradient piggybacks the ESP Gradient master toggle
-        -- (ESP.Config.Gradient + GradientColorA2/B2/Speed/Rotation/Spacing/
-        -- Reverse). drawCrosshair enables + refreshes it each frame from the
-        -- same lineGradSeq / gradOffset helpers ESP uses. When on, arm/dot/
-        -- outer BackgroundColor gets forced to white so the gradient shows
-        -- pure (multiplies against white cleanly).
-        new("UIGradient", { Name = "KGrad", Enabled = false }),
-    })
-
-    -- v0.8.0: segmented arms. Each arm walks outward as a chain of small Frames, so
-    -- it can render straight (Curvier=0) or bend into a real arc (Curvier>0) --
-    -- something the v0.5 single-Frame-per-arm approach could never do.
-    --
-    -- v0.9.0 OUTLINE REBUILD. v0.8 put a Border UIStroke on every segment. A stroke
-    -- traces all FOUR sides of its box, so a 14-box arm drew 14 rectangles and came
-    -- out looking like a ladder. No stroke mode means "perimeter of the union only",
-    -- so the outline is its own geometry: a second segment chain, each piece othick
-    -- wider/longer than its fill twin, flat-filled in the outline colour under a
-    -- lower-ZIndex root. Interior edges hide inside their neighbours, the fill chain
-    -- covers the middle, and an edge survives only where the arm actually ends.
-    -- Two ROOTS, not per-arm layers: Sibling ZIndex breaks ties by ancestry, so
-    -- per-arm layering would let one arm's outline paint over another's fill at Gap 0.
+    -- v0.11.2 DOUBLE CROSSHAIRS. Everything below is built per-INSTANCE now. With
+    -- Double off there is one crosshair (config table `Crosshair`, "A"); with it on
+    -- A follows the aimbot's FOV rules and a second crosshair `Crosshair.S` follows
+    -- Silent Aim's. Same renderer, two frame sets, two config tables.
     local ARM_SEG_MAX = 96
-    local outlineRoot = new("Frame", {
-        Name = "Outline", Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 14, Parent = xhCanvas,
-    })
-    local fillRoot = new("Frame", {
-        Name = "Fill", Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 15, Parent = xhCanvas,
-    })
-    -- v0.8.1: Frames reject arbitrary properties (`_segs` isn't a valid member), so
-    -- an arm is a plain Lua record. v0.9.0 adds the outline chain beside the fill.
+    local ARMS = 6            -- most any style needs (the hexagram's six edges)
+
     local function mkSeg(parent, z, col)
         return new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5),
@@ -10726,19 +10707,61 @@ end
             BackgroundColor3 = col, ZIndex = z, Parent = parent,
         }, { new("UICorner", { CornerRadius = UDim.new(0, 0) }) })
     end
-    local function mkArm(name)
-        local a = {
-            out  = new("Frame", { Name = name .. "O", Size = UDim2.new(1, 0, 1, 0),
-                     BackgroundTransparency = 1, BorderSizePixel = 0,
-                     ZIndex = 14, Parent = outlineRoot }),
-            fill = new("Frame", { Name = name, Size = UDim2.new(1, 0, 1, 0),
-                     BackgroundTransparency = 1, BorderSizePixel = 0,
-                     ZIndex = 15, Parent = fillRoot }),
-            fills = {}, outs = {},
-        }
-        return a
+
+    -- Build one complete crosshair. The CanvasGroup wrap lets Opacity drive the whole
+    -- thing at once; KGrad piggybacks the shared ESP gradient master.
+    --
+    -- v0.9.0 OUTLINE MODEL, unchanged: v0.8 put a Border UIStroke on every segment,
+    -- and a stroke traces all FOUR sides of its box, so an arm came out looking like
+    -- a ladder. The outline is its own geometry -- a second segment chain, each piece
+    -- othick wider/longer than its fill twin, under a lower-ZIndex root. Two ROOTS
+    -- rather than per-arm layers because Sibling ZIndex breaks ties by ancestry.
+    local function mkXH(name)
+        local canvas = new("CanvasGroup", {
+            Name = "XHair" .. name, AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.new(0, 64, 0, 64),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            BackgroundTransparency = 1, GroupTransparency = 1, Visible = false,
+            ZIndex = 15, Parent = layer,
+        }, { new("UIGradient", { Name = "KGrad", Enabled = false }) })
+        local outlineRoot = new("Frame", {
+            Name = "Outline", Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 14, Parent = canvas,
+        })
+        local fillRoot = new("Frame", {
+            Name = "Fill", Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 15, Parent = canvas,
+        })
+        local arms = {}
+        for i = 1, ARMS do
+            arms[i] = {
+                out  = new("Frame", { Name = "A" .. i .. "O", Size = UDim2.new(1, 0, 1, 0),
+                         BackgroundTransparency = 1, BorderSizePixel = 0,
+                         ZIndex = 14, Parent = outlineRoot }),
+                fill = new("Frame", { Name = "A" .. i, Size = UDim2.new(1, 0, 1, 0),
+                         BackgroundTransparency = 1, BorderSizePixel = 0,
+                         ZIndex = 15, Parent = fillRoot }),
+                fills = {}, outs = {},
+            }
+        end
+        local dot = new("Frame", {
+            Name = "Dot", AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0, 4, 0, 4), BorderSizePixel = 0, Visible = false,
+            ZIndex = 16, Parent = canvas,
+        }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
+             new("UIStroke", { Thickness = 1, Enabled = false }) })
+        local outer = new("Frame", {
+            Name = "Outer", AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0, 24, 0, 24), BackgroundTransparency = 1,
+            BorderSizePixel = 0, Visible = false, ZIndex = 15, Parent = canvas,
+        }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }),
+             new("UIStroke", { Thickness = 2, Enabled = true }) })
+        return { canvas = canvas, arms = arms, dot = dot, outer = outer }
     end
-    -- grown on demand -- 96 x 2 x 4 = 768 Frames up front is real cost for a
+
+    -- grown on demand -- 96 segs x 2 chains x 6 arms up front is real cost for a
     -- crosshair most people leave straight.
     local function growArm(a, want)
         for i = #a.fills + 1, math.min(want, ARM_SEG_MAX) do
@@ -10746,35 +10769,11 @@ end
             a.fills[i] = mkSeg(a.fill, 15, Color3.new(1, 1, 1))
         end
     end
-    local armU = mkArm("U")
-    local armD = mkArm("D")
-    local armL = mkArm("L")
-    local armR = mkArm("R")
 
-    local dotFrame = new("Frame", {
-        Name = "Dot", AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = UDim2.new(0, 4, 0, 4), BorderSizePixel = 0, Visible = false,
-        ZIndex = 16, Parent = xhCanvas,
-    }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
-         new("UIStroke", { Thickness = 1, Enabled = false }) })
-
-    -- outer shape (Circle / Square). Same frame; UICorner drives roundness.
-    local outerFrame = new("Frame", {
-        Name = "Outer", AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = UDim2.new(0, 24, 0, 24), BackgroundTransparency = 1,
-        BorderSizePixel = 0, Visible = false, ZIndex = 15, Parent = xhCanvas,
-    }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }),
-         new("UIStroke", { Thickness = 2, Enabled = true }) })
-
-    -- v0.9.0: segment count follows the geometry instead of sitting at 14.
-    -- Straight arms get ONE segment (a subdivided straight line buys nothing, and it
-    -- turned CurveAngle's per-segment tilt into hatching instead of a slanted bar).
-    -- Curved arms: neighbouring segments sit sweep/n apart, so on the outside of a
-    -- bend they gap by ~(thickness/2)*(sweep/n) -- which is why more Thickness meant
-    -- less smooth. Budget that notch at ~0.5px and solve for n. The sweep*6 term
-    -- keeps a full circle round at Thickness 1.
+    -- v0.9.0: segment count follows the geometry instead of sitting at 14. Straight
+    -- arms get ONE segment. Curved arms: neighbouring segments sit sweep/n apart, so
+    -- on the outside of a bend they gap by ~(thickness/2)*(sweep/n) -- which is why
+    -- more Thickness meant less smooth. Budget that notch at ~0.5px and solve for n.
     local function segmentsFor(thickness, curvierDeg)
         local sweep = math.rad(math.abs(curvierDeg or 0))
         if sweep <= 0 then return 1 end
@@ -10782,9 +10781,8 @@ end
         return math.clamp(n, 10, ARM_SEG_MAX)
     end
 
-    -- v0.9.0 double-sided gradient sampler: colour for a segment `dist` px out from
-    -- centre, folded A -> B -> A so every arm carries the same outward ramp. `off` is
-    -- the shared ESP gradient offset, so the two animate in step.
+    -- double-sided gradient sampler: colour for a segment `dist` px out from centre,
+    -- folded A -> B -> A so every arm carries the same outward ramp.
     local function segColorAt(dist, reach, a, b, spacing, off)
         local t = ((dist / math.max(reach, 1)) - off) % 1
         local f
@@ -10793,39 +10791,37 @@ end
         return a:Lerp(b, math.clamp(f, 0, 1))
     end
 
-    -- Paint one arm. thetaArm (rad) = outward heading from "up", measured CW so it
-    -- maps straight onto Frame.Rotation. v0.9.0: curveDeg goes on the segment's
-    -- rotation, never the walk heading -- see the CurveAngle note on the config.
-    local function paintArm(a, thetaArm, thickness, length, gap, color, outline, ocol,
-                            othick, curveDeg, curvierDeg, smoothing, segN, grad)
-        growArm(a, segN)
-        local segLen = length / segN
-        local theta  = thetaArm
-        local turn   = math.rad(curvierDeg or 0) / segN
-        -- start `gap` px out from the centre along the arm's base direction
-        local x = math.sin(thetaArm) * gap
-        local y = -math.cos(thetaArm) * gap
-        local drawOutline = outline and othick > 0
-        -- outline twin: othick wider per side, othick longer per end, so the fill
-        -- sits centred inside it with an even margin.
-        local ow = thickness + othick * 2
-        local ol = segLen + 1 + othick * 2
-        local fillR = math.floor(thickness * 0.5 * smoothing + 0.5)
-        local outR  = math.floor(ow * 0.5 * smoothing + 0.5)
-        local dist  = gap
-        for i = 1, segN do
+    -- v0.11.2: paint one arm from an EXPLICIT start point and heading, rather than
+    -- always radiating from the centre. That is what lets a style be an arbitrary set
+    -- of line segments -- the hexagram is six chords between ring vertices, not six
+    -- spokes. P carries the style params so the signature stays readable.
+    -- curveDeg goes on the segment's rotation, never the walk heading.
+    local function paintArm(a, x0, y0, theta0, length, dist0, P)
+        growArm(a, P.segN)
+        local segLen = length / P.segN
+        local theta  = theta0
+        local turn   = math.rad(P.curvier or 0) / P.segN
+        local x, y   = x0, y0
+        local drawOutline = P.outline and P.othick > 0
+        -- outline twin: othick wider per side, othick longer per end
+        local ow = P.thickness + P.othick * 2
+        local ol = segLen + 1 + P.othick * 2
+        local fillR = math.floor(P.thickness * 0.5 * P.smooth + 0.5)
+        local outR  = math.floor(ow * 0.5 * P.smooth + 0.5)
+        local dist  = dist0
+        for i = 1, P.segN do
             local dx = math.sin(theta) * segLen * 0.5
             local dy = -math.cos(theta) * segLen * 0.5
             x = x + dx; y = y + dy
             local pos = UDim2.new(0.5, x, 0.5, y)
-            local rot = math.deg(theta) + curveDeg
+            local rot = math.deg(theta) + P.curve
             local f = a.fills[i]
             f.Visible = true
             f.Position = pos
-            -- +1px overlap kills seams between segments; still reads as a solid line
-            f.Size = UDim2.new(0, thickness, 0, segLen + 1)
+            -- +1px overlap kills seams between segments
+            f.Size = UDim2.new(0, P.thickness, 0, segLen + 1)
             f.Rotation = rot
-            f.BackgroundColor3 = grad and grad(dist + segLen * 0.5) or color
+            f.BackgroundColor3 = P.grad and P.grad(dist + segLen * 0.5) or P.color
             f.BackgroundTransparency = 0
             local fc = f:FindFirstChildOfClass("UICorner")
             if fc then fc.CornerRadius = UDim.new(0, fillR) end
@@ -10835,7 +10831,7 @@ end
                 o.Position = pos
                 o.Size = UDim2.new(0, ow, 0, ol)
                 o.Rotation = rot
-                o.BackgroundColor3 = ocol
+                o.BackgroundColor3 = P.ocol
                 local oc = o:FindFirstChildOfClass("UICorner")
                 if oc then oc.CornerRadius = UDim.new(0, outR) end
             end
@@ -10843,21 +10839,45 @@ end
             dist = dist + segLen
             theta = theta + turn
         end
-        -- retire the tail of the pool when the count shrinks (Curvier turned down)
-        for i = segN + 1, #a.fills do
+        for i = P.segN + 1, #a.fills do
             a.fills[i].Visible = false
             a.outs[i].Visible = false
         end
     end
 
-    -- v0.9.0: this only ever read Combat.Aim._rageLock / _target, which exist solely
-    -- while the aimbot is enabled AND held -- so Follow Target did nothing at all for
-    -- anyone not running an aimbot. Falls through to its own search now, gated by the
-    -- largest configured FOV (Shared.crosshairTarget). Throttled to 20Hz: that search
-    -- walks every player and raycasts, and the lerp smooths between picks anyway.
-    local followCache, followAt = nil, 0
-    local function crosshairFollowPart()
-        local partName = Crosshair.Follow.Part or "HumanoidRootPart"
+    -- v0.11.2 STYLE TABLE.
+    --   spokes   -- degrees, measured CW from up; each is an arm radiating outward.
+    --   chords   -- {from, to} vertex angles on a ring of radius Gap+Length; the arm
+    --               runs BETWEEN them. Used for closed shapes.
+    --   gap0     -- force Gap to 0 (Plus).
+    --   dot / outer / outerRot -- the non-arm pieces.
+    local STYLES = {
+        Cross       = { spokes = { 0, 90, 180, 270 } },
+        Plus        = { spokes = { 0, 90, 180, 270 }, gap0 = true },
+        ["T-Cross"] = { spokes = { 90, 180, 270 } },
+        X           = { spokes = { 45, 135, 225, 315 } },
+        Chevron     = { spokes = { 135, 225 } },
+        Arrow       = { spokes = { 180 } },
+        -- closed shapes, drawn as chords between ring vertices
+        Triangle    = { chords = { { 0, 120 }, { 120, 240 }, { 240, 0 } } },
+        Diamond     = { chords = { { 0, 90 }, { 90, 180 }, { 180, 270 }, { 270, 0 } } },
+        -- two overlapping triangles -- a six-point star outline
+        Star        = { chords = { { 0, 120 }, { 120, 240 }, { 240, 0 },
+                                   { 60, 180 }, { 180, 300 }, { 300, 60 } } },
+        Dot         = { dot = true },
+        Circle      = { outer = true },
+        Square      = { outer = true, square = true },
+    }
+    -- exported so the tab's dropdown can't drift from the renderer
+    Shared._xhStyles = { "Cross", "Plus", "T-Cross", "X", "Chevron", "Arrow",
+                         "Triangle", "Diamond", "Star", "Dot", "Circle", "Square" }
+
+    -- v0.9.0: Follow Target used to read Combat.Aim._target only, which exists solely
+    -- while the aimbot is enabled AND held -- so it did nothing for anyone not running
+    -- one. Own search now, gated by `which`'s FOV rules. Throttled to 20Hz: it walks
+    -- every player and raycasts, and the lerp smooths between picks anyway.
+    local function followPart(cfg, which)
+        local partName = cfg.Follow.Part or "HumanoidRootPart"
         local function partOf(plr)
             local ch = plr and plr.Character
             if not ch then return nil end
@@ -10866,29 +10886,20 @@ end
                 or ch:FindFirstChild("Head")
         end
         local combat = Shared.Combat
-        if combat then
+        if combat and which ~= "Silent" then
             local p = partOf(combat.Aim._rageLock or combat.Aim._target)
-            if p then followCache = p; return p end
+            if p then cfg._followCache = p; return p end
         end
         local now = os.clock()
-        if now - followAt >= 0.05 then
-            followAt = now
-            followCache = Shared.crosshairTarget and partOf(Shared.crosshairTarget()) or nil
+        if now - (cfg._followAt or 0) >= 0.05 then
+            cfg._followAt = now
+            cfg._followCache = Shared.crosshairTarget
+                and partOf(Shared.crosshairTarget(which)) or nil
         end
-        if followCache and followCache.Parent then return followCache end
-        followCache = nil
+        if cfg._followCache and cfg._followCache.Parent then return cfg._followCache end
+        cfg._followCache = nil
         return nil
     end
-
-    -- one style -> which pieces are visible
-    local STYLE_ARMS = {
-        Cross   = { U = true,  D = true,  L = true,  R = true,  dot = false, outer = false },
-        Plus    = { U = true,  D = true,  L = true,  R = true,  dot = false, outer = false }, -- same arms; Gap forced 0
-        ["T-Cross"] = { U = false, D = true, L = true, R = true, dot = false, outer = false },
-        Dot     = { U = false, D = false, L = false, R = false, dot = true,  outer = false },
-        Circle  = { U = false, D = false, L = false, R = false, dot = false, outer = true  },
-        Square  = { U = false, D = false, L = false, R = false, dot = false, outer = true  },
-    }
 
     -- fetch the viewport for follow / offset math.
     local function vp()
@@ -10897,47 +10908,40 @@ end
         return Vector2.new(1280, 720)
     end
 
-    local function drawCrosshair(dt)
-        if not Crosshair.Enabled then xhCanvas.Visible = false; return end
-        xhCanvas.Visible = true
+    local function drawXH(cfg, g, dt, which)
+        if not cfg.Enabled then g.canvas.Visible = false; return end
+        g.canvas.Visible = true
 
-        -- v0.5.2/v0.6.0: base center from Origin (Center | Mouse) + user Offset.
-        -- Priority chain: LockToPart > Follow Target > Origin. LockToPart is a
-        -- hard set (no lerp, no offset); Follow Target lerps; Origin is the
-        -- resting default.
+        -- base center from Origin (Center | Mouse) + user Offset. Priority chain:
+        -- LockToPart > Follow Target > Origin.
         local size = vp()
-        -- v0.9.0: framerate-independent lerp. `s` = fraction of the gap left after
-        -- one 60Hz frame, so 144Hz and 60Hz feel the same. Collapses to the old
-        -- (1 - s) at exactly 60fps, so saved Smoothness values don't change meaning.
+        -- framerate-independent lerp: `s` = fraction of the gap left after one 60Hz
+        -- frame, so 144Hz and 60Hz feel the same. Collapses to (1 - s) at 60fps.
         local function lerpF(s)
             if s <= 0 then return 1 end
             return 1 - s ^ (math.max(dt, 0.0001) * 60)
         end
         local cx, cy
-        if Crosshair.Origin == "Mouse" then
+        if cfg.Origin == "Mouse" then
             local m = UserInputService:GetMouseLocation()
-            local tx, ty = m.X + Crosshair.OffsetX, m.Y + Crosshair.OffsetY
-            -- v0.9.0: trail the cursor instead of being welded to it. 0 = old snap.
-            local a = lerpF(math.clamp(Crosshair.MouseSmoothness or 0, 0, 0.98))
-            local lx = Crosshair._mouseX or tx
-            local ly = Crosshair._mouseY or ty
+            local tx, ty = m.X + cfg.OffsetX, m.Y + cfg.OffsetY
+            local a = lerpF(math.clamp(cfg.MouseSmoothness or 0, 0, 0.98))
+            local lx = cfg._mouseX or tx
+            local ly = cfg._mouseY or ty
             cx = lx + (tx - lx) * a
             cy = ly + (ty - ly) * a
-            Crosshair._mouseX, Crosshair._mouseY = cx, cy
+            cfg._mouseX, cfg._mouseY = cx, cy
         else
-            Crosshair._mouseX, Crosshair._mouseY = nil, nil
-            cx, cy = size.X * 0.5 + Crosshair.OffsetX, size.Y * 0.5 + Crosshair.OffsetY
+            cfg._mouseX, cfg._mouseY = nil, nil
+            cx, cy = size.X * 0.5 + cfg.OffsetX, size.Y * 0.5 + cfg.OffsetY
         end
-        -- v0.6.0: LockToPart -- highest-priority center. Resolves late-bound
-        -- target via Shared.resolvePath (config reloads populate InstancePath
-        -- but not the live Instance).
         local locked = false
-        if Crosshair.LockToPart.Enabled then
-            if not Crosshair.LockToPart._target and Crosshair.LockToPart.InstancePath then
-                Crosshair.LockToPart._target = Shared.resolvePath
-                    and Shared.resolvePath(Crosshair.LockToPart.InstancePath) or nil
+        if cfg.LockToPart.Enabled then
+            if not cfg.LockToPart._target and cfg.LockToPart.InstancePath then
+                cfg.LockToPart._target = Shared.resolvePath
+                    and Shared.resolvePath(cfg.LockToPart.InstancePath) or nil
             end
-            local lt = Crosshair.LockToPart._target
+            local lt = cfg.LockToPart._target
             local pos
             if lt and lt:IsA("BasePart") then pos = lt.Position
             elseif lt and lt:IsA("Model") then
@@ -10948,27 +10952,25 @@ end
                 local cam = Workspace.CurrentCamera
                 if cam then
                     local sp = cam:WorldToViewportPoint(pos)
-                    -- v0.9.0: occlusion was never the problem (WorldToViewportPoint
-                    -- doesn't raycast, so parts behind walls always projected fine).
-                    -- Behind the CAMERA was: Z <= 0 made this a no-op and the
-                    -- crosshair froze. The projection is mirrored through the origin
-                    -- there, so flip it back, then clamp to the viewport edge.
+                    -- occlusion was never the problem (WorldToViewportPoint doesn't
+                    -- raycast). Behind the CAMERA was: the projection is mirrored
+                    -- through the origin there, so flip it back and clamp to the edge.
                     if sp.Z > 0 then
                         cx, cy = sp.X, sp.Y
                         locked = true
-                    elseif Crosshair.LockToPart.ClampOffscreen then
+                    elseif cfg.LockToPart.ClampOffscreen then
                         cx, cy = size.X - sp.X, size.Y - sp.Y
                         locked = true
                     end
-                    if locked and Crosshair.LockToPart.ClampOffscreen then
+                    if locked and cfg.LockToPart.ClampOffscreen then
                         cx = math.clamp(cx, 2, math.max(2, size.X - 2))
                         cy = math.clamp(cy, 2, math.max(2, size.Y - 2))
                     end
                 end
             end
         end
-        if not locked and Crosshair.Follow.Enabled then
-            local part = crosshairFollowPart()
+        if not locked and cfg.Follow.Enabled then
+            local part = followPart(cfg, which)
             local tx, ty = cx, cy
             if part then
                 local cam = Workspace.CurrentCamera
@@ -10977,124 +10979,149 @@ end
                     if sp.Z > 0 then tx, ty = sp.X, sp.Y end
                 end
             end
-            local a = lerpF(math.clamp(Crosshair.Follow.Smoothness or 0, 0, 0.98))
-            local lx = Crosshair.Follow._screenX or cx
-            local ly = Crosshair.Follow._screenY or cy
+            local a = lerpF(math.clamp(cfg.Follow.Smoothness or 0, 0, 0.98))
+            local lx = cfg.Follow._screenX or cx
+            local ly = cfg.Follow._screenY or cy
             lx = lx + (tx - lx) * a
             ly = ly + (ty - ly) * a
-            Crosshair.Follow._screenX = lx
-            Crosshair.Follow._screenY = ly
+            cfg.Follow._screenX, cfg.Follow._screenY = lx, ly
             cx, cy = lx, ly
         end
 
-        -- position + spin + rotation on the wrap canvas. sqrt(2) covers the rotated
-        -- diagonal. v0.9.0: Thickness / OutlineThickness join the margin budget -- a
-        -- fat outlined arm at a big Curvier sweep bulged past the old flat 32px and
-        -- got clipped by the CanvasGroup.
-        local reach = (Crosshair.Length + Crosshair.Gap) * 2
-            + Crosshair.Thickness * 2 + Crosshair.OutlineThickness * 4 + 32
+        -- sqrt(2) covers the rotated diagonal; Thickness / OutlineThickness join the
+        -- margin budget so a fat outlined arm at a big sweep isn't clipped.
+        local reach = (cfg.Length + cfg.Gap) * 2
+            + cfg.Thickness * 2 + cfg.OutlineThickness * 4 + 32
         local baseSize = math.max(reach * 1.42, 24)
-        xhCanvas.Size = UDim2.new(0, baseSize, 0, baseSize)
-        xhCanvas.Position = UDim2.new(0, cx, 0, cy)
-        xhCanvas.GroupTransparency = 1 - math.clamp(Crosshair.Opacity, 0, 1)
+        g.canvas.Size = UDim2.new(0, baseSize, 0, baseSize)
+        g.canvas.Position = UDim2.new(0, cx, 0, cy)
+        g.canvas.GroupTransparency = 1 - math.clamp(cfg.Opacity, 0, 1)
 
         local spinDeg = 0
-        if Crosshair.Spin then
-            local speed = Crosshair.SpinSpeed * (Crosshair.SpinDir == "CCW" and -1 or 1)
-            Crosshair._spinAcc = ((Crosshair._spinAcc or 0) + speed * dt) % 360
-            spinDeg = Crosshair._spinAcc
+        if cfg.Spin then
+            local speed = cfg.SpinSpeed * (cfg.SpinDir == "CCW" and -1 or 1)
+            cfg._spinAcc = ((cfg._spinAcc or 0) + speed * dt) % 360
+            spinDeg = cfg._spinAcc
         end
-        xhCanvas.Rotation = (Crosshair.Rotation or 0) + spinDeg
+        g.canvas.Rotation = (cfg.Rotation or 0) + spinDeg
 
-        -- v0.8.0: gradient master (shared with ESP.Config.Gradient). When on,
-        -- the KGrad UIGradient on xhCanvas animates with the same colors + speed
-        -- + rotation ESP features use; arm/dot/outer paint white so the gradient
-        -- shows pure. Off: KGrad disabled, colors from Crosshair.* fields.
+        -- gradient master, shared with ESP.Config.Gradient. Canvas mode = one
+        -- UIGradient over the CanvasGroup. Double-sided = per-segment colour by
+        -- distance from centre, which a single linear UIGradient can't express.
         local gradOn = ESP.Config.Gradient == true
-        -- v0.9.0: two exclusive gradient paths. Canvas mode = one UIGradient over the
-        -- CanvasGroup. Double-sided = per-segment colour by distance from centre. A
-        -- UIGradient can't do the latter: one linear sweep puts opposite arms on
-        -- opposite halves of the ramp, which reads lopsided the moment it spins.
-        local doubleGrad = gradOn and Crosshair.DoubleGradient == true
-        do
-            local kg = xhCanvas:FindFirstChild("KGrad")
-            if kg then
-                kg.Enabled = gradOn and not doubleGrad
-                if kg.Enabled then
-                    kg.Color = lineGradSeq(ESP.Config.GradientColorA2,
-                        ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
-                    kg.Rotation = ESP.Config.GradientRotation
-                    kg.Offset = gradOffset()
-                end
+        local doubleGrad = gradOn and cfg.DoubleGradient == true
+        local kg = g.canvas:FindFirstChild("KGrad")
+        if kg then
+            kg.Enabled = gradOn and not doubleGrad
+            if kg.Enabled then
+                kg.Color = lineGradSeq(ESP.Config.GradientColorA2,
+                    ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
+                kg.Rotation = ESP.Config.GradientRotation
+                kg.Offset = gradOffset()
             end
         end
         local armGrad = nil
         if doubleGrad then
-            local ga = ESP.Config.GradientColorA2
-            local gb = ESP.Config.GradientColorB2
+            local ga, gb = ESP.Config.GradientColorA2, ESP.Config.GradientColorB2
             local gs = math.clamp(ESP.Config.GradientSpacing or 0.5, 0.05, 0.95)
             local goff = gradOffset().X
-            local span = math.max(Crosshair.Length + Crosshair.Gap, 1)
+            local span = math.max(cfg.Length + cfg.Gap, 1)
             armGrad = function(d) return segColorAt(d, span, ga, gb, gs, goff) end
         end
-        local armColor = (gradOn and not doubleGrad) and Color3.new(1, 1, 1) or Crosshair.Color
-        local dotBase = (Crosshair.Style == "Dot") and Crosshair.Color or Crosshair.Dot.Color
+        local armColor = (gradOn and not doubleGrad) and Color3.new(1, 1, 1) or cfg.Color
+        local dotBase = (cfg.Style == "Dot") and cfg.Color or cfg.Dot.Color
         local dotColor = (gradOn and not doubleGrad) and Color3.new(1, 1, 1)
             or (armGrad and armGrad(0) or dotBase)
 
-        -- style dispatch
-        local mask = STYLE_ARMS[Crosshair.Style] or STYLE_ARMS.Cross
-        armU.fill.Visible = mask.U; armU.out.Visible = mask.U
-        armD.fill.Visible = mask.D; armD.out.Visible = mask.D
-        armL.fill.Visible = mask.L; armL.out.Visible = mask.L
-        armR.fill.Visible = mask.R; armR.out.Visible = mask.R
-        outerFrame.Visible = mask.outer
-        dotFrame.Visible = mask.dot or Crosshair.Dot.Enabled
+        local st = STYLES[cfg.Style] or STYLES.Cross
+        g.outer.Visible = st.outer == true
+        g.dot.Visible = (st.dot == true) or cfg.Dot.Enabled
 
-        -- arms -- segmented walker (v0.8.0). thetaArm = arm's base heading from
-        -- "up" measured CW: U=0, R=pi/2, D=pi, L=3pi/2.
-        if mask.U or mask.D or mask.L or mask.R then
-            local gap = (Crosshair.Style == "Plus") and 0 or Crosshair.Gap
-            local thickness = Crosshair.Thickness
-            local length    = Crosshair.Length
-            local outline   = Crosshair.Outline
-            local ocol      = Crosshair.OutlineColor
-            local othick    = Crosshair.OutlineThickness
-            local curve     = Crosshair.CurveAngle or 0
-            local curvier   = Crosshair.CurvierAngle or 0
-            local smooth    = math.clamp(Crosshair.CornerSmoothing or 0, 0, 1)
-            local segN      = segmentsFor(thickness, curvier)
-            paintArm(armU, 0,             thickness, length, gap, armColor, outline, ocol, othick, curve, curvier, smooth, segN, armGrad)
-            paintArm(armR, math.pi / 2,   thickness, length, gap, armColor, outline, ocol, othick, curve, curvier, smooth, segN, armGrad)
-            paintArm(armD, math.pi,       thickness, length, gap, armColor, outline, ocol, othick, curve, curvier, smooth, segN, armGrad)
-            paintArm(armL, math.pi * 1.5, thickness, length, gap, armColor, outline, ocol, othick, curve, curvier, smooth, segN, armGrad)
+        local gap = st.gap0 and 0 or cfg.Gap
+        local P = {
+            thickness = cfg.Thickness, color = armColor,
+            outline = cfg.Outline, ocol = cfg.OutlineColor, othick = cfg.OutlineThickness,
+            curve = cfg.CurveAngle or 0, curvier = cfg.CurvierAngle or 0,
+            smooth = math.clamp(cfg.CornerSmoothing or 0, 0, 1),
+            segN = segmentsFor(cfg.Thickness, cfg.CurvierAngle or 0),
+            grad = armGrad,
+        }
+        local used = 0
+        if st.spokes then
+            for _, deg in ipairs(st.spokes) do
+                used = used + 1
+                local th = math.rad(deg)
+                paintArm(g.arms[used], math.sin(th) * gap, -math.cos(th) * gap,
+                         th, cfg.Length, gap, P)
+            end
+        elseif st.chords then
+            -- ring vertices sit at Gap + Length so the shape's size still tracks both
+            local R = gap + cfg.Length
+            for _, e in ipairs(st.chords) do
+                used = used + 1
+                local a1, a2 = math.rad(e[1]), math.rad(e[2])
+                local x1, y1 = math.sin(a1) * R, -math.cos(a1) * R
+                local x2, y2 = math.sin(a2) * R, -math.cos(a2) * R
+                local dx, dy = x2 - x1, y2 - y1
+                paintArm(g.arms[used], x1, y1, math.atan2(dx, -dy),
+                         math.sqrt(dx * dx + dy * dy), R, P)
+            end
+        end
+        for i = 1, ARMS do
+            local on = i <= used
+            g.arms[i].fill.Visible = on
+            g.arms[i].out.Visible = on
         end
 
-        -- center dot (visible when style==Dot OR user opted in on any style)
-        if dotFrame.Visible then
-            local dsz = (Crosshair.Style == "Dot") and math.max(Crosshair.Length, 2) or Crosshair.Dot.Size
-            dotFrame.Size = UDim2.new(0, dsz * 2, 0, dsz * 2)
-            dotFrame.BackgroundColor3 = dotColor
-            local ds = dotFrame:FindFirstChildOfClass("UIStroke")
+        if g.dot.Visible then
+            local dsz = (cfg.Style == "Dot") and math.max(cfg.Length, 2) or cfg.Dot.Size
+            g.dot.Size = UDim2.new(0, dsz * 2, 0, dsz * 2)
+            g.dot.BackgroundColor3 = dotColor
+            local ds = g.dot:FindFirstChildOfClass("UIStroke")
             if ds then
-                ds.Thickness = Crosshair.OutlineThickness
-                ds.Color = Crosshair.OutlineColor
-                ds.Enabled = Crosshair.Outline and Crosshair.OutlineThickness > 0
+                ds.Thickness = cfg.OutlineThickness
+                ds.Color = cfg.OutlineColor
+                ds.Enabled = cfg.Outline and cfg.OutlineThickness > 0
             end
         end
 
-        -- outer (Circle / Square)
-        if outerFrame.Visible then
-            local d = math.max(Crosshair.Length * 2, 8)
-            outerFrame.Size = UDim2.new(0, d, 0, d)
-            local uc = outerFrame:FindFirstChildOfClass("UICorner")
-            if uc then uc.CornerRadius = (Crosshair.Style == "Circle") and UDim.new(1, 0) or UDim.new(0, 4) end
-            local os_ = outerFrame:FindFirstChildOfClass("UIStroke")
+        if g.outer.Visible then
+            local d = math.max(cfg.Length * 2, 8)
+            g.outer.Size = UDim2.new(0, d, 0, d)
+            local uc = g.outer:FindFirstChildOfClass("UICorner")
+            if uc then uc.CornerRadius = st.square and UDim.new(0, 4) or UDim.new(1, 0) end
+            local os_ = g.outer:FindFirstChildOfClass("UIStroke")
             if os_ then
-                os_.Thickness = math.max(Crosshair.Thickness, 1)
+                os_.Thickness = math.max(cfg.Thickness, 1)
                 os_.Color = armColor
                 os_.Enabled = true
             end
+        end
+    end
+
+    local XA, XS = mkXH("A"), mkXH("S")
+
+    -- v0.11.2 SYNC. The buttons set Crosshair._sync; consumed here so the copy lands
+    -- between frames rather than mid-render. Matches TOTAL angle (static Rotation +
+    -- live spin), because two crosshairs at different Rotation offsets are not "in
+    -- the same rotation" even when their spin accumulators agree.
+    local function drawCrosshair(dt)
+        local sync = Crosshair._sync
+        if sync then
+            Crosshair._sync = nil
+            -- _sync names the card whose button was pressed; that card is the one
+            -- that MOVES to match the other.
+            local A, S = Crosshair, Crosshair.S
+            local dst = (sync == "A") and A or S
+            local src = (sync == "A") and S or A
+            dst._spinAcc = ((src.Rotation or 0) + (src._spinAcc or 0)
+                            - (dst.Rotation or 0)) % 360
+        end
+        drawXH(Crosshair, XA, dt, "Aim")
+        if Crosshair.Double then
+            drawXH(Crosshair.S, XS, dt, "Silent")
+        else
+            XS.canvas.Visible = false
         end
     end
 
@@ -12937,127 +12964,131 @@ addTab("Visuals", function(root)
     dropdown(tracerPanel, "Location", { "Below", "Middle", "Above" }, ESP.Tracer.Location, function(v) ESP.Tracer.Location = v end)
 
     --------------------------------------------------------------- Crosshair
-    -- v0.5.0: custom crosshair. Live-rendered by the chunk-level render layer
-    -- above; this tab is purely wiring. Styles (Cross/T-Cross/Plus/Dot/Circle/
-    -- Square) plus rich modifiers -- follow-target with smoothness, spin, pulse
-    -- on hit, per-arm curve, center dot, opacity, offsets. Deep tunes hide in
-    -- right-click popups so the base surface stays dense but calm.
-    local xhCard = panel(crosshairSub, "Crosshair")
-    local xhEnRow = configCheckbox(xhCard, "Enabled", Crosshair.Enabled, function(v) Crosshair.Enabled = v end)
-    attachSingleSwatch(xhEnRow.row, Crosshair.Color, function(c) Crosshair.Color = c end)
+    -- v0.11.2: one builder used twice. "Double Crosshairs" (card A only) retitles A
+    -- to "Crosshair (A)" and reveals card S. A follows the AIMBOT's FOV rules, S
+    -- follows Silent Aim's -- and with that FOV switched off there is no radius gate
+    -- at all. Each card ends in a Sync button that moves THAT card's rotation to
+    -- match the other, for when spin has drifted them apart.
+    local xhCardS
+    local function buildXH(parent, cfg, title, tag)
+        local card = panel(parent, title)
+        local titleLbl = card:FindFirstChildOfClass("TextLabel")
 
-    local xhStyleDd = dropdown(xhCard, "Style", { "Cross", "T-Cross", "Plus", "Dot", "Circle", "Square" },
-        Crosshair.Style, function(v) Crosshair.Style = v end)
-    rightClickSettings(xhStyleDd.frame, "style", function(popup)
-        -- v0.9.0: tilts each arm SEGMENT about its own centre, leaving the arm
-        -- pointing where it points. Until now it was folded into the walk heading,
-        -- which rotated all four arms equally -- the same picture as the Rotation
-        -- slider below, just spelled differently.
-        popup:slider("Curve Angle", -180, 180, Crosshair.CurveAngle, 0, function(v) Crosshair.CurveAngle = v end)
-        -- v0.8.0: bends each arm into an arc (total sweep across the arm).
-        -- 0=straight; 90=quarter-circle; 180=half-circle; up to 360.
-        popup:slider("Curvier Angle", -360, 360, Crosshair.CurvierAngle, 0, function(v) Crosshair.CurvierAngle = v end)
-        -- v0.9.0: rounds every segment + its outline. Caps the arm tips and hides
-        -- the faceting on tight arcs.
-        popup:slider("Corner Smoothing", 0, 1, Crosshair.CornerSmoothing, 2, function(v) Crosshair.CornerSmoothing = v end)
-        -- v0.9.0: mirrors the shared ESP gradient so it runs outward from the centre
-        -- along every arm at once instead of sweeping across the whole crosshair.
-        popup:toggle("Double-sided Gradient", Crosshair.DoubleGradient, function(v) Crosshair.DoubleGradient = v end)
-    end)
+        local enRow = configCheckbox(card, "Enabled", cfg.Enabled, function(v) cfg.Enabled = v end)
+        attachSingleSwatch(enRow.row, cfg.Color, function(c) cfg.Color = c end)
 
-    -- v0.5.2: base origin (Center | Mouse). Follow Target still leads when on --
-    -- Origin is where the crosshair rests when nothing's being followed.
-    local xhOriginDd = dropdown(xhCard, "Origin", { "Center", "Mouse" }, Crosshair.Origin,
-        function(v) Crosshair.Origin = v end)
-    rightClickSettings(xhOriginDd.frame, "origin", function(popup)
-        -- v0.9.0: trail behind the cursor instead of being welded to it.
-        popup:slider("Mouse Smoothness", 0, 0.98, Crosshair.MouseSmoothness, 2,
-            function(v) Crosshair.MouseSmoothness = v end)
-    end)
+        if tag == "A" then
+            configCheckbox(card, "Double Crosshairs", Crosshair.Double, function(v)
+                Crosshair.Double = v
+                if titleLbl then titleLbl.Text = v and "Crosshair (A)" or "Crosshair" end
+                if xhCardS then xhCardS.Visible = v end
+            end)
+        end
 
-    local xhOutRow = configCheckbox(xhCard, "Outline", Crosshair.Outline, function(v) Crosshair.Outline = v end)
-    attachSingleSwatch(xhOutRow.row, Crosshair.OutlineColor, function(c) Crosshair.OutlineColor = c end)
-    rightClickSettings(xhOutRow.row, "outline", function(popup)
-        -- v0.9.0: decimals. The outline is drawn as geometry now (a wider twin of
-        -- each segment), and its width lands as `Thickness + 2 * this` in a UDim
-        -- offset -- which Roblox stores as an integer. So the honest granularity is
-        -- 0.5, not 0.01: 1.0 and 1.5 differ, 1.50 and 1.52 do not. Two decimals of
-        -- precision so half-steps are actually reachable on the slider.
-        popup:slider("Thickness", 0, 6, Crosshair.OutlineThickness, 2, function(v) Crosshair.OutlineThickness = v end)
-    end)
-
-    -- v0.8.0: ranges opened way up per user request. Sane defaults still land
-    -- in the low end; sliders reach far enough for weird / stylistic setups.
-    slider(xhCard, "Thickness", 1, 40, Crosshair.Thickness, 0, function(v) Crosshair.Thickness = v end)
-    slider(xhCard, "Length",    2, 1000, Crosshair.Length,  0, function(v) Crosshair.Length    = v end)
-    slider(xhCard, "Gap",       0, 800, Crosshair.Gap,      0, function(v) Crosshair.Gap       = v end)
-    slider(xhCard, "Opacity",   0, 1,  Crosshair.Opacity,   2, function(v) Crosshair.Opacity   = v end)
-    slider(xhCard, "Offset X",  -2000, 2000, Crosshair.OffsetX, 0, function(v) Crosshair.OffsetX = v end)
-    slider(xhCard, "Offset Y",  -2000, 2000, Crosshair.OffsetY, 0, function(v) Crosshair.OffsetY = v end)
-    slider(xhCard, "Rotation",  0, 360, Crosshair.Rotation, 0, function(v) Crosshair.Rotation = v end)
-
-    local xhSpinRow = configCheckbox(xhCard, "Spin", Crosshair.Spin, function(v) Crosshair.Spin = v end)
-    rightClickSettings(xhSpinRow.row, "spin", function(popup)
-        -- v0.8.0: 12x the old cap (720 -> 8640 deg/s ~= 24 turns/s).
-        popup:slider("Speed (deg/s)", 0, 8640, Crosshair.SpinSpeed, 0, function(v) Crosshair.SpinSpeed = v end)
-        popup:dropdown("Direction", { "CW", "CCW" }, Crosshair.SpinDir, function(v) Crosshair.SpinDir = v end)
-    end)
-
-    local xhFollowRow = configCheckbox(xhCard, "Follow Target", Crosshair.Follow.Enabled, function(v)
-        Crosshair.Follow.Enabled = v
-        if not v then Crosshair.Follow._screenX = nil; Crosshair.Follow._screenY = nil end
-    end)
-    rightClickSettings(xhFollowRow.row, "follow", function(popup)
-        popup:slider("Smoothness", 0, 0.98, Crosshair.Follow.Smoothness, 2, function(v) Crosshair.Follow.Smoothness = v end)
-        popup:dropdown("Body Part", { "Head", "HumanoidRootPart", "UpperTorso", "Torso",
-            "LeftHand", "RightHand", "LeftFoot", "RightFoot" }, Crosshair.Follow.Part,
-            function(v) Crosshair.Follow.Part = v end)
-    end)
-
-    local xhDotRow = configCheckbox(xhCard, "Center Dot", Crosshair.Dot.Enabled, function(v) Crosshair.Dot.Enabled = v end)
-    attachSingleSwatch(xhDotRow.row, Crosshair.Dot.Color, function(c) Crosshair.Dot.Color = c end)
-    rightClickSettings(xhDotRow.row, "center dot", function(popup)
-        popup:slider("Size", 1, 12, Crosshair.Dot.Size, 0, function(v) Crosshair.Dot.Size = v end)
-    end)
-
-    -- v0.9.0: "Pulse on Hit" is gone -- see the note where Shared.crosshairPulse
-    -- used to live.
-
-    -- v0.6.0: Lock To Part -- picks a specific instance via the wave-3 explorer.
-    -- Overrides Follow Target + Origin. "Open" button reopens the picker to
-    -- change or clear the selection. Empty state shows an inline hint.
-    local xhLockRow = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
-        ZIndex = 33, Parent = xhCard,
-    })
-    local xhLockCB = configCheckbox(xhLockRow, "Lock To Part", Crosshair.LockToPart.Enabled,
-        function(v)
-            Crosshair.LockToPart.Enabled = v
-            if not v then Crosshair.LockToPart._target = nil end
+        local styleDd = dropdown(card, "Style", Shared._xhStyles, cfg.Style,
+            function(v) cfg.Style = v end)
+        rightClickSettings(styleDd.frame, "style", function(popup)
+            -- tilts each arm SEGMENT about its own centre, leaving the arm's heading
+            -- alone -- v0.8 folded it into the heading, which was just Rotation again.
+            popup:slider("Curve Angle", -180, 180, cfg.CurveAngle, 0, function(v) cfg.CurveAngle = v end)
+            popup:slider("Curvier Angle", -360, 360, cfg.CurvierAngle, 0, function(v) cfg.CurvierAngle = v end)
+            popup:slider("Corner Smoothing", 0, 1, cfg.CornerSmoothing, 2, function(v) cfg.CornerSmoothing = v end)
+            popup:toggle("Double-sided Gradient", cfg.DoubleGradient, function(v) cfg.DoubleGradient = v end)
         end)
-    rightClickSettings(xhLockCB.row, "lock to part", function(popup)
-        -- v0.9.0: keep tracking when the part leaves frame (pinned to the screen
-        -- edge in its direction) instead of freezing where it last was.
-        popup:toggle("Track Off-screen", Crosshair.LockToPart.ClampOffscreen,
-            function(v) Crosshair.LockToPart.ClampOffscreen = v end)
-    end)
-    local xhOpenBtn = new("TextButton", {
-        Text = "open", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-        AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
-        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
-        BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.new(0, 60, 0, 20),
-        ZIndex = 38, Parent = xhLockCB.row,
-    }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
-    xhOpenBtn.MouseButton1Click:Connect(function()
-        if not Shared.openInstancePicker then return end
-        Shared.openInstancePicker(function(inst, path)
-            Crosshair.LockToPart.InstancePath = path
-            Crosshair.LockToPart._target = inst
-        end, { title = "lock crosshair to part", subtitle = "pick any physical instance." })
-    end)
-end)
 
+        local originDd = dropdown(card, "Origin", { "Center", "Mouse" }, cfg.Origin,
+            function(v) cfg.Origin = v end)
+        rightClickSettings(originDd.frame, "origin", function(popup)
+            popup:slider("Mouse Smoothness", 0, 0.98, cfg.MouseSmoothness, 2,
+                function(v) cfg.MouseSmoothness = v end)
+        end)
+
+        local outRow = configCheckbox(card, "Outline", cfg.Outline, function(v) cfg.Outline = v end)
+        attachSingleSwatch(outRow.row, cfg.OutlineColor, function(c) cfg.OutlineColor = c end)
+        rightClickSettings(outRow.row, "outline", function(popup)
+            -- the outline is geometry, and its width lands in an integer UDim offset,
+            -- so the honest granularity here is 0.5 rather than 0.01.
+            popup:slider("Thickness", 0, 6, cfg.OutlineThickness, 2, function(v) cfg.OutlineThickness = v end)
+        end)
+
+        slider(card, "Thickness", 1, 40, cfg.Thickness, 0, function(v) cfg.Thickness = v end)
+        slider(card, "Length",    2, 1000, cfg.Length,  0, function(v) cfg.Length    = v end)
+        slider(card, "Gap",       0, 800, cfg.Gap,      0, function(v) cfg.Gap       = v end)
+        slider(card, "Opacity",   0, 1,  cfg.Opacity,   2, function(v) cfg.Opacity   = v end)
+        slider(card, "Offset X",  -2000, 2000, cfg.OffsetX, 0, function(v) cfg.OffsetX = v end)
+        slider(card, "Offset Y",  -2000, 2000, cfg.OffsetY, 0, function(v) cfg.OffsetY = v end)
+        slider(card, "Rotation",  0, 360, cfg.Rotation, 0, function(v) cfg.Rotation = v end)
+
+        local spinRow = configCheckbox(card, "Spin", cfg.Spin, function(v) cfg.Spin = v end)
+        rightClickSettings(spinRow.row, "spin", function(popup)
+            popup:slider("Speed (deg/s)", 0, 8640, cfg.SpinSpeed, 0, function(v) cfg.SpinSpeed = v end)
+            popup:dropdown("Direction", { "CW", "CCW" }, cfg.SpinDir, function(v) cfg.SpinDir = v end)
+        end)
+
+        local followRow = configCheckbox(card, "Follow Target", cfg.Follow.Enabled, function(v)
+            cfg.Follow.Enabled = v
+            if not v then cfg.Follow._screenX = nil; cfg.Follow._screenY = nil end
+        end)
+        rightClickSettings(followRow.row, "follow", function(popup)
+            popup:slider("Smoothness", 0, 0.98, cfg.Follow.Smoothness, 2, function(v) cfg.Follow.Smoothness = v end)
+            popup:dropdown("Body Part", { "Head", "HumanoidRootPart", "UpperTorso", "Torso",
+                "LeftHand", "RightHand", "LeftFoot", "RightFoot" }, cfg.Follow.Part,
+                function(v) cfg.Follow.Part = v end)
+        end)
+
+        local dotRow = configCheckbox(card, "Center Dot", cfg.Dot.Enabled, function(v) cfg.Dot.Enabled = v end)
+        attachSingleSwatch(dotRow.row, cfg.Dot.Color, function(c) cfg.Dot.Color = c end)
+        rightClickSettings(dotRow.row, "center dot", function(popup)
+            popup:slider("Size", 1, 12, cfg.Dot.Size, 0, function(v) cfg.Dot.Size = v end)
+        end)
+
+        -- Lock To Part: overrides Follow Target + Origin. "open" reopens the picker.
+        local lockRow = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
+            ZIndex = 33, Parent = card,
+        })
+        local lockCB = configCheckbox(lockRow, "Lock To Part", cfg.LockToPart.Enabled,
+            function(v)
+                cfg.LockToPart.Enabled = v
+                if not v then cfg.LockToPart._target = nil end
+            end)
+        rightClickSettings(lockCB.row, "lock to part", function(popup)
+            popup:toggle("Track Off-screen", cfg.LockToPart.ClampOffscreen,
+                function(v) cfg.LockToPart.ClampOffscreen = v end)
+        end)
+        local openBtn = new("TextButton", {
+            Text = "open", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.new(0, 60, 0, 20),
+            ZIndex = 38, Parent = lockCB.row,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        openBtn.MouseButton1Click:Connect(function()
+            if not Shared.openInstancePicker then return end
+            Shared.openInstancePicker(function(inst, path)
+                cfg.LockToPart.InstancePath = path
+                cfg.LockToPart._target = inst
+            end, { title = "lock crosshair to part", subtitle = "pick any physical instance." })
+        end)
+
+        local syncBtn = new("TextButton", {
+            Text = "sync", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 24),
+            ZIndex = 34, Parent = card,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        popFx(syncBtn)
+        syncBtn.MouseButton1Click:Connect(function() Crosshair._sync = tag end)
+
+        return card
+    end
+
+    buildXH(crosshairSub, Crosshair, Crosshair.Double and "Crosshair (A)" or "Crosshair", "A")
+    xhCardS = buildXH(crosshairSub, Crosshair.S, "Crosshair (S)", "S")
+    xhCardS.Visible = Crosshair.Double == true
+end)
 addTab("World", function(root)
     -- v0.6.0: World is now subtab-driven. Same content as before goes into the
     -- Lighting / Effects sub-tabs; new Rules sub-tab is a full list UI with
@@ -13260,21 +13291,38 @@ registerConfig("options", KoffeeOptions)
     local live, lastAt = {}, 0
     for _, r in ipairs(ROLES) do live[r] = Theme.Palette[r] end
 
-    local function swap(root, from, to)
+    -- v0.11.2: ONE pass, matching every instance against the palette as it was
+    -- BEFORE this repaint. The old version swapped role by role, so if the new
+    -- Accent happened to equal the old Panel, the Panel pass then re-swapped
+    -- everything Accent had just painted -- roles bled into each other.
+    -- KUserColor marks instances whose colour is the user's DATA (swatch previews,
+    -- picker chips), not chrome. Repainting those desynced the preview from the
+    -- value behind it, which was most of the visible breakage.
+    local function mapped(c)
+        for _, r in ipairs(ROLES) do
+            if c == live[r] then return KoffeeOptions.UIColors[r] end
+        end
+        return nil
+    end
+    local function repaint(root)
         for _, d in ipairs(root:GetDescendants()) do
-            if d:IsA("GuiObject") then
-                if d.BackgroundColor3 == from then d.BackgroundColor3 = to end
+            if d:GetAttribute("KUserColor") then
+                -- data, not chrome -- leave it alone
+            elseif d:IsA("GuiObject") then
+                local n = mapped(d.BackgroundColor3)
+                if n then d.BackgroundColor3 = n end
                 if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
-                    if d.TextColor3 == from then d.TextColor3 = to end
+                    n = mapped(d.TextColor3); if n then d.TextColor3 = n end
                 end
                 if d:IsA("ImageLabel") or d:IsA("ImageButton") then
-                    if d.ImageColor3 == from then d.ImageColor3 = to end
+                    n = mapped(d.ImageColor3); if n then d.ImageColor3 = n end
                 end
-                if d:IsA("ScrollingFrame") and d.ScrollBarImageColor3 == from then
-                    d.ScrollBarImageColor3 = to
+                if d:IsA("ScrollingFrame") then
+                    n = mapped(d.ScrollBarImageColor3)
+                    if n then d.ScrollBarImageColor3 = n end
                 end
-            elseif d:IsA("UIStroke") and d.Color == from then
-                d.Color = to
+            elseif d:IsA("UIStroke") then
+                local n = mapped(d.Color); if n then d.Color = n end
             end
         end
     end
@@ -13291,15 +13339,20 @@ registerConfig("options", KoffeeOptions)
         end
         if not dirty then return end
         lastAt = now
+        pcall(repaint, screen)
+        pcall(repaint, popupScreen)
         for _, r in ipairs(ROLES) do
-            local to, from = want[r], live[r]
-            if to and from and to ~= from then
-                pcall(swap, screen, from, to)
-                pcall(swap, popupScreen, from, to)
-                Theme.Palette[r] = to
-                live[r] = to
-            end
+            if want[r] then Theme.Palette[r] = want[r]; live[r] = want[r] end
         end
+        -- the arraylist embeds its detail / "on" tags as RichText colour STRINGS, so
+        -- the sweep can't see them. Re-point; the label poll rebuilds them itself.
+        local function rich(c)
+            return string.format("rgb(%d,%d,%d)",
+                math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5),
+                math.floor(c.B * 255 + 0.5))
+        end
+        ROW.muted = rich(Theme.Palette.TextMuted)
+        ROW.on    = rich(Theme.Palette.Accent)
     end)
 end)()
 
