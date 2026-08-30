@@ -1,9 +1,9 @@
--- koffee v0.13.1
+-- koffee v0.13.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.13.1"
+Koffee.Version = "0.13.2"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -11880,6 +11880,7 @@ end)()
             m.close()
         end)
     end
+    Shared.openModal = openModal
     Shared.openInstancePicker = openInstancePicker
 
     ----------------------------------------------------------------- text popup
@@ -14099,72 +14100,83 @@ registerConfig("custom", Koffee.Custom)
 
     -- analytic node geometry: port centres never wait on a layout pass
     local NODE_W, HEAD_H, ROW_H, WIRE_SEG = 172, 24, 20, 12
+    local TOOL_H, INSP_W, CANVAS_W, CANVAS_H = 34, 202, 2600, 1800
     local function nodeH(K) return HEAD_H + math.max(#K.ins, 1) * ROW_H + 6 end
     local function bez(x1, y1, ax, ay, bx, by, x2, y2, t)
         local u = 1 - t
         local a, b, c, d = u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t
         return a * x1 + b * ax + c * bx + d * x2, a * y1 + b * ay + c * by + d * y2
     end
+    local function toolBtn(parent, text, width, order, onClick)
+        local b = new("TextButton", {
+            Text = text, AutoButtonColor = false,
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, Size = UDim2.new(0, width, 0, 24),
+            LayoutOrder = order, ZIndex = 36, Parent = parent,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        b.MouseEnter:Connect(function()
+            tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
+        end)
+        b.MouseLeave:Connect(function()
+            tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+        end)
+        b.MouseButton1Click:Connect(onClick)
+        return b
+    end
 
-    local conns = {}   -- UIS listeners, dropped when the tab rebuilds
-
-    addTab("Custom", function(root)
-        for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-        conns = {}
-
-        local card = panel(root, "Custom Features")
-        configCheckbox(card, "Enabled", CF.Enabled, function(v) CF.Enabled = v end)
-
-        local editor = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 452), BackgroundColor3 = Theme.Palette.Background,
-            BackgroundTransparency = 0.2, BorderSizePixel = 0, ClipsDescendants = true,
-            Active = true, LayoutOrder = 50, ZIndex = 33, Parent = root,
-        }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
-        local canvas = new("Frame", {
-            Size = UDim2.new(0, 4000, 0, 4000), Position = UDim2.new(0, 0, 0, 0),
-            BackgroundTransparency = 1, ZIndex = 33, Parent = editor,
+    -- one implementation, used both inline in the tab and inside the expanded
+    -- modal. `extra` puts a single button at the toolbar's right edge.
+    local function makeEditor(parent, connList, extra)
+        local canvas = new("ScrollingFrame", {
+            Position = UDim2.new(0, 6, 0, TOOL_H),
+            Size = UDim2.new(1, -(INSP_W + 22), 1, -(TOOL_H + 22)),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            CanvasSize = UDim2.new(0, CANVAS_W, 0, CANVAS_H),
+            ScrollingDirection = Enum.ScrollingDirection.XY,
+            ScrollBarThickness = 6, ScrollBarImageColor3 = Theme.Palette.Border,
+            ClipsDescendants = true, Active = true, ZIndex = 34, Parent = parent,
         })
         local wireLayer = new("Frame", {
-            Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+            Size = UDim2.new(0, CANVAS_W, 0, CANVAS_H), BackgroundTransparency = 1,
             ZIndex = 34, Parent = canvas,
         })
-
-        local sel, pending, dragId, dragDX, dragDY = nil, nil, nil, 0, 0
-        local panning, panMX, panMY, panOX, panOY = false, 0, 0, 0, 0
-        local nodeFrames, wirePool = {}, {}
-        local rebuildAll
-
         local hint = new("TextLabel", {
             Text = "", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
-            Position = UDim2.new(0, 10, 1, -20), Size = UDim2.new(1, -220, 0, 14),
+            Position = UDim2.new(0, 8, 1, -16), Size = UDim2.new(1, -(INSP_W + 20), 0, 14),
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-            ZIndex = 39, Parent = editor,
+            ZIndex = 39, Parent = parent,
         })
-
         local insp = new("ScrollingFrame", {
-            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 8),
-            Size = UDim2.new(0, 202, 1, -16),
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, TOOL_H),
+            Size = UDim2.new(0, INSP_W, 1, -(TOOL_H + 8)),
             BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.02,
             BorderSizePixel = 0, ScrollBarThickness = 4,
             ScrollBarImageColor3 = Theme.Palette.Border,
             CanvasSize = UDim2.new(0, 0, 0, 0),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             ScrollingDirection = Enum.ScrollingDirection.Y,
-            ZIndex = 40, Parent = editor,
+            ZIndex = 40, Parent = parent,
         }, { corner(6), stroke(Theme.Palette.Border),
             new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
                 PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }),
             new("UIListLayout", { Padding = UDim.new(0, 6),
                 SortOrder = Enum.SortOrder.LayoutOrder }) })
 
-        local function inspApi(parent)
+        local sel, pending, dragId = nil, nil, nil
+        local panning, lastMX, lastMY = false, 0, 0
+        local nodeFrames, wirePool = {}, {}
+        local rebuildAll
+
+        local function inspApi(p)
             local a = {}
-            function a:slider(l, mn, mx, i, p, cb) slider(parent, l, mn, mx, i, p, cb) end
-            function a:toggle(l, i, cb) configCheckbox(parent, l, i, cb) end
-            function a:dropdown(l, o, i, cb) dropdown(parent, l, o, i, cb) end
-            function a:text(l, i, cb) textRow(parent, l, i, cb) end
-            function a:swatch(l, i, cb) swatchRow(parent, l, i, cb) end
+            function a:slider(l, mn, mx, i, pr, cb) slider(p, l, mn, mx, i, pr, cb) end
+            function a:toggle(l, i, cb) configCheckbox(p, l, i, cb) end
+            function a:dropdown(l, o, i, cb) dropdown(p, l, o, i, cb) end
+            function a:text(l, i, cb) textRow(p, l, i, cb) end
+            function a:swatch(l, i, cb) swatchRow(p, l, i, cb) end
             return a
         end
 
@@ -14173,7 +14185,7 @@ registerConfig("custom", Koffee.Custom)
                 if c:IsA("GuiObject") then c:Destroy() end
             end
             local node = sel and nodeById(sel)
-            if not node or not KINDS[node.kind] then
+            if not (node and KINDS[node.kind]) then
                 new("TextLabel", {
                     Text = "click a block to edit it", FontFace = Theme.Fonts.Regular,
                     TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
@@ -14220,10 +14232,8 @@ registerConfig("custom", Koffee.Custom)
                         local src = node.wires and node.wires[slot.key]
                         src = src and nodeById(src)
                         if src and KINDS[src.kind] then
-                            local x2 = node.x
-                            local y2 = node.y + HEAD_H + (i - 0.5) * ROW_H
-                            local x1 = src.x + NODE_W
-                            local y1 = src.y + HEAD_H + 0.5 * ROW_H
+                            local x2, y2 = node.x, node.y + HEAD_H + (i - 0.5) * ROW_H
+                            local x1, y1 = src.x + NODE_W, src.y + HEAD_H + 0.5 * ROW_H
                             local off = math.max(40, math.abs(x2 - x1) * 0.5)
                             local px, py = x1, y1
                             for s = 1, WIRE_SEG do
@@ -14287,10 +14297,9 @@ registerConfig("custom", Koffee.Custom)
                     head.MouseButton1Click:Connect(function() sel = node.id; rebuildAll() end)
                     head.InputBegan:Connect(function(inp)
                         if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                            -- delta dragging: immune to canvas scroll offset entirely
                             local m = UserInputService:GetMouseLocation()
-                            dragId = node.id
-                            dragDX = m.X - (canvas.AbsolutePosition.X + node.x)
-                            dragDY = m.Y - (canvas.AbsolutePosition.Y + node.y)
+                            dragId, lastMX, lastMY = node.id, m.X, m.Y
                         end
                     end)
 
@@ -14362,39 +14371,9 @@ registerConfig("custom", Koffee.Custom)
             end
         end
 
-        editor.InputBegan:Connect(function(inp)
-            if inp.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-            local m = UserInputService:GetMouseLocation()
-            panning, panMX, panMY = true, m.X, m.Y
-            panOX, panOY = canvas.Position.X.Offset, canvas.Position.Y.Offset
-            if pending or sel then pending, sel = nil, nil; rebuildAll() end
-        end)
-        conns[#conns + 1] = UserInputService.InputChanged:Connect(function(inp)
-            if inp.UserInputType ~= Enum.UserInputType.MouseMovement then return end
-            if not editor.Parent then return end
-            local m = UserInputService:GetMouseLocation()
-            if dragId then
-                local node = nodeById(dragId)
-                if node then
-                    node.x = m.X - dragDX - canvas.AbsolutePosition.X
-                    node.y = m.Y - dragDY - canvas.AbsolutePosition.Y
-                    local f = nodeFrames[dragId]
-                    if f then f.Position = UDim2.new(0, node.x, 0, node.y) end
-                    redrawWires()
-                end
-            elseif panning then
-                canvas.Position = UDim2.new(0, panOX + (m.X - panMX), 0, panOY + (m.Y - panMY))
-            end
-        end)
-        conns[#conns + 1] = UserInputService.InputEnded:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                dragId, panning = nil, false
-            end
-        end)
-
         local function freeSpot()
-            for row = 0, 20 do
-                for col = 0, 1 do
+            for row = 0, 24 do
+                for col = 0, 7 do
                     local x, y = 24 + col * 210, 24 + row * 104
                     local taken = false
                     for _, n in ipairs(CF.Nodes) do
@@ -14408,35 +14387,83 @@ registerConfig("custom", Koffee.Custom)
             return 24, 24
         end
 
-        local addWrap = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
-            ZIndex = 35, Parent = card,
+        local bar = new("Frame", {
+            Position = UDim2.new(0, 6, 0, 5), Size = UDim2.new(1, -12, 0, 24),
+            BackgroundTransparency = 1, ZIndex = 35, Parent = parent,
         }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
-            Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+            Padding = UDim.new(0, 5), VerticalAlignment = Enum.VerticalAlignment.Center,
             SortOrder = Enum.SortOrder.LayoutOrder }) })
         for i, kind in ipairs(ORDER) do
-            local b = new("TextButton", {
-                Text = kind:lower(), AutoButtonColor = false,
-                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-                TextColor3 = Theme.Palette.TextMuted,
-                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
-                BorderSizePixel = 0, Size = UDim2.new(0, 74, 0, 26),
-                LayoutOrder = i, ZIndex = 36, Parent = addWrap,
-            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
-            b.MouseEnter:Connect(function()
-                tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
-            end)
-            b.MouseLeave:Connect(function()
-                tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
-            end)
-            b.MouseButton1Click:Connect(function()
+            toolBtn(bar, kind:lower(), 70, i, function()
                 local x, y = freeSpot()
                 sel = addNode(kind, x, y)
                 rebuildAll()
             end)
         end
+        if extra then toolBtn(bar, extra.text, 74, 99, extra.fn) end
+
+        canvas.InputBegan:Connect(function(inp)
+            if inp.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            local m = UserInputService:GetMouseLocation()
+            panning, lastMX, lastMY = true, m.X, m.Y
+            if pending or sel then pending, sel = nil, nil; rebuildAll() end
+        end)
+        connList[#connList + 1] = UserInputService.InputChanged:Connect(function(inp)
+            if inp.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            if not canvas.Parent then return end
+            local m = UserInputService:GetMouseLocation()
+            local dx, dy = m.X - lastMX, m.Y - lastMY
+            lastMX, lastMY = m.X, m.Y
+            if dragId then
+                local node = nodeById(dragId)
+                if node then
+                    node.x, node.y = math.max(0, node.x + dx), math.max(0, node.y + dy)
+                    local f = nodeFrames[dragId]
+                    if f then f.Position = UDim2.new(0, node.x, 0, node.y) end
+                    redrawWires()
+                end
+            elseif panning then
+                local c = canvas.CanvasPosition
+                canvas.CanvasPosition = Vector2.new(c.X - dx, c.Y - dy)
+            end
+        end)
+        connList[#connList + 1] = UserInputService.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragId, panning = nil, false
+            end
+        end)
 
         rebuildAll()
+        return rebuildAll
+    end
+
+    local tabConns = {}
+
+    addTab("Custom", function(root)
+        for _, c in ipairs(tabConns) do pcall(function() c:Disconnect() end) end
+        tabConns = {}
+
+        local card = panel(root, "Custom Features")
+        configCheckbox(card, "Enabled", CF.Enabled, function(v) CF.Enabled = v end)
+
+        local frame = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 452), BackgroundColor3 = Theme.Palette.Background,
+            BackgroundTransparency = 0.2, BorderSizePixel = 0, ClipsDescendants = true,
+            Active = true, LayoutOrder = 50, ZIndex = 33, Parent = root,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+
+        local refresh
+        refresh = makeEditor(frame, tabConns, { text = "expand", fn = function()
+            local vp = viewport()
+            if not Shared.openModal then return end
+            local m = Shared.openModal(math.max(620, vp.X - 80), math.max(460, vp.Y - 80))
+            local mConns = {}
+            makeEditor(m.box, mConns, { text = "close", fn = function()
+                for _, c in ipairs(mConns) do pcall(function() c:Disconnect() end) end
+                m.close()
+                refresh()          -- pick up whatever was edited in the big view
+            end })
+        end })
     end)
 end)()
 
