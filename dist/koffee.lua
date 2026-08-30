@@ -1,19 +1,11 @@
--- koffee v0.11.0
+-- koffee v0.11.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.11.0"
+Koffee.Version = "0.11.1"
 
--- v0.0.70: Adonis / __newindex AC neutralizer (zyn). Hooks the anti-cheat's
--- Detected/Kill paths to no-ops. Fully guarded: if the runtime lacks any required
--- global (getgc, hookfunction, setthreadidentity, getrenv) the whole block pcalls
--- out and the suite loads normally.
--- v0.10.0: runs FIRST and SYNCHRONOUSLY -- moved above the asset preloader, and
--- both the v0.1.1 task.spawn deferral and the v0.3.8 presence gate are gone. The
--- hooks are in place before any other Koffee code executes, with no window where
--- the AC is live and we are not. Cost is the getgc(true) walk on every load,
--- Adonis server or not: a visible hitch on heavy games.
+-- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
     if not (getgc and hookfunction and setthreadidentity and getrenv) then return end
     local dbg = false          -- flip true to see what the AC tried to do
@@ -4233,7 +4225,7 @@ local ESP = {
         RenderDistance = 1000,
         -- v0.11.0 COLOR MODE. One master that resolves the colour for every
         -- Second-Interface element (box, cube, corners, skeleton, tracer, head dot,
-        -- name/distance text, health bar, chams) instead of each carrying a flat
+        -- name/distance text, health bar) instead of each carrying a flat
         -- swatch. "Static" returns nil so every element keeps its own configured
         -- colour -- i.e. exactly the pre-v0.11 behaviour, and the default.
         --   Gradient  animated A2/B2 ramp, targets spread along it
@@ -4342,32 +4334,6 @@ local ESP = {
         Hidden  = Color3.fromRGB(120, 120, 120),
         Team    = Color3.fromRGB(127, 190, 143),
     },
-    -- v0.11.0 CHAMS. Two independent layers, because "chams" means two different
-    -- things and people want both:
-    --   MATERIAL  -- overwrite each part's Material/Color/Transparency. This is what
-    --               gives Neon / Glass / X-Ray / Wireframe their look, and it is the
-    --               only way to get anything other than a flat silhouette.
-    --   OVERLAY   -- one Highlight per character for the through-walls pass, with
-    --               its own colour while occluded.
-    -- Both ride the ESP render loop, so they inherit team check, target lock,
-    -- render distance and the colour mode for free. That does mean the ESP module
-    -- has to be on -- chams is an ESP feature here, not a standalone one.
-    Chams = {
-        Enabled      = false,
-        Style        = "Flat",   -- Flat | Neon | Glass | X-Ray | Wireframe | Ghost | None
-        Color        = Color3.fromRGB(212, 145, 90),
-        Transparency = 0,
-        Accessories  = false,    -- include hats/tools, off by default (they read as noise)
-        Overlay      = true,
-        OverlayFill    = 0.55,
-        OverlayOutline = 0,
-        OverlayColor   = Color3.fromRGB(212, 145, 90),
-        HiddenColor    = Color3.fromRGB(255, 90, 90),
-        ThroughWalls   = true,
-        -- Roblox stops rendering Highlights past ~31 live instances, so the overlay
-        -- is capped to the nearest N. Material chams have no such limit.
-        MaxOverlays  = 24,
-    },
     Connections = {},
     Rigs = {},
     UpdateConn = nil,
@@ -4383,11 +4349,9 @@ registerConfig("esp_indicators", ESP.Indicators)
 registerConfig("esp_health",     ESP.Health)
 registerConfig("esp_tracer",     ESP.Tracer)
 registerConfig("esp_colors",     ESP.Colors)
-registerConfig("esp_chams",      ESP.Chams)
 
 -- v0.11.0 COLOR ENGINE + CHAMS. Own IIFE for the register budget. Publishes
--- Shared.dyeColor (the colour-mode resolver) and Shared.chams / Shared.chamsOff,
--- which the ESP render loop calls per rig.
+-- Shared.dyeColor, the colour-mode resolver the ESP render loop calls per rig.
 ;(function()
     local C = ESP.Config
 
@@ -4431,150 +4395,6 @@ registerConfig("esp_chams",      ESP.Chams)
     end
     Shared.dyePhase = phaseOf
 
-    ------------------------------------------------------------------------ chams
-    local MATERIAL_FOR = {
-        Flat      = Enum.Material.SmoothPlastic,
-        Neon      = Enum.Material.Neon,
-        Glass     = Enum.Material.Glass,
-        ["X-Ray"] = Enum.Material.ForceField,
-        Ghost     = Enum.Material.Neon,
-        Wireframe = Enum.Material.SmoothPlastic,   -- body is hidden; edges do the work
-    }
-    -- extra transparency the style forces on top of the user's slider
-    local STYLE_ALPHA = { Glass = 0.45, Ghost = 0.55, Wireframe = 1 }
-
-    local function partsFor(char)
-        local out = {}
-        for _, d in ipairs(char:GetDescendants()) do
-            if d:IsA("BasePart") then
-                local acc = d:FindFirstAncestorOfClass("Accessory")
-                    or d:FindFirstAncestorOfClass("Tool")
-                if ESP.Chams.Accessories or not acc then
-                    -- HumanoidRootPart is invisible by design; painting it puts a
-                    -- solid block through the middle of every character.
-                    if d.Name ~= "HumanoidRootPart" then out[#out + 1] = d end
-                end
-            end
-        end
-        return out
-    end
-
-    -- Snapshot once per part, so restore is exact however many times the style
-    -- changes while chams are on. Deliberately records ONLY the three fields we
-    -- write: snapshotting Reflectance/CastShadow and handing them back would
-    -- clobber any change the game legitimately made to them in the meantime.
-    local function snap(rig, p)
-        rig._cham = rig._cham or {}
-        if rig._cham[p] then return end
-        rig._cham[p] = { m = p.Material, c = p.Color, t = p.Transparency }
-    end
-
-    function Shared.chamsOff(rig)
-        if not rig then return end
-        if rig._cham then
-            for p, s in pairs(rig._cham) do
-                if p and p.Parent then
-                    pcall(function()
-                        p.Material = s.m; p.Color = s.c; p.Transparency = s.t
-                    end)
-                end
-            end
-            rig._cham = nil
-        end
-        if rig._chamEdges then
-            for _, e in ipairs(rig._chamEdges) do pcall(function() e:Destroy() end) end
-            rig._chamEdges = nil
-        end
-        if rig._chamHL then pcall(function() rig._chamHL:Destroy() end); rig._chamHL = nil end
-    end
-
-    -- `rank` is the target's nearest-first index, used only to stay under the
-    -- Highlight render cap.
-    function Shared.chams(rig, color, hidden, rank)
-        local cfg = ESP.Chams
-        if not (cfg.Enabled and rig.character and rig.character.Parent) then
-            Shared.chamsOff(rig); return
-        end
-        local col = color or cfg.Color
-        local style = cfg.Style
-
-        ---------------------------------------------------------------- material
-        if style == "None" then
-            if rig._cham then
-                for p, s in pairs(rig._cham) do
-                    if p and p.Parent then
-                        pcall(function()
-                            p.Material = s.m; p.Color = s.c; p.Transparency = s.t
-                        end)
-                    end
-                end
-                rig._cham = nil
-            end
-            if rig._chamEdges then
-                for _, e in ipairs(rig._chamEdges) do pcall(function() e:Destroy() end) end
-                rig._chamEdges = nil
-            end
-        else
-            local mat = MATERIAL_FOR[style] or Enum.Material.SmoothPlastic
-            local alpha = math.clamp(cfg.Transparency + (STYLE_ALPHA[style] or 0), 0, 1)
-            local parts = partsFor(rig.character)
-            for _, p in ipairs(parts) do
-                snap(rig, p)
-                if p.Material ~= mat then p.Material = mat end
-                if p.Color ~= col then p.Color = col end
-                if p.Transparency ~= alpha then p.Transparency = alpha end
-            end
-            -- Wireframe: the body is invisible and a per-part SelectionBox draws the
-            -- edges. Roblox has no mesh-level wireframe exposed to scripts, so this
-            -- is the honest version of it -- the character's part volumes as lines.
-            if style == "Wireframe" then
-                if not rig._chamEdges then
-                    rig._chamEdges = {}
-                    for _, p in ipairs(parts) do
-                        local sb = Instance.new("SelectionBox")
-                        sb.Name = KID.name("chamedge")
-                        sb.Adornee = p
-                        sb.LineThickness = 0.02
-                        sb.SurfaceTransparency = 1
-                        sb.Transparency = 0
-                        sb.Parent = p
-                        rig._chamEdges[#rig._chamEdges + 1] = sb
-                    end
-                end
-                for _, sb in ipairs(rig._chamEdges) do
-                    if sb.Parent then sb.Color3 = col end
-                end
-            elseif rig._chamEdges then
-                for _, e in ipairs(rig._chamEdges) do pcall(function() e:Destroy() end) end
-                rig._chamEdges = nil
-            end
-        end
-
-        ----------------------------------------------------------------- overlay
-        local wantHL = cfg.Overlay and rank <= cfg.MaxOverlays
-        if not wantHL then
-            if rig._chamHL then pcall(function() rig._chamHL:Destroy() end); rig._chamHL = nil end
-            return
-        end
-        local hl = rig._chamHL
-        if not hl or not hl.Parent then
-            hl = Instance.new("Highlight")
-            hl.Name = KID.name("cham")
-            hl.Adornee = rig.character
-            hl.Parent = rig.character
-            rig._chamHL = hl
-        end
-        if hl.Adornee ~= rig.character then hl.Adornee = rig.character end
-        local hc = (hidden and cfg.HiddenColor) or (color or cfg.OverlayColor)
-        hl.FillColor = hc
-        hl.OutlineColor = hc
-        hl.FillTransparency = cfg.OverlayFill
-        hl.OutlineTransparency = cfg.OverlayOutline
-        pcall(function()
-            hl.DepthMode = cfg.ThroughWalls and Enum.HighlightDepthMode.AlwaysOnTop
-                or Enum.HighlightDepthMode.Occluded
-        end)
-    end
 end)()
 registerConfig("shared",         Shared)
 
@@ -5167,7 +4987,6 @@ local function cleanRig(rig)
     end
     pcall(function() rig.headDot:Destroy() end)
     pcall(function() rig.tracer:Destroy() end)
-    if Shared.chamsOff then pcall(Shared.chamsOff, rig) end   -- v0.11.0
     pcall(function() rig.healthBg:Destroy() end)   -- fill is a child, goes with it
     pcall(function() rig.pfp:Destroy() end)
     pcall(function() rig.nameLbl:Destroy() end)
@@ -5484,10 +5303,6 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
 end
 
 local function hideRigVisuals(rig)
-    -- v0.11.0: chams write to the CHARACTER, not to our own frames, so every path
-    -- that stops rendering a rig has to hand the materials back. Missing this is how
-    -- you leave a whole server neon after switching teams.
-    if Shared.chamsOff then Shared.chamsOff(rig) end
     rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
@@ -5807,11 +5622,6 @@ local function updateESPRigs()
     local cam = Workspace.CurrentCamera
     if not cam then return end
     local camPos = cam.CFrame.Position
-    -- v0.11.0: rank counts rigs that clear every gate this frame, and only exists to
-    -- keep the chams overlay under Roblox's ~31 live Highlight limit. Iteration
-    -- order, not nearest-first -- pairs() over ESP.Rigs is stable between joins, so
-    -- the cap doesn't flicker, and at MaxOverlays 24 it almost never binds anyway.
-    local rank = 0
     for plr, entry in pairs(ESP.Rigs) do
         local rig = entry.rig
         -- v0.0.15 hard life gate. Torso (HRP) replaces head as the anchor:
@@ -5883,11 +5693,6 @@ local function updateESPRigs()
                 overrideColor = hidden and ESP.Colors.Hidden or ESP.Colors.Visible
             end
         end
-
-        -- v0.11.0 chams ride this loop so they inherit team check, target lock,
-        -- render distance and the colour mode without duplicating any of it.
-        rank = rank + 1
-        Shared.chams(rig, overrideColor, hidden, rank)
 
         -- world-anchored overlays + skeleton render regardless of the box.
         updateBillboards(rig, plr, dist, overrideColor)
@@ -7976,7 +7781,11 @@ local Combat = {
         ThirdPerson   = false,
         Distance      = 500,
         Sensitivity   = 0.4,
-        PerfectLock   = false,                            -- v0.0.96: true = snap straight onto the target, ignores Sensitivity + Smooth
+        -- v0.11.1: no longer moves the camera or the cursor at all. It publishes a
+        -- redirect point and the game's own Mouse.Hit/Target/UnitRay reads resolve
+        -- onto the target -- zero travel, and Sensitivity / Smooth / Aim Type stop
+        -- applying. Needs the __index hook, which it installs on demand.
+        PerfectLock   = false,
         TeamCheck     = true,
         VisibleCheck  = false,
         HealthCheck   = false,
@@ -8362,6 +8171,12 @@ local Combat = {
     local trigBusy   = false
     local silentTarget = nil   -- the part (for Mouse.Target)
     local silentPos    = nil   -- Vector3 redirect point (predicted; drives Hit/UnitRay)
+    -- v0.11.1 Perfect Lock redirect. Not silentPos -- the silent heartbeat nils that
+    -- whenever Silent Aim is off, which is the case Perfect Lock must work in.
+    local plPos, plPart = nil, nil
+    local function plArmed()
+        return plPos ~= nil and Combat.Aim.Enabled and Combat.Aim.PerfectLock
+    end
 
     -- v0.0.39: fire-read resolver state + caller scoping. ONE local table so the
     -- Combat chunk's ~200-local budget stays below the limit; resolvers read it
@@ -8686,6 +8501,16 @@ local Combat = {
         -- touches, so cameras, Popper occlusion, physics and other scripts stay
         -- untouched -- this is why the default never breaks the game / camera.
         local function resolveIndex(self, key)
+            -- v0.11.1 Perfect Lock, answered above everything silent-aim (method,
+            -- enabled state, LMB gate) so it never depends on them. Mouse aim reads
+            -- only -- the same subset safe mode allows.
+            if plArmed() and (key == "Hit" or key == "Target" or key == "UnitRay")
+               and typeof(self) == "Instance" and self:IsA("Mouse") then
+                if key == "Hit" then return true, CFrame.new(plPos) end
+                if key == "Target" then return true, plPart end
+                if SR.camPos then return true, Ray.new(SR.camPos, (plPos - SR.camPos).Unit) end
+                return PASS_H, PASS_V
+            end
             -- v0.3.0: External method delegates ALL silent-aim work to KoffeeHelper.exe
             -- over localhost HTTP. Under this method, every Lua-side spoof stays dormant
             -- so the game sees 100% vanilla client behaviour -- the raycast rewrite
@@ -9091,9 +8916,15 @@ local Combat = {
     -- re-run cleanly.
     pcall(function() RunService:UnbindFromRenderStep(KID.ctx.bind) end)
     RunService:BindToRenderStep(KID.ctx.bind, Enum.RenderPriority.Last.Value + 1, function()
+        -- v0.11.1: cleared every frame and only re-set below, so the redirect can
+        -- never outlive the frame that armed it.
+        plPos, plPart = nil, nil
         if not (Combat.Aim.Enabled and aimHeld) then
             Combat.Aim._target = nil; Combat.Aim._rageLock = nil; return
         end
+        -- Perfect Lock answers reads through the __index hook, so it needs that hook
+        -- installed even with Silent Aim off. Covers keybind + config-load paths too.
+        if Combat.Aim.PerfectLock and not Combat.Silent._hooked then installSilentHooks() end
         local cam = Workspace.CurrentCamera
         if not cam then return end
         local maxR = Combat.Aim.FOV.Enabled and Combat.Aim.FOV.Size or math.huge
@@ -9175,19 +9006,12 @@ local Combat = {
         end
 
         if Combat.Aim.PerfectLock then
-            -- v0.0.97 Perfect Lock: mode-aware. Camera aim type = snap camera
-            -- angles straight to the target via aimCFrame with aX=aY=1 (full 1:1
-            -- interpolation, no sensitivity / smoothing). Mouse / Third-Person =
-            -- move the real mouse cursor straight onto the target's screen point.
-            if Combat.Aim.AimType == "Camera" and not Combat.Aim.ThirdPerson then
-                cam.CFrame = aimCFrame(cam, cam.CFrame.Position, tpos, 1, 1)
-            elseif mousemoverel then
-                local sp = cam:WorldToViewportPoint(tpos)
-                if sp.Z > 0 then
-                    local ml = UserInputService:GetMouseLocation()
-                    pcall(mousemoverel, sp.X - ml.X, sp.Y - ml.Y)
-                end
-            end
+            -- v0.11.1: moves NOTHING. Publishing the redirect point makes the game's
+            -- own Mouse.Hit/Target/UnitRay reads resolve onto the target, so there is
+            -- no travel to converge. The old paths both had drag: camera aim had to
+            -- rotate, and mousemoverel is relative + sensitivity-scaled, so it walked
+            -- the cursor over several frames.
+            plPos, plPart = tpos, part
         elseif Combat.Aim.ThirdPerson then
             -- v0.0.36.1: drive the REAL mouse onto the target's screen point. Measured
             -- live: WorldToViewportPoint INCLUDES the 58px GUI inset but PlayerMouse.X/Y
@@ -12995,34 +12819,6 @@ addTab("Visuals", function(root)
     -- v0.0.28: Equal Size removed (broke distance-scaled features) -- pinned ON permanently.
     slider(espPanel, "Thickness", 0.1, 8, ESP.Render.Thickness, 1,
         function(v) ESP.Render.Thickness = v end)
-
-    --------------------------------------------------------------- Chams
-    -- v0.11.0. Material layer + through-walls Highlight overlay, independent of
-    -- each other. Needs the ESP module on -- it rides that render loop.
-    local chamsPanel = panel(espSub, "Chams")
-    local chamRow = configCheckbox(chamsPanel, "Enabled", ESP.Chams.Enabled,
-        function(v) ESP.Chams.Enabled = v end)
-    attachSingleSwatch(chamRow.row, ESP.Chams.Color, function(c) ESP.Chams.Color = c end)
-    -- Flat/Neon/Glass/X-Ray/Ghost repaint the parts; Wireframe hides them and draws
-    -- their edges; None leaves materials alone and runs the overlay only.
-    dropdown(chamsPanel, "Style", { "Flat", "Neon", "Glass", "X-Ray", "Wireframe", "Ghost", "None" },
-        ESP.Chams.Style, function(v) ESP.Chams.Style = v end)
-    slider(chamsPanel, "Transparency", 0, 1, ESP.Chams.Transparency, 2,
-        function(v) ESP.Chams.Transparency = v end)
-    configCheckbox(chamsPanel, "Accessories", ESP.Chams.Accessories,
-        function(v) ESP.Chams.Accessories = v end)
-    local chamOvRow = configCheckbox(chamsPanel, "Overlay", ESP.Chams.Overlay,
-        function(v) ESP.Chams.Overlay = v end)
-    attachDualSwatch(chamOvRow.row, ESP.Chams.OverlayColor, ESP.Chams.HiddenColor,
-        function(c) ESP.Chams.OverlayColor = c end,
-        function(c) ESP.Chams.HiddenColor = c end)
-    rightClickSettings(chamOvRow.row, "chams overlay", function(popup)
-        popup:toggle("Through Walls", ESP.Chams.ThroughWalls, function(v) ESP.Chams.ThroughWalls = v end)
-        popup:slider("Fill", 0, 1, ESP.Chams.OverlayFill, 2, function(v) ESP.Chams.OverlayFill = v end)
-        popup:slider("Outline", 0, 1, ESP.Chams.OverlayOutline, 2, function(v) ESP.Chams.OverlayOutline = v end)
-        -- Roblox stops drawing Highlights past ~31 live instances.
-        popup:slider("Max Overlays", 1, 30, ESP.Chams.MaxOverlays, 0, function(v) ESP.Chams.MaxOverlays = math.floor(v) end)
-    end)
 
     --------------------------------------------------------------- Box
     local boxesPanel = panel(espSub, "Box")
