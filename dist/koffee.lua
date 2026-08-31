@@ -1,9 +1,9 @@
--- koffee v0.15.1
+-- koffee v0.15.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.15.1"
+Koffee.Version = "0.15.2"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -4347,6 +4347,13 @@ local ESP = {
         -- clears Humanoid.Health via the standard path lights it up.
         HitNumbers = {
             Enabled          = false,
+            -- v0.15.2: Minecraft preset -- every hit its own number, scattered around
+            -- the body, tilted, sitting still and fading late instead of rising.
+            Preset           = "Koffee",   -- "Koffee" | "Minecraft"
+            McSpread         = 1.6,        -- studs of random scatter around the torso
+            McRotation       = 70,         -- max tilt either way
+            McLife           = 3,          -- s on screen
+            McFade           = 1,          -- s of that spent fading out
             Stack            = "Merged",   -- "Merged" (accumulate on victim) | "Literal" (stack copies)
             Window           = 0.6,        -- s -- merge window on the same victim
             RiseDistance     = 40,         -- px the number rises during life
@@ -11271,8 +11278,9 @@ end
         if isKill then c.Kills = c.Kills + 1 end
         if not hitCfg.Enabled then return end
         local now = os.clock()
+        local mc = hitCfg.Preset == "Minecraft"
         local e
-        if hitCfg.Stack == "Merged" then
+        if hitCfg.Stack == "Merged" and not mc then
             -- reuse the most recent live entry for this victim within Window
             for _, cand in ipairs(hitCfg._pool) do
                 if cand._alive and cand.victim == victim
@@ -11294,6 +11302,16 @@ end
             e.isKill = false
             e._alive = true
             e.lbl.Visible = true
+            if mc then
+                local sp = hitCfg.McSpread or 1.6
+                e.off = Vector3.new((math.random() - 0.5) * 2 * sp,
+                                    (math.random() - 0.5) * 2 * sp,
+                                    (math.random() - 0.5) * 2 * sp)
+                local r = hitCfg.McRotation or 70
+                e.rot = (math.random() - 0.5) * 2 * r
+            else
+                e.off, e.rot = nil, nil
+            end
         else
             -- restart the fade so the merged number sticks around fresh
             e.startAt = now
@@ -11305,6 +11323,7 @@ end
         if e.isKill and hitCfg.ShowKill then tag = tag .. "  KILL" end
         e.lbl.Text = tag
         e.lbl.TextSize = hitCfg.TextSize
+        e.lbl.Rotation = e.rot or 0
         local col = e.isKill and hitCfg.KillColor
             or ((hitCfg.Crits and e.total >= hitCfg.CritThreshold) and hitCfg.CritColor
                 or hitCfg.Color)
@@ -11314,6 +11333,7 @@ end
         -- Falls back to Bold for the frame or two before the face lands (usually
         -- zero, since the preloader already cached every catalog font).
         local fname = hitCfg.Font or "None"
+        if mc and fname == "None" then fname = "Minecraft Regular" end
         if fname ~= hitNumFontName then
             hitNumFontName = fname
             hitNumFont = Theme.Fonts.Bold
@@ -11345,19 +11365,28 @@ end
         local cam = Workspace.CurrentCamera
         for _, e in ipairs(hitCfg._pool) do
             if e._alive then
+                local mc = hitCfg.Preset == "Minecraft"
                 local age = now - e.startAt
-                local life = hitCfg.HoldTime or 0.8
+                local life = mc and (hitCfg.McLife or 3) or (hitCfg.HoldTime or 0.8)
                 if age >= life or (e.victim and e.victim.Parent == nil) then
                     e._alive = false; e.lbl.Visible = false
                 else
                     local t = age / life
-                    e.lbl.TextTransparency = math.clamp(t, 0, 1)
+                    -- Koffee fades across the whole life; Minecraft holds solid and
+                    -- only fades over the last McFade seconds
+                    local fade = t
+                    if mc then
+                        local fw = math.max(hitCfg.McFade or 1, 0.01)
+                        fade = math.clamp((age - (life - fw)) / fw, 0, 1)
+                    end
+                    e.lbl.TextTransparency = math.clamp(fade, 0, 1)
                     local s = e.lbl:FindFirstChildOfClass("UIStroke")
-                    if s then s.Transparency = math.clamp(t, 0, 1) end
+                    if s then s.Transparency = math.clamp(fade, 0, 1) end
                     if cam and e.victim and e.victim.Parent then
-                        local sp = cam:WorldToViewportPoint(e.victim.Position)
+                        local at = e.victim.Position + (e.off or Vector3.zero)
+                        local sp = cam:WorldToViewportPoint(at)
                         if sp.Z > 0 then
-                            local rise = (hitCfg.RiseDistance or 40) * t
+                            local rise = mc and 0 or ((hitCfg.RiseDistance or 40) * t)
                             e.lbl.Position = UDim2.new(0, sp.X, 0, sp.Y - rise)
                             e.lbl.Visible = true
                         else
@@ -13118,6 +13147,12 @@ addTab("Visuals", function(root)
     local hitRow = configCheckbox(indPanel, "Hit Numbers", hitCfgUI.Enabled, function(v) hitCfgUI.Enabled = v end)
     attachSingleSwatch(hitRow.row, hitCfgUI.Color, function(c) hitCfgUI.Color = c end)
     rightClickSettings(hitRow.row, "hit numbers", function(popup)
+        popup:dropdown("Preset", { "Koffee", "Minecraft" }, hitCfgUI.Preset,
+            function(v) hitCfgUI.Preset = v end)
+        popup:slider("MC Scatter", 0, 6, hitCfgUI.McSpread, 2, function(v) hitCfgUI.McSpread = v end)
+        popup:slider("MC Max Tilt", 0, 180, hitCfgUI.McRotation, 0, function(v) hitCfgUI.McRotation = v end)
+        popup:slider("MC Life (s)", 0.2, 10, hitCfgUI.McLife, 2, function(v) hitCfgUI.McLife = v end)
+        popup:slider("MC Fade (s)", 0.05, 5, hitCfgUI.McFade, 2, function(v) hitCfgUI.McFade = v end)
         popup:dropdown("Stack Mode", { "Merged", "Literal" }, hitCfgUI.Stack, function(v) hitCfgUI.Stack = v end)
         popup:slider("Merge Window (s)", 0.1, 3, hitCfgUI.Window, 2, function(v) hitCfgUI.Window = v end)
         popup:slider("Rise Distance", 0, 200, hitCfgUI.RiseDistance, 0, function(v) hitCfgUI.RiseDistance = v end)
@@ -15320,7 +15355,7 @@ registerConfig("custom", Koffee.Custom)
 
     -- analytic node geometry: port centres never wait on a layout pass
     local NODE_W, HEAD_H, ROW_H, WIRE_SEG = 172, 24, 20, 12
-    local TOOL_H, INSP_W, CANVAS_W, CANVAS_H = 82, 202, 2600, 1800
+    local TOOL_H, INSP_W, CANVAS_W, CANVAS_H = 90, 202, 2600, 1800
     local function nodeH(K, node)
         if node and node.fold then return HEAD_H + 4 end
         return HEAD_H + math.max(#K.ins, 1) * ROW_H + 6
@@ -15358,7 +15393,7 @@ registerConfig("custom", Koffee.Custom)
     local function makeEditor(parent, connList, extra)
         local canvas = new("ScrollingFrame", {
             Position = UDim2.new(0, 6, 0, TOOL_H),
-            Size = UDim2.new(1, -(INSP_W + 22), 1, -(TOOL_H + 22)),
+            Size = UDim2.new(1, -(INSP_W + 22), 1, -(TOOL_H + 26)),
             BackgroundTransparency = 1, BorderSizePixel = 0,
             CanvasSize = UDim2.new(0, CANVAS_W, 0, CANVAS_H),
             ScrollingDirection = Enum.ScrollingDirection.XY,
@@ -15372,13 +15407,13 @@ registerConfig("custom", Koffee.Custom)
         local hint = new("TextLabel", {
             Text = "", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
-            Position = UDim2.new(0, 8, 1, -16), Size = UDim2.new(1, -(INSP_W + 20), 0, 14),
+            Position = UDim2.new(0, 8, 1, -17), Size = UDim2.new(1, -(INSP_W + 20), 0, 14),
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
             ZIndex = 39, Parent = parent,
         })
         local insp = new("ScrollingFrame", {
             AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, TOOL_H),
-            Size = UDim2.new(0, INSP_W, 1, -(TOOL_H + 8)),
+            Size = UDim2.new(0, INSP_W, 1, -(TOOL_H + 26)),
             BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.02,
             BorderSizePixel = 0, ScrollBarThickness = 4,
             ScrollBarImageColor3 = Theme.Palette.Border,
@@ -15646,7 +15681,7 @@ registerConfig("custom", Koffee.Custom)
                 Padding = UDim.new(0, 5), VerticalAlignment = Enum.VerticalAlignment.Center,
                 SortOrder = Enum.SortOrder.LayoutOrder }) })
         end
-        local bar, bar2 = barAt(2, 48), barAt(52)
+        local bar, bar2 = barAt(8, 48), barAt(60)
         local pick = ORDER[1]
         local ddw = new("Frame", {
             Size = UDim2.new(0, 216, 0, 48), BackgroundTransparency = 1,
