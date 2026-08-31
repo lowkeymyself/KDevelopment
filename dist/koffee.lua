@@ -1,9 +1,9 @@
--- koffee v0.17.1
+-- koffee v0.17.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.17.1"
+Koffee.Version = "0.17.2"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -14507,8 +14507,11 @@ registerConfig("custom", Koffee.Custom)
 
     ---------------------------------------------------------------- sources
     KINDS.Target = {
-        blurb = "finds a player",
-        ins = {}, outs = { player = true },
+        blurb = "finds a player, and says whether it found one",
+        -- v0.17.2: bool is "did it find anybody". Without it there was no way to
+        -- drive a Switch / Show When off targeting itself -- Screen Position's bool
+        -- was the only stand-in and it conflates "no target" with "off screen".
+        ins = {}, outs = { player = true, bool = true },
         opts = { Source = "Aimbot Target", Filter = "Any", MaxDistance = 0 },
         eval = function(o)
             local C, s, plr = Shared.Combat, o.Source, nil
@@ -14534,7 +14537,7 @@ registerConfig("custom", Koffee.Custom)
                 local d = playerAt(plr)
                 if not d or d > o.MaxDistance then plr = nil end
             end
-            return { player = plr }
+            return { player = plr, bool = plr ~= nil }
         end,
         ui = function(api, o)
             api:dropdown("Source", { "Aimbot Target", "Silent Aim Target",
@@ -16009,6 +16012,25 @@ registerConfig("custom", Koffee.Custom)
                 wire(off, "point", sp); opt(off, "Y", 16)
                 wire(br, "pos", off); wire(br, "value", hp)
                 opt(br, "W", 60); opt(br, "H", 5)
+            end,
+        },
+        {
+            name = "label over your target",
+            note = "follows the target and disappears the moment you are not on one",
+            build = function()
+                local t  = addNode("Target", 24, 24)
+                local sp = addNode("Screen Position", 244, 24)
+                local sw = addNode("Switch", 244, 190)
+                local x  = addNode("Text", 500, 24)
+                opt(sp, "Anchor", "Above")
+                wire(sp, "player", t)
+                -- Target's bool is "did it find anybody", which is what drives both
+                -- the wording and whether the label exists at all
+                wire(sw, "bool", t)
+                opt(sw, "TrueText", "TARGET"); opt(sw, "FalseText", "")
+                wire(x, "pos", sp); wire(x, "a", sw)
+                wire(x, "color", sw); wire(x, "show", t)
+                opt(x, "Text", "{a}"); opt(x, "Size", 15)
             end,
         },
     }
