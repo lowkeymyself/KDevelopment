@@ -1,9 +1,9 @@
--- koffee v0.15.0
+-- koffee v0.15.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.15.0"
+Koffee.Version = "0.15.1"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
