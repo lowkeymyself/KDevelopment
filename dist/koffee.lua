@@ -1,9 +1,9 @@
--- koffee v0.17.2
+-- koffee v0.18.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.17.2"
+Koffee.Version = "0.18.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -8122,8 +8122,14 @@ local ANIM_IDS = {
 }
 local ANIM_LOOP = {}
 local ANIM_DROPDOWN = { "Orbit 1", "Orbit 2", "Orbit 3", "Orbit 4", "Aura 1", "Aura 2", "Aura 3", "Small Body 1", "Small Body 2" }
+-- v0.18.0: one named gate for everything that only exists on this place. The anim
+-- list below and the Combat > Misc gun extras both hang off it.
+Koffee._gunGame = game.PlaceId == 155615604
+-- the weapon's "holding it properly" track. Seated animations stop it, which is
+-- half of why the gun refuses to fire in a car.
+Koffee._gunHoldAnim = "rbxassetid://388726667"
 -- Place 155615604: replace the whole custom-anim list with these (loop only where noted)
-if game.PlaceId == 155615604 then
+if Koffee._gunGame then
     ANIM_IDS = {
         ["Prone"] = "481089053",
         ["Prone Walking"] = "481088553",
@@ -8522,6 +8528,13 @@ local Combat = {
         _hooked       = false,
     },
     Misc = { Resolver = false },
+    -- v0.18.0: place-gated weapon extras. Only registered and only shown when
+    -- Koffee._gunGame, so on every other game these are dead config keys.
+    --   AntiSpread -- pins the SpreadRadius attribute on held/stored tools to 0
+    --   ShootInCar -- the weapon refuses to fire seated for two separate reasons
+    --                 (its hold track stops playing, and it reads Humanoid.SeatPart),
+    --                 so this answers both reads
+    Gun  = { AntiSpread = false, ShootInCar = false },
     -- v0.0.88 HIT / KILL SOUNDS. Detection: universal Humanoid.Health drop watcher
     -- (A) per player. Attribution: "invisible target lock" -- each frame while LMB
     -- held, the enemy CLOSEST to the mouse cursor (screen-space, within MouseRadius
@@ -8628,6 +8641,7 @@ local Combat = {
     registerConfig("combat_silent",  Combat.Silent)
     registerConfig("combat_trigger", Combat.Trigger)
     registerConfig("combat_misc",    Combat.Misc)
+    if Koffee._gunGame then registerConfig("combat_gun", Combat.Gun) end
     registerConfig("combat_sounds",  Combat.HitSounds)
     -- v0.7.0 hit/kill visual effects. Rides HitSounds attribution.
     registerConfig("combat_hiteffects", Combat.HitEffects)
@@ -9170,6 +9184,28 @@ local Combat = {
         -- touches, so cameras, Popper occlusion, physics and other scripts stay
         -- untouched -- this is why the default never breaks the game / camera.
         local function resolveIndex(self, key)
+            -- v0.18.0 SHOOT IN CAR (place-gated). The weapon blocks firing while
+            -- seated twice over, so both reads get answered:
+            --   IsPlaying -- the seated animation stops the hold track, and the gun
+            --                treats "not holding" as "can't fire"
+            --   SeatPart  -- checked directly against our own Humanoid
+            -- Deliberately NOT a second hookmetamethod: __index is already hooked
+            -- once per session and delegates here, and stacking a second hook on the
+            -- same metamethod is how you get one of them silently winning.
+            -- The gate is one table read + two string compares for every other
+            -- property access in the game, which is the whole reason it sits first.
+            if Combat.Gun.ShootInCar and (key == "IsPlaying" or key == "SeatPart")
+               and typeof(self) == "Instance" then
+                if key == "IsPlaying" and self:IsA("AnimationTrack") then
+                    local ok, anim = pcall(function() return self.Animation end)
+                    if ok and anim and anim.AnimationId == Koffee._gunHoldAnim then return true, true end
+                elseif key == "SeatPart" and self:IsA("Humanoid") then
+                    -- ours only. Spoofing every humanoid would desync other players'
+                    -- seated state for anything in the game that reads it.
+                    if self.Parent == LocalPlayer.Character then return true, nil end
+                end
+                return PASS_H, PASS_V
+            end
             -- v0.11.1 Perfect Lock, answered above everything silent-aim (method,
             -- enabled state, LMB gate) so it never depends on them. Mouse aim reads
             -- only -- the same subset safe mode allows.
@@ -11026,6 +11062,14 @@ local Combat = {
         -- Misc
         local miscCard = panel(leftCol, "Misc")
         configCheckbox(miscCard, "Resolver", Combat.Misc.Resolver, function(v) Combat.Misc.Resolver = v end)
+        -- v0.18.0: this place's weapon extras. The rows only exist here, so on any
+        -- other game the Misc card is unchanged rather than showing dead toggles.
+        if Koffee._gunGame then
+            configCheckbox(miscCard, "Anti-Spread", Combat.Gun.AntiSpread,
+                function(v) Combat.Gun.AntiSpread = v end)
+            configCheckbox(miscCard, "Shoot In Car", Combat.Gun.ShootInCar,
+                function(v) Combat.Gun.ShootInCar = v end)
+        end
 
         -- v0.0.88 Sounds panel. Hit + Kill each have Enabled, Preset dropdown,
         -- Custom Sound Id (0 = use preset), Volume, Pitch, Cooldown. Also a
@@ -11308,6 +11352,70 @@ local Combat = {
     -- would blow the 200-register ceiling; Shared is the natural handoff.
     Shared.subTabs = subTabs
 end)()
+
+-- v0.18.0 ANTI-SPREAD (place-gated). This place's weapons carry the cone as a
+-- SpreadRadius attribute on the Tool itself, so it is pinned to 0 rather than
+-- intercepted: attribute writes replicate from the client here, and every shot
+-- reads the attribute fresh. Attribute-signal driven with a slow sweep behind it,
+-- because a tool can be swapped, re-parented or re-attributed by the server and
+-- ChildAdded alone misses the re-attribute case. Own IIFE for the register budget.
+if Koffee._gunGame then
+(function()
+    -- Combat is scoped to its own IIFE; Shared.Combat is the published handle
+    local G = Shared.Combat.Gun
+    local watched = setmetatable({}, { __mode = "k" })
+    local conns = {}
+    local nextSweep = 0
+
+    local function pin(tool)
+        if not (G.AntiSpread and tool and tool.Parent) then return end
+        if not tool:IsA("Tool") then return end
+        -- absent attribute = not one of this game's guns, leave it completely alone
+        if tool:GetAttribute("SpreadRadius") == nil then return end
+        if tool:GetAttribute("SpreadRadius") ~= 0 then
+            pcall(function() tool:SetAttribute("SpreadRadius", 0) end)
+        end
+        if not watched[tool] then
+            watched[tool] = tool:GetAttributeChangedSignal("SpreadRadius"):Connect(function()
+                if G.AntiSpread and tool:GetAttribute("SpreadRadius") ~= 0 then
+                    pcall(function() tool:SetAttribute("SpreadRadius", 0) end)
+                end
+            end)
+        end
+    end
+
+    local function sweep()
+        local ch = LocalPlayer.Character
+        if ch then for _, c in ipairs(ch:GetChildren()) do pin(c) end end
+        local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+        if bp then for _, c in ipairs(bp:GetChildren()) do pin(c) end end
+    end
+
+    local function watch(container)
+        if not container then return end
+        conns[#conns + 1] = container.ChildAdded:Connect(function(c)
+            task.defer(pin, c)
+        end)
+    end
+
+    watch(LocalPlayer.Character)
+    watch(LocalPlayer:FindFirstChildOfClass("Backpack"))
+    LocalPlayer.CharacterAdded:Connect(function(ch)
+        task.wait(0.5)
+        watch(ch)
+        watch(LocalPlayer:FindFirstChildOfClass("Backpack"))
+        if G.AntiSpread then sweep() end
+    end)
+
+    RunService.Heartbeat:Connect(function()
+        if Koffee._unloaded or not G.AntiSpread then return end
+        local now = os.clock()
+        if now < nextSweep then return end
+        nextSweep = now + 2
+        sweep()
+    end)
+end)()
+end
 
 -- helper: attach two color swatches (visible + hidden) to a Visible Check row
 local function attachDualSwatch(row, visColor, hidColor, onVis, onHid)
