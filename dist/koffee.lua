@@ -10335,7 +10335,7 @@ local Combat = {
         })
         local buttons, content = {}, {}
         -- v0.0.32: fade content in on switch (CanvasGroup GroupTransparency).
-        local function select(name)
+        local function showCol(name)
             for n, b in pairs(buttons) do
                 local on = (n == name)
                 tween(b, Theme.Animation.Fast, {
@@ -10366,9 +10366,9 @@ local Combat = {
             }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 6),
                 SortOrder = Enum.SortOrder.LayoutOrder }) })
             content[name] = cf
-            b.MouseButton1Click:Connect(function() select(name) end)
+            b.MouseButton1Click:Connect(function() showCol(name) end)
         end
-        select(names[1])
+        showCol(names[1])
         return content
     end
 

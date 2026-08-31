@@ -1,0 +1,88 @@
+---
+globals:
+  getgc: { args: [{ type: bool, required: false }] }
+  hookfunction: { args: [{ type: any }, { type: any }] }
+  hookmetamethod: { args: [{ type: any }, { type: string }, { type: any }] }
+  getnamecallmethod: { args: [] }
+  setthreadidentity: { args: [{ type: number }] }
+  getrenv: { args: [] }
+  getgenv: { args: [] }
+  checkcaller: { args: [] }
+  newcclosure: { args: [{ type: any }] }
+  getcallingscript: { args: [] }
+  getcustomasset: { args: [{ type: string }] }
+  setclipboard: { args: [{ type: string }] }
+  toclipboard: { args: [{ type: string }] }
+  getclipboard: { args: [] }
+  mousemoverel: { args: [{ type: number }, { type: number }] }
+  writefile: { args: [{ type: string }, { type: string }] }
+  readfile: { args: [{ type: string }] }
+  isfile: { args: [{ type: string }] }
+  isfolder: { args: [{ type: string }] }
+  makefolder: { args: [{ type: string }] }
+  delfile: { args: [{ type: string }] }
+  listfiles: { args: [{ type: string }] }
+  appendfile: { args: [{ type: string }, { type: string }] }
+  loadstring: { args: [{ type: string }] }
+  syn.request:
+    args:
+      - type: any
+  http.request:
+    args:
+      - type: any
+  http_request: { args: [{ type: any }] }
+  request: { args: [{ type: any }] }
+  identifyexecutor: { args: [] }
+  gethui: { args: [] }
+  protectgui: { args: [{ type: any }] }
+  syn_protect_gui: { args: [{ type: any }] }
+  cloneref: { args: [{ type: any }] }
+  firesignal: { args: [{ type: any }] }
+  getconnections: { args: [{ type: any }] }
+  setfflag: { args: [{ type: string }, { type: string }] }
+  queue_on_teleport: { args: [{ type: string }] }
+  _KCONT: { args: [] }
+  getsynasset:
+    args:
+      - type: string
+  syn.getcustomasset:
+    args:
+      - type: string
+  syn.protectgui:
+    args:
+      - type: any
+  syn.protect_gui:
+    args:
+      - type: any
+  syn.setclipboard:
+    args:
+      - type: string
+  syn.getclipboard:
+    args: []
+  mouse1click:
+    args: []
+  mouse1press:
+    args: []
+  mouse1release:
+    args: []
+  fluxus.gethui:
+    args: []
+  fluxus.protect_gui:
+    args:
+      - type: any
+  protect_gui:
+    args:
+      - type: any
+  gethiddenui:
+    args: []
+  get_hidden_ui:
+    args: []
+  get_hidden_gui:
+    args: []
+  load:
+    args:
+      - type: string
+  game.HttpGet:
+    method: true
+    args:
+      - type: string

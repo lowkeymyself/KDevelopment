@@ -1,0 +1,9 @@
+std = "roblox+koffee"
+[lints]
+undefined_variable = "deny"
+unused_variable = "warn"
+shadowing = "allow"
+mixed_table = "allow"
+multiple_statements = "allow"
+global_usage = "allow"
+empty_if = "allow"
