@@ -1,9 +1,9 @@
--- koffee v0.16.0
+-- koffee v0.16.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.16.0"
+Koffee.Version = "0.16.1"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -15399,6 +15399,164 @@ registerConfig("custom", Koffee.Custom)
         end
     end
 
+    -- headers keyed off ORDER's own grouping, so the reference below is generated
+    -- from the block registry and can never drift out of date
+    local DOC_HEADS = {
+        ["Target"]          = "sources  --  these find things",
+        ["For Each Player"] = "repeating  --  runs everything after it once per player",
+        ["Visible"]         = "logic  --  these decide and reshape",
+        ["Screen Position"] = "position  --  these make things follow",
+        ["Text"]            = "drawing  --  these put things on your screen",
+        ["Sound"]           = "actions  --  these fire when something happens",
+    }
+    local DOC_BODY = {
+        { h = "the idea" },
+        { p = "blocks do one small job each and pass the answer along. on their own they do nothing. you connect them, and the connection is where the feature comes from." },
+        { p = "a block that finds a player, a block that asks a question about them, a block that draws the answer. that is a feature you built without writing code." },
+        { h = "wiring" },
+        { p = "click the dot on the RIGHT of one block, then the dot on the LEFT of another. the source dot lights up while you are mid connection." },
+        { p = "click an input dot with nothing pending to unplug it. drag a block by its header. drag empty space to pan. minus folds a block, x deletes it." },
+        { p = "you can only connect things that fit. a block that produces a player will not plug into a slot that wants a colour, so a wire that looks refused is telling you something." },
+        { h = "three rules worth knowing" },
+        { p = "1. an input you do NOT wire falls back to that block's own setting. so a Text block on its own is just a label you place anywhere. wire something in and it takes over." },
+        { p = "2. Switch is the 'otherwise'. it holds both answers at once -- text and colour for yes, text and colour for no -- so you never need two blocks that can drift apart." },
+        { p = "3. in a Text block, {a} {b} {c} get replaced by its three value inputs. so \"health is {a}\" with Info wired into Value A is one block, not two sitting next to each other." },
+        { h = "show when" },
+        { p = "every drawing block has a Show When input. wire a yes/no into it and the block only appears when that is true. leave it empty and it is always on." },
+        { h = "position" },
+        { p = "every drawing block has a Position input. leave it empty and it sits where its X/Y sliders say. wire Screen Position into it and it follows a part or a player through the world." },
+        { h = "sharing" },
+        { p = "copy graph puts the whole thing on your clipboard as text. paste adds it back, renumbering so it never collides with blocks you already have. that is how you send a setup to someone." },
+    }
+
+    -- worked examples, built as real graphs so they can be opened and taken apart
+    local function wire(id, key, src) local n = nodeById(id); if n then n.wires[key] = src end end
+    local function opt(id, k, v) local n = nodeById(id); if n then n.opts[k] = v end end
+
+    local EXAMPLES = {
+        {
+            name = "target visible readout",
+            note = "says VISIBLE in green or NOT VISIBLE in red, wherever your target is",
+            build = function()
+                local t = addNode("Target", 24, 24)
+                local v = addNode("Visible", 24, 150)
+                local s = addNode("Switch", 244, 150)
+                local x = addNode("Text", 464, 150)
+                opt(t, "Source", "Silent Aim Target")
+                wire(v, "player", t)
+                wire(s, "bool", v)
+                wire(x, "a", s); wire(x, "color", s)
+                opt(x, "Text", "{a}"); opt(x, "Y", 62); opt(x, "Size", 26)
+            end,
+        },
+        {
+            name = "name + health over every enemy",
+            note = "per player, so this is a full custom esp made of five blocks",
+            build = function()
+                local fe = addNode("For Each Player", 24, 24)
+                local sp = addNode("Screen Position", 244, 24)
+                local nm = addNode("Info", 244, 168)
+                local hp = addNode("Info", 244, 300)
+                local tx = addNode("Text", 500, 24)
+                local br = addNode("Bar", 500, 210)
+                opt(sp, "Anchor", "Above")
+                wire(sp, "player", fe)
+                opt(nm, "Field", "Name");       wire(nm, "player", fe)
+                opt(hp, "Field", "Health 0-1"); wire(hp, "player", fe)
+                wire(tx, "pos", sp); wire(tx, "a", nm)
+                opt(tx, "Text", "{a}"); opt(tx, "Size", 14)
+                local off = addNode("Offset", 500, 380)
+                wire(off, "point", sp); opt(off, "Y", 16)
+                wire(br, "pos", off); wire(br, "value", hp)
+                opt(br, "W", 60); opt(br, "H", 5)
+            end,
+        },
+    }
+
+    local function docsModal(onBuilt)
+        if not Shared.openModal then return end
+        local vp = viewport()
+        local m = Shared.openModal(math.min(600, vp.X - 60), math.min(560, vp.Y - 60))
+        new("TextLabel", {
+            Text = "custom features", FontFace = Theme.Fonts.Bold,
+            TextSize = Theme.Text.Header, TextColor3 = Theme.Palette.Text,
+            BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
+            ZIndex = 202, Parent = m.box,
+        })
+        local body = new("ScrollingFrame", {
+            Position = UDim2.new(0, 10, 0, 38), Size = UDim2.new(1, -20, 1, -84),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+            ScrollBarImageColor3 = Theme.Palette.Border,
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+            ZIndex = 202, Parent = m.box,
+        }, { new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 10) }),
+             new("UIListLayout", { Padding = UDim.new(0, 5),
+                 SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local order = 0
+        local function head(t)
+            order = order + 1
+            new("TextLabel", {
+                Text = t, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+                TextColor3 = Theme.Palette.Accent, BackgroundTransparency = 1,
+                TextWrapped = true, AutomaticSize = Enum.AutomaticSize.Y,
+                Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
+                LayoutOrder = order, ZIndex = 203, Parent = body,
+            }, { new("UIPadding", { PaddingTop = UDim.new(0, 8) }) })
+        end
+        local function para(t, muted)
+            order = order + 1
+            new("TextLabel", {
+                Text = t, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = muted and Theme.Palette.TextMuted or Theme.Palette.Text,
+                BackgroundTransparency = 1, TextWrapped = true,
+                AutomaticSize = Enum.AutomaticSize.Y, LineHeight = 1.25,
+                Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+                LayoutOrder = order, ZIndex = 203, Parent = body,
+            })
+        end
+        for _, e in ipairs(DOC_BODY) do
+            if e.h then head(e.h) else para(e.p) end
+        end
+        head("try one")
+        for _, e in ipairs(EXAMPLES) do
+            order = order + 1
+            local b = new("TextButton", {
+                Text = "build: " .. e.name, AutoButtonColor = false,
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextMuted,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 26),
+                LayoutOrder = order, ZIndex = 203, Parent = body,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            b.MouseButton1Click:Connect(function()
+                e.build()
+                m.close()
+                if onBuilt then onBuilt() end
+            end)
+            para(e.note, true)
+        end
+        para("these add to whatever is already on the canvas, they do not replace it", true)
+        head("every block")
+        for _, name in ipairs(ORDER) do
+            if DOC_HEADS[name] then para(DOC_HEADS[name], true) end
+            local K = KINDS[name]
+            if K then para(name .. "  --  " .. (K.blurb or "")) end
+        end
+        local close = new("TextButton", {
+            Text = "close", AutoButtonColor = false, FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 1),
+            Position = UDim2.new(1, -14, 1, -12), Size = UDim2.new(0, 88, 0, 26),
+            ZIndex = 202, Parent = m.box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        close.MouseButton1Click:Connect(m.close)
+        return m
+    end
+
     -- inline option rows: the inspector renders options directly, no popups
     local function textRow(parent, label, initial, onChange)
         local r = new("Frame", {
@@ -15821,6 +15979,7 @@ registerConfig("custom", Koffee.Custom)
         toolBtn(bar2, "paste", 60, 3, function()
             local _, msg = pasteGraph(); say(msg); rebuildAll()
         end)
+        toolBtn(bar2, "docs", 56, 5, function() docsModal(rebuildAll) end)
         toolBtn(bar2, "clear", 58, 4, function()
             for i = #CF.Nodes, 1, -1 do CF.Nodes[i] = nil end
             sel, pending = nil, nil
