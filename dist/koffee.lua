@@ -1,9 +1,9 @@
--- koffee v0.16.2
+-- koffee v0.17.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.16.2"
+Koffee.Version = "0.17.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -3832,6 +3832,19 @@ local function rightClickSettings(row, title, buildFn, alsoLeft)
             end
             return r
         end
+        -- v0.17.0: a plain clickable row. The popup body is built once, so anything
+        -- that has to act on live state (rescan, reset) needs a button, not a toggle.
+        function api:action(label, onClick)
+            local b = new("TextButton", {
+                Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, AutoButtonColor = false,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BorderSizePixel = 0,
+                Size = UDim2.new(1, 0, 0, 20), ZIndex = 211, Parent = popupFrame,
+            }, { corner(4), stroke(Theme.Palette.Border, 1) })
+            b.MouseButton1Click:Connect(function() pcall(onClick, b) end)
+            popFx(b)
+            return b
+        end
         buildFn(api)
     end
 
@@ -6445,6 +6458,332 @@ World.FX = {
                Color = Color3.fromRGB(255, 183, 210) },
 }
 registerConfig("world_fx", World.FX)
+
+-- v0.17.0 BULLET TRACERS (Replication). You cannot see another player's outgoing
+-- FireServer: __namecall only shows your own traffic. What you CAN see is the
+-- server's rebroadcast, which every game that draws somebody else's shot is forced
+-- to send you. So listen on every RemoteEvent's OnClientEvent, shape-match the arg
+-- tuple, and gate on "the origin sits near a character" -- the one test that kills
+-- nearly every false positive. Own IIFE for the register budget.
+Koffee.Bullets = {
+    Enabled     = false,
+    Bindables   = false,   -- also watch BindableEvents (games that hop remote -> localscript)
+    Color       = Color3.fromRGB(255, 176, 46),
+    TeamColor   = false,
+    Thickness   = 2,
+    Duration    = 0.7,
+    Fade        = true,
+    Impact      = true,
+    MaxDistance = 3000,
+    TeamCheck   = false,
+    ShowOwn     = false,
+    MaxLive     = 24,
+}
+registerConfig("bullets", Koffee.Bullets)
+;(function()
+    local B = Koffee.Bullets
+    local RS  = game:GetService("ReplicatedStorage")
+    local RF  = game:GetService("ReplicatedFirst")
+
+    local MAX_HOOKS  = 500   -- connection budget across the whole tree
+    local NEAR_CHAR  = 16    -- studs a muzzle may sit from a torso and still count
+    local FLOOD      = 60    -- calls/sec above which a remote is state sync, not a gun
+    local LOCK_HITS  = 3     -- valid shots before a remote is pinned as THE gun remote
+    local NEAR_PLANE = 0.5
+
+    local hooks, stats, pinned, hookCount = {}, {}, nil, 0
+    local shots, linePool, dotPool = {}, {}, {}
+    local layer, started = nil, false
+
+    -- re-exec: these connections live on the GAME's remotes, so KID's instance
+    -- sweep can't reach them and a second run would double-hook every gun remote.
+    -- Park them on the boot ctx instead.
+    for _, c in ipairs(KID.ctx.bulletConns or {}) do pcall(function() c:Disconnect() end) end
+    KID.ctx.bulletConns = {}
+
+    local function setStatus(s)
+        Shared._bulletStatus = s
+        if Shared._bulletSetStatus then pcall(Shared._bulletSetStatus, s) end
+    end
+
+    ------------------------------------------------------------------ detection
+
+    -- the money filter. A real muzzle is next to somebody; a UI ping or a loot
+    -- spawn is not. Returns the owning player so the shot can be team-checked.
+    local function charAt(pos)
+        local best, bd = nil, NEAR_CHAR
+        for _, p in ipairs(Players:GetPlayers()) do
+            local c = p.Character
+            local r = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+            if r then
+                local d = (r.Position - pos).Magnitude
+                if d < bd then best, bd = p, d end
+            end
+        end
+        return best
+    end
+
+    -- arg names are unknowable, so shape does the work. A unit-length Vector3 is a
+    -- direction, a long one is a world point, a CFrame is both.
+    local function collect(n, args)
+        local pts, dirs, who, budget = {}, {}, nil, 0
+        local function look(v, depth)
+            budget = budget + 1
+            if budget > 64 then return end
+            local t = typeof(v)
+            if t == "Vector3" then
+                local m = v.Magnitude
+                if m > 0.02 and m < 1.2 then dirs[#dirs + 1] = v
+                elseif m >= 1.2 then pts[#pts + 1] = v end
+            elseif t == "CFrame" then
+                pts[#pts + 1] = v.Position
+                dirs[#dirs + 1] = v.LookVector
+            elseif t == "Instance" then
+                if v:IsA("Player") then who = who or v
+                elseif v:IsA("BasePart") then pts[#pts + 1] = v.Position end
+            elseif t == "table" and depth < 2 then
+                for _, sub in pairs(v) do look(sub, depth + 1) end
+            end
+        end
+        for i = 1, n do look(args[i], 0) end
+        return pts, dirs, who
+    end
+
+    local function resolve(pts, dirs, who)
+        for i = 1, #pts do
+            local o = pts[i]
+            local src = charAt(o)
+            if src then
+                local target
+                for j = 1, #pts do
+                    if j ~= i then target = pts[j] break end
+                end
+                if not target and dirs[1] then target = o + dirs[1].Unit * 900 end
+                if target then
+                    local len = (target - o).Magnitude
+                    if len > 3 and len < 6000 then return o, target, who or src end
+                end
+            end
+        end
+        return nil
+    end
+
+    ------------------------------------------------------------------ drawing
+
+    local function grabLine()
+        local l = table.remove(linePool)
+        if not l then
+            l = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1),
+                BorderSizePixel = 0, Visible = false, ZIndex = 12,
+            }, { lineOutline() })
+        end
+        if l.Parent ~= layer then l.Parent = layer end
+        return l
+    end
+
+    local function grabDot()
+        local d = table.remove(dotPool)
+        if not d then
+            d = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1),
+                BorderSizePixel = 0, Visible = false, ZIndex = 13,
+            }, { pillCorner() })
+        end
+        if d.Parent ~= layer then d.Parent = layer end
+        return d
+    end
+
+    local function release(s)
+        if s.line then s.line.Visible = false; linePool[#linePool + 1] = s.line; s.line = nil end
+        if s.dot then s.dot.Visible = false; dotPool[#dotPool + 1] = s.dot; s.dot = nil end
+    end
+
+    -- a tracer spans hundreds of studs, so one end is regularly behind the camera
+    -- where WorldToViewportPoint mirrors through the origin. Clipping the world
+    -- segment to the near plane first is exact and costs one frame, where the ESP
+    -- look-ray's segment sampling would just drop the visible half.
+    local function clip(cam, a, b)
+        local cf = cam.CFrame
+        local o, f = cf.Position, cf.LookVector
+        local da, db = (a - o):Dot(f), (b - o):Dot(f)
+        if da < NEAR_PLANE and db < NEAR_PLANE then return nil end
+        if da < NEAR_PLANE then a = a + (b - a) * ((NEAR_PLANE - da) / (db - da)) end
+        if db < NEAR_PLANE then b = b + (a - b) * ((NEAR_PLANE - db) / (da - db)) end
+        return a, b
+    end
+
+    ------------------------------------------------------------------ intake
+
+    local function dupe(o, t, now)
+        for i = #shots, math.max(1, #shots - 6), -1 do
+            local s = shots[i]
+            if now - s.t < 0.06 and (s.a - o).Magnitude < 2 and (s.b - t).Magnitude < 6 then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function push(o, t, src)
+        if src == LocalPlayer and not B.ShowOwn then return false end
+        if B.TeamCheck and src and src.Team and LocalPlayer.Team
+            and src.Team == LocalPlayer.Team then return false end
+        local cam = Workspace.CurrentCamera
+        if cam and (o - cam.CFrame.Position).Magnitude > B.MaxDistance then return false end
+        local now = os.clock()
+        if dupe(o, t, now) then return false end
+        local col = B.Color
+        if B.TeamColor and src and src.TeamColor then col = src.TeamColor.Color end
+        shots[#shots + 1] = { a = o, b = t, t = now, col = col }
+        local cap = math.clamp(B.MaxLive or 24, 1, 64)
+        while #shots > cap do release(shots[1]); table.remove(shots, 1) end
+        return true
+    end
+
+    local function onFire(ev, ...)
+        if Koffee._unloaded or not B.Enabled then return end
+        -- once a remote has proven itself, every other one is noise
+        if pinned and pinned ~= ev then return end
+        local st = stats[ev]
+        if not st then st = { n = 0, win = 0, hits = 0, dead = false }; stats[ev] = st end
+        if st.dead then return end
+        local now = os.clock()
+        if now - st.win > 1 then st.win, st.n = now, 0 end
+        st.n = st.n + 1
+        if st.n > FLOOD then st.dead = true; return end
+        local args = table.pack(...)
+        if args.n == 0 or args.n > 12 then return end
+        local pts, dirs, who = collect(args.n, args)
+        if #pts == 0 then return end
+        local o, t, src = resolve(pts, dirs, who)
+        if not o then return end
+        if push(o, t, src) then
+            st.hits = st.hits + 1
+            if not pinned and st.hits >= LOCK_HITS then
+                pinned = ev
+                setStatus("(locked on " .. ev.Name .. ")")
+            end
+        end
+    end
+
+    local function hook(inst)
+        if hookCount >= MAX_HOOKS or hooks[inst] then return end
+        local sig
+        if inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent") then
+            sig = inst.OnClientEvent
+        elseif B.Bindables and inst:IsA("BindableEvent") then
+            sig = inst.Event
+        else
+            return
+        end
+        local ok, conn = pcall(function()
+            return sig:Connect(function(...) onFire(inst, ...) end)
+        end)
+        if ok and conn then
+            hooks[inst] = conn
+            table.insert(KID.ctx.bulletConns, conn)
+            hookCount = hookCount + 1
+        end
+    end
+
+    local function sweep()
+        setStatus("(scanning)")
+        task.spawn(function()
+            local seen = 0
+            for _, root in ipairs({ RS, RF, Lighting, Workspace }) do
+                local ok, kids = pcall(function() return root:GetDescendants() end)
+                if ok then
+                    for _, d in ipairs(kids) do
+                        if hookCount >= MAX_HOOKS then break end
+                        hook(d)
+                        seen = seen + 1
+                        -- a loaded map is 50k+ instances; yield so the sweep never
+                        -- shows up as a hitch on the frame the feature is switched on
+                        if seen % 4000 == 0 then task.wait() end
+                    end
+                end
+            end
+            if not pinned then setStatus("(watching " .. hookCount .. ")") end
+        end)
+    end
+
+    local function start()
+        if started then return end
+        started = true
+        sweep()
+        -- remotes created after join land in ReplicatedStorage essentially always,
+        -- and DescendantAdded on Workspace would fire for every part the game spawns
+        RS.DescendantAdded:Connect(hook)
+        RF.DescendantAdded:Connect(hook)
+    end
+
+    -- full reset: drops every hook so the Bindables toggle can go both ways, clears
+    -- the pin so a different remote can win, then re-sweeps from scratch
+    Shared._bulletRelearn = function()
+        for inst, c in pairs(hooks) do
+            pcall(function() c:Disconnect() end)
+            hooks[inst] = nil
+        end
+        KID.ctx.bulletConns = {}
+        hookCount, pinned, stats = 0, nil, {}
+        if started then sweep() else setStatus("") end
+    end
+
+    ------------------------------------------------------------------ render
+
+    RunService.RenderStepped:Connect(function()
+        if Koffee._unloaded then return end
+        if not B.Enabled then
+            for i = #shots, 1, -1 do release(shots[i]); shots[i] = nil end
+            return
+        end
+        if not started then start() end
+        layer = ensureBoxLayer()
+        local cam = Workspace.CurrentCamera
+        local now, dur = os.clock(), math.max(B.Duration, 0.05)
+        local thick = math.max(B.Thickness, 0.5)
+        for i = #shots, 1, -1 do
+            local s = shots[i]
+            local age = now - s.t
+            if age > dur or not cam then
+                release(s)
+                table.remove(shots, i)
+            else
+                local a, b = clip(cam, s.a, s.b)
+                if not a then
+                    if s.line then s.line.Visible = false end
+                    if s.dot then s.dot.Visible = false end
+                else
+                    local pa = cam:WorldToViewportPoint(a)
+                    local pb = cam:WorldToViewportPoint(b)
+                    local dx, dy = pb.X - pa.X, pb.Y - pa.Y
+                    local tr = B.Fade and math.clamp(age / dur, 0, 0.96) or 0
+                    s.line = s.line or grabLine()
+                    local l = s.line
+                    l.Size = UDim2.new(0, math.sqrt(dx * dx + dy * dy) + 1, 0, thick)
+                    l.Position = UDim2.new(0, (pa.X + pb.X) * 0.5, 0, (pa.Y + pb.Y) * 0.5)
+                    l.Rotation = math.deg(math.atan2(dy, dx))
+                    l.BackgroundColor3 = s.col
+                    l.BackgroundTransparency = tr
+                    l.Visible = true
+                    applyLineOutline(l, true, Color3.new(0, 0, 0), math.max(1, thick))
+                    if B.Impact and pb.Z > 0 then
+                        s.dot = s.dot or grabDot()
+                        local sz = math.max(thick * 2.5, 4)
+                        s.dot.Size = UDim2.new(0, sz, 0, sz)
+                        s.dot.Position = UDim2.new(0, pb.X, 0, pb.Y)
+                        s.dot.BackgroundColor3 = s.col
+                        s.dot.BackgroundTransparency = tr
+                        s.dot.Visible = true
+                    elseif s.dot then
+                        s.dot.Visible = false
+                    end
+                end
+            end
+        end
+    end)
+end)()
 
 -- v0.10.0 CUSTOM SKYBOXES. Faces come from the Takurin repo (topsky/<Name>/
 -- sky512_*.tex). A set is 3-20MB, so these are the one asset class that does NOT
@@ -13342,6 +13681,43 @@ addTab("Visuals", function(root)
     attachSingleSwatch(trRow.row, ESP.Tracer.Color, function(c) ESP.Tracer.Color = c end)
     dropdown(tracerPanel, "Origin", { "Mouse", "Bottom", "Middle", "Top" }, ESP.Tracer.Origin, function(v) ESP.Tracer.Origin = v end)
     dropdown(tracerPanel, "Location", { "Below", "Middle", "Above" }, ESP.Tracer.Location, function(v) ESP.Tracer.Location = v end)
+
+    --------------------------------------------------------------- Bullet Tracers
+    -- v0.17.0. Separate from the ESP tracer above: that one is a snap-line to a
+    -- player, this one draws where somebody's shot actually went. The panel title
+    -- carries the detector state (scanning / watching n / locked on <remote>) so a
+    -- game whose shots we can't read is obvious instead of silent.
+    local btPanel = panel(rightCol, "Bullet Tracers")
+    local btTitle = btPanel:FindFirstChildOfClass("TextLabel")
+    Shared._bulletSetStatus = function(s)
+        if btTitle and btTitle.Parent then
+            btTitle.Text = (s and s ~= "") and ("Bullet Tracers  " .. s) or "Bullet Tracers"
+        end
+    end
+    Shared._bulletSetStatus(Shared._bulletStatus or "")
+    local btRow = configCheckbox(btPanel, "Enabled", Koffee.Bullets.Enabled,
+        function(v) Koffee.Bullets.Enabled = v end)
+    attachSingleSwatch(btRow.row, Koffee.Bullets.Color, function(c) Koffee.Bullets.Color = c end)
+    rightClickSettings(btRow.row, "bullet tracers", function(popup)
+        popup:toggle("Team Check", Koffee.Bullets.TeamCheck, function(v) Koffee.Bullets.TeamCheck = v end)
+        popup:toggle("Show Own Shots", Koffee.Bullets.ShowOwn, function(v) Koffee.Bullets.ShowOwn = v end)
+        popup:toggle("Shooter Team Color", Koffee.Bullets.TeamColor, function(v) Koffee.Bullets.TeamColor = v end)
+        popup:toggle("Fade Out", Koffee.Bullets.Fade, function(v) Koffee.Bullets.Fade = v end)
+        popup:toggle("Impact Dot", Koffee.Bullets.Impact, function(v) Koffee.Bullets.Impact = v end)
+        -- some games hop the shot through a BindableEvent so a LocalScript draws it.
+        -- Off by default: it roughly doubles the connection count for a rarer case.
+        popup:toggle("Watch Bindables", Koffee.Bullets.Bindables, function(v)
+            Koffee.Bullets.Bindables = v
+            if Shared._bulletRelearn then Shared._bulletRelearn() end
+        end)
+        popup:slider("Max On Screen", 1, 64, Koffee.Bullets.MaxLive, 0, function(v) Koffee.Bullets.MaxLive = v end)
+        popup:action("Relearn Source", function()
+            if Shared._bulletRelearn then Shared._bulletRelearn() end
+        end)
+    end)
+    slider(btPanel, "Thickness", 1, 10, Koffee.Bullets.Thickness, 1, function(v) Koffee.Bullets.Thickness = v end)
+    slider(btPanel, "Duration", 0.1, 3, Koffee.Bullets.Duration, 2, function(v) Koffee.Bullets.Duration = v end)
+    slider(btPanel, "Max Distance", 100, 6000, Koffee.Bullets.MaxDistance, 0, function(v) Koffee.Bullets.MaxDistance = v end)
 
     --------------------------------------------------------------- Crosshair
     -- v0.11.2: one builder used twice. "Double Crosshairs" (card A only) retitles A
