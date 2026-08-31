@@ -1,9 +1,9 @@
--- koffee v0.16.1
+-- koffee v0.16.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.16.1"
+Koffee.Version = "0.16.2"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -6447,10 +6447,10 @@ World.FX = {
 registerConfig("world_fx", World.FX)
 
 -- v0.10.0 CUSTOM SKYBOXES. Faces come from the Takurin repo (topsky/<Name>/
--- sky512_*.tex). The full set is ~60MB, so these are the one asset class that does
--- NOT ride the loader's blocking prefetch -- a sky downloads the first time it is
+-- sky512_*.tex). A set is 3-20MB, so these are the one asset class that does NOT
+-- ride the loader's blocking prefetch -- a sky downloads the first time it is
 -- picked and is cached on disk from then on. Own IIFE for the register budget.
-World.SkyBox = { Name = "None" }
+World.SkyBox = { Name = "None", Celestial = false }
 registerConfig("world_skybox", World.SkyBox)
 ;(function()
     local SKY_BASE = "https://raw.githubusercontent.com/lowkeymyself/Takurin/main/topsky/"
@@ -6458,7 +6458,22 @@ registerConfig("world_skybox", World.SkyBox)
     Shared._skyNames = { "None", "Aurora", "Emo", "Goodnight", "Hades", "Hazy",
         "Moonlight", "Overcast", "Pink Sunrise", "Space Blue", "Spooky", "Universe" }
 
-    local ownSky, hidden, applied, busy = nil, nil, "None", false
+    local ownSky, hidden, applied, busy = nil, nil, "None|0", false
+    local parked = setmetatable({}, { __mode = "k" })
+    local nextScan = 0
+
+    -- v0.16.2: the dropdown title doubles as a status line. A face can be 3MB, so
+    -- a cold pick is 20-40s of silence, which reads as "the skybox is broken".
+    local function setStatus(s)
+        Shared._skyStatusText = s
+        if Shared._skySetStatus then pcall(Shared._skySetStatus, s) end
+    end
+
+    -- Name + nonce: re-picking the same entry bumps the nonce, so a failed
+    -- download is retried by just clicking it again.
+    local function keyOf()
+        return World.SkyBox.Name .. "|" .. tostring(World.SkyBox._nonce or 0)
+    end
 
     local function httpGet(url)
         local req = (syn and syn.request) or (http and http.request) or http_request or request
@@ -6471,24 +6486,25 @@ registerConfig("world_skybox", World.SkyBox)
         return nil
     end
 
-    -- download (once) + resolve all six faces. Returns nil on any failure so a
-    -- half-downloaded sky never gets applied as a set of broken faces.
+    -- download (once) + resolve all six faces. Returns nil + a reason on any
+    -- failure so a half-downloaded sky never applies as a set of broken faces.
     local function ensureFaces(name)
-        if not (writefile and isfile and getcustomasset) then return nil end
+        if not (writefile and isfile and getcustomasset) then return nil, "no file api" end
         if makefolder then
             pcall(makefolder, "Koffee/sky")
             pcall(makefolder, "Koffee/sky/" .. name)
         end
         local ids = {}
-        for _, f in ipairs(FACES) do
+        for i, f in ipairs(FACES) do
             local path = "Koffee/sky/" .. name .. "/sky512_" .. f .. ".tex"
             if not isfile(path) then
+                setStatus("(downloading " .. i .. "/6)")
                 local body = httpGet(SKY_BASE .. name:gsub(" ", "%%20") .. "/sky512_" .. f .. ".tex")
-                if not body then return nil end
-                if not pcall(writefile, path, body) then return nil end
+                if not body then return nil, "download failed" end
+                if not pcall(writefile, path, body) then return nil, "write failed" end
             end
             local ok, id = pcall(getcustomasset, path)
-            if not (ok and type(id) == "string" and #id > 0) then return nil end
+            if not (ok and type(id) == "string" and #id > 0) then return nil, "asset failed" end
             ids[f] = id
         end
         return ids
@@ -6498,14 +6514,17 @@ registerConfig("world_skybox", World.SkyBox)
     -- A leftover Atmosphere hazes a custom skybox into mush, Clouds sit in front of
     -- it, and plenty of games keep their Sky under Workspace or re-add one at
     -- runtime. Parked (Parent = nil) rather than destroyed so "None" restores the
-    -- game's own look exactly.
-    local function purgeSky()
+    -- game look exactly. v0.16.2: `parked` dedupes, the rescan used to push a fresh
+    -- entry every pass and grow `hidden` without bound.
+    local function park(inst)
+        if inst == ownSky or parked[inst] then return end
+        parked[inst] = true
         hidden = hidden or {}
-        local function park(inst)
-            if inst == ownSky then return end
-            table.insert(hidden, { sky = inst, parent = inst.Parent })
-            inst.Parent = nil
-        end
+        table.insert(hidden, { sky = inst, parent = inst.Parent })
+        inst.Parent = nil
+    end
+
+    local function purgeSky()
         for _, s in ipairs(Lighting:GetChildren()) do
             if s:IsA("Sky") or s:IsA("Atmosphere") then park(s) end
         end
@@ -6520,56 +6539,92 @@ registerConfig("world_skybox", World.SkyBox)
         end
     end
 
-    local function apply(name)
-        if name == "None" then
-            if ownSky then ownSky:Destroy(); ownSky = nil end
-            for _, e in ipairs(hidden or {}) do
-                if e.sky and not e.sky.Parent then pcall(function() e.sky.Parent = e.parent end) end
-            end
-            hidden = nil
-            applied = "None"
-            return
+    -- v0.16.2: the engine caches sky faces and does not reliably repaint when one
+    -- Sky is swapped for another. That is the "stuck on the last skybox" bug.
+    -- Toggling CelestialBodiesShown across a frame forces the repaint.
+    local function kick(sky, want)
+        if not (sky and sky.Parent) then return end
+        pcall(function()
+            sky.CelestialBodiesShown = not want
+            task.wait()
+            if sky.Parent then sky.CelestialBodiesShown = want end
+        end)
+    end
+
+    local function restoreGame()
+        for _, e in ipairs(hidden or {}) do
+            parked[e.sky] = nil
+            if e.sky and not e.sky.Parent then pcall(function() e.sky.Parent = e.parent end) end
         end
+        hidden = nil
+    end
+
+    local function apply(name, key)
         if busy then return end
         busy = true
         task.spawn(function()
-            local ids = ensureFaces(name)
-            busy = false
-            -- mark it applied even on failure: the heartbeat is edge-triggered on
-            -- (Name ~= applied), and leaving them mismatched would re-attempt the
-            -- download every single frame. Switch away and back to retry.
-            applied = name
-            if not ids then return end
-            -- the user may have changed the dropdown while we were downloading
-            if World.SkyBox.Name ~= name then return end
+            if name == "None" then
+                if ownSky then ownSky:Destroy(); ownSky = nil end
+                task.wait()
+                restoreGame()
+                local s = Lighting:FindFirstChildOfClass("Sky")
+                if s then kick(s, s.CelestialBodiesShown) end
+                applied, busy = key, false
+                setStatus("")
+                return
+            end
+            setStatus("(loading)")
+            local ids, why = ensureFaces(name)
+            -- applied is set even on failure: the heartbeat edge-triggers on the
+            -- key, and leaving them mismatched retries the download every frame.
+            applied = key
+            if not ids then
+                busy = false
+                setStatus("(" .. (why or "failed") .. ", pick it again)")
+                return
+            end
+            if World.SkyBox.Name ~= name then busy = false; setStatus("") return end
             purgeSky()
-            if ownSky then ownSky:Destroy() end
-            ownSky = KID.track(Instance.new("Sky"))
-            ownSky.Name = KID.name("sky")
-            ownSky.SkyboxBk, ownSky.SkyboxDn = ids.bk, ids.dn
-            ownSky.SkyboxFt, ownSky.SkyboxLf = ids.ft, ids.lf
-            ownSky.SkyboxRt, ownSky.SkyboxUp = ids.rt, ids.up
-            ownSky.Parent = Lighting
+            if ownSky then ownSky:Destroy(); ownSky = nil end
+            task.wait()   -- the engine needs a frame to actually drop the old Sky
+            local sky = KID.track(Instance.new("Sky"))
+            sky.Name = KID.name("sky")
+            sky.SkyboxBk, sky.SkyboxDn = ids.bk, ids.dn
+            sky.SkyboxFt, sky.SkyboxLf = ids.ft, ids.lf
+            sky.SkyboxRt, sky.SkyboxUp = ids.rt, ids.up
+            -- the six faces are baked images and Roblox's own sun/moon/stars render
+            -- ON TOP of them, which is where the stray moon came from. Off by
+            -- default, right-click the dropdown to put them back.
+            local want = World.SkyBox.Celestial == true
+            sky.CelestialBodiesShown = want
+            sky.StarCount       = want and 3000 or 0
+            sky.SunAngularSize  = want and 21 or 0
+            sky.MoonAngularSize = want and 11 or 0
+            sky.Parent = Lighting
+            ownSky, busy = sky, false
+            setStatus("")
+            kick(sky, want)
         end)
     end
 
     -- Driven off state rather than the dropdown's callback, so a loaded config
     -- applies its sky too (rebuildConfigTabs repaints widgets without firing them).
     RunService.Heartbeat:Connect(function()
-        if Koffee._unloaded then return end
-        if World.SkyBox.Name ~= applied and not busy then apply(World.SkyBox.Name); return end
+        if Koffee._unloaded or busy then return end
+        local key = keyOf()
+        if key ~= applied then apply(World.SkyBox.Name, key); return end
         -- v0.10.1: keep it ours. Games re-add a Sky (day/night cycles, region
         -- triggers) and it would render straight over the custom one, so re-park
         -- anything new while a custom sky is active. Also survives our own Sky being
-        -- stripped by a game that clears Lighting.
-        if applied ~= "None" and ownSky and not busy then
-            if ownSky.Parent ~= Lighting then ownSky.Parent = Lighting end
-            for _, s in ipairs(Lighting:GetChildren()) do
-                if s ~= ownSky and (s:IsA("Sky") or s:IsA("Atmosphere")) then
-                    table.insert(hidden, { sky = s, parent = s.Parent })
-                    s.Parent = nil
-                end
-            end
+        -- stripped by a game that clears Lighting. Throttled: this used to walk
+        -- Lighting's children every single frame.
+        if not ownSky then return end
+        local now = os.clock()
+        if now < nextScan then return end
+        nextScan = now + 0.25
+        if ownSky.Parent ~= Lighting then ownSky.Parent = Lighting end
+        for _, s in ipairs(Lighting:GetChildren()) do
+            if s ~= ownSky and (s:IsA("Sky") or s:IsA("Atmosphere")) then park(s) end
         end
     end)
 end)()
@@ -13457,9 +13512,27 @@ addTab("World", function(root)
         popup:slider("Fog End", 0, 5000, World.Light.FogEnd, 0, function(v) World.Light.FogEnd = v end)
     end)
     slider(fx, "Ambient Intensity", 0, 2, World.Light.Intensity, 2, function(v) World.Light.Intensity = v end)
-    -- v0.10.0: custom skybox. Downloads on first pick (~6MB a set), cached after.
-    dropdown(fx, "Skybox", Shared._skyNames, World.SkyBox.Name,
-        function(v) World.SkyBox.Name = v end)
+    -- v0.10.0: custom skybox. Downloads on first pick, cached after. v0.16.2: the
+    -- nonce bump makes re-picking the same entry a retry, and the row title carries
+    -- the download status.
+    local skyDd = dropdown(fx, "Skybox", Shared._skyNames, World.SkyBox.Name,
+        function(v)
+            World.SkyBox.Name = v
+            World.SkyBox._nonce = (World.SkyBox._nonce or 0) + 1
+        end)
+    local skyTitle = skyDd.frame:FindFirstChildOfClass("TextLabel")
+    Shared._skySetStatus = function(s)
+        if skyTitle and skyTitle.Parent then
+            skyTitle.Text = (s and s ~= "") and ("Skybox  " .. s) or "Skybox"
+        end
+    end
+    Shared._skySetStatus(Shared._skyStatusText or "")
+    rightClickSettings(skyDd.frame, "skybox", function(popup)
+        popup:toggle("Sun, Moon & Stars", World.SkyBox.Celestial, function(v)
+            World.SkyBox.Celestial = v
+            World.SkyBox._nonce = (World.SkyBox._nonce or 0) + 1
+        end)
+    end)
     moduleCheckbox(fx, "Remove Sky",     "removesky")
     moduleCheckbox(fx, "Disable Clouds", "noclouds")
     moduleCheckbox(fx, "Low Graphics",   "lowgfx")

@@ -229,6 +229,19 @@ pub fn patch_iat(image: &mut [u8], thunk_va: usize, resolved_addr: u64) -> bool 
     true
 }
 
+// ── exception directory (for RtlAddFunctionTable) ────────────────────────
+
+/// DataDirectory[3] = Exception (.pdata): `(rva, size)` of the RUNTIME_FUNCTION
+/// array. The mapped driver's SEH (__try/__except in KfmCopy) only becomes
+/// findable by the kernel exception unwinder once this table is registered.
+pub fn exception_directory(data: &[u8]) -> Option<(u32, u32)> {
+    let opt = opt_off(data)?;
+    let rva  = u32_at(data, opt + 0x70 + 3 * 8)?;
+    let size = u32_at(data, opt + 0x70 + 3 * 8 + 4)?;
+    if rva == 0 || size == 0 { return None; }
+    Some((rva, size))
+}
+
 // ── stack-cookie fix ──────────────────────────────────────────────────────
 
 /// Randomise the security cookie in the image's LoadConfig directory.

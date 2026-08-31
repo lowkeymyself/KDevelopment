@@ -77,6 +77,28 @@ pub fn map_driver(
     rtc.write_memory(pool_va, &image)?;
     println!("[+] mapper: image written to kernel pool");
 
+    // 7b. Register the mapped module's .pdata with the kernel exception
+    //     unwinder (RtlAddFunctionTable). Without this, __try/__except inside
+    //     a manually-mapped driver is NOT resolved by x64 exception dispatch
+    //     and any fault in KfmCopy would bugcheck the system (0x1E) instead
+    //     of returning STATUS_ACCESS_VIOLATION. With it, a torn/race-faulted
+    //     target address is a recoverable io error, never a BSOD.
+    if let Some((ex_rva, ex_size)) = pe::exception_directory(&image) {
+        let entry_count = (ex_size / 12) as u64; // RUNTIME_FUNCTION = 12 bytes
+        if entry_count > 0 {
+            match rtc.get_module_export(ntos_base, "RtlAddFunctionTable") {
+                Some(raf) => {
+                    let rc = rtc.kernel_call(ntos_base, raf,
+                        pool_va + ex_rva as u64, entry_count, pool_va, 0);
+                    println!("[+] mapper: pdata registered ({} entries): {:?}", entry_count, rc);
+                }
+                None => println!("[!] mapper: RtlAddFunctionTable not found -- SEH will NOT work"),
+            }
+        }
+    } else {
+        println!("[!] mapper: no .pdata in image -- SEH will NOT work");
+    }
+
     // 8. Verify pool content at DriverEntry offset.
     let entry_rva_usize = entry_rva as usize;
     if entry_rva_usize + 16 <= image.len() {

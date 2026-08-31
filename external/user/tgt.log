@@ -1,0 +1,6 @@
+ERROR: Input redirection is not supported, exiting the process immediately.
+koffee-external v0.1.0 -- real driver
+[+] loader: device already accessible -- skipping map
+[!] KoffeeTestTarget.exe not found -- launch it first.
+===TGT=== 
+The system cannot find the file specified.
