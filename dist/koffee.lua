@@ -1,9 +1,9 @@
--- koffee v0.14.0
+-- koffee v0.15.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.14.0"
+Koffee.Version = "0.15.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -13797,15 +13797,18 @@ registerConfig("custom", Koffee.Custom)
         return (part.Position - cam.CFrame.Position).Magnitude, part
     end
     -- per-(block, context) scratch for the blocks that remember things
+    local frameId = 0
     local function slot(node, ctx)
         local k = node.id .. "|" .. ctx.key
         local v = st[k]
         if not v then v = {}; st[k] = v end
+        v._f = frameId
         return v
     end
 
     local FPS, fpsAcc, fpsN = 60, 0, 0
 
+    local guiFor   -- assigned below; Group's eval hands its frame to children
     local KINDS = {}
     local ORDER = {
         "Target", "Self", "Part", "Number", "Text Value", "Colour", "Time",
@@ -13815,7 +13818,8 @@ registerConfig("custom", Koffee.Custom)
         "Delay", "Format", "Colour Mix", "Colour Cycle", "Pick Number",
         "Pick Colour", "Switch",
         "Screen Position", "Offset",
-        "Text",
+        "Text", "Box", "Bar", "Line", "Circle", "Image", "Group",
+        "Sound", "Notify", "Adorn Part", "Note",
     }
 
     ---------------------------------------------------------------- sources
@@ -14457,7 +14461,8 @@ registerConfig("custom", Koffee.Custom)
     local function visIns(extra)
         local t = {}
         for _, e in ipairs(extra or {}) do t[#t + 1] = e end
-        t[#t + 1] = { key = "pos",   type = "point", label = "Position" }
+        t[#t + 1] = { key = "pos",    type = "point", label = "Position" }
+        t[#t + 1] = { key = "parent", type = "frame", label = "Inside Group" }
         t[#t + 1] = { key = "color", type = "color", label = "Colour" }
         t[#t + 1] = { key = "show",  type = "bool",  label = "Show When" }
         return t
@@ -14480,13 +14485,18 @@ registerConfig("custom", Koffee.Custom)
     local function placeVis(gui, o, ins, node, ctx, dt)
         if ins.show and (ins.show.bool ~= true) then gui.Visible = false; return false end
         gui.Visible = true
+        local host = (ins.parent and ins.parent.frame) or ensureLayer()
+        if host ~= gui and gui.Parent ~= host then pcall(function() gui.Parent = host end) end
         local p = ins.pos and ins.pos.point
         if p then
-            gui.Position = UDim2.new(0, p.X, 0, p.Y)
+            -- a wired Position is absolute screen pixels, so rebase it when the
+            -- block is sitting inside a Group
+            local a = (gui.Parent ~= layer) and gui.Parent.AbsolutePosition or Vector2.new(0, 0)
+            gui.Position = UDim2.new(0, p.X - a.X, 0, p.Y - a.Y)
         else
-            local vp = viewport()
-            gui.Position = UDim2.new(0, vp.X * math.clamp(o.X, 0, 100) / 100,
-                                     0, vp.Y * math.clamp(o.Y, 0, 100) / 100)
+            -- scale, so X/Y stay a percentage of whatever the block lives in
+            gui.Position = UDim2.new(math.clamp(o.X, 0, 100) / 100, 0,
+                                     math.clamp(o.Y, 0, 100) / 100, 0)
         end
         local rot = o.Rotation or 0
         if o.Spin then
@@ -14580,6 +14590,449 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
+    KINDS.Box = {
+        blurb = "a rectangle",
+        sink = true, visual = true,
+        ins = visIns({ { key = "w", type = "number", label = "Width" },
+                       { key = "h", type = "number", label = "Height" } }),
+        outs = {},
+        opts = visOpts({ W = 120, H = 40, Color = Color3.fromRGB(20, 20, 20), Alpha = 0.3,
+                 Radius = 4, Outline = true, OutlineThickness = 1,
+                 OutlineColor = Color3.fromRGB(238, 238, 238) }),
+        make = function()
+            local f = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0,
+                ZIndex = 17, Parent = ensureLayer(),
+            }, { new("UICorner"), new("UIStroke") })
+            f:SetAttribute("KUserColor", true)
+            for _, d in ipairs(f:GetDescendants()) do d:SetAttribute("KUserColor", true) end
+            return f
+        end,
+        paint = function(f, o, ins, node, ctx, dt)
+            if not placeVis(f, o, ins, node, ctx, dt) then return end
+            local w = (ins.w and ins.w.number) or o.W
+            local h = (ins.h and ins.h.number) or o.H
+            f.Size = UDim2.new(0, math.max(w, 1), 0, math.max(h, 1))
+            f.BackgroundColor3 = (ins.color and ins.color.color) or o.Color
+            f.BackgroundTransparency = 1 - (1 - math.clamp(o.Alpha, 0, 1))
+                * math.clamp(o.Opacity or 1, 0, 1)
+            local c = f:FindFirstChildOfClass("UICorner")
+            if c then c.CornerRadius = UDim.new(0, o.Radius or 0) end
+            local sk = f:FindFirstChildOfClass("UIStroke")
+            if sk then
+                sk.Enabled = o.Outline == true and (o.OutlineThickness or 0) > 0
+                sk.Thickness = o.OutlineThickness or 0
+                sk.Color = o.OutlineColor
+                sk.Transparency = 1 - math.clamp(o.Opacity or 1, 0, 1)
+            end
+        end,
+        ui = function(api, o)
+            api:slider("Width", 1, 1200, o.W, 0, function(v) o.W = v end)
+            api:slider("Height", 1, 1200, o.H, 0, function(v) o.H = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            api:slider("Fill", 0, 1, o.Alpha, 2, function(v) o.Alpha = v end)
+            api:slider("Corner Radius", 0, 32, o.Radius, 0, function(v) o.Radius = v end)
+            api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
+            api:slider("Outline Thickness", 0, 8, o.OutlineThickness, 1,
+                function(v) o.OutlineThickness = v end)
+            api:swatch("Outline Colour", o.OutlineColor, function(c) o.OutlineColor = c end)
+            visUiTail(api, o)
+        end,
+    }
+
+    KINDS.Bar = {
+        blurb = "a progress bar driven by a 0-1 number",
+        sink = true, visual = true,
+        ins = visIns({ { key = "value", type = "number", label = "Fill 0-1" } }),
+        outs = {},
+        opts = visOpts({ W = 120, H = 8, Dir = "Left to Right",
+                 FillColor = Color3.fromRGB(122, 220, 134),
+                 BgColor = Color3.fromRGB(16, 16, 16), BgAlpha = 0.45,
+                 Radius = 3, Outline = true, OutlineColor = Color3.fromRGB(0, 0, 0) }),
+        make = function()
+            local f = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0,
+                ClipsDescendants = true, ZIndex = 17, Parent = ensureLayer(),
+            }, { new("UICorner"), new("UIStroke"),
+                 new("Frame", { Name = "Fill", BorderSizePixel = 0, ZIndex = 18 }) })
+            f:SetAttribute("KUserColor", true)
+            for _, d in ipairs(f:GetDescendants()) do d:SetAttribute("KUserColor", true) end
+            return f
+        end,
+        paint = function(f, o, ins, node, ctx, dt)
+            if not placeVis(f, o, ins, node, ctx, dt) then return end
+            local op = math.clamp(o.Opacity or 1, 0, 1)
+            f.Size = UDim2.new(0, math.max(o.W, 1), 0, math.max(o.H, 1))
+            f.BackgroundColor3 = o.BgColor
+            f.BackgroundTransparency = 1 - (1 - math.clamp(o.BgAlpha, 0, 1)) * op
+            local c = f:FindFirstChildOfClass("UICorner")
+            if c then c.CornerRadius = UDim.new(0, o.Radius or 0) end
+            local sk = f:FindFirstChildOfClass("UIStroke")
+            if sk then
+                sk.Enabled = o.Outline == true
+                sk.Color = o.OutlineColor
+                sk.Transparency = 1 - op
+            end
+            local fill = f:FindFirstChild("Fill")
+            if not fill then return end
+            local t = math.clamp((ins.value and ins.value.number) or 0, 0, 1)
+            fill.BackgroundColor3 = (ins.color and ins.color.color) or o.FillColor
+            fill.BackgroundTransparency = 1 - op
+            local d = o.Dir
+            if d == "Right to Left" then
+                fill.Size = UDim2.new(t, 0, 1, 0); fill.Position = UDim2.new(1 - t, 0, 0, 0)
+            elseif d == "Bottom to Top" then
+                fill.Size = UDim2.new(1, 0, t, 0); fill.Position = UDim2.new(0, 0, 1 - t, 0)
+            elseif d == "Top to Bottom" then
+                fill.Size = UDim2.new(1, 0, t, 0); fill.Position = UDim2.new(0, 0, 0, 0)
+            else
+                fill.Size = UDim2.new(t, 0, 1, 0); fill.Position = UDim2.new(0, 0, 0, 0)
+            end
+        end,
+        ui = function(api, o)
+            api:slider("Width", 1, 1200, o.W, 0, function(v) o.W = v end)
+            api:slider("Height", 1, 200, o.H, 0, function(v) o.H = v end)
+            api:dropdown("Direction", { "Left to Right", "Right to Left",
+                "Bottom to Top", "Top to Bottom" }, o.Dir, function(v) o.Dir = v end)
+            api:swatch("Fill Colour", o.FillColor, function(c) o.FillColor = c end)
+            api:swatch("Background Colour", o.BgColor, function(c) o.BgColor = c end)
+            api:slider("Background Fill", 0, 1, o.BgAlpha, 2, function(v) o.BgAlpha = v end)
+            api:slider("Corner Radius", 0, 32, o.Radius, 0, function(v) o.Radius = v end)
+            api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
+            api:swatch("Outline Colour", o.OutlineColor, function(c) o.OutlineColor = c end)
+            visUiTail(api, o)
+        end,
+    }
+
+    KINDS.Line = {
+        blurb = "a line between two screen positions",
+        sink = true, visual = true,
+        ins = { { key = "a", type = "point", label = "From" },
+                { key = "b", type = "point", label = "To" },
+                { key = "color", type = "color", label = "Colour" },
+                { key = "show", type = "bool", label = "Show When" } },
+        outs = {},
+        opts = { Thickness = 2, Color = Color3.fromRGB(238, 238, 238), Opacity = 1,
+                 FromX = 50, FromY = 100, ToX = 50, ToY = 50 },
+        make = function()
+            local f = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0,
+                ZIndex = 17, Parent = ensureLayer(),
+            })
+            f:SetAttribute("KUserColor", true)
+            return f
+        end,
+        paint = function(f, o, ins)
+            if ins.show and (ins.show.bool ~= true) then f.Visible = false; return end
+            f.Visible = true
+            local vp = viewport()
+            local a = (ins.a and ins.a.point) or Vector2.new(vp.X * o.FromX / 100, vp.Y * o.FromY / 100)
+            local b = (ins.b and ins.b.point) or Vector2.new(vp.X * o.ToX / 100, vp.Y * o.ToY / 100)
+            local d = b - a
+            f.Size = UDim2.new(0, d.Magnitude, 0, math.max(o.Thickness, 1))
+            f.Position = UDim2.new(0, (a.X + b.X) * 0.5, 0, (a.Y + b.Y) * 0.5)
+            f.Rotation = math.deg(math.atan2(d.Y, d.X))
+            f.BackgroundColor3 = (ins.color and ins.color.color) or o.Color
+            f.BackgroundTransparency = 1 - math.clamp(o.Opacity or 1, 0, 1)
+        end,
+        ui = function(api, o)
+            api:slider("Thickness", 1, 20, o.Thickness, 1, function(v) o.Thickness = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            api:slider("Opacity", 0, 1, o.Opacity, 2, function(v) o.Opacity = v end)
+            api:label("From/To below are used only while those inputs are unwired")
+            api:slider("From X %", 0, 100, o.FromX, 1, function(v) o.FromX = v end)
+            api:slider("From Y %", 0, 100, o.FromY, 1, function(v) o.FromY = v end)
+            api:slider("To X %", 0, 100, o.ToX, 1, function(v) o.ToX = v end)
+            api:slider("To Y %", 0, 100, o.ToY, 1, function(v) o.ToY = v end)
+        end,
+    }
+
+    KINDS.Circle = {
+        blurb = "a ring or a dot",
+        sink = true, visual = true,
+        ins = visIns({ { key = "radius", type = "number", label = "Radius" } }),
+        outs = {},
+        opts = visOpts({ Radius = 60, Thickness = 2, Filled = false,
+                 Color = Color3.fromRGB(238, 238, 238), Alpha = 1 }),
+        make = function()
+            local f = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0,
+                ZIndex = 17, Parent = ensureLayer(),
+            }, { pillCorner(), new("UIStroke") })
+            f:SetAttribute("KUserColor", true)
+            for _, d in ipairs(f:GetDescendants()) do d:SetAttribute("KUserColor", true) end
+            return f
+        end,
+        paint = function(f, o, ins, node, ctx, dt)
+            if not placeVis(f, o, ins, node, ctx, dt) then return end
+            local r = math.max((ins.radius and ins.radius.number) or o.Radius, 1)
+            local op = math.clamp(o.Opacity or 1, 0, 1)
+            local col = (ins.color and ins.color.color) or o.Color
+            f.Size = UDim2.new(0, r * 2, 0, r * 2)
+            f.BackgroundColor3 = col
+            f.BackgroundTransparency = o.Filled
+                and (1 - (1 - math.clamp(o.Alpha, 0, 1)) * op) or 1
+            local sk = f:FindFirstChildOfClass("UIStroke")
+            if sk then
+                sk.Enabled = not o.Filled
+                sk.Thickness = math.max(o.Thickness, 0.1)
+                sk.Color = col
+                sk.Transparency = 1 - op
+            end
+        end,
+        ui = function(api, o)
+            api:slider("Radius", 1, 600, o.Radius, 0, function(v) o.Radius = v end)
+            api:slider("Thickness", 0.1, 20, o.Thickness, 1, function(v) o.Thickness = v end)
+            api:toggle("Filled", o.Filled, function(v) o.Filled = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            api:slider("Fill", 0, 1, o.Alpha, 2, function(v) o.Alpha = v end)
+            visUiTail(api, o)
+        end,
+    }
+
+    KINDS.Image = {
+        blurb = "an image, or a player's avatar",
+        sink = true, visual = true,
+        ins = visIns({ { key = "player", type = "player", label = "Avatar Of" } }),
+        outs = {},
+        opts = visOpts({ Asset = "", W = 64, H = 64, Radius = 6,
+                 Tint = Color3.fromRGB(255, 255, 255) }),
+        make = function()
+            local f = new("ImageLabel", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+                BorderSizePixel = 0, ZIndex = 17, Parent = ensureLayer(),
+            }, { new("UICorner") })
+            f:SetAttribute("KUserColor", true)
+            return f
+        end,
+        paint = function(f, o, ins, node, ctx, dt)
+            if not placeVis(f, o, ins, node, ctx, dt) then return end
+            f.Size = UDim2.new(0, math.max(o.W, 1), 0, math.max(o.H, 1))
+            f.ImageColor3 = (ins.color and ins.color.color) or o.Tint
+            f.ImageTransparency = 1 - math.clamp(o.Opacity or 1, 0, 1)
+            local c = f:FindFirstChildOfClass("UICorner")
+            if c then c.CornerRadius = UDim.new(0, o.Radius or 0) end
+            local plr = ins.player and ins.player.player
+            if plr then
+                local s = slot(node, ctx)
+                if s.uid ~= plr.UserId then
+                    s.uid = plr.UserId
+                    s.url = ""
+                    task.spawn(function()
+                        local ok, url = pcall(function()
+                            return Players:GetUserThumbnailAsync(plr.UserId,
+                                Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+                        end)
+                        if ok then s.url = url end
+                    end)
+                end
+                f.Image = s.url or ""
+            else
+                local a = tostring(o.Asset or "")
+                f.Image = (a ~= "" and not a:find("://")) and ("rbxassetid://" .. a) or a
+            end
+        end,
+        ui = function(api, o)
+            api:text("Asset id", o.Asset, function(v) o.Asset = v end)
+            api:label("ignored while Avatar Of is wired")
+            api:slider("Width", 1, 512, o.W, 0, function(v) o.W = v end)
+            api:slider("Height", 1, 512, o.H, 0, function(v) o.H = v end)
+            api:slider("Corner Radius", 0, 128, o.Radius, 0, function(v) o.Radius = v end)
+            api:swatch("Tint", o.Tint, function(c) o.Tint = c end)
+            visUiTail(api, o)
+        end,
+    }
+
+    KINDS.Group = {
+        blurb = "a panel other blocks can sit inside, so the whole widget moves as one",
+        sink = true, visual = true,
+        ins = visIns(), outs = { frame = true },
+        opts = visOpts({ W = 220, H = 90, Color = Color3.fromRGB(16, 16, 16), Alpha = 0.4,
+                 Radius = 6, Outline = true, OutlineColor = Color3.fromRGB(90, 90, 90) }),
+        make = function()
+            local f = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0,
+                ZIndex = 17, Parent = ensureLayer(),
+            }, { new("UICorner"), new("UIStroke") })
+            f:SetAttribute("KUserColor", true)
+            for _, d in ipairs(f:GetDescendants()) do d:SetAttribute("KUserColor", true) end
+            return f
+        end,
+        eval = function(o, ins, ctx, node)
+            return { frame = guiFor(node, KINDS.Group, ctx) }
+        end,
+        paint = function(f, o, ins, node, ctx, dt)
+            if not placeVis(f, o, ins, node, ctx, dt) then return end
+            local op = math.clamp(o.Opacity or 1, 0, 1)
+            f.Size = UDim2.new(0, math.max(o.W, 1), 0, math.max(o.H, 1))
+            f.BackgroundColor3 = o.Color
+            f.BackgroundTransparency = 1 - (1 - math.clamp(o.Alpha, 0, 1)) * op
+            local c = f:FindFirstChildOfClass("UICorner")
+            if c then c.CornerRadius = UDim.new(0, o.Radius or 0) end
+            local sk = f:FindFirstChildOfClass("UIStroke")
+            if sk then
+                sk.Enabled = o.Outline == true
+                sk.Color = o.OutlineColor
+                sk.Transparency = 1 - op
+            end
+        end,
+        ui = function(api, o)
+            api:slider("Width", 1, 1600, o.W, 0, function(v) o.W = v end)
+            api:slider("Height", 1, 1200, o.H, 0, function(v) o.H = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            api:slider("Fill", 0, 1, o.Alpha, 2, function(v) o.Alpha = v end)
+            api:slider("Corner Radius", 0, 32, o.Radius, 0, function(v) o.Radius = v end)
+            api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
+            api:swatch("Outline Colour", o.OutlineColor, function(c) o.OutlineColor = c end)
+            visUiTail(api, o)
+        end,
+    }
+
+    ---------------------------------------------------------------- actions
+    KINDS.Sound = {
+        blurb = "plays a sound the moment something becomes true",
+        sink = true,
+        ins = { { key = "bool", type = "bool", label = "When" } },
+        outs = {},
+        opts = { Asset = "", Volume = 0.6, Pitch = 1, Cooldown = 0.15, Edge = "becomes yes" },
+        paint = function(_, o, ins, node, ctx)
+            local want = (ins.bool and ins.bool.bool) == true
+            local s, now = slot(node, ctx), os.clock()
+            local fire
+            if o.Edge == "becomes no" then fire = (s.prev == true) and not want
+            elseif o.Edge == "while yes" then fire = want
+            else fire = want and (s.prev ~= true) end
+            s.prev = want
+            if not fire then return end
+            if now - (s.at or 0) < (o.Cooldown or 0) then return end
+            s.at = now
+            local a = tostring(o.Asset or "")
+            if a == "" then return end
+            local snd = Instance.new("Sound")
+            snd.SoundId = a:find("://") and a or ("rbxassetid://" .. a)
+            snd.Volume = math.clamp(o.Volume or 0.6, 0, 4)
+            snd.PlaybackSpeed = math.clamp(o.Pitch or 1, 0.1, 4)
+            snd.Parent = Workspace.CurrentCamera or Workspace
+            snd:Play()
+            task.delay(6, function() if snd then snd:Destroy() end end)
+        end,
+        ui = function(api, o)
+            api:text("Sound id", o.Asset, function(v) o.Asset = v end)
+            api:dropdown("Fire when it", { "becomes yes", "becomes no", "while yes" },
+                o.Edge, function(v) o.Edge = v end)
+            api:slider("Volume", 0, 3, o.Volume, 2, function(v) o.Volume = v end)
+            api:slider("Pitch", 0.1, 3, o.Pitch, 2, function(v) o.Pitch = v end)
+            api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
+        end,
+    }
+
+    KINDS.Notify = {
+        blurb = "flashes a message when something becomes true",
+        sink = true, visual = true,
+        ins = { { key = "bool", type = "bool", label = "When" },
+                { key = "a", type = "text", label = "Value A" },
+                { key = "color", type = "color", label = "Colour" } },
+        outs = {},
+        opts = { Text = "TRIGGERED  {a}", Color = Color3.fromRGB(238, 238, 238),
+                 Size = 20, Font = "None", Hold = 1.5, Cooldown = 0.5,
+                 X = 50, Y = 22 },
+        make = function()
+            local lb = new("TextLabel", {
+                BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5),
+                AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.new(0, 0, 0, 0),
+                Visible = false, ZIndex = 18, Parent = ensureLayer(),
+            }, { new("UIStroke", { ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+                    Thickness = 2, Color = Color3.new(0, 0, 0) }) })
+            lb:SetAttribute("KUserColor", true)
+            for _, d in ipairs(lb:GetDescendants()) do d:SetAttribute("KUserColor", true) end
+            return lb
+        end,
+        paint = function(lb, o, ins, node, ctx)
+            local want = (ins.bool and ins.bool.bool) == true
+            local s, now = slot(node, ctx), os.clock()
+            if want and s.prev ~= true and now - (s.at or 0) >= (o.Cooldown or 0) then
+                s.at, s.until_ = now, now + (o.Hold or 1.5)
+            end
+            s.prev = want
+            if not s.until_ or now > s.until_ then lb.Visible = false; return end
+            lb.Visible = true
+            local a = (ins.a and ins.a.text) or ""
+            lb.Text = (o.Text or ""):gsub("{a}", a)
+            lb.TextColor3 = (ins.color and ins.color.color) or o.Color
+            lb.TextSize = o.Size
+            lb.FontFace = (Theme.loadFeiFont and Theme.loadFeiFont(o.Font)) or Theme.Fonts.Bold
+            local vp = viewport()
+            lb.Position = UDim2.new(0, vp.X * math.clamp(o.X, 0, 100) / 100,
+                                    0, vp.Y * math.clamp(o.Y, 0, 100) / 100)
+            local left = (s.until_ - now) / math.max(o.Hold or 1.5, 0.01)
+            lb.TextTransparency = 1 - math.clamp(left * 3, 0, 1)
+        end,
+        ui = function(api, o)
+            api:text("Text  ({a})", o.Text, function(v) o.Text = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            api:dropdown("Font", Theme.FontNames, o.Font, function(v) o.Font = v end)
+            api:slider("Size", 8, 96, o.Size, 0, function(v) o.Size = v end)
+            api:slider("Hold (s)", 0.2, 10, o.Hold, 2, function(v) o.Hold = v end)
+            api:slider("Cooldown (s)", 0, 10, o.Cooldown, 2, function(v) o.Cooldown = v end)
+            api:slider("X %", 0, 100, o.X, 1, function(v) o.X = v end)
+            api:slider("Y %", 0, 100, o.Y, 1, function(v) o.Y = v end)
+        end,
+    }
+
+    KINDS["Adorn Part"] = {
+        blurb = "outlines a part in the world while something is true",
+        sink = true, visual = true,
+        ins = { { key = "part", type = "part", label = "Part" },
+                { key = "player", type = "player", label = "Player" },
+                { key = "color", type = "color", label = "Colour" },
+                { key = "show", type = "bool", label = "Show When" } },
+        outs = {},
+        opts = { Fill = Color3.fromRGB(217, 150, 95), Outline = Color3.fromRGB(255, 255, 255),
+                 FillAlpha = 0.6, OutlineAlpha = 0, AlwaysOnTop = true },
+        make = function()
+            local h = Instance.new("Highlight")
+            h.Name = KID.name("cfadorn")
+            h.Enabled = false
+            h.Parent = Workspace.CurrentCamera or Workspace
+            KID.track(h)
+            return h
+        end,
+        paint = function(h, o, ins)
+            if ins.show and (ins.show.bool ~= true) then h.Enabled = false; return end
+            local target = ins.part and ins.part.part
+            if not target then
+                local plr = ins.player and ins.player.player
+                target = plr and plr.Character or nil
+            end
+            if not target then h.Enabled = false; return end
+            h.Adornee = target
+            h.Enabled = true
+            h.FillColor = (ins.color and ins.color.color) or o.Fill
+            h.OutlineColor = o.Outline
+            h.FillTransparency = 1 - math.clamp(o.FillAlpha, 0, 1)
+            h.OutlineTransparency = math.clamp(o.OutlineAlpha, 0, 1)
+            pcall(function()
+                h.DepthMode = o.AlwaysOnTop and Enum.HighlightDepthMode.AlwaysOnTop
+                    or Enum.HighlightDepthMode.Occluded
+            end)
+        end,
+        ui = function(api, o)
+            api:swatch("Fill Colour", o.Fill, function(c) o.Fill = c end)
+            api:slider("Fill Strength", 0, 1, o.FillAlpha, 2, function(v) o.FillAlpha = v end)
+            api:swatch("Outline Colour", o.Outline, function(c) o.Outline = c end)
+            api:slider("Outline Fade", 0, 1, o.OutlineAlpha, 2, function(v) o.OutlineAlpha = v end)
+            api:toggle("See Through Walls", o.AlwaysOnTop, function(v) o.AlwaysOnTop = v end)
+            api:label("roblox stops drawing highlights past about 30 at once")
+        end,
+    }
+
+    KINDS.Note = {
+        blurb = "a label on the canvas. draws nothing in game",
+        ins = {}, outs = {},
+        opts = { Text = "notes" },
+        ui = function(api, o) api:text("Note", o.Text, function(v) o.Text = v end) end,
+    }
+
     ------------------------------------------------------------- evaluation
     local frameDt = 1 / 60
     local resolveIns, evalNode
@@ -14655,7 +15108,7 @@ registerConfig("custom", Koffee.Custom)
         return out
     end
 
-    local function guiFor(node, K, ctx)
+    guiFor = function(node, K, ctx)
         local key = node.id .. "|" .. ctx.key
         local g = vis[key]
         if g and g.Parent then return g end
@@ -14667,7 +15120,7 @@ registerConfig("custom", Koffee.Custom)
 
     RunService.RenderStepped:Connect(function(dt)
         if Koffee._unloaded then return end
-        frameDt = dt
+        frameDt, frameId = dt, frameId + 1
         fpsAcc, fpsN = fpsAcc + dt, fpsN + 1
         if fpsAcc >= 0.25 then FPS = fpsN / fpsAcc; fpsAcc, fpsN = 0, 0 end
         local alive = {}
@@ -14680,8 +15133,9 @@ registerConfig("custom", Koffee.Custom)
                     local ctxs = fe and playersFor(fe.opts) or { GCTX }
                     for _, ctx in ipairs(ctxs) do
                         alive[node.id .. "|" .. ctx.key] = true
-                        local g = guiFor(node, K, ctx)
-                        if g then
+                        -- action blocks (Sound) have no GUI of their own
+                        local g = K.make and guiFor(node, K, ctx) or nil
+                        if g or not K.make then
                             local ins = resolveIns(node, K, cache, 0, ctx)
                             pcall(K.paint, g, node.opts, ins, node, ctx, dt)
                         end
@@ -14690,7 +15144,10 @@ registerConfig("custom", Koffee.Custom)
             end
         end
         for key, g in pairs(vis) do
-            if not alive[key] then g:Destroy(); vis[key] = nil; st[key] = nil end
+            if not alive[key] then g:Destroy(); vis[key] = nil end
+        end
+        for key, v in pairs(st) do
+            if v._f ~= frameId then st[key] = nil end
         end
     end)
 
@@ -14864,7 +15321,14 @@ registerConfig("custom", Koffee.Custom)
     -- analytic node geometry: port centres never wait on a layout pass
     local NODE_W, HEAD_H, ROW_H, WIRE_SEG = 172, 24, 20, 12
     local TOOL_H, INSP_W, CANVAS_W, CANVAS_H = 82, 202, 2600, 1800
-    local function nodeH(K) return HEAD_H + math.max(#K.ins, 1) * ROW_H + 6 end
+    local function nodeH(K, node)
+        if node and node.fold then return HEAD_H + 4 end
+        return HEAD_H + math.max(#K.ins, 1) * ROW_H + 6
+    end
+    local function portY(node, i)
+        if node.fold then return HEAD_H * 0.5 end
+        return HEAD_H + (i - 0.5) * ROW_H
+    end
     local function bez(x1, y1, ax, ay, bx, by, x2, y2, t)
         local u = 1 - t
         local a, b, c, d = u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t
@@ -14998,8 +15462,8 @@ registerConfig("custom", Koffee.Custom)
                         local src = node.wires and node.wires[slot.key]
                         src = src and nodeById(src)
                         if src and KINDS[src.kind] then
-                            local x2, y2 = node.x, node.y + HEAD_H + (i - 0.5) * ROW_H
-                            local x1, y1 = src.x + NODE_W, src.y + HEAD_H + 0.5 * ROW_H
+                            local x2, y2 = node.x, node.y + portY(node, i)
+                            local x1, y1 = src.x + NODE_W, src.y + portY(src, 1)
                             local off = math.max(40, math.abs(x2 - x1) * 0.5)
                             local px, py = x1, y1
                             for s = 1, WIRE_SEG do
@@ -15031,7 +15495,7 @@ registerConfig("custom", Koffee.Custom)
                     local picked = (sel == node.id)
                     local f = new("Frame", {
                         Position = UDim2.new(0, node.x, 0, node.y),
-                        Size = UDim2.new(0, NODE_W, 0, nodeH(K)),
+                        Size = UDim2.new(0, NODE_W, 0, nodeH(K, node)),
                         BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.02,
                         BorderSizePixel = 0, Active = true, ZIndex = 35, Parent = canvas,
                     }, { corner(6),
@@ -15039,7 +15503,10 @@ registerConfig("custom", Koffee.Custom)
                     nodeFrames[node.id] = f
 
                     local head = new("TextButton", {
-                        Text = "  " .. node.kind:lower(), AutoButtonColor = false,
+                        Text = "  " .. (node.kind == "Note"
+                            and (node.opts.Text ~= "" and node.opts.Text or "note")
+                            or node.kind:lower()),
+                        AutoButtonColor = false,
                         FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
                         TextColor3 = picked and Theme.Palette.Accent or Theme.Palette.Text,
                         TextXAlignment = Enum.TextXAlignment.Left,
@@ -15054,6 +15521,18 @@ registerConfig("custom", Koffee.Custom)
                         Position = UDim2.new(1, -5, 0.5, 0), Size = UDim2.new(0, 16, 0, 16),
                         ZIndex = 37, Parent = head,
                     })
+                    local fold = new("TextButton", {
+                        Text = node.fold and "+" or "-", AutoButtonColor = false,
+                        FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+                        TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                        AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, -21, 0.5, 0), Size = UDim2.new(0, 16, 0, 16),
+                        ZIndex = 37, Parent = head,
+                    })
+                    fold.MouseButton1Click:Connect(function()
+                        node.fold = not node.fold or nil
+                        rebuildAll()
+                    end)
                     del.MouseButton1Click:Connect(function()
                         removeNode(node.id)
                         if sel == node.id then sel = nil end
@@ -15071,6 +15550,7 @@ registerConfig("custom", Koffee.Custom)
 
                     for i, slot in ipairs(K.ins) do
                         local y = HEAD_H + (i - 1) * ROW_H
+                        if not node.fold then
                         new("TextLabel", {
                             Text = slot.label, FontFace = Theme.Fonts.Regular,
                             TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
@@ -15078,14 +15558,16 @@ registerConfig("custom", Koffee.Custom)
                             Size = UDim2.new(1, -26, 0, ROW_H),
                             TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 36, Parent = f,
                         })
+                        end
                         local lit = node.wires and node.wires[slot.key] ~= nil
                         local p = new("TextButton", {
                             Text = "", AutoButtonColor = false, BorderSizePixel = 0,
                             BackgroundColor3 = lit and Theme.Palette.Accent
                                 or Theme.Palette.PanelElevated,
                             AnchorPoint = Vector2.new(0.5, 0.5),
-                            Position = UDim2.new(0, 0, 0, y + ROW_H * 0.5),
-                            Size = UDim2.new(0, 11, 0, 11), ZIndex = 38, Parent = f,
+                            Position = UDim2.new(0, 0, 0, portY(node, i)),
+                            Size = UDim2.new(0, node.fold and 7 or 11, 0, node.fold and 7 or 11),
+                            ZIndex = 38, Parent = f,
                         }, { pillCorner(), stroke(Theme.Palette.Border) })
                         p.MouseButton1Click:Connect(function()
                             node.wires = node.wires or {}
@@ -15109,7 +15591,7 @@ registerConfig("custom", Koffee.Custom)
                             BackgroundColor3 = (pending == node.id) and Theme.Palette.Accent
                                 or Theme.Palette.PanelElevated,
                             AnchorPoint = Vector2.new(0.5, 0.5),
-                            Position = UDim2.new(1, 0, 0, HEAD_H + ROW_H * 0.5),
+                            Position = UDim2.new(1, 0, 0, portY(node, 1)),
                             Size = UDim2.new(0, 11, 0, 11), ZIndex = 38, Parent = f,
                         }, { pillCorner(), stroke(Theme.Palette.Border) })
                         op.MouseButton1Click:Connect(function()
