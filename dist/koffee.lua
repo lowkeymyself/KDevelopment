@@ -1,9 +1,9 @@
--- koffee v0.15.2
+-- koffee v0.15.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.15.2"
+Koffee.Version = "0.15.3"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -1639,6 +1639,7 @@ end)
 local Modules = {}
 local KoffeeOptions = {
     Arraylist = true, ArraylistOutline = false, ArraylistOutlineSize = 1,
+    TopBar = true,   -- v0.15.3: the always-on HUD strip
     -- v0.0.97 custom feature-interface font (arraylist / ESP / health text / HUD stats,
     -- everything outside the main Koffee window). On/Name/Size ride the config system.
     CustomFontOn   = false,
@@ -1679,6 +1680,15 @@ local function arrayPlainText(mod)
     if detail ~= "" then s = s .. detail end
     if mod.IsActive and mod.IsActive() then s = s .. "  on" end
     return s
+end
+
+-- v0.15.3: hiding the top strip also lifts the arraylist into the space it left,
+-- otherwise the modules float with a 46px gap above them. Declared here so both
+-- KoffeeOptions and the two frames it touches are already in scope.
+local function applyTopBar()
+    local on = KoffeeOptions.TopBar ~= false
+    hud.Visible = on
+    activeArray.Position = UDim2.new(0, 16, 0, (on and Theme.Sizes.HudHeight or 0) + 12)
 end
 
 local function buildArrayLabelText(mod)
@@ -4118,7 +4128,8 @@ local function loadSnapshot(data)
     -- v0.0.96: the Arraylist option is registered state too, so a load can flip
     -- it -- re-apply the actual column visibility (the rebuilt tab's checkbox
     -- reads KoffeeOptions but nothing drives the live column off it).
-    if labelsColumn then labelsColumn.Visible = KoffeeOptions.Arraylist == true end
+    if activeArray then activeArray.Visible = KoffeeOptions.Arraylist == true end
+    if applyTopBar then pcall(applyTopBar) end
     -- v0.0.97: a loaded config can flip CustomFontOn / change the font / size --
     -- push those into the Theme so the feature interface reflects the saved state.
     pcall(function()
@@ -13595,7 +13606,11 @@ addTab("Options", function(root)
     local uiPanel = panel(root, "Interface")
     local arrRow = configCheckbox(uiPanel, "Arraylist", KoffeeOptions.Arraylist, function(v)
         KoffeeOptions.Arraylist = v
-        labelsColumn.Visible = v
+        activeArray.Visible = v
+    end)
+    configCheckbox(uiPanel, "Top Bar", KoffeeOptions.TopBar, function(v)
+        KoffeeOptions.TopBar = v
+        applyTopBar()
     end)
     rightClickSettings(arrRow.row, "arraylist", function(menu)
         menu:toggle("Overwrite Outline", KoffeeOptions.ArraylistOutline, function(v)
