@@ -1,9 +1,9 @@
--- koffee v0.17.0
+-- koffee v0.17.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.17.0"
+Koffee.Version = "0.17.1"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -6476,7 +6476,7 @@ Koffee.Bullets = {
     Impact      = true,
     MaxDistance = 3000,
     TeamCheck   = false,
-    ShowOwn     = false,
+    ShowOwn     = true,
     MaxLive     = 24,
 }
 registerConfig("bullets", Koffee.Bullets)
@@ -6494,6 +6494,14 @@ registerConfig("bullets", Koffee.Bullets)
     local hooks, stats, pinned, hookCount = {}, {}, nil, 0
     local shots, linePool, dotPool = {}, {}, {}
     local layer, started = nil, false
+
+    -- v0.17.1 OWN SHOTS. The inbound path structurally cannot see your own fire:
+    -- servers broadcast a shot to everyone EXCEPT the shooter, because the shooter's
+    -- own client already drew it locally. So your shots come off the OUTBOUND side
+    -- instead -- silent aim's __namecall hook drops raw FireServer args into this
+    -- queue and we drain it out here, where namecalls are legal again.
+    local outQ, statsOut, pinnedOut = {}, {}, nil
+    Shared._bulletOut = outQ
 
     -- re-exec: these connections live on the GAME's remotes, so KID's instance
     -- sweep can't reach them and a second run would double-hook every gun remote.
@@ -6615,10 +6623,15 @@ registerConfig("bullets", Koffee.Bullets)
 
     ------------------------------------------------------------------ intake
 
-    local function dupe(o, t, now)
-        for i = #shots, math.max(1, #shots - 6), -1 do
+    -- a game that DOES echo your own shot back sends it a round-trip later than the
+    -- outbound tap recorded it, so own shots get a much wider window than the plain
+    -- two-sources-one-shot case.
+    local function dupe(o, t, now, mine)
+        local win = mine and 0.4 or 0.06
+        local tol = mine and 12 or 6
+        for i = #shots, math.max(1, #shots - 8), -1 do
             local s = shots[i]
-            if now - s.t < 0.06 and (s.a - o).Magnitude < 2 and (s.b - t).Magnitude < 6 then
+            if now - s.t < win and (s.a - o).Magnitude < 3 and (s.b - t).Magnitude < tol then
                 return true
             end
         end
@@ -6632,7 +6645,7 @@ registerConfig("bullets", Koffee.Bullets)
         local cam = Workspace.CurrentCamera
         if cam and (o - cam.CFrame.Position).Magnitude > B.MaxDistance then return false end
         local now = os.clock()
-        if dupe(o, t, now) then return false end
+        if dupe(o, t, now, src == LocalPlayer) then return false end
         local col = B.Color
         if B.TeamColor and src and src.TeamColor then col = src.TeamColor.Color end
         shots[#shots + 1] = { a = o, b = t, t = now, col = col }
@@ -6663,6 +6676,69 @@ registerConfig("bullets", Koffee.Bullets)
             if not pinned and st.hits >= LOCK_HITS then
                 pinned = ev
                 setStatus("(locked on " .. ev.Name .. ")")
+            end
+        end
+    end
+
+    ------------------------------------------------------------------ own shots
+
+    -- for our own fire the shooter is never in doubt, so the origin does not have to
+    -- be guessed: if the remote sent one near us we use it (that is the real muzzle),
+    -- otherwise we fall back to our own head. That means a game which sends nothing
+    -- but a hit position still draws a correct tracer.
+    local function ownShot(pts, dirs)
+        local c = LocalPlayer.Character
+        local r = c and (c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart"))
+        local cam = Workspace.CurrentCamera
+        local me = (r and r.Position) or (cam and cam.CFrame.Position)
+        if not me then return nil end
+        local origin, target = nil, nil
+        for i = 1, #pts do
+            local p = pts[i]
+            if not origin and (p - me).Magnitude < NEAR_CHAR then origin = p
+            elseif not target then target = p end
+        end
+        origin = origin or me
+        if not target and dirs[1] then target = origin + dirs[1].Unit * 900 end
+        if not target then return nil end
+        local len = (target - origin).Magnitude
+        if len > 3 and len < 6000 then return origin, target end
+        return nil
+    end
+
+    local function drainOut()
+        while #outQ > 0 do
+            local e = table.remove(outQ, 1)
+            local ev, args = e.r, e.a
+            local st = statsOut[ev]
+            if not st then st = { n = 0, win = 0, hits = 0, dead = false }; statsOut[ev] = st end
+            if not st.dead and not (pinnedOut and pinnedOut ~= ev) then
+                local now = os.clock()
+                if now - st.win > 1 then st.win, st.n = now, 0 end
+                st.n = st.n + 1
+                if st.n > FLOOD then
+                    st.dead = true
+                else
+                    local pts, dirs = collect(args.n, args)
+                    local o, t = ownShot(pts, dirs)
+                    -- pre-lock only: a shot goes roughly where you are looking, which
+                    -- is what stops a movement or camera remote from being pinned.
+                    -- Dropped once a remote wins, so silent aim's redirect (which
+                    -- deliberately points away from your crosshair) still draws.
+                    if o and not pinnedOut then
+                        local cam = Workspace.CurrentCamera
+                        local d = t - o
+                        if not cam or d.Magnitude < 1e-3
+                            or d.Unit:Dot(cam.CFrame.LookVector) < 0.4 then o = nil end
+                    end
+                    if o and push(o, t, LocalPlayer) then
+                        st.hits = st.hits + 1
+                        if not pinnedOut and st.hits >= LOCK_HITS then
+                            pinnedOut = ev
+                            setStatus("(locked on " .. ev.Name .. ")")
+                        end
+                    end
+                end
             end
         end
     end
@@ -6727,6 +6803,7 @@ registerConfig("bullets", Koffee.Bullets)
         end
         KID.ctx.bulletConns = {}
         hookCount, pinned, stats = 0, nil, {}
+        pinnedOut, statsOut = nil, {}
         if started then sweep() else setStatus("") end
     end
 
@@ -6736,9 +6813,11 @@ registerConfig("bullets", Koffee.Bullets)
         if Koffee._unloaded then return end
         if not B.Enabled then
             for i = #shots, 1, -1 do release(shots[i]); shots[i] = nil end
+            for i = #outQ, 1, -1 do outQ[i] = nil end
             return
         end
         if not started then start() end
+        drainOut()
         layer = ensureBoxLayer()
         local cam = Workspace.CurrentCamera
         local now, dur = os.clock(), math.max(B.Duration, 0.05)
@@ -9224,6 +9303,18 @@ local Combat = {
             return PASS_H, PASS_V
         end
         local function resolveNamecall(self, method, args)
+            -- v0.17.1 BULLET TRACER TAP (your own shots). Records and nothing else --
+            -- it never handles, never rewrites, never early-returns. Namecall-free by
+            -- construction: two table reads, a length op and a constructor. The args
+            -- table is captured by reference on purpose, so a shot that silent aim
+            -- rewrites below draws where the bullet ACTUALLY went, not where you
+            -- aimed. Drained on RenderStepped, where namecalls are legal again.
+            if method == "FireServer" or method == "InvokeServer" then
+                local q = Shared._bulletOut
+                if q and Koffee.Bullets.Enabled and #q < 16 then
+                    q[#q + 1] = { r = self, a = args }
+                end
+            end
             -- v0.3.0: External method offloads everything to KoffeeHelper (see
             -- resolveIndex head comment). Every namecall passes through vanilla.
             if Combat.Silent.Method == "External" then return PASS_H, PASS_V end
