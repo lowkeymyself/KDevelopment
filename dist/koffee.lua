@@ -1,9 +1,9 @@
--- koffee v0.15.3
+-- koffee v0.16.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.15.3"
+Koffee.Version = "0.16.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -4349,6 +4349,12 @@ local ESP = {
     Indicators = {
         Distance       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), TextSize = 13, OutlineThickness = 1 }, -- below feet
         Skeleton       = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Thickness = 0 }, -- 0 = universal
+        -- v0.16.0: a line out of the head along its LookVector. ThroughWalls off
+        -- runs its own camera->head ray, independent of the global Visible Check
+        -- (that one only tints, it never hides).
+        LookDirection  = { Enabled = false, Color = Color3.fromRGB(255, 255, 255),
+                           Thickness = 0, Length = 5, ThroughWalls = true,
+                           UseEspColor = true, Taper = false },
         HeadDot        = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Size = 6 },       -- dot at head
         -- v0.0.28: right-click Profile Picture for Size / Outline Thickness / Y Offset.
         ProfilePicture = { Enabled = false, Size = 40, OutlineThickness = 1, YOffset = 0 },          -- avatar above name
@@ -4790,6 +4796,20 @@ local function makeSkeletonLines(parent)
     return lines
 end
 
+-- the look ray is drawn as several segments so Taper can thin it toward the tip
+local LOOK_SEGS = 6
+local function makeLookLine(parent)
+    local segs = {}
+    for _ = 1, LOOK_SEGS do
+        segs[#segs + 1] = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0, Visible = false, ZIndex = 13, Parent = parent,
+        }, { lineOutline(), lineGradient() })
+    end
+    return segs
+end
+
 local function makeHeadDot(parent)
     return new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
@@ -5016,6 +5036,7 @@ local function makeRig(plr, character)
     -- v0.0.21 overlays. 2D screen-space elements in ESP.BoxLayer.
     local skeleton = makeSkeletonLines(ESP.BoxLayer)
     local headDot  = makeHeadDot(ESP.BoxLayer)
+    local lookLine = makeLookLine(ESP.BoxLayer)
     local tracer   = makeTracer(ESP.BoxLayer)
     local healthBg, healthFill, healthTxt = makeHealthBar(ESP.BoxLayer)
     -- v0.0.26: screen-space (2D) name / pfp / distance tags in the box layer.
@@ -5040,6 +5061,7 @@ local function makeRig(plr, character)
         fillRows   = fillRows,                        -- v0.0.20 cube 3D fill strips
         -- v0.0.21 overlays
         skeleton   = skeleton,
+        lookLine   = lookLine,
         headDot    = headDot,
         tracer     = tracer,
         healthBg   = healthBg,
@@ -5070,6 +5092,9 @@ local function cleanRig(rig)
     -- v0.0.21 overlays
     if rig.skeleton then
         for _, l in ipairs(rig.skeleton) do pcall(function() l:Destroy() end) end
+    end
+    if rig.lookLine then
+        for _, l in ipairs(rig.lookLine) do pcall(function() l:Destroy() end) end
     end
     pcall(function() rig.headDot:Destroy() end)
     pcall(function() rig.tracer:Destroy() end)
@@ -5700,6 +5725,56 @@ local function updateSkeleton(rig, overrideColor, dist)
     for i = slot + 1, #rig.skeleton do rig.skeleton[i].Visible = false end
 end
 
+-- v0.16.0 LOOK DIRECTION. Head CFrame LookVector projected as a screen-space ray.
+-- Sampled along the world line rather than projecting just the two endpoints, so it
+-- stays correct when the tip crosses behind the camera.
+local function updateLookLine(rig, overrideColor, dist)
+    local cfg = ESP.Indicators.LookDirection
+    local segs = rig.lookLine
+    if not segs then return end
+    local cam = Workspace.CurrentCamera
+    local char = rig.character
+    local head = char and char:FindFirstChild("Head")
+    if not (cfg.Enabled and cam and head and head:IsA("BasePart")) then
+        for _, l in ipairs(segs) do l.Visible = false end
+        return
+    end
+    if not cfg.ThroughWalls then
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        rp.FilterDescendantsInstances = { char, LocalPlayer.Character, cam }
+        local from = cam.CFrame.Position
+        if Workspace:Raycast(from, head.Position - from, rp) then
+            for _, l in ipairs(segs) do l.Visible = false end
+            return
+        end
+    end
+    local st = cfg.Thickness or 0
+    local thick = (st > 0) and st or featureThickness(dist)
+    local col = (cfg.UseEspColor and overrideColor) or cfg.Color
+    local origin = head.Position
+    local step = head.CFrame.LookVector * ((cfg.Length or 5) / LOOK_SEGS)
+    local used = 0
+    for i = 1, LOOK_SEGS do
+        local a = cam:WorldToViewportPoint(origin + step * (i - 1))
+        local b = cam:WorldToViewportPoint(origin + step * i)
+        if a.Z > 0 and b.Z > 0 then
+            used = used + 1
+            local l = segs[used]
+            local dx, dy = b.X - a.X, b.Y - a.Y
+            local t = cfg.Taper and (1 - (i - 1) / LOOK_SEGS) or 1
+            l.Size = UDim2.new(0, math.sqrt(dx * dx + dy * dy) + 1, 0, math.max(thick * t, 0.5))
+            l.Position = UDim2.new(0, (a.X + b.X) * 0.5, 0, (a.Y + b.Y) * 0.5)
+            l.Rotation = math.deg(math.atan2(dy, dx))
+            l.BackgroundColor3 = col
+            l.Visible = true
+            applyLineOutline(l, ESP.Config.Outline, ESP.Boxes.OutlineColor, math.max(1, thick))
+            applyLineGradient(l, ESP.Config.Gradient)
+        end
+    end
+    for i = used + 1, #segs do segs[i].Visible = false end
+end
+
 -- v0.0.13 render: gates are strict (dead / despawned / out-of-range / ancestry
 -- broken -> hide immediately). Every visible ESP element is opt-in via its own
 -- config toggle -- master ESP shows nothing on its own. v0.0.17: Outline is a
@@ -5783,6 +5858,7 @@ local function updateESPRigs()
         -- world-anchored overlays + skeleton render regardless of the box.
         updateBillboards(rig, plr, dist, overrideColor)
         updateSkeleton(rig, overrideColor, dist)
+        updateLookLine(rig, overrideColor, dist)
 
         -- 2D box-AABB features (box / health bar / head dot / tracer) share one
         -- projection. If none is enabled, hide them all and skip projecting.
@@ -6281,6 +6357,7 @@ local subFeatureDefs = {
     { id = "esp_name",     name = "Name",            get = function() return ESP.Names.Enabled end },
     { id = "esp_distance", name = "Distance",        get = function() return ESP.Indicators.Distance.Enabled end },
     { id = "esp_skeleton", name = "Skeleton",        get = function() return ESP.Indicators.Skeleton.Enabled end },
+    { id = "esp_look",     name = "Look Direction",  get = function() return ESP.Indicators.LookDirection.Enabled end },
     { id = "esp_headdot",  name = "Head Dot",        get = function() return ESP.Indicators.HeadDot.Enabled end },
     { id = "esp_pfp",      name = "Profile Picture", get = function() return ESP.Indicators.ProfilePicture.Enabled end },
     { id = "esp_health",   name = "Health",          get = function() return ESP.Health.Bar.Enabled end },
@@ -13134,6 +13211,22 @@ addTab("Visuals", function(root)
     rightClickSettings(distRow.row, "distance", function(popup)
         popup:slider("Text Size", 8, 28, ESP.Indicators.Distance.TextSize, 0, function(v) ESP.Indicators.Distance.TextSize = v end)
         popup:slider("Outline Thickness", 0, 6, ESP.Indicators.Distance.OutlineThickness, 1, function(v) ESP.Indicators.Distance.OutlineThickness = v end)
+    end)
+    local lookRow = configCheckbox(indPanel, "Look Direction", ESP.Indicators.LookDirection.Enabled,
+        function(v) ESP.Indicators.LookDirection.Enabled = v end)
+    attachSingleSwatch(lookRow.row, ESP.Indicators.LookDirection.Color,
+        function(c) ESP.Indicators.LookDirection.Color = c end)
+    rightClickSettings(lookRow.row, "look direction", function(popup)
+        popup:toggle("Visible Through Walls", ESP.Indicators.LookDirection.ThroughWalls,
+            function(v) ESP.Indicators.LookDirection.ThroughWalls = v end)
+        popup:slider("Length", 1, 40, ESP.Indicators.LookDirection.Length, 1,
+            function(v) ESP.Indicators.LookDirection.Length = v end)
+        popup:slider("Thickness", 0, 8, ESP.Indicators.LookDirection.Thickness, 1,
+            function(v) ESP.Indicators.LookDirection.Thickness = v end)
+        popup:toggle("Taper To Tip", ESP.Indicators.LookDirection.Taper,
+            function(v) ESP.Indicators.LookDirection.Taper = v end)
+        popup:toggle("Use ESP Colour", ESP.Indicators.LookDirection.UseEspColor,
+            function(v) ESP.Indicators.LookDirection.UseEspColor = v end)
     end)
     local skelRow = configCheckbox(indPanel, "Skeleton", ESP.Indicators.Skeleton.Enabled, function(v) ESP.Indicators.Skeleton.Enabled = v end)
     attachSingleSwatch(skelRow.row, ESP.Indicators.Skeleton.Color, function(c) ESP.Indicators.Skeleton.Color = c end)
