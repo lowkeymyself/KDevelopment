@@ -1,9 +1,9 @@
--- koffee v0.13.3
+-- koffee v0.14.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.13.3"
+Koffee.Version = "0.14.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -9744,6 +9744,16 @@ local Combat = {
     for _, plr in ipairs(Players:GetPlayers()) do trackHP(plr) end
     Players.PlayerAdded:Connect(trackHP)
     Players.PlayerRemoving:Connect(untrackHP)
+    -- v0.14.0: own deaths, for the Custom Features Counter block
+    LocalPlayer.CharacterAdded:Connect(function(ch)
+        local hum = ch:WaitForChild("Humanoid", 5)
+        if not hum then return end
+        hum.Died:Connect(function()
+            local c = Shared._counters
+            if not c then c = { Hits = 0, Kills = 0, Deaths = 0, Shots = 0 }; Shared._counters = c end
+            c.Deaths = c.Deaths + 1
+        end)
+    end)
     RunService.Heartbeat:Connect(updateMouseTarget)
 
     -- silent aim: keep the redirect target FRESH every frame while active. v0.0.35:
@@ -9852,6 +9862,9 @@ local Combat = {
         -- gate is accurate (this flag replaces IsMouseButtonPressed polling).
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             lmbDown = true; lmbClickAt = os.clock()
+            local c = Shared._counters
+            if not c then c = { Hits = 0, Kills = 0, Deaths = 0, Shots = 0 }; Shared._counters = c end
+            c.Shots = c.Shots + 1
             -- v0.0.92 sample the mouse target IMMEDIATELY on press edge, not just
             -- on the next Heartbeat -- catches sub-frame LMB taps (fast snipers)
             -- where the button's released before another Heartbeat can sample.
@@ -11251,6 +11264,11 @@ end
 
     -- spawn a fresh number OR add to an existing merged one for the same victim.
     local function spawnHit(victim, dmg, isKill)
+        -- v0.14.0: feed the Custom Features Counter block
+        local c = Shared._counters
+        if not c then c = { Hits = 0, Kills = 0, Deaths = 0, Shots = 0 }; Shared._counters = c end
+        c.Hits = c.Hits + 1
+        if isKill then c.Kills = c.Kills + 1 end
         if not hitCfg.Enabled then return end
         local now = os.clock()
         local e
@@ -13747,14 +13765,16 @@ addTab("Options", function(root)
 end)
 
 -- CONFIGS TAB (v0.0.34) -- save / load / delete / auto-load per game
--- CUSTOM FEATURES (v0.13.0). User-wired node graph: blocks read game state,
+-- CUSTOM FEATURES (v0.14.0). User-wired node graph: blocks read game state,
 -- transform it, draw it. Read-only and depth-capped, so a bad graph is a visual
--- bug, never a crash.
+-- bug, never a crash. Evaluation carries a context so a subgraph under For Each
+-- Player runs once per player with its own cached values and its own GUI copies.
 Koffee.Custom = { Enabled = true, Nodes = {} }
 registerConfig("custom", Koffee.Custom)
 ;(function()
     local CF = Koffee.Custom
-    local layer, labels, spins = nil, {}, {}
+    local layer, vis, st = nil, {}, {}
+    local GCTX = { key = "g", player = nil }
 
     local function ensureLayer()
         if layer and layer.Parent then return layer end
@@ -13765,7 +13785,6 @@ registerConfig("custom", Koffee.Custom)
         })
         return layer
     end
-
     local function nodeById(id)
         for _, n in ipairs(CF.Nodes) do if n.id == id then return n end end
         return nil
@@ -13777,12 +13796,29 @@ registerConfig("custom", Koffee.Custom)
         if not (part and cam) then return nil, nil end
         return (part.Position - cam.CFrame.Position).Magnitude, part
     end
+    -- per-(block, context) scratch for the blocks that remember things
+    local function slot(node, ctx)
+        local k = node.id .. "|" .. ctx.key
+        local v = st[k]
+        if not v then v = {}; st[k] = v end
+        return v
+    end
 
-    -- ins = ordered input slots, outs = value types produced (drives wiring).
-    -- Sinks have no eval; they get their resolved inputs back and render.
+    local FPS, fpsAcc, fpsN = 60, 0, 0
+
     local KINDS = {}
-    local ORDER = { "Target", "Visible", "Info", "Compare", "Switch", "Text" }
+    local ORDER = {
+        "Target", "Self", "Part", "Number", "Text Value", "Colour", "Time",
+        "Key Held", "Module State", "Game Info", "Camera", "Mouse", "Counter",
+        "For Each Player",
+        "Visible", "Info", "Compare", "Math", "Logic", "Map Range", "Smooth",
+        "Delay", "Format", "Colour Mix", "Colour Cycle", "Pick Number",
+        "Pick Colour", "Switch",
+        "Screen Position", "Offset",
+        "Text",
+    }
 
+    ---------------------------------------------------------------- sources
     KINDS.Target = {
         blurb = "finds a player",
         ins = {}, outs = { player = true },
@@ -13822,6 +13858,218 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
+    KINDS.Self = {
+        blurb = "you",
+        ins = {}, outs = { player = true }, opts = {},
+        eval = function() return { player = LocalPlayer } end,
+    }
+
+    KINDS.Part = {
+        blurb = "a part or model you pick in game",
+        ins = {}, outs = { part = true },
+        opts = { Path = "" },
+        eval = function(o)
+            local inst = o._inst
+            if (not inst or not inst.Parent) and o.Path ~= "" and Shared.resolvePath then
+                inst = Shared.resolvePath(o.Path)
+                o._inst = inst
+            end
+            return { part = inst }
+        end,
+        ui = function(api, o)
+            api:label(o.Path ~= "" and o.Path or "nothing picked")
+            api:button("pick a part", function(done)
+                if not Shared.openInstancePicker then return end
+                Shared.openInstancePicker(function(inst, path)
+                    o.Path, o._inst = path or "", inst
+                    done()
+                end, { title = "pick a part" })
+            end)
+        end,
+    }
+
+    KINDS.Number = {
+        blurb = "a fixed number",
+        ins = {}, outs = { number = true },
+        opts = { Value = 0, Min = 0, Max = 100 },
+        eval = function(o) return { number = o.Value or 0 } end,
+        ui = function(api, o)
+            api:slider("Value", o.Min or 0, o.Max or 100, o.Value, 2, function(v) o.Value = v end)
+            api:slider("Slider Min", -10000, 10000, o.Min, 0, function(v) o.Min = v end)
+            api:slider("Slider Max", -10000, 10000, o.Max, 0, function(v) o.Max = v end)
+            api:label("reopen this block to redraw the value slider's range")
+        end,
+    }
+
+    KINDS["Text Value"] = {
+        blurb = "a fixed piece of text",
+        ins = {}, outs = { text = true },
+        opts = { Text = "" },
+        eval = function(o) return { text = o.Text or "" } end,
+        ui = function(api, o) api:text("Text", o.Text, function(v) o.Text = v end) end,
+    }
+
+    KINDS.Colour = {
+        blurb = "a fixed colour",
+        ins = {}, outs = { color = true },
+        opts = { Color = Color3.fromRGB(238, 238, 238) },
+        eval = function(o) return { color = o.Color } end,
+        ui = function(api, o) api:swatch("Colour", o.Color, function(c) o.Color = c end) end,
+    }
+
+    KINDS.Time = {
+        blurb = "a number that moves on its own",
+        ins = {}, outs = { number = true },
+        opts = { Mode = "Ping-Pong", Speed = 1 },
+        eval = function(o)
+            local t = os.clock() * (o.Speed or 1)
+            local m = o.Mode
+            if m == "Seconds" then return { number = t } end
+            if m == "Sine" then return { number = math.sin(t) } end
+            if m == "Blink" then return { number = (t % 2 < 1) and 1 or 0 } end
+            return { number = math.abs((t % 2) - 1) }   -- Ping-Pong 0..1
+        end,
+        ui = function(api, o)
+            api:dropdown("Mode", { "Ping-Pong", "Sine", "Seconds", "Blink" }, o.Mode,
+                function(v) o.Mode = v end)
+            api:slider("Speed", 0, 10, o.Speed, 2, function(v) o.Speed = v end)
+        end,
+    }
+
+    KINDS["Key Held"] = {
+        blurb = "true while a key is down",
+        ins = {}, outs = { bool = true },
+        opts = { Key = "LeftAlt", Mode = "Hold" },
+        eval = function(o, _, ctx, node)
+            local kc = Enum.KeyCode[o.Key or ""]
+            local down = kc and UserInputService:IsKeyDown(kc) or false
+            if o.Mode ~= "Toggle" then return { bool = down } end
+            local s = slot(node, ctx)
+            if down and not s.prev then s.on = not s.on end
+            s.prev = down
+            return { bool = s.on == true }
+        end,
+        ui = function(api, o)
+            api:text("Key name", o.Key, function(v) o.Key = v end)
+            api:label("roblox KeyCode name, eg LeftAlt / E / MouseButton2 is not a key")
+            api:dropdown("Mode", { "Hold", "Toggle" }, o.Mode, function(v) o.Mode = v end)
+        end,
+    }
+
+    KINDS["Module State"] = {
+        blurb = "is a koffee feature turned on?",
+        ins = {}, outs = { bool = true, text = true },
+        opts = { Module = "" },
+        eval = function(o)
+            local m = Modules and Modules[o.Module]
+            local on = m and m.Enabled and true or false
+            return { bool = on, text = m and m.Name or (o.Module or "") }
+        end,
+        ui = function(api, o)
+            local names = {}
+            for id in pairs(Modules or {}) do names[#names + 1] = id end
+            table.sort(names)
+            api:dropdown("Module", names, o.Module, function(v) o.Module = v end)
+        end,
+    }
+
+    KINDS["Game Info"] = {
+        blurb = "fps, ping, player count and friends",
+        ins = {}, outs = { number = true, text = true },
+        opts = { Field = "FPS" },
+        eval = function(o)
+            local f = o.Field
+            if f == "FPS" then return { number = FPS, text = tostring(math.floor(FPS)) } end
+            if f == "Ping" then
+                local ms = 0
+                pcall(function()
+                    ms = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+                end)
+                return { number = ms, text = tostring(math.floor(ms)) }
+            end
+            if f == "Players" then
+                local n = #Players:GetPlayers()
+                return { number = n, text = tostring(n) }
+            end
+            if f == "Time Of Day" then
+                return { number = Lighting.ClockTime, text = Lighting.TimeOfDay }
+            end
+            if f == "My Name" then return { number = 0, text = LocalPlayer.Name } end
+            return { number = 0, text = "" }
+        end,
+        ui = function(api, o)
+            api:dropdown("Field", { "FPS", "Ping", "Players", "Time Of Day", "My Name" },
+                o.Field, function(v) o.Field = v end)
+        end,
+    }
+
+    KINDS.Camera = {
+        blurb = "camera numbers",
+        ins = {}, outs = { number = true },
+        opts = { Field = "FOV" },
+        eval = function(o)
+            local cam = Workspace.CurrentCamera
+            if not cam then return { number = 0 } end
+            local p, l = cam.CFrame.Position, cam.CFrame.LookVector
+            local f = o.Field
+            if f == "X" then return { number = p.X } end
+            if f == "Y" then return { number = p.Y } end
+            if f == "Z" then return { number = p.Z } end
+            if f == "Yaw" then return { number = math.deg(math.atan2(-l.X, -l.Z)) } end
+            if f == "Pitch" then return { number = math.deg(math.asin(math.clamp(l.Y, -1, 1))) } end
+            return { number = cam.FieldOfView }
+        end,
+        ui = function(api, o)
+            api:dropdown("Field", { "FOV", "X", "Y", "Z", "Yaw", "Pitch" }, o.Field,
+                function(v) o.Field = v end)
+        end,
+    }
+
+    KINDS.Mouse = {
+        blurb = "where your cursor is",
+        ins = {}, outs = { point = true, number = true },
+        opts = {},
+        eval = function()
+            local m = UserInputService:GetMouseLocation()
+            return { point = Vector2.new(m.X, m.Y), number = m.X }
+        end,
+    }
+
+    KINDS.Counter = {
+        blurb = "how many times something happened",
+        ins = {}, outs = { number = true, text = true },
+        opts = { Field = "Hits" },
+        eval = function(o)
+            local c = Shared._counters or {}
+            local n = c[o.Field] or 0
+            return { number = n, text = tostring(n) }
+        end,
+        ui = function(api, o)
+            api:dropdown("Field", { "Hits", "Kills", "Deaths", "Shots" }, o.Field,
+                function(v) o.Field = v end)
+            api:button("reset all counters", function(done)
+                for k in pairs(Shared._counters or {}) do Shared._counters[k] = 0 end
+                done()
+            end)
+        end,
+    }
+
+    KINDS["For Each Player"] = {
+        blurb = "runs everything after it once per player",
+        ins = {}, outs = { player = true },
+        opts = { Filter = "Enemies Only", MaxDistance = 0, AliveOnly = true, MaxCount = 24 },
+        eval = function(_, _, ctx) return { player = ctx.player } end,
+        ui = function(api, o)
+            api:dropdown("Filter", { "Any", "Enemies Only", "Team Only" }, o.Filter,
+                function(v) o.Filter = v end)
+            api:toggle("Alive Only", o.AliveOnly, function(v) o.AliveOnly = v end)
+            api:slider("Max Distance", 0, 5000, o.MaxDistance, 0, function(v) o.MaxDistance = v end)
+            api:slider("Max Players", 1, 64, o.MaxCount, 0, function(v) o.MaxCount = v end)
+            api:label("closest players are kept when the limit is hit")
+        end,
+    }
+
+    ------------------------------------------------------------- transforms
     KINDS.Visible = {
         blurb = "can you see them?",
         ins = { { key = "player", type = "player", label = "Player" } },
@@ -13866,11 +14114,16 @@ registerConfig("custom", Koffee.Custom)
             local f, num, txt = o.Field, nil, nil
             if f == "Name" then txt = plr.Name
             elseif f == "Display Name" then txt = plr.DisplayName
+            elseif f == "Team" then txt = plr.Team and plr.Team.Name or "none"
             elseif f == "Distance" then num = (playerAt(plr)) or 0
             elseif f == "Health" then num = hum and hum.Health or 0
+            elseif f == "Max Health" then num = hum and hum.MaxHealth or 0
             elseif f == "Health %" then
                 local mh = hum and hum.MaxHealth or 0
                 num = (hum and mh > 0) and (hum.Health / mh * 100) or 0
+            elseif f == "Health 0-1" then
+                local mh = hum and hum.MaxHealth or 0
+                num = (hum and mh > 0) and (hum.Health / mh) or 0
             end
             if num then
                 local m = 10 ^ math.max(math.floor(o.Decimals or 0), 0)
@@ -13879,7 +14132,8 @@ registerConfig("custom", Koffee.Custom)
             return { text = txt or "", number = num or 0 }
         end,
         ui = function(api, o)
-            api:dropdown("Field", { "Name", "Display Name", "Distance", "Health", "Health %" },
+            api:dropdown("Field", { "Name", "Display Name", "Team", "Distance",
+                "Health", "Max Health", "Health %", "Health 0-1" },
                 o.Field, function(v) o.Field = v end)
             api:slider("Decimals", 0, 3, o.Decimals, 0, function(v) o.Decimals = v end)
         end,
@@ -13900,7 +14154,183 @@ registerConfig("custom", Koffee.Custom)
         ui = function(api, o)
             api:dropdown("Test", { "less than", "more than", "equal to" }, o.Op,
                 function(v) o.Op = v end)
-            api:slider("Value", 0, 5000, o.Value, 1, function(v) o.Value = v end)
+            api:slider("Value", -5000, 5000, o.Value, 1, function(v) o.Value = v end)
+        end,
+    }
+
+    KINDS.Math = {
+        blurb = "does sums on two numbers",
+        ins = { { key = "a", type = "number", label = "A" },
+                { key = "b", type = "number", label = "B" } },
+        outs = { number = true },
+        opts = { Op = "add", B = 0 },
+        eval = function(o, ins)
+            local a = (ins.a and ins.a.number) or 0
+            local b = ins.b and ins.b.number or (o.B or 0)
+            local op = o.Op
+            if op == "subtract" then return { number = a - b } end
+            if op == "multiply" then return { number = a * b } end
+            if op == "divide" then return { number = (b ~= 0) and (a / b) or 0 } end
+            if op == "smallest" then return { number = math.min(a, b) } end
+            if op == "largest" then return { number = math.max(a, b) } end
+            if op == "difference" then return { number = math.abs(a - b) } end
+            return { number = a + b }
+        end,
+        ui = function(api, o)
+            api:dropdown("Operation", { "add", "subtract", "multiply", "divide",
+                "smallest", "largest", "difference" }, o.Op, function(v) o.Op = v end)
+            api:slider("B when unwired", -5000, 5000, o.B, 2, function(v) o.B = v end)
+        end,
+    }
+
+    KINDS.Logic = {
+        blurb = "combines two yes / no answers",
+        ins = { { key = "a", type = "bool", label = "A" },
+                { key = "b", type = "bool", label = "B" } },
+        outs = { bool = true },
+        opts = { Op = "and" },
+        eval = function(o, ins)
+            local a = (ins.a and ins.a.bool) == true
+            local b = (ins.b and ins.b.bool) == true
+            if o.Op == "or" then return { bool = a or b } end
+            if o.Op == "not A" then return { bool = not a } end
+            if o.Op == "only one" then return { bool = a ~= b } end
+            return { bool = a and b }
+        end,
+        ui = function(api, o)
+            api:dropdown("Operation", { "and", "or", "not A", "only one" }, o.Op,
+                function(v) o.Op = v end)
+        end,
+    }
+
+    KINDS["Map Range"] = {
+        blurb = "rescales a number into a new range",
+        ins = { { key = "number", type = "number", label = "Number" } },
+        outs = { number = true },
+        opts = { InMin = 0, InMax = 100, OutMin = 0, OutMax = 1, Clamp = true },
+        eval = function(o, ins)
+            local n = (ins.number and ins.number.number) or 0
+            local span = (o.InMax - o.InMin)
+            local t = (span ~= 0) and ((n - o.InMin) / span) or 0
+            if o.Clamp then t = math.clamp(t, 0, 1) end
+            return { number = o.OutMin + (o.OutMax - o.OutMin) * t }
+        end,
+        ui = function(api, o)
+            api:slider("From Min", -5000, 5000, o.InMin, 2, function(v) o.InMin = v end)
+            api:slider("From Max", -5000, 5000, o.InMax, 2, function(v) o.InMax = v end)
+            api:slider("To Min", -5000, 5000, o.OutMin, 2, function(v) o.OutMin = v end)
+            api:slider("To Max", -5000, 5000, o.OutMax, 2, function(v) o.OutMax = v end)
+            api:toggle("Clamp", o.Clamp, function(v) o.Clamp = v end)
+        end,
+    }
+
+    KINDS.Smooth = {
+        blurb = "eases a number instead of snapping",
+        ins = { { key = "number", type = "number", label = "Number" } },
+        outs = { number = true },
+        opts = { Smoothness = 0.8, Snap = 0 },
+        eval = function(o, ins, ctx, node, dt)
+            local target = (ins.number and ins.number.number) or 0
+            local s = slot(node, ctx)
+            if s.v == nil then s.v = target end
+            -- framerate independent: Smoothness is the fraction of the gap left
+            -- after one 60Hz frame, so 144fps and 60fps ease identically
+            local k = math.clamp(o.Smoothness or 0, 0, 0.99)
+            local a = 1 - k ^ (math.max(dt or 1 / 60, 0.0001) * 60)
+            s.v = s.v + (target - s.v) * a
+            if (o.Snap or 0) > 0 and math.abs(target - s.v) < o.Snap then s.v = target end
+            return { number = s.v }
+        end,
+        ui = function(api, o)
+            api:slider("Smoothness", 0, 0.99, o.Smoothness, 2, function(v) o.Smoothness = v end)
+            api:slider("Snap Below", 0, 20, o.Snap, 2, function(v) o.Snap = v end)
+        end,
+    }
+
+    KINDS.Delay = {
+        blurb = "keeps a yes alive for a moment",
+        ins = { { key = "bool", type = "bool", label = "Yes / No" } },
+        outs = { bool = true },
+        opts = { HoldTime = 0.4, WaitTime = 0 },
+        eval = function(o, ins, ctx, node)
+            local want = (ins.bool and ins.bool.bool) == true
+            local s, now = slot(node, ctx), os.clock()
+            if want then
+                s.since = s.since or now
+                if now - s.since >= (o.WaitTime or 0) then s.last = now; s.on = true end
+            else
+                s.since = nil
+                if s.on and now - (s.last or 0) >= (o.HoldTime or 0) then s.on = false end
+            end
+            return { bool = s.on == true }
+        end,
+        ui = function(api, o)
+            api:slider("Hold After (s)", 0, 10, o.HoldTime, 2, function(v) o.HoldTime = v end)
+            api:slider("Wait Before (s)", 0, 10, o.WaitTime, 2, function(v) o.WaitTime = v end)
+        end,
+    }
+
+    KINDS.Format = {
+        blurb = "turns a number into tidy text",
+        ins = { { key = "number", type = "number", label = "Number" } },
+        outs = { text = true },
+        opts = { Decimals = 0, Prefix = "", Suffix = "", Commas = false },
+        eval = function(o, ins)
+            local n = (ins.number and ins.number.number) or 0
+            local txt = string.format("%." .. math.max(math.floor(o.Decimals or 0), 0) .. "f", n)
+            if o.Commas then
+                local whole, rest = txt:match("^(-?%d+)(.*)$")
+                if whole then
+                    local sign, digits = whole:match("^(-?)(%d+)$")
+                    local out = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+                    out = out:gsub("^,", "")
+                    txt = sign .. out .. rest
+                end
+            end
+            return { text = (o.Prefix or "") .. txt .. (o.Suffix or "") }
+        end,
+        ui = function(api, o)
+            api:slider("Decimals", 0, 4, o.Decimals, 0, function(v) o.Decimals = v end)
+            api:text("Prefix", o.Prefix, function(v) o.Prefix = v end)
+            api:text("Suffix", o.Suffix, function(v) o.Suffix = v end)
+            api:toggle("Thousands Commas", o.Commas, function(v) o.Commas = v end)
+        end,
+    }
+
+    KINDS["Colour Mix"] = {
+        blurb = "blends two colours by a 0-1 number",
+        ins = { { key = "t", type = "number", label = "Blend 0-1" },
+                { key = "a", type = "color", label = "Colour A" },
+                { key = "b", type = "color", label = "Colour B" } },
+        outs = { color = true },
+        opts = { ColorA = Color3.fromRGB(232, 92, 92),
+                 ColorB = Color3.fromRGB(122, 220, 134) },
+        eval = function(o, ins)
+            local a = (ins.a and ins.a.color) or o.ColorA
+            local b = (ins.b and ins.b.color) or o.ColorB
+            local t = math.clamp((ins.t and ins.t.number) or 0, 0, 1)
+            return { color = a:Lerp(b, t) }
+        end,
+        ui = function(api, o)
+            api:swatch("Colour A (at 0)", o.ColorA, function(c) o.ColorA = c end)
+            api:swatch("Colour B (at 1)", o.ColorB, function(c) o.ColorB = c end)
+        end,
+    }
+
+    KINDS["Colour Cycle"] = {
+        blurb = "a moving rainbow colour",
+        ins = { { key = "number", type = "number", label = "Offset" } },
+        outs = { color = true },
+        opts = { Speed = 0.5, Sat = 0.7, Val = 1 },
+        eval = function(o, ins)
+            local off = (ins.number and ins.number.number) or 0
+            local h = (os.clock() * (o.Speed or 0.5) + off) % 1
+            return { color = Color3.fromHSV(h, math.clamp(o.Sat, 0, 1), math.clamp(o.Val, 0, 1)) }
+        end,
+        ui = function(api, o)
+            api:slider("Speed", 0, 4, o.Speed, 2, function(v) o.Speed = v end)
+            api:slider("Saturation", 0, 1, o.Sat, 2, function(v) o.Sat = v end)
+            api:slider("Brightness", 0, 1, o.Val, 2, function(v) o.Val = v end)
         end,
     }
 
@@ -13925,150 +14355,347 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
+    KINDS["Pick Number"] = {
+        blurb = "one of two numbers",
+        ins = { { key = "bool", type = "bool", label = "Yes / No" } },
+        outs = { number = true },
+        opts = { Yes = 1, No = 0 },
+        eval = function(o, ins)
+            local b = (ins.bool and ins.bool.bool) == true
+            return { number = b and o.Yes or o.No }
+        end,
+        ui = function(api, o)
+            api:slider("When yes", -5000, 5000, o.Yes, 2, function(v) o.Yes = v end)
+            api:slider("When no", -5000, 5000, o.No, 2, function(v) o.No = v end)
+        end,
+    }
+
+    KINDS["Pick Colour"] = {
+        blurb = "one of two colours",
+        ins = { { key = "bool", type = "bool", label = "Yes / No" } },
+        outs = { color = true },
+        opts = { Yes = Color3.fromRGB(122, 220, 134), No = Color3.fromRGB(232, 92, 92) },
+        eval = function(o, ins)
+            local b = (ins.bool and ins.bool.bool) == true
+            return { color = b and o.Yes or o.No }
+        end,
+        ui = function(api, o)
+            api:swatch("When yes", o.Yes, function(c) o.Yes = c end)
+            api:swatch("When no", o.No, function(c) o.No = c end)
+        end,
+    }
+
+    --------------------------------------------------------------- position
+    KINDS["Screen Position"] = {
+        blurb = "where something in the world is on your screen",
+        ins = { { key = "part", type = "part", label = "Part" },
+                { key = "player", type = "player", label = "Player" } },
+        outs = { point = true, bool = true, number = true },
+        opts = { OffsetX = 0, OffsetY = 0, WorldY = 0, Clamp = false, Anchor = "Centre" },
+        eval = function(o, ins)
+            local cam = Workspace.CurrentCamera
+            if not cam then return { bool = false, number = 0 } end
+            local target, size = nil, nil
+            local part = ins.part and ins.part.part
+            if part then
+                if part:IsA("BasePart") then target, size = part.Position, part.Size
+                elseif part:IsA("Model") then
+                    local ok, cf = pcall(function() return part:GetPivot().Position end)
+                    if ok then target = cf end
+                end
+            else
+                local plr = ins.player and ins.player.player
+                local ch = plr and plr.Character
+                local hrp = ch and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Head"))
+                if hrp then target, size = hrp.Position, hrp.Size end
+            end
+            if not target then return { bool = false, number = 0 } end
+            if o.Anchor == "Above" then target = target + Vector3.new(0, (size and size.Y or 2) * 1.6, 0)
+            elseif o.Anchor == "Below" then target = target - Vector3.new(0, (size and size.Y or 2) * 1.6, 0) end
+            target = target + Vector3.new(0, o.WorldY or 0, 0)
+            local sp = cam:WorldToViewportPoint(target)
+            local vp = viewport()
+            local onScreen = sp.Z > 0
+            local x, y = sp.X, sp.Y
+            if not onScreen then x, y = vp.X - x, vp.Y - y end   -- unmirror behind-camera
+            x, y = x + (o.OffsetX or 0), y + (o.OffsetY or 0)
+            if o.Clamp then
+                x = math.clamp(x, 2, math.max(2, vp.X - 2))
+                y = math.clamp(y, 2, math.max(2, vp.Y - 2))
+            end
+            return { point = Vector2.new(x, y), bool = onScreen,
+                     number = (target - cam.CFrame.Position).Magnitude }
+        end,
+        ui = function(api, o)
+            api:dropdown("Anchor", { "Centre", "Above", "Below" }, o.Anchor,
+                function(v) o.Anchor = v end)
+            api:slider("World Height", -20, 20, o.WorldY, 1, function(v) o.WorldY = v end)
+            api:slider("Screen X Offset", -400, 400, o.OffsetX, 0, function(v) o.OffsetX = v end)
+            api:slider("Screen Y Offset", -400, 400, o.OffsetY, 0, function(v) o.OffsetY = v end)
+            api:toggle("Keep On Screen", o.Clamp, function(v) o.Clamp = v end)
+        end,
+    }
+
+    KINDS.Offset = {
+        blurb = "nudges a screen position",
+        ins = { { key = "point", type = "point", label = "Position" } },
+        outs = { point = true },
+        opts = { X = 0, Y = 0 },
+        eval = function(o, ins)
+            local p = (ins.point and ins.point.point) or Vector2.new(0, 0)
+            return { point = p + Vector2.new(o.X or 0, o.Y or 0) }
+        end,
+        ui = function(api, o)
+            api:slider("X", -800, 800, o.X, 0, function(v) o.X = v end)
+            api:slider("Y", -800, 800, o.Y, 0, function(v) o.Y = v end)
+        end,
+    }
+
+    ---------------------------------------------------------------- visuals
+    -- every visual block shares these three slots and these five options, so
+    -- position / colour / visibility work the same way everywhere
+    local function visIns(extra)
+        local t = {}
+        for _, e in ipairs(extra or {}) do t[#t + 1] = e end
+        t[#t + 1] = { key = "pos",   type = "point", label = "Position" }
+        t[#t + 1] = { key = "color", type = "color", label = "Colour" }
+        t[#t + 1] = { key = "show",  type = "bool",  label = "Show When" }
+        return t
+    end
+    local function visOpts(extra)
+        local o = { X = 50, Y = 50, Opacity = 1, Rotation = 0, Spin = false, SpinSpeed = 90 }
+        for k, v in pairs(extra or {}) do o[k] = v end
+        return o
+    end
+    local function visUiTail(api, o)
+        api:slider("X %", 0, 100, o.X, 1, function(v) o.X = v end)
+        api:slider("Y %", 0, 100, o.Y, 1, function(v) o.Y = v end)
+        api:label("X/Y are ignored while Position is wired")
+        api:slider("Rotation", -180, 180, o.Rotation, 0, function(v) o.Rotation = v end)
+        api:toggle("Spin", o.Spin, function(v) o.Spin = v end)
+        api:slider("Spin Speed", -720, 720, o.SpinSpeed, 0, function(v) o.SpinSpeed = v end)
+        api:slider("Opacity", 0, 1, o.Opacity, 2, function(v) o.Opacity = v end)
+    end
+    -- shared placement + spin, run before each block's own paint
+    local function placeVis(gui, o, ins, node, ctx, dt)
+        if ins.show and (ins.show.bool ~= true) then gui.Visible = false; return false end
+        gui.Visible = true
+        local p = ins.pos and ins.pos.point
+        if p then
+            gui.Position = UDim2.new(0, p.X, 0, p.Y)
+        else
+            local vp = viewport()
+            gui.Position = UDim2.new(0, vp.X * math.clamp(o.X, 0, 100) / 100,
+                                     0, vp.Y * math.clamp(o.Y, 0, 100) / 100)
+        end
+        local rot = o.Rotation or 0
+        if o.Spin then
+            local s = slot(node, ctx)
+            s.spin = ((s.spin or 0) + (o.SpinSpeed or 0) * (dt or 0)) % 360
+            rot = rot + s.spin
+        end
+        gui.Rotation = rot
+        return true
+    end
+
     KINDS.Text = {
         blurb = "draws words on your screen. put {a} {b} {c} in the text to drop in wired values",
-        sink = true,
-        ins = { { key = "a",     type = "text",  label = "Value A" },
-                { key = "b",     type = "text",  label = "Value B" },
-                { key = "c",     type = "text",  label = "Value C" },
-                { key = "color", type = "color", label = "Colour" },
-                { key = "show",  type = "bool",  label = "Show When" } },
+        sink = true, visual = true,
+        ins = visIns({ { key = "a", type = "text", label = "Value A" },
+                       { key = "b", type = "text", label = "Value B" },
+                       { key = "c", type = "text", label = "Value C" } }),
         outs = {},
-        opts = { Text = "KOFFEE", Color = Color3.fromRGB(238, 238, 238),
-                 X = 50, Y = 50, Size = 22, Font = "None", Rotation = 0,
-                 Spin = false, SpinSpeed = 90, Opacity = 1,
-                 Outline = true, OutlineThickness = 2,
-                 OutlineColor = Color3.fromRGB(0, 0, 0) },
+        opts = visOpts({ Text = "KOFFEE", Color = Color3.fromRGB(238, 238, 238),
+                 Size = 22, Font = "None", Outline = true, OutlineThickness = 2,
+                 OutlineColor = Color3.fromRGB(0, 0, 0), Align = "Centre",
+                 BgOn = false, BgColor = Color3.fromRGB(12, 12, 12), BgAlpha = 0.35,
+                 BgPad = 6 }),
+        make = function()
+            local lb = new("TextLabel", {
+                BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5),
+                AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.new(0, 0, 0, 0),
+                ZIndex = 17, Parent = ensureLayer(),
+            }, { new("UIStroke", { ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual }),
+                 new("UIPadding"), corner(4) })
+            lb:SetAttribute("KUserColor", true)
+            for _, d in ipairs(lb:GetDescendants()) do d:SetAttribute("KUserColor", true) end
+            return lb
+        end,
+        paint = function(lb, o, ins, node, ctx, dt)
+            if not placeVis(lb, o, ins, node, ctx, dt) then return end
+            -- the Text field is a template: {a}/{b}/{c} become the wired values. A
+            -- token for an unwired slot blanks; an unknown letter is left alone. No
+            -- token at all and A wired = plain passthrough (pre-template graphs).
+            local tpl, wired = o.Text or "", node.wires or {}
+            local function val(k) return (ins[k] and ins[k].text) or "" end
+            if tpl:find("{") then
+                lb.Text = (tpl:gsub("{(%a)}", function(k)
+                    k = k:lower()
+                    if k == "a" or k == "b" or k == "c" then return val(k) end
+                    return nil
+                end))
+            elseif wired.a then
+                lb.Text = val("a")
+            else
+                lb.Text = tpl
+            end
+            lb.TextColor3 = (ins.color and ins.color.color) or o.Color
+            lb.TextSize = o.Size
+            lb.FontFace = (Theme.loadFeiFont and Theme.loadFeiFont(o.Font)) or Theme.Fonts.Bold
+            lb.TextTransparency = 1 - math.clamp(o.Opacity or 1, 0, 1)
+            lb.TextXAlignment = (o.Align == "Left" and Enum.TextXAlignment.Left)
+                or (o.Align == "Right" and Enum.TextXAlignment.Right)
+                or Enum.TextXAlignment.Center
+            local pad = o.BgOn and (o.BgPad or 0) or 0
+            local up = lb:FindFirstChildOfClass("UIPadding")
+            if up then
+                up.PaddingLeft = UDim.new(0, pad); up.PaddingRight = UDim.new(0, pad)
+                up.PaddingTop = UDim.new(0, pad * 0.5); up.PaddingBottom = UDim.new(0, pad * 0.5)
+            end
+            lb.BackgroundColor3 = o.BgColor
+            lb.BackgroundTransparency = o.BgOn and math.clamp(o.BgAlpha, 0, 1) or 1
+            local sk = lb:FindFirstChildOfClass("UIStroke")
+            if sk then
+                sk.Enabled = o.Outline == true and (o.OutlineThickness or 0) > 0
+                sk.Thickness = o.OutlineThickness or 0
+                sk.Color = o.OutlineColor
+                sk.Transparency = lb.TextTransparency
+            end
+        end,
         ui = function(api, o)
             api:text("Text  ({a} {b} {c})", o.Text, function(v) o.Text = v end)
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             api:dropdown("Font", Theme.FontNames, o.Font, function(v) o.Font = v end)
             api:slider("Size", 8, 96, o.Size, 0, function(v) o.Size = v end)
-            api:slider("X %", 0, 100, o.X, 1, function(v) o.X = v end)
-            api:slider("Y %", 0, 100, o.Y, 1, function(v) o.Y = v end)
-            api:slider("Rotation", -180, 180, o.Rotation, 0, function(v) o.Rotation = v end)
-            api:toggle("Spin", o.Spin, function(v) o.Spin = v end)
-            api:slider("Spin Speed", -720, 720, o.SpinSpeed, 0, function(v) o.SpinSpeed = v end)
-            api:slider("Opacity", 0, 1, o.Opacity, 2, function(v) o.Opacity = v end)
+            api:dropdown("Align", { "Centre", "Left", "Right" }, o.Align, function(v) o.Align = v end)
             api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
             api:slider("Outline Thickness", 0, 8, o.OutlineThickness, 1,
                 function(v) o.OutlineThickness = v end)
             api:swatch("Outline Colour", o.OutlineColor, function(c) o.OutlineColor = c end)
+            api:toggle("Background", o.BgOn, function(v) o.BgOn = v end)
+            api:swatch("Background Colour", o.BgColor, function(c) o.BgColor = c end)
+            api:slider("Background Fade", 0, 1, o.BgAlpha, 2, function(v) o.BgAlpha = v end)
+            api:slider("Background Padding", 0, 24, o.BgPad, 0, function(v) o.BgPad = v end)
+            visUiTail(api, o)
         end,
     }
 
-    -- memoized (a block feeding three consumers runs once) and depth-capped so a
-    -- wire loop returns empty instead of hanging the client
-    local function evalNode(node, cache, depth)
-        local hit = cache[node.id]
+    ------------------------------------------------------------- evaluation
+    local frameDt = 1 / 60
+    local resolveIns, evalNode
+    resolveIns = function(node, K, cache, depth, ctx)
+        local ins = {}
+        for _, s in ipairs(K.ins) do
+            local ref = node.wires and node.wires[s.key]
+            local src = ref and nodeById(ref)
+            if src then ins[s.key] = evalNode(src, cache, depth + 1, ctx) end
+        end
+        return ins
+    end
+    -- memoized per context, depth-capped so a wire loop returns empty instead of
+    -- hanging the client
+    evalNode = function(node, cache, depth, ctx)
+        local bag = cache[ctx.key]
+        if not bag then bag = {}; cache[ctx.key] = bag end
+        local hit = bag[node.id]
         if hit ~= nil then return hit end
-        if depth > 12 then return {} end
+        if depth > 16 then return {} end
         local K = KINDS[node.kind]
         if not K then return {} end
-        cache[node.id] = {}
-        local ins = {}
-        for _, slot in ipairs(K.ins) do
-            local ref = node.wires and node.wires[slot.key]
-            local src = ref and nodeById(ref)
-            if src then ins[slot.key] = evalNode(src, cache, depth + 1) end
-        end
+        bag[node.id] = {}
+        local ins = resolveIns(node, K, cache, depth, ctx)
         local out = ins
         if K.eval then
-            local ok, r = pcall(K.eval, node.opts, ins)
+            local ok, r = pcall(K.eval, node.opts, ins, ctx, node, frameDt)
             out = (ok and type(r) == "table") and r or {}
         end
-        cache[node.id] = out
+        bag[node.id] = out
         return out
     end
 
-    local function drawText(node, ins, dt)
-        local o = node.opts
-        local lb = labels[node.id]
-        if not lb or not lb.Parent then
-            lb = new("TextLabel", {
-                Name = "cf" .. node.id, BackgroundTransparency = 1,
-                AnchorPoint = Vector2.new(0.5, 0.5), AutomaticSize = Enum.AutomaticSize.XY,
-                Size = UDim2.new(0, 0, 0, 0), ZIndex = 17, Parent = ensureLayer(),
-            })
-            lb:SetAttribute("KUserColor", true)   -- user data, not chrome
-            local st = new("UIStroke", {
-                ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual, Parent = lb,
-            })
-            st:SetAttribute("KUserColor", true)
-            labels[node.id] = lb
+    -- which For Each block, if any, a sink hangs off. Memoized per frame.
+    local function feOf(node, memo, depth)
+        if depth > 16 then return nil end
+        local hit = memo[node.id]
+        if hit ~= nil then return hit or nil end
+        memo[node.id] = false
+        if node.kind == "For Each Player" then memo[node.id] = node; return node end
+        local K = KINDS[node.kind]
+        if K then
+            for _, s in ipairs(K.ins) do
+                local ref = node.wires and node.wires[s.key]
+                local src = ref and nodeById(ref)
+                if src then
+                    local f = feOf(src, memo, depth + 1)
+                    if f then memo[node.id] = f; return f end
+                end
+            end
         end
-        local wired = node.wires or {}
-        if wired.show and not (ins.show and ins.show.bool) then lb.Visible = false; return end
-        lb.Visible = true
-        -- the Text field is a template: {a}/{b}/{c} become the wired values. A token
-        -- for an unwired slot blanks; an unknown letter is left alone so "{x}" still
-        -- reads as literal text. No token at all and A wired = plain passthrough.
-        local tpl = o.Text or ""
-        local function val(k) return (ins[k] and ins[k].text) or "" end
-        if tpl:find("{") then
-            lb.Text = (tpl:gsub("{(%a)}", function(k)
-                k = k:lower()
-                if k == "a" or k == "b" or k == "c" then return val(k) end
-                return nil
-            end))
-        elseif wired.a then
-            lb.Text = val("a")
-        else
-            lb.Text = tpl
+        return nil
+    end
+    local function playersFor(o)
+        local out = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                local ally = isTeammate and isTeammate(p) or false
+                local ok = true
+                if o.Filter == "Enemies Only" and ally then ok = false end
+                if o.Filter == "Team Only" and not ally then ok = false end
+                local d = playerAt(p)
+                if ok and o.AliveOnly then
+                    local hum = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+                    if not (hum and hum.Health > 0) then ok = false end
+                end
+                if ok and (o.MaxDistance or 0) > 0 and (not d or d > o.MaxDistance) then ok = false end
+                if ok then out[#out + 1] = { key = tostring(p.UserId), player = p, d = d or 1e9 } end
+            end
         end
-        lb.TextColor3 = (wired.color and ins.color and ins.color.color) or o.Color
-        lb.TextSize = o.Size
-        lb.FontFace = (Theme.loadFeiFont and Theme.loadFeiFont(o.Font)) or Theme.Fonts.Bold
-        lb.Position = UDim2.new(math.clamp(o.X, 0, 100) / 100, 0, math.clamp(o.Y, 0, 100) / 100, 0)
-        lb.TextTransparency = 1 - math.clamp(o.Opacity or 1, 0, 1)
-        local rot = o.Rotation or 0
-        if o.Spin then
-            spins[node.id] = ((spins[node.id] or 0) + (o.SpinSpeed or 0) * dt) % 360
-            rot = rot + spins[node.id]
-        else
-            spins[node.id] = nil
-        end
-        lb.Rotation = rot
-        local st = lb:FindFirstChildOfClass("UIStroke")
-        if st then
-            st.Enabled = o.Outline == true and (o.OutlineThickness or 0) > 0
-            st.Thickness = o.OutlineThickness or 0
-            st.Color = o.OutlineColor
-            st.Transparency = lb.TextTransparency
-        end
+        table.sort(out, function(a, b) return a.d < b.d end)
+        while #out > math.max(math.floor(o.MaxCount or 24), 1) do table.remove(out) end
+        return out
+    end
+
+    local function guiFor(node, K, ctx)
+        local key = node.id .. "|" .. ctx.key
+        local g = vis[key]
+        if g and g.Parent then return g end
+        local ok, made = pcall(K.make)
+        if not ok then return nil end
+        vis[key] = made
+        return made
     end
 
     RunService.RenderStepped:Connect(function(dt)
         if Koffee._unloaded then return end
+        frameDt = dt
+        fpsAcc, fpsN = fpsAcc + dt, fpsN + 1
+        if fpsAcc >= 0.25 then FPS = fpsN / fpsAcc; fpsAcc, fpsN = 0, 0 end
         local alive = {}
         if CF.Enabled then
-            local cache = {}
+            local cache, memo = {}, {}
             for _, node in ipairs(CF.Nodes) do
                 local K = KINDS[node.kind]
                 if K and K.sink then
-                    alive[node.id] = true
-                    pcall(drawText, node, evalNode(node, cache, 0), dt)
+                    local fe = feOf(node, memo, 0)
+                    local ctxs = fe and playersFor(fe.opts) or { GCTX }
+                    for _, ctx in ipairs(ctxs) do
+                        alive[node.id .. "|" .. ctx.key] = true
+                        local g = guiFor(node, K, ctx)
+                        if g then
+                            local ins = resolveIns(node, K, cache, 0, ctx)
+                            pcall(K.paint, g, node.opts, ins, node, ctx, dt)
+                        end
+                    end
                 end
             end
         end
-        for id, lb in pairs(labels) do
-            if not alive[id] then lb:Destroy(); labels[id] = nil; spins[id] = nil end
+        for key, g in pairs(vis) do
+            if not alive[key] then g:Destroy(); vis[key] = nil; st[key] = nil end
         end
     end)
 
-    local function addNode(kind, x, y)
-        local K = KINDS[kind]
-        if not K then return nil end
-        local id = 1
-        for _, n in ipairs(CF.Nodes) do if n.id >= id then id = n.id + 1 end end
-        local o = {}
-        for k, v in pairs(K.opts or {}) do o[k] = v end
-        table.insert(CF.Nodes, { id = id, kind = kind, opts = o, wires = {},
-                                 x = x or 24, y = y or 24 })
-        return id
-    end
-    -- v0.13.3: the Text block's single "text" slot became "a". Re-point old graphs
-    -- once rather than silently dropping the wire.
+    ------------------------------------------------------------- graph edits
+    -- the Text block's single "text" slot became "a" in v0.13.3
     local function migrate()
         for _, n in ipairs(CF.Nodes) do
             local w = n.wires
@@ -14086,11 +14713,13 @@ registerConfig("custom", Koffee.Custom)
         if t == "table" then
             local parts = {}
             for k, val in pairs(v) do
-                local e = enc(val)
-                if e then
-                    local ek = (type(k) == "number") and ("[" .. k .. "]")
-                        or ("[" .. string.format("%q", k) .. "]")
-                    parts[#parts + 1] = ek .. "=" .. e
+                if not (type(k) == "string" and k:sub(1, 1) == "_") then
+                    local e = enc(val)
+                    if e then
+                        local ek = (type(k) == "number") and ("[" .. k .. "]")
+                            or ("[" .. string.format("%q", k) .. "]")
+                        parts[#parts + 1] = ek .. "=" .. e
+                    end
                 end
             end
             return "{" .. table.concat(parts, ",") .. "}"
@@ -14148,6 +14777,17 @@ registerConfig("custom", Koffee.Custom)
         return added > 0, added > 0 and ("pasted " .. added) or "nothing to paste"
     end
 
+    local function addNode(kind, x, y)
+        local K = KINDS[kind]
+        if not K then return nil end
+        local id = 1
+        for _, n in ipairs(CF.Nodes) do if n.id >= id then id = n.id + 1 end end
+        local o = {}
+        for k, v in pairs(K.opts or {}) do o[k] = v end
+        table.insert(CF.Nodes, { id = id, kind = kind, opts = o, wires = {},
+                                 x = x or 24, y = y or 24 })
+        return id
+    end
     local function removeNode(id)
         for i, n in ipairs(CF.Nodes) do
             if n.id == id then table.remove(CF.Nodes, i); break end
@@ -14158,6 +14798,7 @@ registerConfig("custom", Koffee.Custom)
             end
         end
     end
+
     -- inline option rows: the inspector renders options directly, no popups
     local function textRow(parent, label, initial, onChange)
         local r = new("Frame", {
@@ -14181,6 +14822,31 @@ registerConfig("custom", Koffee.Custom)
             new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
         box.FocusLost:Connect(function() onChange(box.Text) end)
     end
+    local function labelRow(parent, text)
+        new("TextLabel", {
+            Text = text, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+            TextWrapped = true, AutomaticSize = Enum.AutomaticSize.Y,
+            Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 41, Parent = parent,
+        })
+    end
+    local function buttonRow(parent, text, onClick)
+        local b = new("TextButton", {
+            Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 24), ZIndex = 41, Parent = parent,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        b.MouseEnter:Connect(function()
+            tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
+        end)
+        b.MouseLeave:Connect(function()
+            tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+        end)
+        b.MouseButton1Click:Connect(onClick)
+        return b
+    end
     local function swatchRow(parent, label, initial, onChange)
         local r = new("Frame", {
             Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
@@ -14197,7 +14863,7 @@ registerConfig("custom", Koffee.Custom)
 
     -- analytic node geometry: port centres never wait on a layout pass
     local NODE_W, HEAD_H, ROW_H, WIRE_SEG = 172, 24, 20, 12
-    local TOOL_H, INSP_W, CANVAS_W, CANVAS_H = 62, 202, 2600, 1800
+    local TOOL_H, INSP_W, CANVAS_W, CANVAS_H = 82, 202, 2600, 1800
     local function nodeH(K) return HEAD_H + math.max(#K.ins, 1) * ROW_H + 6 end
     local function bez(x1, y1, ax, ay, bx, by, x2, y2, t)
         local u = 1 - t
@@ -14275,6 +14941,8 @@ registerConfig("custom", Koffee.Custom)
             function a:dropdown(l, o, i, cb) dropdown(p, l, o, i, cb) end
             function a:text(l, i, cb) textRow(p, l, i, cb) end
             function a:swatch(l, i, cb) swatchRow(p, l, i, cb) end
+            function a:label(t) labelRow(p, t) end
+            function a:button(t, fn) buttonRow(p, t, function() fn(rebuildAll) end) end
             return a
         end
 
@@ -14488,22 +15156,26 @@ registerConfig("custom", Koffee.Custom)
             return 24, 24
         end
 
-        local function barAt(y)
+        local function barAt(y, h)
             return new("Frame", {
-                Position = UDim2.new(0, 6, 0, y), Size = UDim2.new(1, -12, 0, 24),
+                Position = UDim2.new(0, 6, 0, y), Size = UDim2.new(1, -12, 0, h or 24),
                 BackgroundTransparency = 1, ZIndex = 35, Parent = parent,
             }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
                 Padding = UDim.new(0, 5), VerticalAlignment = Enum.VerticalAlignment.Center,
                 SortOrder = Enum.SortOrder.LayoutOrder }) })
         end
-        local bar, bar2 = barAt(5), barAt(33)
-        for i, kind in ipairs(ORDER) do
-            toolBtn(bar, kind:lower(), 70, i, function()
-                local x, y = freeSpot()
-                sel = addNode(kind, x, y)
-                rebuildAll()
-            end)
-        end
+        local bar, bar2 = barAt(2, 48), barAt(52)
+        local pick = ORDER[1]
+        local ddw = new("Frame", {
+            Size = UDim2.new(0, 216, 0, 48), BackgroundTransparency = 1,
+            LayoutOrder = 1, ZIndex = 36, Parent = bar,
+        })
+        dropdown(ddw, "block", ORDER, pick, function(v) pick = v end)
+        toolBtn(bar, "add block", 84, 2, function()
+            local x, y = freeSpot()
+            sel = addNode(pick, x, y)
+            rebuildAll()
+        end)
         local function say(msg) note, noteAt = msg, os.clock() end
         toolBtn(bar2, "duplicate", 78, 1, function()
             local n = sel and nodeById(sel)
