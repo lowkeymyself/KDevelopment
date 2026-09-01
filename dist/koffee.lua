@@ -1,9 +1,9 @@
--- koffee v0.18.4
+-- koffee v0.19.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.18.4"
+Koffee.Version = "0.19.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -6596,7 +6596,18 @@ Koffee.Bullets = {
     Enabled     = false,
     Bindables   = false,   -- also watch BindableEvents (games that hop remote -> localscript)
     Color       = Color3.fromRGB(255, 176, 46),
-    TeamColor   = false,
+    ColorMode   = "Static",   -- Static / Shooter Team / Distance / Random Per Shot
+    TeamColor   = false,      -- pre-v0.19 key, still honoured as Shooter Team
+    Style       = "Instant",  -- Instant / Travel / Grow / Retract
+    TravelLen   = 0.35,       -- Travel: dash length as a fraction of the shot
+    ThroughWalls = true,
+    Taper       = false,
+    Outline     = true,
+    OutlineColor = Color3.new(0, 0, 0),
+    OutlineThickness = 1,
+    Gradient    = false,
+    OriginDot   = false,
+    ImpactSize  = 5,
     Thickness   = 2,
     Duration    = 0.7,
     Fade        = true,
@@ -6617,6 +6628,7 @@ registerConfig("bullets", Koffee.Bullets)
     local FLOOD      = 60    -- calls/sec above which a remote is state sync, not a gun
     local LOCK_HITS  = 3     -- valid shots before a remote is pinned as THE gun remote
     local NEAR_PLANE = 0.5
+    local WALL_SEGS  = 5     -- occlusion resolution when Through Walls is off
 
     local hooks, stats, pinned, hookCount = {}, {}, nil, 0
     local shots, linePool, dotPool = {}, {}, {}
@@ -6704,7 +6716,7 @@ registerConfig("bullets", Koffee.Bullets)
             l = new("Frame", {
                 AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1),
                 BorderSizePixel = 0, Visible = false, ZIndex = 12,
-            }, { lineOutline() })
+            }, { lineOutline(), lineGradient() })
         end
         if l.Parent ~= layer then l.Parent = layer end
         return l
@@ -6723,8 +6735,59 @@ registerConfig("bullets", Koffee.Bullets)
     end
 
     local function release(s)
-        if s.line then s.line.Visible = false; linePool[#linePool + 1] = s.line; s.line = nil end
+        for i = #(s.lines or {}), 1, -1 do
+            s.lines[i].Visible = false
+            linePool[#linePool + 1] = s.lines[i]
+            s.lines[i] = nil
+        end
         if s.dot then s.dot.Visible = false; dotPool[#dotPool + 1] = s.dot; s.dot = nil end
+        if s.odot then s.odot.Visible = false; dotPool[#dotPool + 1] = s.odot; s.odot = nil end
+    end
+
+    -- every style reduces to one pair of fractions along origin -> impact, so the
+    -- renderer draws all four identically
+    local function span(style, prog)
+        if style == "Travel" then
+            local head = math.min(prog, 1)
+            return math.max(head - math.clamp(B.TravelLen or 0.35, 0.02, 1), 0), head
+        elseif style == "Grow" then
+            return 0, math.min(prog / 0.3, 1)
+        elseif style == "Retract" then
+            return math.clamp((prog - 0.3) / 0.7, 0, 1), 1
+        end
+        return 0, 1
+    end
+
+    -- one ray per segment, cached. A bullet lives under a second and the camera
+    -- does not travel far in 70ms, so re-testing every frame buys nothing at five
+    -- rays per tracer per frame.
+    local function occlude(s, cam, now)
+        if s.mask and now < (s.maskAt or 0) then return s.mask end
+        s.maskAt = now + 0.07
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        rp.FilterDescendantsInstances = { LocalPlayer.Character, cam }
+        local m, o = s.mask or {}, cam.CFrame.Position
+        for i = 1, WALL_SEGS do
+            local mid = s.a:Lerp(s.b, (i - 0.5) / WALL_SEGS)
+            m[i] = Workspace:Raycast(o, mid - o, rp) == nil
+        end
+        s.mask = m
+        return m
+    end
+
+    local function dot(s, field, on, x, y, px, tr)
+        if on then
+            s[field] = s[field] or grabDot()
+            local sz = math.max(px, 2)
+            s[field].Size = UDim2.new(0, sz, 0, sz)
+            s[field].Position = UDim2.new(0, x, 0, y)
+            s[field].BackgroundColor3 = s.col
+            s[field].BackgroundTransparency = tr
+            s[field].Visible = true
+        elseif s[field] then
+            s[field].Visible = false
+        end
     end
 
     -- a tracer spans hundreds of studs, so one end is regularly behind the camera
@@ -6758,6 +6821,22 @@ registerConfig("bullets", Koffee.Bullets)
         return false
     end
 
+    -- resolved once at intake: a shot's colour must not shift under it while it is
+    -- still on screen
+    local function colorFor(o, src)
+        local m = B.ColorMode
+        if B.TeamColor and m == "Static" then m = "Shooter Team" end
+        if m == "Shooter Team" and src and src.TeamColor then return src.TeamColor.Color end
+        if m == "Random Per Shot" then return Color3.fromHSV(math.random(), 0.7, 1) end
+        if m == "Distance" then
+            local cam = Workspace.CurrentCamera
+            local d = cam and (o - cam.CFrame.Position).Magnitude or 0
+            local f = math.clamp(d / math.max(B.MaxDistance, 1), 0, 1)
+            return Color3.fromHSV(0.33 * (1 - f), 0.85, 1)   -- green near, red far
+        end
+        return B.Color
+    end
+
     local function push(o, t, src)
         if src == LocalPlayer and not B.ShowOwn then return false end
         if B.TeamCheck and src and src.Team and LocalPlayer.Team
@@ -6766,9 +6845,7 @@ registerConfig("bullets", Koffee.Bullets)
         if cam and (o - cam.CFrame.Position).Magnitude > B.MaxDistance then return false end
         local now = os.clock()
         if dupe(o, t, now, src == LocalPlayer) then return false end
-        local col = B.Color
-        if B.TeamColor and src and src.TeamColor then col = src.TeamColor.Color end
-        shots[#shots + 1] = { a = o, b = t, t = now, col = col }
+        shots[#shots + 1] = { a = o, b = t, t = now, col = colorFor(o, src), lines = {} }
         local cap = math.clamp(B.MaxLive or 24, 1, 64)
         while #shots > cap do release(shots[1]); table.remove(shots, 1) end
         return true
@@ -6949,35 +7026,72 @@ registerConfig("bullets", Koffee.Bullets)
                 release(s)
                 table.remove(shots, i)
             else
-                local a, b = clip(cam, s.a, s.b)
-                if not a then
-                    if s.line then s.line.Visible = false end
-                    if s.dot then s.dot.Visible = false end
-                else
-                    local pa = cam:WorldToViewportPoint(a)
-                    local pb = cam:WorldToViewportPoint(b)
-                    local dx, dy = pb.X - pa.X, pb.Y - pa.Y
-                    local tr = B.Fade and math.clamp(age / dur, 0, 0.96) or 0
-                    s.line = s.line or grabLine()
-                    local l = s.line
-                    l.Size = UDim2.new(0, math.sqrt(dx * dx + dy * dy) + 1, 0, thick)
-                    l.Position = UDim2.new(0, (pa.X + pb.X) * 0.5, 0, (pa.Y + pb.Y) * 0.5)
-                    l.Rotation = math.deg(math.atan2(dy, dx))
-                    l.BackgroundColor3 = s.col
-                    l.BackgroundTransparency = tr
-                    l.Visible = true
-                    applyLineOutline(l, true, Color3.new(0, 0, 0), math.max(1, thick))
-                    if B.Impact and pb.Z > 0 then
-                        s.dot = s.dot or grabDot()
-                        local sz = math.max(thick * 2.5, 4)
-                        s.dot.Size = UDim2.new(0, sz, 0, sz)
-                        s.dot.Position = UDim2.new(0, pb.X, 0, pb.Y)
-                        s.dot.BackgroundColor3 = s.col
-                        s.dot.BackgroundTransparency = tr
-                        s.dot.Visible = true
-                    elseif s.dot then
-                        s.dot.Visible = false
+                local prog = age / dur
+                local tr = B.Fade and math.clamp(prog, 0, 0.96) or 0
+                local lo, hi = span(B.Style, prog)
+
+                -- style and the wall test collapse into the same thing: a list of
+                -- sub-spans to draw. One entry through walls, up to WALL_SEGS when
+                -- occlusion is on.
+                local segs = {}
+                if hi > lo then
+                    if B.ThroughWalls then
+                        segs[1] = { lo, hi }
+                    else
+                        local m, run = occlude(s, cam, now), nil
+                        for k = 1, WALL_SEGS do
+                            local x0 = math.max((k - 1) / WALL_SEGS, lo)
+                            local x1 = math.min(k / WALL_SEGS, hi)
+                            if m[k] and x1 > x0 then
+                                if run and math.abs(run[2] - x0) < 1e-4 then run[2] = x1
+                                else run = { x0, x1 }; segs[#segs + 1] = run end
+                            else
+                                run = nil
+                            end
+                        end
                     end
+                end
+
+                while #s.lines > #segs do
+                    local l = table.remove(s.lines)
+                    l.Visible = false
+                    linePool[#linePool + 1] = l
+                end
+                while #s.lines < #segs do s.lines[#s.lines + 1] = grabLine() end
+
+                local tipX, tipY, tipOn = 0, 0, false
+                for k = 1, #segs do
+                    local sp = segs[k]
+                    local ca, cb = clip(cam, s.a:Lerp(s.b, sp[1]), s.a:Lerp(s.b, sp[2]))
+                    local l = s.lines[k]
+                    if not ca then
+                        l.Visible = false
+                    else
+                        local pa = cam:WorldToViewportPoint(ca)
+                        local pb = cam:WorldToViewportPoint(cb)
+                        local dx, dy = pb.X - pa.X, pb.Y - pa.Y
+                        local tk = math.max(B.Taper and (thick * (1 - 0.7 * sp[1])) or thick, 0.5)
+                        l.Size = UDim2.new(0, math.sqrt(dx * dx + dy * dy) + 1, 0, tk)
+                        l.Position = UDim2.new(0, (pa.X + pb.X) * 0.5, 0, (pa.Y + pb.Y) * 0.5)
+                        l.Rotation = math.deg(math.atan2(dy, dx))
+                        l.BackgroundColor3 = s.col
+                        l.BackgroundTransparency = tr
+                        l.Visible = true
+                        applyLineOutline(l, B.Outline, B.OutlineColor,
+                            math.max(B.OutlineThickness or 1, 0.5))
+                        applyLineGradient(l, B.Gradient)
+                        if sp[2] >= hi then tipX, tipY, tipOn = pb.X, pb.Y, pb.Z > 0 end
+                    end
+                end
+
+                -- impact only once the line has actually arrived, so Travel does not
+                -- mark the wall before the bullet gets there
+                dot(s, "dot", B.Impact and tipOn and hi >= 1, tipX, tipY, B.ImpactSize or 5, tr)
+                if B.OriginDot and lo <= 0 then
+                    local op = cam:WorldToViewportPoint(s.a)
+                    dot(s, "odot", op.Z > 0, op.X, op.Y, (B.ImpactSize or 5) * 0.8, tr)
+                else
+                    dot(s, "odot", false, 0, 0, 0, tr)
                 end
             end
         end
@@ -14006,6 +14120,33 @@ addTab("Visuals", function(root)
         popup:action("Relearn Source", function()
             if Shared._bulletRelearn then Shared._bulletRelearn() end
         end)
+    end)
+    -- v0.19.0: Through Walls off costs five rays a tracer, cached at ~15Hz, so the
+    -- line is cut where geometry hides it instead of painting over the wall.
+    local btWallRow = configCheckbox(btPanel, "Through Walls", Koffee.Bullets.ThroughWalls,
+        function(v) Koffee.Bullets.ThroughWalls = v end)
+    rightClickSettings(btWallRow.row, "shape", function(popup)
+        popup:toggle("Taper", Koffee.Bullets.Taper, function(v) Koffee.Bullets.Taper = v end)
+        popup:toggle("Gradient", Koffee.Bullets.Gradient, function(v) Koffee.Bullets.Gradient = v end)
+        popup:toggle("Origin Dot", Koffee.Bullets.OriginDot, function(v) Koffee.Bullets.OriginDot = v end)
+        popup:toggle("Impact Dot", Koffee.Bullets.Impact, function(v) Koffee.Bullets.Impact = v end)
+        popup:slider("Dot Size", 2, 20, Koffee.Bullets.ImpactSize, 0, function(v) Koffee.Bullets.ImpactSize = v end)
+    end)
+    local btStyleDd = dropdown(btPanel, "Style", { "Instant", "Travel", "Grow", "Retract" },
+        Koffee.Bullets.Style, function(v) Koffee.Bullets.Style = v end)
+    rightClickSettings(btStyleDd.frame, "style", function(popup)
+        popup:toggle("Fade Out", Koffee.Bullets.Fade, function(v) Koffee.Bullets.Fade = v end)
+        -- Travel only: how much of the shot the moving dash covers
+        popup:slider("Dash Length", 0.02, 1, Koffee.Bullets.TravelLen, 2, function(v) Koffee.Bullets.TravelLen = v end)
+    end)
+    dropdown(btPanel, "Colour Mode", { "Static", "Shooter Team", "Distance", "Random Per Shot" },
+        Koffee.Bullets.ColorMode, function(v) Koffee.Bullets.ColorMode = v end)
+    local btOutRow = configCheckbox(btPanel, "Outline", Koffee.Bullets.Outline,
+        function(v) Koffee.Bullets.Outline = v end)
+    attachSingleSwatch(btOutRow.row, Koffee.Bullets.OutlineColor, function(c) Koffee.Bullets.OutlineColor = c end)
+    rightClickSettings(btOutRow.row, "outline", function(popup)
+        popup:slider("Thickness", 0.5, 6, Koffee.Bullets.OutlineThickness, 2,
+            function(v) Koffee.Bullets.OutlineThickness = v end)
     end)
     slider(btPanel, "Thickness", 1, 10, Koffee.Bullets.Thickness, 1, function(v) Koffee.Bullets.Thickness = v end)
     slider(btPanel, "Duration", 0.1, 3, Koffee.Bullets.Duration, 2, function(v) Koffee.Bullets.Duration = v end)
