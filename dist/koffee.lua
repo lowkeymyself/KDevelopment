@@ -1,9 +1,9 @@
--- koffee v0.18.0
+-- koffee v0.18.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.18.0"
+Koffee.Version = "0.18.1"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -56,6 +56,105 @@ pcall(function()
     end)
 
     setthreadidentity(7)
+end)
+
+-- v0.18.1 ANALYTICS / TELEMETRY NEUTRALIZER. Two prongs: hang the controller's own
+-- closures so it stops producing reports, and no-op whatever it has listening on
+-- its remote so anything already queued never lands. Spawned, because a game
+-- without any of this must cost the loader nothing, and silent, because "this game
+-- has no such script" is the normal case rather than an error worth reporting.
+pcall(function()
+    local dbg = false          -- flip true to see what it found
+    if not (getgc and debug and debug.info and hookfunction) then return end
+    local genv = (getgenv and getgenv()) or nil
+    if genv then
+        if genv["\6_rt_an_ctx"] then return end   -- re-exec: already neutralized
+        genv["\6_rt_an_ctx"] = true
+    end
+
+    -- source-name needles. Adding another telemetry script later is one string.
+    local NEEDLES = { "AnalyticsPipelineController" }
+    local held = {}            -- keep hook refs alive so they cannot be collected
+
+    local function hang() return task.wait(9e9) end
+    local function noop() end
+
+    task.spawn(function()
+        -- 1) hang every closure belonging to the controller.
+        -- debug.info THROWS on some closures, and a raw loop dies on the first one,
+        -- silently skipping every function after it -- including the real target.
+        -- So every probe is individually pcall'd.
+        local ok, gc = pcall(getgc)
+        if ok and type(gc) == "table" then
+            local n = 0
+            for _, v in pairs(gc) do
+                n = n + 1
+                if n % 3000 == 0 then task.wait() end   -- never hitch a frame
+                if type(v) == "function" then
+                    local o, src = pcall(debug.info, v, "s")
+                    if o and type(src) == "string" then
+                        for _, needle in ipairs(NEEDLES) do
+                            if src:find(needle, 1, true) then
+                                if pcall(hookfunction, v, hang) then
+                                    held[#held + 1] = v
+                                    if dbg then warn("[koffee] hung " .. src) end
+                                end
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        -- 2) silence its client listeners.
+        if not getconnections then return end
+        local RS = game:GetService("ReplicatedStorage")
+
+        -- bounded, unlike a bare WaitForChild -- that blocks FOREVER on any game
+        -- that has no such object, which is most of them
+        local function grab(parent, name)
+            if not parent then return nil end
+            local o, inst = pcall(function() return parent:WaitForChild(name, 8) end)
+            return o and inst or nil
+        end
+
+        -- the literal path first, then a search, so the remote moving one level
+        -- deep does not take the whole thing down with it
+        local ev = grab(grab(grab(RS, "Remotes"), "AnalyticsPipeline"), "RemoteEvent")
+        if not ev then
+            local o, kids = pcall(function() return RS:GetDescendants() end)
+            if o then
+                for _, d in ipairs(kids) do
+                    if d:IsA("RemoteEvent") and d.Parent
+                       and d.Parent.Name:find("Analytics", 1, true) then ev = d break end
+                end
+            end
+        end
+        if not ev then return end
+
+        -- three passes: the script can rebind after we hang it, and a listener
+        -- registered a second later would otherwise sail straight through
+        for pass = 1, 3 do
+            local o, conns = pcall(getconnections, ev.OnClientEvent)
+            if o and type(conns) == "table" then
+                for _, c in pairs(conns) do
+                    -- Disable() is reversible and leaves the closure untouched, so
+                    -- prefer it wherever the executor exposes it
+                    local done = pcall(function() c:Disable() end)
+                    if not done then
+                        local o2, f = pcall(function() return c.Function end)
+                        if o2 and type(f) == "function" and pcall(hookfunction, f, noop) then
+                            held[#held + 1] = f
+                            done = true
+                        end
+                    end
+                    if dbg and done then warn("[koffee] silenced a listener") end
+                end
+            end
+            if pass < 3 then task.wait(2) end
+        end
+    end)
 end)
 
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
