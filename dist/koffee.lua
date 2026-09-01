@@ -1,9 +1,9 @@
--- koffee v0.18.3
+-- koffee v0.18.4
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.18.3"
+Koffee.Version = "0.18.4"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -4363,6 +4363,11 @@ local ESP = {
         -- forces it off on any switch and the toggle refuses to arm unless Cube.
         FollowDirection = false,     -- v0.0.23: box/cube orients to the player's facing
         ImmediateMode  = true,       -- true = snap-to-frame, false = lerp smoothing
+        -- v0.18.4: periodic stale-rig sweep. CharacterRemoving does not fire when a
+        -- game Destroys or reparents a character itself, which is how ESP ends up
+        -- drawing people who are not there.
+        Rescan         = true,
+        RescanRate     = 2,          -- seconds between sweeps
         TeamCheck      = false,
         VisibleCheck   = false,
         TeamBasedColor = false,      -- team color overrides box outline color on same-team
@@ -5238,6 +5243,40 @@ local function applyESP(plr)
     if plr.Character then attach(plr.Character) end
 end
 
+-- v0.18.4: a rig is stale when its character left Workspace (games reparent
+-- corpses instead of destroying them, so .Parent stays truthy), when the player
+-- swapped Character without CharacterAdded firing, or when the player is gone but
+-- PlayerRemoving never reached us. Every case resolves to strip and rebuild.
+local nextRescan = 0
+local function rescanRigs(applyFn, stripFn)
+    if not ESP.Config.Rescan then return end
+    local now = os.clock()
+    if now < nextRescan then return end
+    nextRescan = now + math.clamp(ESP.Config.RescanRate or 2, 0.25, 10)
+    local todo = {}
+    for plr, entry in pairs(ESP.Rigs) do
+        local rig = entry.rig
+        if plr.Parent ~= Players then
+            todo[#todo + 1] = { plr, false }
+        elseif rig then
+            local c = rig.character
+            if (not c) or (not c:IsDescendantOf(Workspace))
+               or (plr.Character and plr.Character ~= c) then
+                todo[#todo + 1] = { plr, true }
+            end
+        elseif plr.Character and plr.Character:IsDescendantOf(Workspace) then
+            todo[#todo + 1] = { plr, true }
+        end
+    end
+    for _, e in ipairs(todo) do
+        stripFn(e[1])
+        if e[2] then task.spawn(applyFn, e[1]) end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if not ESP.Rigs[plr] then task.spawn(applyFn, plr) end
+    end
+end
+
 local function stripESP(plr)
     local entry = ESP.Rigs[plr]
     if not entry then return end
@@ -5883,6 +5922,7 @@ end
 local function updateESPRigs()
     local cam = Workspace.CurrentCamera
     if not cam then return end
+    rescanRigs(applyESP, stripESP)   -- self-throttled, see rescanRigs
     local camPos = cam.CFrame.Position
     for plr, entry in pairs(ESP.Rigs) do
         local rig = entry.rig
@@ -5892,7 +5932,10 @@ local function updateESPRigs()
         -- centered on the visible body. If the torso reference goes stale
         -- (rig-swapping games, respawn mid-frame), re-resolve from character.
         if not rig then continue end
-        if not (rig.character and rig.character.Parent) then
+        -- v0.18.4: .Parent alone is not enough. A character moved out of Workspace
+        -- (corpse folders, ReplicatedStorage stashes) keeps a truthy Parent and its
+        -- parts keep their last position, which is the ghost-ESP case.
+        if not (rig.character and rig.character:IsDescendantOf(Workspace)) then
             hideRigVisuals(rig); continue
         end
         if not (rig.torso and rig.torso.Parent) then
@@ -13713,6 +13756,14 @@ addTab("Visuals", function(root)
     -- v0.0.34: ESP ships with NO keybind by default (pill reads "no keybind").
     keybindPill(master.row, "esp", nil)
     rightClickSettings(configCheckbox(espPanel, "Team Check", ESP.Config.TeamCheck, function(v) ESP.Config.TeamCheck = v end).row, "team check", teamCheckSettings)
+    -- v0.18.4: sweeps for rigs whose character left Workspace or whose player is
+    -- gone. Rate is a trade: faster clears ghosts sooner, slower costs less.
+    local rescanRow = configCheckbox(espPanel, "Rescan Players", ESP.Config.Rescan,
+        function(v) ESP.Config.Rescan = v end)
+    rightClickSettings(rescanRow.row, "rescan", function(popup)
+        popup:slider("Every (s)", 0.25, 10, ESP.Config.RescanRate, 2,
+            function(v) ESP.Config.RescanRate = v end)
+    end)
     local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
     attachDualSwatch(visRow.row, ESP.Colors.Visible, ESP.Colors.Hidden,
         function(c) ESP.Colors.Visible = c end,
