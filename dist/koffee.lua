@@ -1,9 +1,9 @@
--- koffee v0.18.2
+-- koffee v0.18.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.18.2"
+Koffee.Version = "0.18.3"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -16973,7 +16973,26 @@ local windowOpen = true
 
 -- v0.0.95: track pre-open mouse state so we can restore what the game (or 3rd
 -- Person, or shift-lock, etc.) was doing after the user closes the menu.
-local _preMenuMouseBehavior, _preMenuMouseIcon = nil, nil
+local _preMenuMouseBehavior, _preMenuMouseIcon, _preMenuCamMode = nil, nil, nil
+-- v0.18.3: setting MouseBehavior once loses in first person. The PlayerModule's
+-- camera re-locks it EVERY frame during camera update, so the fix is to re-assert
+-- after it: RenderPriority.Last (2000) runs after Camera (200), where 3rd Person
+-- and the aimbot bind.
+local MFREE = KID.name("mfree")
+local function holdMouseFree(on)
+    pcall(function() RunService:UnbindFromRenderStep(MFREE) end)
+    if not on then return end
+    pcall(function()
+        RunService:BindToRenderStep(MFREE, Enum.RenderPriority.Last.Value, function()
+            if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+                UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+            end
+            if not UserInputService.MouseIconEnabled then
+                UserInputService.MouseIconEnabled = true
+            end
+        end)
+    end)
+end
 local function setWindowOpen(open)
     if windowOpen == open then return end
     windowOpen = open
@@ -16991,6 +17010,14 @@ local function setWindowOpen(open)
         _preMenuMouseIcon     = UserInputService.MouseIconEnabled
         UserInputService.MouseBehavior   = Enum.MouseBehavior.Default
         UserInputService.MouseIconEnabled = true
+        -- LockFirstPerson makes the ENGINE hold the cursor centred, under the
+        -- re-assert. Classic frees it without zooming out, because the camera keeps
+        -- its current distance and forced-first-person games pin that at min zoom.
+        _preMenuCamMode = LocalPlayer.CameraMode
+        if _preMenuCamMode == Enum.CameraMode.LockFirstPerson then
+            pcall(function() LocalPlayer.CameraMode = Enum.CameraMode.Classic end)
+        end
+        holdMouseFree(true)
     else
         -- v0.0.22: popups live in a SEPARATE ScreenGui, so the window's fade
         -- doesn't touch them. Dismiss any open color picker + dropdowns on close
@@ -17008,6 +17035,11 @@ local function setWindowOpen(open)
         end)
         -- restore prior mouse state (3rd Person etc. re-locks on its own next
         -- frame if it's still enabled; otherwise game gets whatever it had)
+        holdMouseFree(false)
+        if _preMenuCamMode then
+            pcall(function() LocalPlayer.CameraMode = _preMenuCamMode end)
+            _preMenuCamMode = nil
+        end
         if _preMenuMouseBehavior then
             UserInputService.MouseBehavior = _preMenuMouseBehavior
         end
