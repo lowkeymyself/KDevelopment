@@ -1,9 +1,9 @@
--- koffee v0.18.1
+-- koffee v0.18.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.18.1"
+Koffee.Version = "0.18.2"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -58,11 +58,8 @@ pcall(function()
     setthreadidentity(7)
 end)
 
--- v0.18.1 ANALYTICS / TELEMETRY NEUTRALIZER. Two prongs: hang the controller's own
--- closures so it stops producing reports, and no-op whatever it has listening on
--- its remote so anything already queued never lands. Spawned, because a game
--- without any of this must cost the loader nothing, and silent, because "this game
--- has no such script" is the normal case rather than an error worth reporting.
+-- v0.18.1 ANALYTICS / TELEMETRY NEUTRALIZER: hang closures to stop reports, and
+-- no-op listeners so queued items never land. Spawned to cost nothing on clean games.
 pcall(function()
     local dbg = false          -- flip true to see what it found
     if not (getgc and debug and debug.info and hookfunction) then return end
@@ -80,10 +77,7 @@ pcall(function()
     local function noop() end
 
     task.spawn(function()
-        -- 1) hang every closure belonging to the controller.
-        -- debug.info THROWS on some closures, and a raw loop dies on the first one,
-        -- silently skipping every function after it -- including the real target.
-        -- So every probe is individually pcall'd.
+        -- 1) hang controller closures. debug.info throws on some, so each probe is pcall'd.
         local ok, gc = pcall(getgc)
         if ok and type(gc) == "table" then
             local n = 0
@@ -111,16 +105,14 @@ pcall(function()
         if not getconnections then return end
         local RS = game:GetService("ReplicatedStorage")
 
-        -- bounded, unlike a bare WaitForChild -- that blocks FOREVER on any game
-        -- that has no such object, which is most of them
+        -- bounded 8s timeout (bare WaitForChild blocks forever on most games)
         local function grab(parent, name)
             if not parent then return nil end
             local o, inst = pcall(function() return parent:WaitForChild(name, 8) end)
             return o and inst or nil
         end
 
-        -- the literal path first, then a search, so the remote moving one level
-        -- deep does not take the whole thing down with it
+        -- literal path first, then search (so remote moving one level doesn't break).
         local ev = grab(grab(grab(RS, "Remotes"), "AnalyticsPipeline"), "RemoteEvent")
         if not ev then
             local o, kids = pcall(function() return RS:GetDescendants() end)
@@ -133,14 +125,12 @@ pcall(function()
         end
         if not ev then return end
 
-        -- three passes: the script can rebind after we hang it, and a listener
-        -- registered a second later would otherwise sail straight through
+        -- three passes: script can rebind after hang, late listeners still caught.
         for pass = 1, 3 do
             local o, conns = pcall(getconnections, ev.OnClientEvent)
             if o and type(conns) == "table" then
                 for _, c in pairs(conns) do
-                    -- Disable() is reversible and leaves the closure untouched, so
-                    -- prefer it wherever the executor exposes it
+                    -- Disable() is reversible, prefer it where available.
                     local done = pcall(function() c:Disable() end)
                     if not done then
                         local o2, f = pcall(function() return c.Function end)
@@ -3931,8 +3921,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft)
             end
             return r
         end
-        -- v0.17.0: a plain clickable row. The popup body is built once, so anything
-        -- that has to act on live state (rescan, reset) needs a button, not a toggle.
+        -- v0.17.0: clickable action (popup built once, needs button not toggle).
         function api:action(label, onClick)
             local b = new("TextButton", {
                 Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
@@ -6558,12 +6547,8 @@ World.FX = {
 }
 registerConfig("world_fx", World.FX)
 
--- v0.17.0 BULLET TRACERS (Replication). You cannot see another player's outgoing
--- FireServer: __namecall only shows your own traffic. What you CAN see is the
--- server's rebroadcast, which every game that draws somebody else's shot is forced
--- to send you. So listen on every RemoteEvent's OnClientEvent, shape-match the arg
--- tuple, and gate on "the origin sits near a character" -- the one test that kills
--- nearly every false positive. Own IIFE for the register budget.
+-- v0.17.0 BULLET TRACERS: listen on server rebroadcast (only way to see others'
+-- shots), shape-match args, gate on muzzle near character. Own IIFE for registers.
 Koffee.Bullets = {
     Enabled     = false,
     Bindables   = false,   -- also watch BindableEvents (games that hop remote -> localscript)
@@ -6594,17 +6579,12 @@ registerConfig("bullets", Koffee.Bullets)
     local shots, linePool, dotPool = {}, {}, {}
     local layer, started = nil, false
 
-    -- v0.17.1 OWN SHOTS. The inbound path structurally cannot see your own fire:
-    -- servers broadcast a shot to everyone EXCEPT the shooter, because the shooter's
-    -- own client already drew it locally. So your shots come off the OUTBOUND side
-    -- instead -- silent aim's __namecall hook drops raw FireServer args into this
-    -- queue and we drain it out here, where namecalls are legal again.
+    -- v0.17.1 OWN SHOTS: server excludes shooter from broadcast, so capture from
+    -- outbound __namecall hook and drain on RenderStepped (safe from namecalls).
     local outQ, statsOut, pinnedOut = {}, {}, nil
     Shared._bulletOut = outQ
 
-    -- re-exec: these connections live on the GAME's remotes, so KID's instance
-    -- sweep can't reach them and a second run would double-hook every gun remote.
-    -- Park them on the boot ctx instead.
+    -- re-exec: park connections on boot ctx (KID sweep can't clean game-remote connections).
     for _, c in ipairs(KID.ctx.bulletConns or {}) do pcall(function() c:Disconnect() end) end
     KID.ctx.bulletConns = {}
 
@@ -6615,8 +6595,7 @@ registerConfig("bullets", Koffee.Bullets)
 
     ------------------------------------------------------------------ detection
 
-    -- the money filter. A real muzzle is next to somebody; a UI ping or a loot
-    -- spawn is not. Returns the owning player so the shot can be team-checked.
+    -- money filter: real muzzle is near a character (UI ping / loot spawn is not).
     local function charAt(pos)
         local best, bd = nil, NEAR_CHAR
         for _, p in ipairs(Players:GetPlayers()) do
@@ -6630,8 +6609,7 @@ registerConfig("bullets", Koffee.Bullets)
         return best
     end
 
-    -- arg names are unknowable, so shape does the work. A unit-length Vector3 is a
-    -- direction, a long one is a world point, a CFrame is both.
+    -- shape-match: unit-length Vector3 is direction, long is point, CFrame is both.
     local function collect(n, args)
         local pts, dirs, who, budget = {}, {}, nil, 0
         local function look(v, depth)
@@ -6963,10 +6941,8 @@ registerConfig("bullets", Koffee.Bullets)
     end)
 end)()
 
--- v0.10.0 CUSTOM SKYBOXES. Faces come from the Takurin repo (topsky/<Name>/
--- sky512_*.tex). A set is 3-20MB, so these are the one asset class that does NOT
--- ride the loader's blocking prefetch -- a sky downloads the first time it is
--- picked and is cached on disk from then on. Own IIFE for the register budget.
+-- v0.10.0 CUSTOM SKYBOXES: 3-20MB sets download on first pick, cached thereafter.
+-- Own IIFE for register budget (not prefetched like other assets).
 World.SkyBox = { Name = "None", Celestial = false }
 registerConfig("world_skybox", World.SkyBox)
 ;(function()
@@ -6979,15 +6955,13 @@ registerConfig("world_skybox", World.SkyBox)
     local parked = setmetatable({}, { __mode = "k" })
     local nextScan = 0
 
-    -- v0.16.2: the dropdown title doubles as a status line. A face can be 3MB, so
-    -- a cold pick is 20-40s of silence, which reads as "the skybox is broken".
+    -- v0.16.2: show download status (cold pick is 20-40s, looks broken without it).
     local function setStatus(s)
         Shared._skyStatusText = s
         if Shared._skySetStatus then pcall(Shared._skySetStatus, s) end
     end
 
-    -- Name + nonce: re-picking the same entry bumps the nonce, so a failed
-    -- download is retried by just clicking it again.
+    -- Name + nonce: bump nonce on re-pick to retry failed downloads.
     local function keyOf()
         return World.SkyBox.Name .. "|" .. tostring(World.SkyBox._nonce or 0)
     end
@@ -7003,8 +6977,7 @@ registerConfig("world_skybox", World.SkyBox)
         return nil
     end
 
-    -- download (once) + resolve all six faces. Returns nil + a reason on any
-    -- failure so a half-downloaded sky never applies as a set of broken faces.
+    -- download + resolve all six faces, return reason on failure (no partial skies).
     local function ensureFaces(name)
         if not (writefile and isfile and getcustomasset) then return nil, "no file api" end
         if makefolder then
@@ -7027,12 +7000,8 @@ registerConfig("world_skybox", World.SkyBox)
         return ids
     end
 
-    -- v0.10.1: park EVERYTHING that contributes to the sky, not just Lighting's Sky.
-    -- A leftover Atmosphere hazes a custom skybox into mush, Clouds sit in front of
-    -- it, and plenty of games keep their Sky under Workspace or re-add one at
-    -- runtime. Parked (Parent = nil) rather than destroyed so "None" restores the
-    -- game look exactly. v0.16.2: `parked` dedupes, the rescan used to push a fresh
-    -- entry every pass and grow `hidden` without bound.
+    -- v0.10.1: park everything (Atmosphere, Clouds, Sky under Workspace). Parked
+    -- (not destroyed) so "None" restores exactly. v0.16.2: dedupe to avoid unbounded growth.
     local function park(inst)
         if inst == ownSky or parked[inst] then return end
         parked[inst] = true
@@ -7056,9 +7025,8 @@ registerConfig("world_skybox", World.SkyBox)
         end
     end
 
-    -- v0.16.2: the engine caches sky faces and does not reliably repaint when one
-    -- Sky is swapped for another. That is the "stuck on the last skybox" bug.
-    -- Toggling CelestialBodiesShown across a frame forces the repaint.
+    -- v0.16.2: engine caches sky faces, won't repaint on swap ("stuck on last skybox").
+    -- Toggle CelestialBodiesShown across a frame to force repaint.
     local function kick(sky, want)
         if not (sky and sky.Parent) then return end
         pcall(function()
@@ -7092,8 +7060,7 @@ registerConfig("world_skybox", World.SkyBox)
             end
             setStatus("(loading)")
             local ids, why = ensureFaces(name)
-            -- applied is set even on failure: the heartbeat edge-triggers on the
-            -- key, and leaving them mismatched retries the download every frame.
+            -- applied set on failure too, heartbeat edge-triggers on key (prevents retry loop).
             applied = key
             if not ids then
                 busy = false
@@ -7109,9 +7076,8 @@ registerConfig("world_skybox", World.SkyBox)
             sky.SkyboxBk, sky.SkyboxDn = ids.bk, ids.dn
             sky.SkyboxFt, sky.SkyboxLf = ids.ft, ids.lf
             sky.SkyboxRt, sky.SkyboxUp = ids.rt, ids.up
-            -- the six faces are baked images and Roblox's own sun/moon/stars render
-            -- ON TOP of them, which is where the stray moon came from. Off by
-            -- default, right-click the dropdown to put them back.
+            -- Roblox's sun/moon/stars render on top of baked faces (off by default,
+            -- right-click dropdown to restore them).
             local want = World.SkyBox.Celestial == true
             sky.CelestialBodiesShown = want
             sky.StarCount       = want and 3000 or 0
@@ -7124,17 +7090,13 @@ registerConfig("world_skybox", World.SkyBox)
         end)
     end
 
-    -- Driven off state rather than the dropdown's callback, so a loaded config
-    -- applies its sky too (rebuildConfigTabs repaints widgets without firing them).
+    -- Heartbeat-driven (not callback), so loaded configs apply sky too.
     RunService.Heartbeat:Connect(function()
         if Koffee._unloaded or busy then return end
         local key = keyOf()
         if key ~= applied then apply(World.SkyBox.Name, key); return end
-        -- v0.10.1: keep it ours. Games re-add a Sky (day/night cycles, region
-        -- triggers) and it would render straight over the custom one, so re-park
-        -- anything new while a custom sky is active. Also survives our own Sky being
-        -- stripped by a game that clears Lighting. Throttled: this used to walk
-        -- Lighting's children every single frame.
+        -- v0.10.1: keep it ours. Games re-add Sky (day/night), re-park new ones.
+        -- Throttled 0.25s (used to walk every frame).
         if not ownSky then return end
         local now = os.clock()
         if now < nextScan then return end
@@ -8627,12 +8589,9 @@ local Combat = {
         _hooked       = false,
     },
     Misc = { Resolver = false },
-    -- v0.18.0: place-gated weapon extras. Only registered and only shown when
-    -- Koffee._gunGame, so on every other game these are dead config keys.
-    --   AntiSpread -- pins the SpreadRadius attribute on held/stored tools to 0
-    --   ShootInCar -- the weapon refuses to fire seated for two separate reasons
-    --                 (its hold track stops playing, and it reads Humanoid.SeatPart),
-    --                 so this answers both reads
+    -- v0.18.0: place-gated weapon extras (only on _gunGame).
+    --   AntiSpread -- pins SpreadRadius to 0
+    --   ShootInCar -- spoof IsPlaying and SeatPart to allow seated fire
     Gun  = { AntiSpread = false, ShootInCar = false },
     -- v0.0.88 HIT / KILL SOUNDS. Detection: universal Humanoid.Health drop watcher
     -- (A) per player. Attribution: "invisible target lock" -- each frame while LMB
@@ -9283,16 +9242,8 @@ local Combat = {
         -- touches, so cameras, Popper occlusion, physics and other scripts stay
         -- untouched -- this is why the default never breaks the game / camera.
         local function resolveIndex(self, key)
-            -- v0.18.0 SHOOT IN CAR (place-gated). The weapon blocks firing while
-            -- seated twice over, so both reads get answered:
-            --   IsPlaying -- the seated animation stops the hold track, and the gun
-            --                treats "not holding" as "can't fire"
-            --   SeatPart  -- checked directly against our own Humanoid
-            -- Deliberately NOT a second hookmetamethod: __index is already hooked
-            -- once per session and delegates here, and stacking a second hook on the
-            -- same metamethod is how you get one of them silently winning.
-            -- The gate is one table read + two string compares for every other
-            -- property access in the game, which is the whole reason it sits first.
+            -- v0.18.0 SHOOT IN CAR (place-gated): spoof IsPlaying and SeatPart.
+            -- Single __index hook delegates here (stacking hooks silently wins one).
             if Combat.Gun.ShootInCar and (key == "IsPlaying" or key == "SeatPart")
                and typeof(self) == "Instance" then
                 if key == "IsPlaying" and self:IsA("AnimationTrack") then
@@ -9438,12 +9389,8 @@ local Combat = {
             return PASS_H, PASS_V
         end
         local function resolveNamecall(self, method, args)
-            -- v0.17.1 BULLET TRACER TAP (your own shots). Records and nothing else --
-            -- it never handles, never rewrites, never early-returns. Namecall-free by
-            -- construction: two table reads, a length op and a constructor. The args
-            -- table is captured by reference on purpose, so a shot that silent aim
-            -- rewrites below draws where the bullet ACTUALLY went, not where you
-            -- aimed. Drained on RenderStepped, where namecalls are legal again.
+            -- v0.17.1 BULLET TRACER TAP: record outgoing shots, no rewrite.
+            -- Namecall-free, args by reference so drawer shows actual path.
             if method == "FireServer" or method == "InvokeServer" then
                 local q = Shared._bulletOut
                 if q and Koffee.Bullets.Enabled and #q < 16 then
@@ -11452,12 +11399,8 @@ local Combat = {
     Shared.subTabs = subTabs
 end)()
 
--- v0.18.0 ANTI-SPREAD (place-gated). This place's weapons carry the cone as a
--- SpreadRadius attribute on the Tool itself, so it is pinned to 0 rather than
--- intercepted: attribute writes replicate from the client here, and every shot
--- reads the attribute fresh. Attribute-signal driven with a slow sweep behind it,
--- because a tool can be swapped, re-parented or re-attributed by the server and
--- ChildAdded alone misses the re-attribute case. Own IIFE for the register budget.
+-- v0.18.0 ANTI-SPREAD (place-gated): pin SpreadRadius to 0. Attribute-signal
+-- driven with slow sweep (handles swap/re-parent/re-attribute). Own IIFE.
 if Koffee._gunGame then
 (function()
     -- Combat is scoped to its own IIFE; Shared.Combat is the published handle
@@ -11469,7 +11412,7 @@ if Koffee._gunGame then
     local function pin(tool)
         if not (G.AntiSpread and tool and tool.Parent) then return end
         if not tool:IsA("Tool") then return end
-        -- absent attribute = not one of this game's guns, leave it completely alone
+        -- absent attribute: not a gun in this game, skip it.
         if tool:GetAttribute("SpreadRadius") == nil then return end
         if tool:GetAttribute("SpreadRadius") ~= 0 then
             pcall(function() tool:SetAttribute("SpreadRadius", 0) end)
@@ -14715,9 +14658,7 @@ registerConfig("custom", Koffee.Custom)
     ---------------------------------------------------------------- sources
     KINDS.Target = {
         blurb = "finds a player, and says whether it found one",
-        -- v0.17.2: bool is "did it find anybody". Without it there was no way to
-        -- drive a Switch / Show When off targeting itself -- Screen Position's bool
-        -- was the only stand-in and it conflates "no target" with "off screen".
+        -- v0.17.2: bool means we found someone (avoids Screen Position's confusion).
         ins = {}, outs = { player = true, bool = true },
         opts = { Source = "Aimbot Target", Filter = "Any", MaxDistance = 0 },
         eval = function(o)
