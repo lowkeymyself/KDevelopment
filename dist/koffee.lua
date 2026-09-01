@@ -1,9 +1,9 @@
--- koffee v0.19.0
+-- koffee v0.19.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.19.0"
+Koffee.Version = "0.19.1"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -3839,7 +3839,9 @@ local openSettingsPopups = {}   -- frame -> close fn
 
 -- v0.13.0: `alsoLeft` additionally opens on LEFT click. Used by Custom Features,
 -- where the button IS the options button and hiding it behind RMB is a trap.
-local function rightClickSettings(row, title, buildFn, alsoLeft)
+-- v0.19.1: `dynamic` rebuilds the body on every open. The default builds once,
+-- which is right for fixed knobs and wrong for anything listing live state.
+local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
     local btn
     for _, c in ipairs(row:GetDescendants()) do
         if c:IsA("TextButton") then btn = c break end
@@ -3847,6 +3849,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft)
     if not btn then return end
 
     local popupFrame, isOpen = nil, false
+    local titleLbl, spawned = nil, {}
     local function ensurePopup()
         if popupFrame then return end
         popupFrame = new("Frame", {
@@ -3871,12 +3874,22 @@ local function rightClickSettings(row, title, buildFn, alsoLeft)
                 SortOrder = Enum.SortOrder.LayoutOrder,
             }),
         })
-        new("TextLabel", {
+        titleLbl = new("TextLabel", {
             Text = title, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
             Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
             ZIndex = 211, Parent = popupFrame,
         })
+    end
+
+    -- dropdowns park their option list on popupScreen, NOT under the popup, so a
+    -- rebuild has to run their own destroyers or the lists pile up invisibly
+    local function buildBody()
+        for _, kill in ipairs(spawned) do pcall(kill) end
+        table.clear(spawned)
+        for _, c in ipairs(popupFrame:GetChildren()) do
+            if c:IsA("GuiObject") and c ~= titleLbl then c:Destroy() end
+        end
         local api = { frame = popupFrame }   -- v0.0.46: expose parent for custom content
         function api:slider(label, mn, mx, initial, precision, onChange)
             slider(popupFrame, label, mn, mx, initial, precision, onChange)
@@ -3885,7 +3898,9 @@ local function rightClickSettings(row, title, buildFn, alsoLeft)
             return configCheckbox(popupFrame, label, initial, onChange)
         end
         function api:dropdown(label, options, initial, onChange)
-            return dropdown(popupFrame, label, options, initial, onChange)
+            local d = dropdown(popupFrame, label, options, initial, onChange)
+            spawned[#spawned + 1] = d.destroy
+            return d
         end
         -- v0.0.28: colour control inside a settings popup (label + right swatch).
         -- v0.0.32: optional `sopts` (alpha etc) forwarded to colorSwatch.
@@ -3943,7 +3958,9 @@ local function rightClickSettings(row, title, buildFn, alsoLeft)
         if popupFrame then popupFrame.Visible = false end
     end
     local function openPopup()
+        local fresh = popupFrame == nil
         ensurePopup()
+        if fresh or dynamic then buildBody() end
         for _, closer in pairs(openSettingsPopups) do closer() end
         -- v0.5.3: openDropdowns stores { btn, close } tables, not bare functions
         -- (see openList at ~3355). Old contract lingered here and tripped
@@ -4170,7 +4187,7 @@ end
 -- where a missing key means "this config predates the field", not "unset it".
 -- v0.13.0: Custom Features' node array is REPLACE too -- it's a list, so merging
 -- would resurrect every node the user deleted since the config was written.
-local REPLACE_TABLES = { MyTeams = true, Nodes = true }
+local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true }
 local function applyInto(target, src)
     for k, v in pairs(src) do
         if type(v) == "table" and type(target[k]) == "table" then
@@ -6616,6 +6633,7 @@ Koffee.Bullets = {
     TeamCheck   = false,
     ShowOwn     = true,
     MaxLive     = 24,
+    Blacklist   = {},     -- remote full names learning must never pin
 }
 registerConfig("bullets", Koffee.Bullets)
 ;(function()
@@ -6638,6 +6656,27 @@ registerConfig("bullets", Koffee.Bullets)
     -- outbound __namecall hook and drain on RenderStepped (safe from namecalls).
     local outQ, statsOut, pinnedOut = {}, {}, nil
     Shared._bulletOut = outQ
+
+    -- GetFullName is stable across sessions, so a blacklist survives a rejoin.
+    -- Cached weakly: it walks the ancestry and onFire is a hot path.
+    local keyCache = setmetatable({}, { __mode = "k" })
+    local blSet = nil
+    local function blKey(ev)
+        local k = keyCache[ev]
+        if not k then
+            local ok, n = pcall(function() return ev:GetFullName() end)
+            k = (ok and n) or tostring(ev)
+            keyCache[ev] = k
+        end
+        return k
+    end
+    local function blacklisted(ev)
+        if not blSet then
+            blSet = {}
+            for _, n in ipairs(B.Blacklist or {}) do blSet[n] = true end
+        end
+        return blSet[blKey(ev)] == true
+    end
 
     -- re-exec: park connections on boot ctx (KID sweep can't clean game-remote connections).
     for _, c in ipairs(KID.ctx.bulletConns or {}) do pcall(function() c:Disconnect() end) end
@@ -6909,6 +6948,7 @@ registerConfig("bullets", Koffee.Bullets)
             local ev, args = e.r, e.a
             local st = statsOut[ev]
             if not st then st = { n = 0, win = 0, hits = 0, dead = false }; statsOut[ev] = st end
+            if blacklisted(ev) then st.dead = true end
             if not st.dead and not (pinnedOut and pinnedOut ~= ev) then
                 local now = os.clock()
                 if now - st.win > 1 then st.win, st.n = now, 0 end
@@ -6950,6 +6990,7 @@ registerConfig("bullets", Koffee.Bullets)
         else
             return
         end
+        if blacklisted(inst) then return end
         local ok, conn = pcall(function()
             return sig:Connect(function(...) onFire(inst, ...) end)
         end)
@@ -6993,6 +7034,33 @@ registerConfig("bullets", Koffee.Bullets)
 
     -- full reset: drops every hook so the Bindables toggle can go both ways, clears
     -- the pin so a different remote can win, then re-sweeps from scratch
+    -- blacklists whatever learning has currently pinned, then relearns so the next
+    -- best candidate can win. Inbound pin first, outbound second.
+    Shared._bulletBlacklist = function()
+        local ev = pinned or pinnedOut
+        if not ev then setStatus("(nothing locked yet)") return false end
+        local k = blKey(ev)
+        for _, n in ipairs(B.Blacklist) do if n == k then return false end end
+        table.insert(B.Blacklist, k)
+        blSet = nil
+        Shared._bulletRelearn()
+        return true
+    end
+
+    Shared._bulletUnBlacklist = function(full)
+        for i = #B.Blacklist, 1, -1 do
+            if B.Blacklist[i] == full then table.remove(B.Blacklist, i) end
+        end
+        blSet = nil
+        Shared._bulletRelearn()
+    end
+
+    Shared._bulletBlNames = function()
+        local t = {}
+        for _, n in ipairs(B.Blacklist or {}) do t[#t + 1] = n end
+        return t
+    end
+
     Shared._bulletRelearn = function()
         for inst, c in pairs(hooks) do
             pcall(function() c:Disconnect() end)
@@ -14120,7 +14188,33 @@ addTab("Visuals", function(root)
         popup:action("Relearn Source", function()
             if Shared._bulletRelearn then Shared._bulletRelearn() end
         end)
-    end)
+        -- v0.19.1: learning pins the first remote that looks like a gun, and a
+        -- movement or aim-sync remote can look exactly like one. Blacklist kicks the
+        -- current pin out permanently and relearns, so the next candidate gets a go.
+        popup:action("Blacklist Current", function()
+            if Shared._bulletBlacklist then Shared._bulletBlacklist() end
+        end)
+        -- this popup is dynamic (see the last arg), so the list below is rebuilt
+        -- every time it opens rather than frozen at first build
+        local bl = (Shared._bulletBlNames and Shared._bulletBlNames()) or {}
+        if #bl > 0 then
+            -- full names are far wider than the popup, so show the tail and map back
+            local shorts, byShort = {}, {}
+            for i, full in ipairs(bl) do
+                local short = full:match("([^%.]+%.[^%.]+)$") or full
+                if byShort[short] then short = short .. " #" .. i end
+                shorts[#shorts + 1] = short
+                byShort[short] = full
+            end
+            local pick = shorts[1]
+            popup:dropdown("Blacklisted", shorts, pick, function(v) pick = v end)
+            popup:action("Un-blacklist", function()
+                if Shared._bulletUnBlacklist and byShort[pick] then
+                    Shared._bulletUnBlacklist(byShort[pick])
+                end
+            end)
+        end
+    end, false, true)
     -- v0.19.0: Through Walls off costs five rays a tracer, cached at ~15Hz, so the
     -- line is cut where geometry hides it instead of painting over the wall.
     local btWallRow = configCheckbox(btPanel, "Through Walls", Koffee.Bullets.ThroughWalls,
