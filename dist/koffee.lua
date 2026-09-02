@@ -1,9 +1,9 @@
--- koffee v0.19.2
+-- koffee v0.19.3
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.19.2"
+Koffee.Version = "0.19.3"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -3993,11 +3993,19 @@ UserInputService.InputBegan:Connect(function(input)
     if input.UserInputType ~= Enum.UserInputType.MouseButton1
     and input.UserInputType ~= Enum.UserInputType.Touch then return end
     local mp = input.Position
+    local function hits(f)
+        local abs, siz = f.AbsolutePosition, f.AbsoluteSize
+        return mp.X >= abs.X and mp.X <= abs.X + siz.X
+           and mp.Y >= abs.Y and mp.Y <= abs.Y + siz.Y
+    end
+    -- v0.19.3: a dropdown's option list is parented to popupScreen and drawn BELOW
+    -- the popup, so picking an option lands outside the popup's rect and used to
+    -- close the popup out from under the dropdown mid-click.
+    for lst in pairs(openDropdowns) do
+        if lst.Visible and hits(lst) then return end
+    end
     for frame, closer in pairs(openSettingsPopups) do
-        local abs, siz = frame.AbsolutePosition, frame.AbsoluteSize
-        local inside = mp.X >= abs.X and mp.X <= abs.X + siz.X
-                   and mp.Y >= abs.Y and mp.Y <= abs.Y + siz.Y
-        if not inside then closer() end
+        if not hits(frame) then closer() end
     end
 end)
 
@@ -7061,14 +7069,29 @@ registerConfig("bullets", Koffee.Bullets)
 
     -- full reset: drops every hook so the Bindables toggle can go both ways, clears
     -- the pin so a different remote can win, then re-sweeps from scratch
-    -- blacklists whatever learning has currently pinned, then relearns so the next
-    -- best candidate can win. Inbound pin first, outbound second.
-    Shared._bulletBlacklist = function()
-        local ev = pinned or pinnedOut
-        if not ev then setStatus("(nothing locked yet)") return false end
-        local k = blKey(ev)
-        for _, n in ipairs(B.Blacklist) do if n == k then return false end end
-        table.insert(B.Blacklist, k)
+    -- v0.19.3: the two paths pin INDEPENDENTLY and can hold different remotes, so
+    -- "blacklist the current one" was ambiguous and picked inbound whatever the
+    -- status line happened to be showing. Both pins are published instead and the
+    -- popup offers a button per pin, so the click is never a guess.
+    Shared._bulletPins = function()
+        local out, seen = {}, {}
+        local function add(ev, tag)
+            if not ev then return end
+            local k = blKey(ev)
+            if seen[k] then seen[k].tag = "both" return end
+            local e = { tag = tag, key = k, short = k:match("([^%.]+)$") or k }
+            seen[k] = e
+            out[#out + 1] = e
+        end
+        add(pinned, "in")
+        add(pinnedOut, "out")
+        return out
+    end
+
+    Shared._bulletBlacklistKey = function(key)
+        if not key then return false end
+        for _, n in ipairs(B.Blacklist) do if n == key then return false end end
+        table.insert(B.Blacklist, key)
         blSet = nil
         Shared._bulletRelearn()
         return true
@@ -14223,11 +14246,27 @@ addTab("Visuals", function(root)
             if Shared._bulletRelearn then Shared._bulletRelearn() end
         end)
         -- v0.19.1: learning pins the first remote that looks like a gun, and a
-        -- movement or aim-sync remote can look exactly like one. Blacklist kicks the
-        -- current pin out permanently and relearns, so the next candidate gets a go.
-        popup:action("Blacklist Current", function()
-            if Shared._bulletBlacklist then Shared._bulletBlacklist() end
-        end)
+        -- movement or aim-sync remote can look exactly like one. Blacklisting kicks
+        -- that pin out permanently and relearns so the next candidate gets a go.
+        -- v0.19.3: one button per pin, because inbound and outbound pin separately.
+        local pins = (Shared._bulletPins and Shared._bulletPins()) or {}
+        if #pins == 0 then
+            new("TextLabel", {
+                Text = "nothing locked yet", FontFace = Theme.Fonts.Medium,
+                TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+                BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16),
+                TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 212,
+                Parent = popup.frame,
+            })
+        end
+        for _, pin in ipairs(pins) do
+            local key = pin.key
+            local label = (pin.tag == "both") and ("Blacklist " .. pin.short)
+                or ("Blacklist " .. pin.tag .. ": " .. pin.short)
+            popup:action(label, function()
+                if Shared._bulletBlacklistKey then Shared._bulletBlacklistKey(key) end
+            end)
+        end
         -- this popup is dynamic (see the last arg), so the list below is rebuilt
         -- every time it opens rather than frozen at first build
         local bl = (Shared._bulletBlNames and Shared._bulletBlNames()) or {}
