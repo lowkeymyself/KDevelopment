@@ -1,9 +1,9 @@
--- koffee v0.19.1
+-- koffee v0.19.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.19.1"
+Koffee.Version = "0.19.2"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -6652,6 +6652,22 @@ registerConfig("bullets", Koffee.Bullets)
     local shots, linePool, dotPool = {}, {}, {}
     local layer, started = nil, false
 
+    -- v0.19.2: our OWN layer. These used to live in ESP.BoxLayer, which ESP DESTROYS
+    -- when you switch it off -- taking every pooled frame with it. Reparenting a
+    -- destroyed frame throws, so one ESP toggle killed the render loop until reload.
+    local function ensureBLayer()
+        if layer and layer.Parent then return layer end
+        layer = new("Frame", {
+            Name = "KBulletLayer", Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 12, Parent = screen,
+        })
+        -- anything pooled or in flight belongs to the old layer and is unusable
+        table.clear(linePool)
+        table.clear(dotPool)
+        for i = #shots, 1, -1 do shots[i] = nil end
+        return layer
+    end
+
     -- v0.17.1 OWN SHOTS: server excludes shooter from broadcast, so capture from
     -- outbound __namecall hook and drain on RenderStepped (safe from namecalls).
     local outQ, statsOut, pinnedOut = {}, {}, nil
@@ -6800,12 +6816,14 @@ registerConfig("bullets", Koffee.Bullets)
     -- one ray per segment, cached. A bullet lives under a second and the camera
     -- does not travel far in 70ms, so re-testing every frame buys nothing at five
     -- rays per tracer per frame.
-    local function occlude(s, cam, now)
+    -- `ignore` is built once per frame by the caller: without every character in it
+    -- a tracer that ends in somebody's chest is occluded by that somebody.
+    local function occlude(s, cam, now, ignore)
         if s.mask and now < (s.maskAt or 0) then return s.mask end
         s.maskAt = now + 0.07
         local rp = RaycastParams.new()
         rp.FilterType = Enum.RaycastFilterType.Exclude
-        rp.FilterDescendantsInstances = { LocalPlayer.Character, cam }
+        rp.FilterDescendantsInstances = ignore
         local m, o = s.mask or {}, cam.CFrame.Position
         for i = 1, WALL_SEGS do
             local mid = s.a:Lerp(s.b, (i - 0.5) / WALL_SEGS)
@@ -6848,12 +6866,19 @@ registerConfig("bullets", Koffee.Bullets)
     -- a game that DOES echo your own shot back sends it a round-trip later than the
     -- outbound tap recorded it, so own shots get a much wider window than the plain
     -- two-sources-one-shot case.
-    local function dupe(o, t, now, mine)
-        local win = mine and 0.4 or 0.06
-        local tol = mine and 12 or 6
+    -- v0.19.2: the wide window exists ONLY to swallow the server's rebroadcast of a
+    -- shot we already recorded outbound, so it may only apply ACROSS sources. Two
+    -- outbound shots 100ms apart at the same wall are two bullets, not a duplicate:
+    -- the old shared window ate three of every four rounds from an automatic weapon,
+    -- which is why tracers showed "sometimes". Same-source now only catches a literal
+    -- repeat, so shotgun pellets and fast fire both survive.
+    local function dupe(o, t, now, tag)
         for i = #shots, math.max(1, #shots - 8), -1 do
             local s = shots[i]
-            if now - s.t < win and (s.a - o).Magnitude < 3 and (s.b - t).Magnitude < tol then
+            local cross = s.tag ~= tag
+            if now - s.t < (cross and 0.4 or 0.02)
+               and (s.a - o).Magnitude < (cross and 3 or 1)
+               and (s.b - t).Magnitude < (cross and 12 or 1) then
                 return true
             end
         end
@@ -6876,15 +6901,17 @@ registerConfig("bullets", Koffee.Bullets)
         return B.Color
     end
 
-    local function push(o, t, src)
+    local function push(o, t, src, tag)
         if src == LocalPlayer and not B.ShowOwn then return false end
         if B.TeamCheck and src and src.Team and LocalPlayer.Team
             and src.Team == LocalPlayer.Team then return false end
         local cam = Workspace.CurrentCamera
         if cam and (o - cam.CFrame.Position).Magnitude > B.MaxDistance then return false end
         local now = os.clock()
-        if dupe(o, t, now, src == LocalPlayer) then return false end
-        shots[#shots + 1] = { a = o, b = t, t = now, col = colorFor(o, src), lines = {} }
+        tag = tag or "in"
+        if dupe(o, t, now, tag) then return false end
+        shots[#shots + 1] = { a = o, b = t, t = now, tag = tag,
+                              col = colorFor(o, src), lines = {} }
         local cap = math.clamp(B.MaxLive or 24, 1, 64)
         while #shots > cap do release(shots[1]); table.remove(shots, 1) end
         return true
@@ -6968,7 +6995,7 @@ registerConfig("bullets", Koffee.Bullets)
                         if not cam or d.Magnitude < 1e-3
                             or d.Unit:Dot(cam.CFrame.LookVector) < 0.4 then o = nil end
                     end
-                    if o and push(o, t, LocalPlayer) then
+                    if o and push(o, t, LocalPlayer, "out") then
                         st.hits = st.hits + 1
                         if not pinnedOut and st.hits >= LOCK_HITS then
                             pinnedOut = ev
@@ -7083,10 +7110,17 @@ registerConfig("bullets", Koffee.Bullets)
         end
         if not started then start() end
         drainOut()
-        layer = ensureBoxLayer()
+        ensureBLayer()
         local cam = Workspace.CurrentCamera
         local now, dur = os.clock(), math.max(B.Duration, 0.05)
         local thick = math.max(B.Thickness, 0.5)
+        local ignore = nil
+        if not B.ThroughWalls then
+            ignore = { cam }
+            for _, pl in ipairs(Players:GetPlayers()) do
+                if pl.Character then ignore[#ignore + 1] = pl.Character end
+            end
+        end
         for i = #shots, 1, -1 do
             local s = shots[i]
             local age = now - s.t
@@ -7106,7 +7140,7 @@ registerConfig("bullets", Koffee.Bullets)
                     if B.ThroughWalls then
                         segs[1] = { lo, hi }
                     else
-                        local m, run = occlude(s, cam, now), nil
+                        local m, run = occlude(s, cam, now, ignore), nil
                         for k = 1, WALL_SEGS do
                             local x0 = math.max((k - 1) / WALL_SEGS, lo)
                             local x1 = math.min(k / WALL_SEGS, hi)
