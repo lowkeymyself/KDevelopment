@@ -1,9 +1,9 @@
--- koffee v0.19.4
+-- koffee v0.20.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.19.4"
+Koffee.Version = "0.20.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -15040,7 +15040,7 @@ registerConfig("custom", Koffee.Custom)
         "Delay", "Format", "Colour Mix", "Colour Cycle", "Pick Number",
         "Pick Colour", "Switch",
         "Screen Position", "Offset",
-        "Text", "Box", "Bar", "Line", "Circle", "Image", "Group",
+        "Text", "Box", "Bar", "Line", "Circle", "Ring", "Image", "Group",
         "Sound", "Notify", "Adorn Part", "Note",
     }
 
@@ -15616,7 +15616,10 @@ registerConfig("custom", Koffee.Custom)
     KINDS["Screen Position"] = {
         blurb = "where something in the world is on your screen",
         ins = { { key = "part", type = "part", label = "Part" },
-                { key = "player", type = "player", label = "Player" } },
+                { key = "player", type = "player", label = "Player" },
+                -- v0.20.0: wireable, so a height can be animated. World studs, not
+                -- pixels, so an animated offset stays glued to the body at any range
+                { key = "worldY", type = "number", label = "World Height" } },
         outs = { point = true, bool = true, number = true },
         opts = { OffsetX = 0, OffsetY = 0, WorldY = 0, Clamp = false, Anchor = "Centre" },
         eval = function(o, ins)
@@ -15639,7 +15642,8 @@ registerConfig("custom", Koffee.Custom)
             if not target then return { bool = false, number = 0 } end
             if o.Anchor == "Above" then target = target + Vector3.new(0, (size and size.Y or 2) * 1.6, 0)
             elseif o.Anchor == "Below" then target = target - Vector3.new(0, (size and size.Y or 2) * 1.6, 0) end
-            target = target + Vector3.new(0, o.WorldY or 0, 0)
+            target = target + Vector3.new(0, (ins.worldY and ins.worldY.number)
+                                             or o.WorldY or 0, 0)
             local sp = cam:WorldToViewportPoint(target)
             local vp = viewport()
             local onScreen = sp.Z > 0
@@ -15665,12 +15669,16 @@ registerConfig("custom", Koffee.Custom)
 
     KINDS.Offset = {
         blurb = "nudges a screen position",
-        ins = { { key = "point", type = "point", label = "Position" } },
+        ins = { { key = "point", type = "point", label = "Position" },
+                { key = "x", type = "number", label = "X" },
+                { key = "y", type = "number", label = "Y" } },
         outs = { point = true },
         opts = { X = 0, Y = 0 },
         eval = function(o, ins)
             local p = (ins.point and ins.point.point) or Vector2.new(0, 0)
-            return { point = p + Vector2.new(o.X or 0, o.Y or 0) }
+            local x = (ins.x and ins.x.number) or o.X or 0
+            local y = (ins.y and ins.y.number) or o.Y or 0
+            return { point = p + Vector2.new(x, y) }
         end,
         ui = function(api, o)
             api:slider("X", -800, 800, o.X, 0, function(v) o.X = v end)
@@ -16009,6 +16017,74 @@ registerConfig("custom", Koffee.Custom)
             api:toggle("Filled", o.Filled, function(v) o.Filled = v end)
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             api:slider("Fill", 0, 1, o.Alpha, 2, function(v) o.Alpha = v end)
+            visUiTail(api, o)
+        end,
+    }
+
+    -- a squashed UICorner renders as a stadium, not an ellipse, so Circle cannot
+    -- lie flat no matter what you scale it by. This walks segments around a real
+    -- ellipse instead, which is what sells a ring as being AROUND something.
+    local RING_SEGS = 28
+    KINDS.Ring = {
+        blurb = "a flat ring that lies around something",
+        sink = true, visual = true,
+        ins = visIns({ { key = "radius", type = "number", label = "Radius" } }),
+        outs = {},
+        opts = visOpts({ Radius = 55, Squash = 0.34, Thickness = 2, Segments = 22,
+                 Color = Color3.fromRGB(238, 238, 238) }),
+        make = function()
+            -- zero-size anchored group: children offset from its centre, and the
+            -- shared Rotation / Spin handling turns the whole ring for free
+            local g = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+                Size = UDim2.new(0, 0, 0, 0), ZIndex = 17, Parent = ensureLayer(),
+            })
+            for _ = 1, RING_SEGS do
+                new("Frame", {
+                    AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0,
+                    BackgroundColor3 = Color3.new(1, 1, 1), Visible = false,
+                    ZIndex = 17, Parent = g,
+                })
+            end
+            g:SetAttribute("KUserColor", true)
+            for _, d in ipairs(g:GetDescendants()) do d:SetAttribute("KUserColor", true) end
+            return g
+        end,
+        paint = function(g, o, ins, node, ctx, dt)
+            if not placeVis(g, o, ins, node, ctx, dt) then return end
+            local r = math.max((ins.radius and ins.radius.number) or o.Radius, 1)
+            local sq = math.clamp(o.Squash or 0.34, 0.02, 1)
+            local col = (ins.color and ins.color.color) or o.Color
+            local tr = 1 - math.clamp(o.Opacity or 1, 0, 1)
+            local segs = g:GetChildren()
+            local n = math.clamp(math.floor(o.Segments or 22), 6, RING_SEGS)
+            local used = 0
+            for i = 1, n do
+                local a0 = (i - 1) / n * math.pi * 2
+                local a1 = i / n * math.pi * 2
+                local x0, y0 = math.cos(a0) * r, math.sin(a0) * r * sq
+                local x1, y1 = math.cos(a1) * r, math.sin(a1) * r * sq
+                local dx, dy = x1 - x0, y1 - y0
+                used = used + 1
+                local f = segs[used]
+                if f then
+                    f.Size = UDim2.new(0, math.sqrt(dx * dx + dy * dy) + 1,
+                                       0, math.max(o.Thickness or 2, 0.5))
+                    f.Position = UDim2.new(0, (x0 + x1) * 0.5, 0, (y0 + y1) * 0.5)
+                    f.Rotation = math.deg(math.atan2(dy, dx))
+                    f.BackgroundColor3 = col
+                    f.BackgroundTransparency = tr
+                    f.Visible = true
+                end
+            end
+            for i = used + 1, #segs do segs[i].Visible = false end
+        end,
+        ui = function(api, o)
+            api:slider("Radius", 1, 600, o.Radius, 0, function(v) o.Radius = v end)
+            api:slider("Squash", 0.02, 1, o.Squash, 2, function(v) o.Squash = v end)
+            api:slider("Thickness", 0.5, 20, o.Thickness, 1, function(v) o.Thickness = v end)
+            api:slider("Smoothness", 6, 28, o.Segments, 0, function(v) o.Segments = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
             visUiTail(api, o)
         end,
     }
@@ -16568,6 +16644,34 @@ registerConfig("custom", Koffee.Custom)
                 wire(x, "pos", sp); wire(x, "a", sw)
                 wire(x, "color", sw); wire(x, "show", t)
                 opt(x, "Text", "{a}"); opt(x, "Size", 15)
+            end,
+        },
+        {
+            name = "scanning ring on your target",
+            note = "rides up and down the body, eased, and shrinks with distance",
+            build = function()
+                local t  = addNode("Target", 24, 24)
+                local sp = addNode("Screen Position", 260, 24)
+                local tm = addNode("Time", 24, 190)
+                local mr = addNode("Map Range", 24, 300)
+                local nm = addNode("Number", 24, 430)
+                local mh = addNode("Math", 260, 300)
+                local rg = addNode("Ring", 520, 24)
+                wire(sp, "player", t)
+                -- Sine is already an ease: it slows at both ends of the travel where
+                -- Ping-Pong would turn around hard
+                opt(tm, "Mode", "Sine"); opt(tm, "Speed", 1.4)
+                wire(mr, "number", tm)
+                opt(mr, "InMin", -1); opt(mr, "InMax", 1)
+                opt(mr, "OutMin", -2.5); opt(mr, "OutMax", 3.5)
+                wire(sp, "worldY", mr)
+                -- radius = k / distance, so the ring keeps a fixed WORLD size
+                opt(nm, "Value", 900)
+                opt(mh, "Op", "divide")
+                wire(mh, "a", nm); wire(mh, "b", sp)
+                wire(rg, "pos", sp); wire(rg, "radius", mh)
+                wire(rg, "show", t)
+                opt(rg, "Squash", 0.34); opt(rg, "Thickness", 2)
             end,
         },
     }
