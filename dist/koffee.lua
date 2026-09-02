@@ -1,9 +1,9 @@
--- koffee v0.21.1
+-- koffee v0.21.2
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.21.1"
+Koffee.Version = "0.21.2"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -12967,8 +12967,10 @@ end)()
 
     ----------------------------------------------------------------- text popup
     -- Compact TextBox modal (used by rename + anti-animation asset input).
-    local function openTextPopup(title, initial, placeholder, onSubmit)
-        local m = openModal(340, 156)
+    -- v0.21.2: `tall` makes it a multi-line box big enough to paste a whole graph
+    -- into, for executors with no clipboard API.
+    local function openTextPopup(title, initial, placeholder, onSubmit, tall)
+        local m = openModal(tall and 520 or 340, tall and 340 or 156)
         new("TextLabel", {
             Text = title, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
@@ -12983,7 +12985,11 @@ end)()
             BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.25,
             BorderSizePixel = 0, ClearTextOnFocus = false,
             TextXAlignment = Enum.TextXAlignment.Left,
-            Position = UDim2.new(0, 16, 0, 44), Size = UDim2.new(1, -32, 0, 32),
+            TextYAlignment = tall and Enum.TextYAlignment.Top or Enum.TextYAlignment.Center,
+            MultiLine = tall == true, TextWrapped = tall == true,
+            ClipsDescendants = true,
+            Position = UDim2.new(0, 16, 0, 44),
+            Size = tall and UDim2.new(1, -32, 1, -100) or UDim2.new(1, -32, 0, 32),
             ZIndex = 202, Parent = m.box,
         }, { corner(6), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
@@ -16738,21 +16744,27 @@ registerConfig("custom", Koffee.Custom)
         return nil
     end
 
+    local function graphText() return "KOFFEEGRAPH" .. enc(CF.Nodes) end
+
+    -- v0.21.2: plenty of executors ship no clipboard API at all, so both directions
+    -- fall back to a popup: copy shows the text to select by hand, paste takes it in.
     local function copyGraph()
         local set = setclipboard or toclipboard or (syn and syn.setclipboard)
-        if not set then return false, "no clipboard access" end
-        local ok = pcall(set, "KOFFEEGRAPH" .. enc(CF.Nodes))
-        return ok, ok and "copied" or "copy failed"
+        local txt = graphText()
+        if set and pcall(set, txt) then return true, "copied" end
+        if Shared.openTextPopup then
+            Shared.openTextPopup("copy graph", txt,
+                "", function() end, true)
+            return true, "select all and copy"
+        end
+        return false, "no clipboard access"
     end
 
     -- Pasting runs loadstring on clipboard text, so the payload is scrubbed first:
     -- strip strings and the only call we allow, then reject anything with letters
     -- left. That leaves no way to smuggle a function call in through a shared graph.
-    local function pasteGraph()
-        local get = getclipboard or (syn and syn.getclipboard)
-        if not get then return false, "no clipboard access" end
-        local ok, txt = pcall(get)
-        if not (ok and type(txt) == "string") then return false, "clipboard empty" end
+    local function pasteGraph(txt)
+        if type(txt) ~= "string" or txt == "" then return false, "nothing pasted" end
         local body = txt:match("KOFFEEGRAPH(.+)$")
         if not body then return false, "not a koffee graph" end
         local scrub = body:gsub("\\\"", ""):gsub('"[^"]*"', "")
@@ -17431,7 +17443,15 @@ registerConfig("custom", Koffee.Custom)
             local _, msg = copyGraph(); say(msg); rebuildAll()
         end)
         toolBtn(bar2, "paste", 60, 3, function()
-            local _, msg = pasteGraph(); say(msg); rebuildAll()
+            -- straight to the popup: reading the clipboard needs an API most
+            -- executors do not have, and a silent "no clipboard access" reads as broken
+            if not Shared.openTextPopup then say("no text input"); return end
+            Shared.openTextPopup("paste graph", "", "paste the KOFFEEGRAPH text here",
+                function(txt)
+                    local _, msg = pasteGraph(txt)
+                    say(msg)
+                    rebuildAll()
+                end, true)
         end)
         toolBtn(bar2, "docs", 56, 5, function() docsModal(rebuildAll) end)
         toolBtn(bar2, "clear", 58, 4, function()
