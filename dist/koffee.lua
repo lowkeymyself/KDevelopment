@@ -1,9 +1,9 @@
--- koffee v0.21.0
+-- koffee v0.21.1
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.21.0"
+Koffee.Version = "0.21.1"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -16145,18 +16145,57 @@ registerConfig("custom", Koffee.Custom)
         return p
     end
 
-    -- one Folder per node: Destroy on it frees every segment, which is exactly what
-    -- the existing `vis` sweep already does for GUI blocks
+    -- one Model per node: Destroy on it frees every segment, which is exactly what
+    -- the existing `vis` sweep already does for GUI blocks. Model rather than Folder
+    -- because a Highlight can only adorn a Model or a BasePart.
     local function rig3(n)
-        local f = KID.track(Instance.new("Folder"))
+        local f = KID.track(Instance.new("Model"))
         f.Name = KID.name("cf3")
         for _ = 1, n do part3(f) end
         f.Parent = Workspace.CurrentCamera
         return f
     end
 
+    -- THROUGH WALLS. A BasePart has no way to skip the depth test, and adornment
+    -- AlwaysOnTop is a long-standing engine bug (it still gets partially occluded),
+    -- so the only reliable route is a Highlight in AlwaysOnTop DepthMode drawing the
+    -- model's silhouette over everything.
+    -- The catch: Roblox renders at most 31 Highlights ENGINE-WIDE and silently drops
+    -- ALL of them past that, chams included. So this keeps a hard budget well under
+    -- the cap and degrades to plain occluded geometry instead of taking the last slot.
+    local HL_MAX = 12
+    local hls = setmetatable({}, { __mode = "k" })
+    local function through3(f, want, col, tr)
+        local h = hls[f]
+        if not want then
+            if h then h:Destroy(); hls[f] = nil end
+            return false
+        end
+        if not h then
+            local n = 0
+            for m, x in pairs(hls) do
+                if m.Parent and x.Parent then n = n + 1 else hls[m] = nil end
+            end
+            if n >= HL_MAX then return false end
+            h = Instance.new("Highlight")
+            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            h.OutlineTransparency = 1
+            h.Adornee = f
+            h.Parent = f
+            hls[f] = h
+        end
+        h.FillColor = col
+        h.FillTransparency = tr
+        h.Enabled = true
+        return true
+    end
+
     local function hide3(f)
-        for _, p in ipairs(f:GetChildren()) do p.Transparency = 1 end
+        for _, p in ipairs(f:GetChildren()) do
+            if p:IsA("BasePart") then p.Transparency = 1 end
+        end
+        local h = hls[f]
+        if h then h.Enabled = false end
     end
 
     local function w3Ins(extra)
@@ -16169,7 +16208,8 @@ registerConfig("custom", Koffee.Custom)
     end
 
     local function w3Opts(extra)
-        local o = { Height = 0, Transparency = 0, Spin = false, SpinSpeed = 60 }
+        local o = { Height = 0, Transparency = 0, ThroughWalls = false,
+                    Spin = false, SpinSpeed = 60 }
         for k, v in pairs(extra or {}) do o[k] = v end
         return o
     end
@@ -16185,6 +16225,7 @@ registerConfig("custom", Koffee.Custom)
     end
 
     local function w3UiTail(api, o)
+        api:toggle("Through Walls", o.ThroughWalls, function(v) o.ThroughWalls = v end)
         api:slider("Height", -20, 20, o.Height, 2, function(v) o.Height = v end)
         api:slider("Transparency", 0, 1, o.Transparency, 2, function(v) o.Transparency = v end)
         api:toggle("Spin", o.Spin, function(v) o.Spin = v end)
@@ -16215,10 +16256,11 @@ registerConfig("custom", Koffee.Custom)
                 * CFrame.Angles(math.rad(o.Tilt or 0), 0, 0)
             -- 6% overlap, otherwise the straight chords leave visible gaps at the joints
             local segLen = (2 * math.pi * r / n) * 1.06
+            through3(f, o.ThroughWalls, col, tr)
             local kids = f:GetChildren()
             for i = 1, n do
                 local pt = kids[i]
-                if pt then
+                if pt and pt:IsA("BasePart") then
                     local a = (i - 0.5) / n * math.pi * 2
                     local off = Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
                     local tan = Vector3.new(-math.sin(a), 0, math.cos(a))
@@ -16228,7 +16270,9 @@ registerConfig("custom", Koffee.Custom)
                     pt.Transparency = tr
                 end
             end
-            for i = n + 1, #kids do kids[i].Transparency = 1 end
+            for i = n + 1, #kids do
+                if kids[i]:IsA("BasePart") then kids[i].Transparency = 1 end
+            end
         end,
         ui = function(api, o)
             api:slider("Radius", 0.2, 40, o.Radius, 2, function(v) o.Radius = v end)
@@ -16267,10 +16311,11 @@ registerConfig("custom", Koffee.Custom)
             sl.spin = (sl.spin or 0) + (o.Spin and (o.SpinSpeed or 60) * (dt or 0) or 0)
             local base = CFrame.new(at) * CFrame.Angles(0, math.rad(sl.spin), 0)
             local hx, hy, hz = w * 0.5, h * 0.5, w * 0.5
+            through3(f, o.ThroughWalls, col, tr)
             local kids = f:GetChildren()
             for i, e in ipairs(BOX_EDGES) do
                 local pt = kids[i]
-                if pt then
+                if pt and pt:IsA("BasePart") then
                     local ax, s1, s2 = e[1], e[2], e[3]
                     local off, size
                     if ax == "x" then
