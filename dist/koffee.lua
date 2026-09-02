@@ -1,9 +1,9 @@
--- koffee v0.19.3
+-- koffee v0.19.4
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.19.3"
+Koffee.Version = "0.19.4"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -6930,12 +6930,15 @@ registerConfig("bullets", Koffee.Bullets)
         -- once a remote has proven itself, every other one is noise
         if pinned and pinned ~= ev then return end
         local st = stats[ev]
-        if not st then st = { n = 0, win = 0, hits = 0, dead = false }; stats[ev] = st end
-        if st.dead then return end
+        if not st then st = { n = 0, win = 0, hits = 0, dead = false, quiet = 0 }; stats[ev] = st end
         local now = os.clock()
-        if now - st.win > 1 then st.win, st.n = now, 0 end
-        st.n = st.n + 1
-        if st.n > FLOOD then st.dead = true; return end
+        if st.dead or now < (st.quiet or 0) then return end
+        -- same exemption as the outbound path: a pinned remote is proven
+        if pinned ~= ev then
+            if now - st.win > 1 then st.win, st.n = now, 0 end
+            st.n = st.n + 1
+            if st.n > FLOOD then st.quiet = now + 5; return end
+        end
         local args = table.pack(...)
         if args.n == 0 or args.n > 12 then return end
         local pts, dirs, who = collect(args.n, args)
@@ -6969,11 +6972,20 @@ registerConfig("bullets", Koffee.Bullets)
             if not origin and (p - me).Magnitude < NEAR_CHAR then origin = p
             elseif not target then target = p end
         end
+        if not target and dirs[1] then
+            -- a direction settles it: the near point really was the muzzle
+            target = (origin or me) + dirs[1].Unit * 900
+        elseif not target and origin then
+            -- v0.19.4: a lone near point with nothing to aim at is the IMPACT, not
+            -- the muzzle. Claiming it as the muzzle left nothing to aim at and the
+            -- shot was dropped, which is every close-range round in a tight map.
+            origin, target = nil, origin
+        end
         origin = origin or me
-        if not target and dirs[1] then target = origin + dirs[1].Unit * 900 end
         if not target then return nil end
         local len = (target - origin).Magnitude
-        if len > 3 and len < 6000 then return origin, target end
+        -- floor was 3 studs, which threw away point-blank shots as well
+        if len > 0.5 and len < 6000 then return origin, target end
         return nil
     end
 
@@ -6982,14 +6994,24 @@ registerConfig("bullets", Koffee.Bullets)
             local e = table.remove(outQ, 1)
             local ev, args = e.r, e.a
             local st = statsOut[ev]
-            if not st then st = { n = 0, win = 0, hits = 0, dead = false }; statsOut[ev] = st end
+            if not st then st = { n = 0, win = 0, hits = 0, dead = false, quiet = 0 }; statsOut[ev] = st end
             if blacklisted(ev) then st.dead = true end
-            if not st.dead and not (pinnedOut and pinnedOut ~= ev) then
-                local now = os.clock()
-                if now - st.win > 1 then st.win, st.n = now, 0 end
-                st.n = st.n + 1
-                if st.n > FLOOD then
-                    st.dead = true
+            local now = os.clock()
+            -- v0.19.4: the flood gate exists to stop a chatty remote being PINNED, so
+            -- it must stop applying once one has proven itself. It used to keep
+            -- counting after the lock and latch st.dead for the rest of the session,
+            -- which is a weapon that works for a few seconds and then never again.
+            -- Blacklisting stays permanent; a flood is now a 5s backoff.
+            if not st.dead and now >= (st.quiet or 0)
+               and not (pinnedOut and pinnedOut ~= ev) then
+                local flooding = false
+                if pinnedOut ~= ev then
+                    if now - st.win > 1 then st.win, st.n = now, 0 end
+                    st.n = st.n + 1
+                    flooding = st.n > FLOOD
+                end
+                if flooding then
+                    st.quiet = now + 5
                 else
                     local pts, dirs = collect(args.n, args)
                     local o, t = ownShot(pts, dirs)
@@ -6997,11 +7019,16 @@ registerConfig("bullets", Koffee.Bullets)
                     -- is what stops a movement or camera remote from being pinned.
                     -- Dropped once a remote wins, so silent aim's redirect (which
                     -- deliberately points away from your crosshair) still draws.
+                    -- v0.19.4: this compared against the camera as it is NOW, but the
+                    -- queue drains a frame or more after the shot. Flick while firing
+                    -- and your own bullet failed its own aim test. The tap records the
+                    -- look direction from the firing frame instead. Threshold relaxed
+                    -- 0.4 -> 0.25 as well: the blacklist covers a bad pin now, so the
+                    -- gate does not have to be the only defence.
                     if o and not pinnedOut then
-                        local cam = Workspace.CurrentCamera
-                        local d = t - o
-                        if not cam or d.Magnitude < 1e-3
-                            or d.Unit:Dot(cam.CFrame.LookVector) < 0.4 then o = nil end
+                        local lk, d = e.lk, t - o
+                        if not lk or d.Magnitude < 1e-3
+                            or d.Unit:Dot(lk) < 0.25 then o = nil end
                     end
                     if o and push(o, t, LocalPlayer, "out") then
                         st.hits = st.hits + 1
@@ -7135,6 +7162,9 @@ registerConfig("bullets", Koffee.Bullets)
         drainOut()
         ensureBLayer()
         local cam = Workspace.CurrentCamera
+        -- read once here so the namecall tap can stamp a shot with the direction you
+        -- were facing when you fired, without touching the camera from inside the hook
+        Shared._bulletLook = cam and cam.CFrame.LookVector or nil
         local now, dur = os.clock(), math.max(B.Duration, 0.05)
         local thick = math.max(B.Thickness, 0.5)
         local ignore = nil
@@ -9676,7 +9706,7 @@ local Combat = {
             if method == "FireServer" or method == "InvokeServer" then
                 local q = Shared._bulletOut
                 if q and Koffee.Bullets.Enabled and #q < 16 then
-                    q[#q + 1] = { r = self, a = args }
+                    q[#q + 1] = { r = self, a = args, lk = Shared._bulletLook }
                 end
             end
             -- v0.3.0: External method offloads everything to KoffeeHelper (see
