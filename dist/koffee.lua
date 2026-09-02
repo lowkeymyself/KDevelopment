@@ -1,9 +1,9 @@
--- koffee v0.20.0
+-- koffee v0.21.0
 -- universal roblox internal suite
 -- funded by konstant
 
 local Koffee = {}
-Koffee.Version = "0.20.0"
+Koffee.Version = "0.21.0"
 
 -- v0.0.70: Adonis / __newindex neutralizer
 pcall(function()
@@ -15039,8 +15039,9 @@ registerConfig("custom", Koffee.Custom)
         "Visible", "Info", "Compare", "Math", "Logic", "Map Range", "Smooth",
         "Delay", "Format", "Colour Mix", "Colour Cycle", "Pick Number",
         "Pick Colour", "Switch",
-        "Screen Position", "Offset",
+        "Screen Position", "Offset", "World Position",
         "Text", "Box", "Bar", "Line", "Circle", "Ring", "Image", "Group",
+        "3D Ring", "3D Box",
         "Sound", "Notify", "Adorn Part", "Note",
     }
 
@@ -15667,6 +15668,43 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
+    KINDS["World Position"] = {
+        blurb = "a point in the world, in studs, for the 3D blocks",
+        ins = { { key = "part", type = "part", label = "Part" },
+                { key = "player", type = "player", label = "Player" },
+                { key = "height", type = "number", label = "Height" } },
+        outs = { world = true, number = true },
+        opts = { Height = 0, Anchor = "Centre" },
+        eval = function(o, ins)
+            local target, size = nil, nil
+            local part = ins.part and ins.part.part
+            if part then
+                if part:IsA("BasePart") then target, size = part.Position, part.Size
+                elseif part:IsA("Model") then
+                    local ok, pv = pcall(function() return part:GetPivot().Position end)
+                    if ok then target = pv end
+                end
+            else
+                local plr = ins.player and ins.player.player
+                local ch = plr and plr.Character
+                local hrp = ch and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Head"))
+                if hrp then target, size = hrp.Position, hrp.Size end
+            end
+            if not target then return { number = 0 } end
+            if o.Anchor == "Above" then target = target + Vector3.new(0, (size and size.Y or 2) * 1.6, 0)
+            elseif o.Anchor == "Feet" then target = target - Vector3.new(0, (size and size.Y or 2) * 1.5, 0) end
+            target = target + Vector3.new(0, (ins.height and ins.height.number) or o.Height or 0, 0)
+            local cam = Workspace.CurrentCamera
+            return { world = target,
+                     number = cam and (target - cam.CFrame.Position).Magnitude or 0 }
+        end,
+        ui = function(api, o)
+            api:dropdown("Anchor", { "Centre", "Above", "Feet" }, o.Anchor,
+                function(v) o.Anchor = v end)
+            api:slider("Height", -20, 20, o.Height, 2, function(v) o.Height = v end)
+        end,
+    }
+
     KINDS.Offset = {
         blurb = "nudges a screen position",
         ins = { { key = "point", type = "point", label = "Position" },
@@ -16086,6 +16124,178 @@ registerConfig("custom", Koffee.Custom)
             api:slider("Smoothness", 6, 28, o.Segments, 0, function(v) o.Segments = v end)
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             visUiTail(api, o)
+        end,
+    }
+
+    ----------------------------------------------------------------- 3D
+    -- Screen-space blocks draw a flat overlay: it never tilts, never sits behind
+    -- anything, and a ring can only ever be an ellipse pretending. These build real
+    -- Parts instead. Parented to the Camera, so they never replicate and sit outside
+    -- the tree a passive AC walks. The trade is honest: real geometry is occluded by
+    -- real geometry, which the overlay blocks never were.
+    local function part3(parent)
+        local p = Instance.new("Part")
+        p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch = true, false, false, false
+        p.CastShadow = false
+        p.Material = Enum.Material.Neon
+        p.TopSurface = Enum.SurfaceType.Smooth
+        p.BottomSurface = Enum.SurfaceType.Smooth
+        p.Size = Vector3.new(0.1, 0.1, 0.1)
+        p.Parent = parent
+        return p
+    end
+
+    -- one Folder per node: Destroy on it frees every segment, which is exactly what
+    -- the existing `vis` sweep already does for GUI blocks
+    local function rig3(n)
+        local f = KID.track(Instance.new("Folder"))
+        f.Name = KID.name("cf3")
+        for _ = 1, n do part3(f) end
+        f.Parent = Workspace.CurrentCamera
+        return f
+    end
+
+    local function hide3(f)
+        for _, p in ipairs(f:GetChildren()) do p.Transparency = 1 end
+    end
+
+    local function w3Ins(extra)
+        local t = {}
+        for _, e in ipairs(extra or {}) do t[#t + 1] = e end
+        t[#t + 1] = { key = "at",    type = "world", label = "World Position" }
+        t[#t + 1] = { key = "color", type = "color", label = "Colour" }
+        t[#t + 1] = { key = "show",  type = "bool",  label = "Show When" }
+        return t
+    end
+
+    local function w3Opts(extra)
+        local o = { Height = 0, Transparency = 0, Spin = false, SpinSpeed = 60 }
+        for k, v in pairs(extra or {}) do o[k] = v end
+        return o
+    end
+
+    -- returns the world anchor, or nil when the block should not draw
+    local function place3(f, o, ins)
+        if ins.show and (ins.show.bool ~= true) then return nil end
+        local at = ins.at and ins.at.world
+        if not at then return nil end
+        local cam = Workspace.CurrentCamera
+        if cam and f.Parent ~= cam then pcall(function() f.Parent = cam end) end
+        return at + Vector3.new(0, o.Height or 0, 0)
+    end
+
+    local function w3UiTail(api, o)
+        api:slider("Height", -20, 20, o.Height, 2, function(v) o.Height = v end)
+        api:slider("Transparency", 0, 1, o.Transparency, 2, function(v) o.Transparency = v end)
+        api:toggle("Spin", o.Spin, function(v) o.Spin = v end)
+        api:slider("Spin Speed", -720, 720, o.SpinSpeed, 0, function(v) o.SpinSpeed = v end)
+    end
+
+    local R3_SEGS = 32
+    KINDS["3D Ring"] = {
+        blurb = "a real ring in the world, lying flat around something",
+        sink = true, visual = true,
+        ins = w3Ins({ { key = "radius", type = "number", label = "Radius" } }),
+        outs = {},
+        opts = w3Opts({ Radius = 4, Thickness = 0.18, Segments = 24, Tilt = 0,
+                 Color = Color3.fromRGB(120, 220, 255) }),
+        make = function() return rig3(R3_SEGS) end,
+        paint = function(f, o, ins, node, ctx, dt)
+            local at = place3(f, o, ins)
+            if not at then hide3(f) return end
+            local r = math.max((ins.radius and ins.radius.number) or o.Radius, 0.05)
+            local col = (ins.color and ins.color.color) or o.Color
+            local n = math.clamp(math.floor(o.Segments or 24), 6, R3_SEGS)
+            local th = math.max(o.Thickness or 0.18, 0.02)
+            local tr = math.clamp(o.Transparency or 0, 0, 1)
+            local sl = slot(node, ctx)
+            sl.spin = (sl.spin or 0) + (o.Spin and (o.SpinSpeed or 60) * (dt or 0) or 0)
+            local base = CFrame.new(at)
+                * CFrame.Angles(0, math.rad(sl.spin), 0)
+                * CFrame.Angles(math.rad(o.Tilt or 0), 0, 0)
+            -- 6% overlap, otherwise the straight chords leave visible gaps at the joints
+            local segLen = (2 * math.pi * r / n) * 1.06
+            local kids = f:GetChildren()
+            for i = 1, n do
+                local pt = kids[i]
+                if pt then
+                    local a = (i - 0.5) / n * math.pi * 2
+                    local off = Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+                    local tan = Vector3.new(-math.sin(a), 0, math.cos(a))
+                    pt.Size = Vector3.new(th, th, segLen)
+                    pt.CFrame = base * CFrame.lookAt(off, off + tan)
+                    pt.Color = col
+                    pt.Transparency = tr
+                end
+            end
+            for i = n + 1, #kids do kids[i].Transparency = 1 end
+        end,
+        ui = function(api, o)
+            api:slider("Radius", 0.2, 40, o.Radius, 2, function(v) o.Radius = v end)
+            api:slider("Thickness", 0.02, 2, o.Thickness, 2, function(v) o.Thickness = v end)
+            api:slider("Smoothness", 6, 32, o.Segments, 0, function(v) o.Segments = v end)
+            api:slider("Tilt", -90, 90, o.Tilt, 0, function(v) o.Tilt = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            w3UiTail(api, o)
+        end,
+    }
+
+    -- 12 cube edges as sign triples: axis the edge runs along, then the corner it
+    -- sits on in the other two
+    local BOX_EDGES = {
+        { "x", -1, -1 }, { "x", -1, 1 }, { "x", 1, -1 }, { "x", 1, 1 },
+        { "y", -1, -1 }, { "y", -1, 1 }, { "y", 1, -1 }, { "y", 1, 1 },
+        { "z", -1, -1 }, { "z", -1, 1 }, { "z", 1, -1 }, { "z", 1, 1 },
+    }
+    KINDS["3D Box"] = {
+        blurb = "a wireframe box in the world",
+        sink = true, visual = true,
+        ins = w3Ins({ { key = "size", type = "number", label = "Size" } }),
+        outs = {},
+        opts = w3Opts({ Size = 5, Thickness = 0.12, Tall = 1.8,
+                 Color = Color3.fromRGB(255, 176, 46) }),
+        make = function() return rig3(#BOX_EDGES) end,
+        paint = function(f, o, ins, node, ctx, dt)
+            local at = place3(f, o, ins)
+            if not at then hide3(f) return end
+            local w = math.max((ins.size and ins.size.number) or o.Size, 0.1)
+            local h = w * math.max(o.Tall or 1.8, 0.05)
+            local col = (ins.color and ins.color.color) or o.Color
+            local th = math.max(o.Thickness or 0.12, 0.02)
+            local tr = math.clamp(o.Transparency or 0, 0, 1)
+            local sl = slot(node, ctx)
+            sl.spin = (sl.spin or 0) + (o.Spin and (o.SpinSpeed or 60) * (dt or 0) or 0)
+            local base = CFrame.new(at) * CFrame.Angles(0, math.rad(sl.spin), 0)
+            local hx, hy, hz = w * 0.5, h * 0.5, w * 0.5
+            local kids = f:GetChildren()
+            for i, e in ipairs(BOX_EDGES) do
+                local pt = kids[i]
+                if pt then
+                    local ax, s1, s2 = e[1], e[2], e[3]
+                    local off, size
+                    if ax == "x" then
+                        off = Vector3.new(0, s1 * hy, s2 * hz)
+                        size = Vector3.new(w + th, th, th)
+                    elseif ax == "y" then
+                        off = Vector3.new(s1 * hx, 0, s2 * hz)
+                        size = Vector3.new(th, h + th, th)
+                    else
+                        off = Vector3.new(s1 * hx, s2 * hy, 0)
+                        size = Vector3.new(th, th, w + th)
+                    end
+                    pt.Size = size
+                    pt.CFrame = base * CFrame.new(off)
+                    pt.Color = col
+                    pt.Transparency = tr
+                end
+            end
+        end,
+        ui = function(api, o)
+            api:slider("Width", 0.2, 40, o.Size, 2, function(v) o.Size = v end)
+            api:slider("Height x Width", 0.1, 6, o.Tall, 2, function(v) o.Tall = v end)
+            api:slider("Thickness", 0.02, 2, o.Thickness, 2, function(v) o.Thickness = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            w3UiTail(api, o)
         end,
     }
 
@@ -16563,6 +16773,7 @@ registerConfig("custom", Koffee.Custom)
         ["Visible"]         = "logic  --  these decide and reshape",
         ["Screen Position"] = "position  --  these make things follow",
         ["Text"]            = "drawing  --  these put things on your screen",
+        ["3D Ring"]         = "in the world  --  real geometry, not screen overlay",
         ["Sound"]           = "actions  --  these fire when something happens",
     }
     local DOC_BODY = {
@@ -16647,31 +16858,26 @@ registerConfig("custom", Koffee.Custom)
             end,
         },
         {
-            name = "scanning ring on your target",
-            note = "rides up and down the body, eased, and shrinks with distance",
+            name = "3D scanning ring on your target",
+            note = "real geometry in the world, eased, rides up and down the body",
             build = function()
                 local t  = addNode("Target", 24, 24)
-                local sp = addNode("Screen Position", 260, 24)
-                local tm = addNode("Time", 24, 190)
-                local mr = addNode("Map Range", 24, 300)
-                local nm = addNode("Number", 24, 430)
-                local mh = addNode("Math", 260, 300)
-                local rg = addNode("Ring", 520, 24)
-                wire(sp, "player", t)
+                local wp = addNode("World Position", 260, 24)
+                local tm = addNode("Time", 24, 200)
+                local mr = addNode("Map Range", 24, 310)
+                local rg = addNode("3D Ring", 520, 24)
+                wire(wp, "player", t)
+                opt(wp, "Anchor", "Feet")
                 -- Sine is already an ease: it slows at both ends of the travel where
                 -- Ping-Pong would turn around hard
                 opt(tm, "Mode", "Sine"); opt(tm, "Speed", 1.4)
                 wire(mr, "number", tm)
                 opt(mr, "InMin", -1); opt(mr, "InMax", 1)
-                opt(mr, "OutMin", -2.5); opt(mr, "OutMax", 3.5)
-                wire(sp, "worldY", mr)
-                -- radius = k / distance, so the ring keeps a fixed WORLD size
-                opt(nm, "Value", 900)
-                opt(mh, "Op", "divide")
-                wire(mh, "a", nm); wire(mh, "b", sp)
-                wire(rg, "pos", sp); wire(rg, "radius", mh)
-                wire(rg, "show", t)
-                opt(rg, "Squash", 0.34); opt(rg, "Thickness", 2)
+                opt(mr, "OutMin", 0); opt(mr, "OutMax", 5.5)
+                -- studs, so the ring stays on the body at any range with no maths
+                wire(wp, "height", mr)
+                wire(rg, "at", wp); wire(rg, "show", t)
+                opt(rg, "Radius", 3.2); opt(rg, "Thickness", 0.15)
             end,
         },
     }
