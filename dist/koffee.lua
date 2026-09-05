@@ -1,7 +1,7 @@
--- koffee v0.23.1
+-- koffee v0.24.0
 
 local Koffee = {}
-Koffee.Version = "0.23.1"
+Koffee.Version = "0.24.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15074,14 +15074,27 @@ end)
 -- transform it, draw it. Read-only and depth-capped, so a bad graph is a visual
 -- bug, never a crash. Evaluation carries a context so a subgraph under For Each
 -- Player runs once per player with its own cached values and its own GUI copies.
-Koffee.Custom = { Enabled = true, Nodes = {} }
+Koffee.Custom = { Enabled = true, Scale = "1x", Nodes = {} }
 registerConfig("custom", Koffee.Custom)
 ;(function()
     local CF = Koffee.Custom
     local layer, vis, st = nil, {}, {}
     -- v0.22.0: key -> frameId a GUI first went unused. Grace period before Destroy.
     local visGone = {}
+    -- v0.24.0: live layer scale. Pixel offsets are DESIGN pixels -- this is what
+    -- keeps a 12px gap looking like 12px on a 1440p or 4K screen.
+    local lscale = 1
     local GCTX = { key = "g", player = nil }
+
+    local SCALE_NAMES = { "1x", "Auto", "0.75x", "1.25x", "1.5x", "2x" }
+    local function wantScale()
+        local s = CF.Scale or "1x"
+        if s == "Auto" then
+            local vp = viewport()
+            return math.clamp((vp and vp.Y or 1080) / 1080, 0.5, 2.5)
+        end
+        return tonumber(s:match("^([%d%.]+)")) or 1
+    end
 
     local function ensureLayer()
         if layer and layer.Parent then return layer end
@@ -15089,7 +15102,7 @@ registerConfig("custom", Koffee.Custom)
             Name = "CustomLayer", Size = UDim2.new(1, 0, 1, 0),
             BackgroundTransparency = 1, BorderSizePixel = 0,
             ZIndex = 16, Parent = screen,
-        })
+        }, { new("UIScale", { Scale = 1 }) })
         return layer
     end
     -- v0.22.0: id -> node index. This was a linear scan of CF.Nodes, hit once per
@@ -15843,16 +15856,32 @@ registerConfig("custom", Koffee.Custom)
         t[#t + 1] = { key = "show",  type = "bool",  label = "Show When" }
         return t
     end
+    -- v0.24.0: Anchor is the block's OWN pivot -- which part of it lands on the
+    -- position. OffX/OffY are pixel nudges on top of the X/Y percentage.
+    local ANCHORS = {
+        ["Top Left"] = { 0, 0 },   ["Top"] = { 0.5, 0 },   ["Top Right"] = { 1, 0 },
+        ["Left"] = { 0, 0.5 },     ["Centre"] = { 0.5, 0.5 }, ["Right"] = { 1, 0.5 },
+        ["Bottom Left"] = { 0, 1 }, ["Bottom"] = { 0.5, 1 }, ["Bottom Right"] = { 1, 1 },
+    }
+    local ANCHOR_NAMES = { "Top Left", "Top", "Top Right", "Left", "Centre", "Right",
+                           "Bottom Left", "Bottom", "Bottom Right" }
     local function visOpts(extra)
-        local o = { X = 50, Y = 50, Opacity = 1, Rotation = 0, Spin = false, SpinSpeed = 90 }
+        local o = { X = 50, Y = 50, OffX = 0, OffY = 0, Anchor = "Centre",
+                    Opacity = 1, Rotation = 0, Spin = false, SpinSpeed = 90 }
         for k, v in pairs(extra or {}) do o[k] = v end
         return o
     end
     local function visUiTail(api, o)
         api:section("transform")
+        -- fallbacks: graphs saved before v0.24.0 have no Anchor / OffX / OffY
+        api:dropdown("Anchor", ANCHOR_NAMES, o.Anchor or "Centre", function(v) o.Anchor = v end)
+        api:label("Anchor is which part of this block sits on the position")
         api:slider("X %", 0, 100, o.X, 1, function(v) o.X = v end)
         api:slider("Y %", 0, 100, o.Y, 1, function(v) o.Y = v end)
         api:label("X/Y are ignored while Position is wired")
+        api:slider("Nudge X px", -400, 400, o.OffX or 0, 0, function(v) o.OffX = v end)
+        api:slider("Nudge Y px", -400, 400, o.OffY or 0, 0, function(v) o.OffY = v end)
+        api:label("nudge is pixels, and works even when Position is wired")
         api:label("wire Inside Group to a Group block to move several blocks as one")
         api:slider("Rotation", -180, 180, o.Rotation, 0, function(v) o.Rotation = v end)
         api:toggle("Spin", o.Spin, function(v) o.Spin = v end)
@@ -15865,16 +15894,23 @@ registerConfig("custom", Koffee.Custom)
         gui.Visible = true
         local host = (ins.parent and ins.parent.frame) or ensureLayer()
         if host ~= gui and gui.Parent ~= host then pcall(function() gui.Parent = host end) end
+        -- v0.24.0: Anchor picks which point of the block lands on the position.
+        -- Centre is the old behaviour, so untouched graphs render identically.
+        local an = ANCHORS[o.Anchor or "Centre"] or ANCHORS.Centre
+        gui.AnchorPoint = Vector2.new(an[1], an[2])
+        local ox, oy = o.OffX or 0, o.OffY or 0
         local p = ins.pos and ins.pos.point
         if p then
             -- a wired Position is absolute screen pixels, so rebase it when the
-            -- block is sitting inside a Group
+            -- block is sitting inside a Group, and undo the layer scale so the
+            -- point still lands on the target it was measured against
             local a = (gui.Parent ~= layer) and gui.Parent.AbsolutePosition or Vector2.new(0, 0)
-            gui.Position = UDim2.new(0, p.X - a.X, 0, p.Y - a.Y)
+            gui.Position = UDim2.new(0, (p.X - a.X) / lscale + ox, 0, (p.Y - a.Y) / lscale + oy)
         else
-            -- scale, so X/Y stay a percentage of whatever the block lives in
-            gui.Position = UDim2.new(math.clamp(o.X, 0, 100) / 100, 0,
-                                     math.clamp(o.Y, 0, 100) / 100, 0)
+            -- v0.24.0: percentage places the block, pixels do the fine detail.
+            -- A 12px gap stays 12px when the parent resizes; a percentage doesn't.
+            gui.Position = UDim2.new(math.clamp(o.X, 0, 100) / 100, ox,
+                                     math.clamp(o.Y, 0, 100) / 100, oy)
         end
         local rot = o.Rotation or 0
         if o.Spin then
@@ -16827,6 +16863,10 @@ registerConfig("custom", Koffee.Custom)
         frameDt, frameId = dt, frameId + 1
         fpsAcc, fpsN = fpsAcc + dt, fpsN + 1
         if fpsAcc >= 0.25 then FPS = fpsN / fpsAcc; fpsAcc, fpsN = 0, 0 end
+        -- v0.24.0: push the design-pixel scale onto the layer once per frame.
+        lscale = wantScale()
+        local lsc = layer and layer:FindFirstChildOfClass("UIScale")
+        if lsc and lsc.Scale ~= lscale then lsc.Scale = lscale end
         local alive = {}
         if CF.Enabled then
             reindex()
@@ -17703,6 +17743,9 @@ registerConfig("custom", Koffee.Custom)
 
         local card = panel(root, "Custom Features")
         configCheckbox(card, "Enabled", CF.Enabled, function(v) CF.Enabled = v end)
+        -- v0.24.0: design-pixel scale. Auto tracks screen height off a 1080p base.
+        dropdown(card, "UI Scale", SCALE_NAMES, CF.Scale, function(v) CF.Scale = v end)
+        labelRow(card, "scales every custom widget together. Auto follows screen height")
 
         local frame = new("Frame", {
             Size = UDim2.new(1, 0, 0, 452), BackgroundColor3 = Theme.Palette.Background,
