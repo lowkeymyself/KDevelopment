@@ -1,7 +1,7 @@
--- koffee v0.23.0
+-- koffee v0.23.1
 
 local Koffee = {}
-Koffee.Version = "0.23.0"
+Koffee.Version = "0.23.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -17902,9 +17902,10 @@ addTab("Configs", function(root)
     rebuildManager()
 end)
 
--- v0.22.0: NPC and Teams unregistered. They shipped as clickable tabs with no
--- build function, so clicking either gave you an empty panel. Still planned --
--- re-add the addTab call with a builder when there's something behind it.
+-- Empty on purpose. Per He: these stay registered with no build function.
+-- v0.22.0 removed them as "dead tabs", v0.23.1 put them back. Do not remove again.
+addTab("NPC")
+addTab("Teams")
 
 -- select first tab AFTER layout AND positioning have settled.
 -- v0.0.5 only checked AbsoluteSize -- but AbsolutePosition can still be zero
