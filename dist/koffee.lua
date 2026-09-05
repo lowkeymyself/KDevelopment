@@ -1,7 +1,7 @@
--- koffee v0.22.0
+-- koffee v0.23.0
 
 local Koffee = {}
-Koffee.Version = "0.22.0"
+Koffee.Version = "0.23.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15849,9 +15849,11 @@ registerConfig("custom", Koffee.Custom)
         return o
     end
     local function visUiTail(api, o)
+        api:section("transform")
         api:slider("X %", 0, 100, o.X, 1, function(v) o.X = v end)
         api:slider("Y %", 0, 100, o.Y, 1, function(v) o.Y = v end)
         api:label("X/Y are ignored while Position is wired")
+        api:label("wire Inside Group to a Group block to move several blocks as one")
         api:slider("Rotation", -180, 180, o.Rotation, 0, function(v) o.Rotation = v end)
         api:toggle("Spin", o.Spin, function(v) o.Spin = v end)
         api:slider("Spin Speed", -720, 720, o.SpinSpeed, 0, function(v) o.SpinSpeed = v end)
@@ -15949,15 +15951,18 @@ registerConfig("custom", Koffee.Custom)
             end
         end,
         ui = function(api, o)
+            api:section("text")
             api:text("Text  ({a} {b} {c})", o.Text, function(v) o.Text = v end)
-            api:swatch("Colour", o.Color, function(c) o.Color = c end)
             api:dropdown("Font", Theme.FontNames, o.Font, function(v) o.Font = v end)
             api:slider("Size", 8, 96, o.Size, 0, function(v) o.Size = v end)
             api:dropdown("Align", { "Centre", "Left", "Right" }, o.Align, function(v) o.Align = v end)
+            api:swatch("Colour", o.Color, function(c) o.Color = c end)
+            api:section("outline")
             api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
             api:slider("Outline Thickness", 0, 8, o.OutlineThickness, 1,
                 function(v) o.OutlineThickness = v end)
             api:swatch("Outline Colour", o.OutlineColor, function(c) o.OutlineColor = c end)
+            api:section("background")
             api:toggle("Background", o.BgOn, function(v) o.BgOn = v end)
             api:swatch("Background Colour", o.BgColor, function(c) o.BgColor = c end)
             api:slider("Background Fade", 0, 1, o.BgAlpha, 2, function(v) o.BgAlpha = v end)
@@ -15973,7 +15978,7 @@ registerConfig("custom", Koffee.Custom)
                        { key = "h", type = "number", label = "Height" } }),
         outs = {},
         opts = visOpts({ W = 120, H = 40, Color = Color3.fromRGB(20, 20, 20), Alpha = 0.3,
-                 Radius = 4, Outline = true, OutlineThickness = 1,
+                 Radius = 4, Pill = false, Outline = true, OutlineThickness = 1,
                  OutlineColor = Color3.fromRGB(238, 238, 238) }),
         make = function()
             local f = new("Frame", {
@@ -15993,7 +15998,11 @@ registerConfig("custom", Koffee.Custom)
             f.BackgroundTransparency = 1 - (1 - math.clamp(o.Alpha, 0, 1))
                 * math.clamp(o.Opacity or 1, 0, 1)
             local c = f:FindFirstChildOfClass("UICorner")
-            if c then c.CornerRadius = UDim.new(0, o.Radius or 0) end
+            -- v0.23.0: Pill = fully rounded ends, computed from the smaller side.
+            if c then
+                c.CornerRadius = o.Pill and UDim.new(0, math.min(w, h) * 0.5)
+                    or UDim.new(0, o.Radius or 0)
+            end
             local sk = f:FindFirstChildOfClass("UIStroke")
             if sk then
                 sk.Enabled = o.Outline == true and (o.OutlineThickness or 0) > 0
@@ -16003,11 +16012,17 @@ registerConfig("custom", Koffee.Custom)
             end
         end,
         ui = function(api, o)
+            api:section("shape")
             api:slider("Width", 1, 1200, o.W, 0, function(v) o.W = v end)
             api:slider("Height", 1, 1200, o.H, 0, function(v) o.H = v end)
+            -- v0.23.0: radius sits WITH size now. Buried under Fill, nobody found it.
+            api:slider("Corner Radius", 0, 400, o.Radius, 0, function(v) o.Radius = v end)
+            api:toggle("Pill", o.Pill, function(v) o.Pill = v end)
+            api:label("Pill rounds the ends fully and ignores Corner Radius")
+            api:section("fill")
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             api:slider("Fill", 0, 1, o.Alpha, 2, function(v) o.Alpha = v end)
-            api:slider("Corner Radius", 0, 32, o.Radius, 0, function(v) o.Radius = v end)
+            api:section("outline")
             api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
             api:slider("Outline Thickness", 0, 8, o.OutlineThickness, 1,
                 function(v) o.OutlineThickness = v end)
@@ -16066,14 +16081,17 @@ registerConfig("custom", Koffee.Custom)
             end
         end,
         ui = function(api, o)
+            api:section("shape")
             api:slider("Width", 1, 1200, o.W, 0, function(v) o.W = v end)
             api:slider("Height", 1, 200, o.H, 0, function(v) o.H = v end)
+            api:slider("Corner Radius", 0, 200, o.Radius, 0, function(v) o.Radius = v end)
             api:dropdown("Direction", { "Left to Right", "Right to Left",
                 "Bottom to Top", "Top to Bottom" }, o.Dir, function(v) o.Dir = v end)
+            api:section("fill")
             api:swatch("Fill Colour", o.FillColor, function(c) o.FillColor = c end)
             api:swatch("Background Colour", o.BgColor, function(c) o.BgColor = c end)
             api:slider("Background Fill", 0, 1, o.BgAlpha, 2, function(v) o.BgAlpha = v end)
-            api:slider("Corner Radius", 0, 32, o.Radius, 0, function(v) o.Radius = v end)
+            api:section("outline")
             api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
             api:swatch("Outline Colour", o.OutlineColor, function(c) o.OutlineColor = c end)
             visUiTail(api, o)
@@ -16112,9 +16130,11 @@ registerConfig("custom", Koffee.Custom)
             f.BackgroundTransparency = 1 - math.clamp(o.Opacity or 1, 0, 1)
         end,
         ui = function(api, o)
+            api:section("stroke")
             api:slider("Thickness", 1, 20, o.Thickness, 1, function(v) o.Thickness = v end)
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             api:slider("Opacity", 0, 1, o.Opacity, 2, function(v) o.Opacity = v end)
+            api:section("endpoints")
             api:label("From/To below are used only while those inputs are unwired")
             api:slider("From X %", 0, 100, o.FromX, 1, function(v) o.FromX = v end)
             api:slider("From Y %", 0, 100, o.FromY, 1, function(v) o.FromY = v end)
@@ -16157,9 +16177,12 @@ registerConfig("custom", Koffee.Custom)
             end
         end,
         ui = function(api, o)
+            api:section("shape")
             api:slider("Radius", 1, 600, o.Radius, 0, function(v) o.Radius = v end)
-            api:slider("Thickness", 0.1, 20, o.Thickness, 1, function(v) o.Thickness = v end)
             api:toggle("Filled", o.Filled, function(v) o.Filled = v end)
+            api:slider("Thickness", 0.1, 20, o.Thickness, 1, function(v) o.Thickness = v end)
+            api:label("Thickness is the ring width, used only while Filled is off")
+            api:section("fill")
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             api:slider("Fill", 0, 1, o.Alpha, 2, function(v) o.Alpha = v end)
             visUiTail(api, o)
@@ -16225,10 +16248,13 @@ registerConfig("custom", Koffee.Custom)
             for i = used + 1, #segs do segs[i].Visible = false end
         end,
         ui = function(api, o)
+            api:section("shape")
             api:slider("Radius", 1, 600, o.Radius, 0, function(v) o.Radius = v end)
             api:slider("Squash", 0.02, 1, o.Squash, 2, function(v) o.Squash = v end)
+            api:label("Squash flattens the ring so it lies around something")
             api:slider("Thickness", 0.5, 20, o.Thickness, 1, function(v) o.Thickness = v end)
             api:slider("Smoothness", 6, 28, o.Segments, 0, function(v) o.Segments = v end)
+            api:section("fill")
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             visUiTail(api, o)
         end,
@@ -16494,11 +16520,14 @@ registerConfig("custom", Koffee.Custom)
             end
         end,
         ui = function(api, o)
+            api:section("source")
             api:text("Asset id", o.Asset, function(v) o.Asset = v end)
             api:label("ignored while Avatar Of is wired")
+            api:section("shape")
             api:slider("Width", 1, 512, o.W, 0, function(v) o.W = v end)
             api:slider("Height", 1, 512, o.H, 0, function(v) o.H = v end)
-            api:slider("Corner Radius", 0, 128, o.Radius, 0, function(v) o.Radius = v end)
+            api:slider("Corner Radius", 0, 256, o.Radius, 0, function(v) o.Radius = v end)
+            api:section("fill")
             api:swatch("Tint", o.Tint, function(c) o.Tint = c end)
             visUiTail(api, o)
         end,
@@ -16538,11 +16567,16 @@ registerConfig("custom", Koffee.Custom)
             end
         end,
         ui = function(api, o)
+            api:label("wire this block's Frame output into another block's Inside Group")
+            api:label("everything inside moves, rotates and fades with the group")
+            api:section("shape")
             api:slider("Width", 1, 1600, o.W, 0, function(v) o.W = v end)
             api:slider("Height", 1, 1200, o.H, 0, function(v) o.H = v end)
+            api:slider("Corner Radius", 0, 400, o.Radius, 0, function(v) o.Radius = v end)
+            api:section("fill")
             api:swatch("Colour", o.Color, function(c) o.Color = c end)
             api:slider("Fill", 0, 1, o.Alpha, 2, function(v) o.Alpha = v end)
-            api:slider("Corner Radius", 0, 32, o.Radius, 0, function(v) o.Radius = v end)
+            api:section("outline")
             api:toggle("Outline", o.Outline, function(v) o.Outline = v end)
             api:swatch("Outline Colour", o.OutlineColor, function(c) o.OutlineColor = c end)
             visUiTail(api, o)
@@ -17199,6 +17233,26 @@ registerConfig("custom", Koffee.Custom)
             ZIndex = 41, Parent = parent,
         })
     end
+    -- v0.23.0: section header for the inspector. A flat slider stack is why Corner
+    -- Radius and Inside Group went unfound -- grouped rows make them scannable.
+    local function sectionRow(parent, text)
+        local f = new("Frame", {
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20),
+            ZIndex = 41, Parent = parent,
+        })
+        new("Frame", {
+            BackgroundColor3 = Theme.Palette.BorderSubtle, BorderSizePixel = 0,
+            Position = UDim2.new(0, 0, 0, 3), Size = UDim2.new(1, 0, 0, 1),
+            ZIndex = 41, Parent = f,
+        })
+        new("TextLabel", {
+            Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 0, 0, 6), Size = UDim2.new(1, 0, 0, 14),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = f,
+        })
+        return f
+    end
     local function buttonRow(parent, text, onClick)
         local b = new("TextButton", {
             Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Medium,
@@ -17317,6 +17371,7 @@ registerConfig("custom", Koffee.Custom)
             function a:text(l, i, cb) textRow(p, l, i, cb) end
             function a:swatch(l, i, cb) swatchRow(p, l, i, cb) end
             function a:label(t) labelRow(p, t) end
+            function a:section(t) sectionRow(p, t) end
             function a:button(t, fn) buttonRow(p, t, function() fn(rebuildAll) end) end
             return a
         end
