@@ -1,7 +1,7 @@
--- koffee v0.25.0
+-- koffee v0.26.0
 
 local Koffee = {}
-Koffee.Version = "0.25.0"
+Koffee.Version = "0.26.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1509,13 +1509,23 @@ RunService.RenderStepped:Connect(function(dt)
     end
 end)
 
+-- v0.26.0: forward-declared so setBackgroundActive can read the menu-effect
+-- toggles. Assigned (not re-declared) further down with the rest of the options.
+local KoffeeOptions
+local bgActive = false
 local function setBackgroundActive(active)
-    snowActive = active
+    bgActive = active
+    local o = KoffeeOptions
+    -- each effect is independently switchable; nil options mean "on", so this
+    -- behaves exactly as before until the user turns something off
+    snowActive = active and (not o or o.MenuSnow ~= false)
+    local wantDim  = active and (not o or o.MenuDim  ~= false)
+    local wantBlur = active and (not o or o.MenuBlur ~= false)
     tween(dim, Theme.Animation.WindowFade, {
-        BackgroundTransparency = active and (1 - Theme.Background.DimTransparency) or 1,
+        BackgroundTransparency = wantDim and (1 - Theme.Background.DimTransparency) or 1,
     })
     tween(blur, Theme.Animation.WindowFade, {
-        Size = active and Theme.Background.BlurSize or 0,
+        Size = wantBlur and Theme.Background.BlurSize or 0,
     })
 end
 
@@ -1774,9 +1784,11 @@ labelsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 end)
 
 local Modules = {}
-local KoffeeOptions = {
+KoffeeOptions = {
     Arraylist = true, ArraylistOutline = false, ArraylistOutlineSize = 1,
     TopBar = true,   -- v0.15.3: the always-on HUD strip
+    -- v0.26.0: the three window-open background effects, each independently off-able
+    MenuDim = true, MenuSnow = true, MenuBlur = true,
     -- v0.0.97 custom feature-interface font (arraylist / ESP / health text / HUD stats,
     -- everything outside the main Koffee window). On/Name/Size ride the config system.
     CustomFontOn   = false,
@@ -14865,6 +14877,22 @@ addTab("Options", function(root)
     configCheckbox(uiPanel, "Top Bar", KoffeeOptions.TopBar, function(v)
         KoffeeOptions.TopBar = v
         applyTopBar()
+    end)
+
+    -- v0.26.0: the three background effects that play while the window is open.
+    -- Re-applying with the live bg state makes each toggle take effect instantly.
+    local bgPanel = panel(root, "Menu Background")
+    configCheckbox(bgPanel, "Dim", KoffeeOptions.MenuDim, function(v)
+        KoffeeOptions.MenuDim = v
+        setBackgroundActive(bgActive)
+    end)
+    configCheckbox(bgPanel, "Blur", KoffeeOptions.MenuBlur, function(v)
+        KoffeeOptions.MenuBlur = v
+        setBackgroundActive(bgActive)
+    end)
+    configCheckbox(bgPanel, "Snow", KoffeeOptions.MenuSnow, function(v)
+        KoffeeOptions.MenuSnow = v
+        setBackgroundActive(bgActive)
     end)
     rightClickSettings(arrRow.row, "arraylist", function(menu)
         menu:toggle("Overwrite Outline", KoffeeOptions.ArraylistOutline, function(v)
