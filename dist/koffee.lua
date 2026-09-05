@@ -1,47 +1,52 @@
--- koffee v0.21.2
--- universal roblox internal suite
--- funded by konstant
+-- koffee v0.22.0
 
 local Koffee = {}
-Koffee.Version = "0.21.2"
+Koffee.Version = "0.22.0"
 
--- v0.0.70: Adonis / __newindex neutralizer
+-- v0.0.70: newindex neutra
 pcall(function()
     if not (getgc and hookfunction and setthreadidentity and getrenv) then return end
     local dbg = false          -- flip true to see what the AC tried to do
-    local held = {}            -- keep hook refs alive
+    local held = {}
     local flagged, killer
 
+    -- v0.22.0: sweep gets its OWN pcall so identity always restores. Bare, a
+    -- raise mid-walk left the thread parked at identity 2 for the rest of boot.
     setthreadidentity(2)
-    for _, v in getgc(true) do
-        if typeof(v) == "table" then
-            local det = rawget(v, "Detected")
-            local kil = rawget(v, "Kill")
-            if typeof(det) == "function" and not flagged then
-                flagged = det
-                pcall(function()
-                    hookfunction(flagged, function(method, info)
-                        if dbg and method ~= "_" then
-                            warn(("Adonis AntiCheat flagged\nMethod: %s\nInfo: %s"):format(tostring(method), tostring(info)))
-                        end
-                        return true
+    pcall(function()
+        for _, v in getgc(true) do
+            if typeof(v) == "table" then
+                local det = rawget(v, "Detected")
+                local kil = rawget(v, "Kill")
+                if typeof(det) == "function" and not flagged then
+                    flagged = det
+                    pcall(function()
+                        hookfunction(flagged, function(method, info)
+                            if dbg and method ~= "_" then
+                                warn(("Adonis AntiCheat flagged\nMethod: %s\nInfo: %s"):format(tostring(method), tostring(info)))
+                            end
+                            return true
+                        end)
+                        table.insert(held, flagged)
                     end)
-                    table.insert(held, flagged)
-                end)
-            end
-            if rawget(v, "Variables") and rawget(v, "Process") and typeof(kil) == "function" and not killer then
-                killer = kil
-                pcall(function()
-                    hookfunction(killer, function(reason)
-                        if dbg then warn("adonis tried to kill (fb): " .. tostring(reason)) end
+                end
+                if rawget(v, "Variables") and rawget(v, "Process") and typeof(kil) == "function" and not killer then
+                    killer = kil
+                    pcall(function()
+                        hookfunction(killer, function(reason)
+                            if dbg then warn("adonis tried to kill (fb): " .. tostring(reason)) end
+                        end)
+                        table.insert(held, killer)
                     end)
-                    table.insert(held, killer)
-                end)
+                end
+                -- v0.22.0: stop once both hooks are in. Used to walk the whole gc
+                -- table anyway. No task.wait() here on purpose -- a late Adonis
+                -- hook is a hook that already let you get flagged.
+                if flagged and killer then break end
             end
         end
-    end
+    end)
 
-    -- defeat debug.info-based detection of the flagged-fn hook
     pcall(function()
         local realInfo = getrenv().debug.info
         local wrapper  = newcclosure or function(f) return f end
@@ -58,26 +63,22 @@ pcall(function()
     setthreadidentity(7)
 end)
 
--- v0.18.1 ANALYTICS / TELEMETRY NEUTRALIZER: hang closures to stop reports, and
--- no-op listeners so queued items never land. Spawned to cost nothing on clean games.
 pcall(function()
-    local dbg = false          -- flip true to see what it found
+    local dbg = false
     if not (getgc and debug and debug.info and hookfunction) then return end
     local genv = (getgenv and getgenv()) or nil
     if genv then
-        if genv["\6_rt_an_ctx"] then return end   -- re-exec: already neutralized
+        if genv["\6_rt_an_ctx"] then return end
         genv["\6_rt_an_ctx"] = true
     end
 
-    -- source-name needles. Adding another telemetry script later is one string.
     local NEEDLES = { "AnalyticsPipelineController" }
-    local held = {}            -- keep hook refs alive so they cannot be collected
+    local held = {}
 
     local function hang() return task.wait(9e9) end
     local function noop() end
 
     task.spawn(function()
-        -- 1) hang controller closures. debug.info throws on some, so each probe is pcall'd.
         local ok, gc = pcall(getgc)
         if ok and type(gc) == "table" then
             local n = 0
@@ -101,18 +102,15 @@ pcall(function()
             end
         end
 
-        -- 2) silence its client listeners.
         if not getconnections then return end
         local RS = game:GetService("ReplicatedStorage")
 
-        -- bounded 8s timeout (bare WaitForChild blocks forever on most games)
         local function grab(parent, name)
             if not parent then return nil end
             local o, inst = pcall(function() return parent:WaitForChild(name, 8) end)
             return o and inst or nil
         end
 
-        -- literal path first, then search (so remote moving one level doesn't break).
         local ev = grab(grab(grab(RS, "Remotes"), "AnalyticsPipeline"), "RemoteEvent")
         if not ev then
             local o, kids = pcall(function() return RS:GetDescendants() end)
@@ -125,12 +123,10 @@ pcall(function()
         end
         if not ev then return end
 
-        -- three passes: script can rebind after hang, late listeners still caught.
         for pass = 1, 3 do
             local o, conns = pcall(getconnections, ev.OnClientEvent)
             if o and type(conns) == "table" then
                 for _, c in pairs(conns) do
-                    -- Disable() is reversible, prefer it where available.
                     local done = pcall(function() c:Disable() end)
                     if not done then
                         local o2, f = pcall(function() return c.Function end)
@@ -147,12 +143,44 @@ pcall(function()
     end)
 end)
 
--- v0.1.3 ASSET PRELOADER + LOADING SCREEN. Every remote asset (interface font,
--- feature-font catalog, sound pack) downloads ONCE behind a blocking loading
--- screen; the suite below does not execute until the manifest settles. Cached
--- files skip instantly, so only a first run / cache wipe waits. Locked-down
--- executors (no file API) skip straight through -- the legacy fallbacks below
--- (Nunito face, silent-missing sounds) still cover them.
+-- operation one neutra
+if game.PlaceId == 13997018456 then pcall(function()
+    if not (hookmetamethod and hookfunction and newcclosure and getconnections and isfunctionhooked) then return end
+    local rs = game:GetService("ReplicatedStorage")
+
+    local clientReporters = {}
+    for _, name in ipairs({"ForeignInstanceDetected", "UnknownHighlight", "RageRemote"}) do
+        local r = rs:FindFirstChild(name, true)
+        if r then clientReporters[r] = name end
+    end
+
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        if getnamecallmethod() == "FireServer" and clientReporters[self] then return end
+        return oldNamecall(self, ...)
+    end))
+
+    local function nukeConns(remote)
+        for _, conn in ipairs(getconnections(remote.OnClientEvent)) do
+            local fn = conn.Function
+            if fn and not isfunctionhooked(fn) then
+                hookfunction(fn, newcclosure(function(...) end))
+            end
+        end
+    end
+
+    local fuid = rs:FindFirstChild("ForeignUIDetected", true)
+    if fuid then nukeConns(fuid) end
+
+    task.spawn(function()
+        while task.wait(2) do
+            for remote in pairs(clientReporters) do nukeConns(remote) end
+            if fuid then nukeConns(fuid) end
+        end
+    end)
+end) end
+
+-- v0.1.3 ASSET PRELOADER + LOADING SCREEN
 do
     local BASE = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/"
     local SOUNDS = {
@@ -160,9 +188,7 @@ do
         "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
         "minecraft orb", "neverlose", "rust", "skeet",
     }
-    -- v0.10.0: second sound pack, pulled from the Takurin repo's fx/ folder.
-    -- display name -> path under fx/. These land as .ogg beside the .mp3 pack; the
-    -- resolver probes both extensions.
+    -- v0.10.0: second sound pack
     local TK = "https://raw.githubusercontent.com/lowkeymyself/Takurin/main/fx/"
     local TK_SOUNDS = {
         { "bonk", "bonk" }, { "bring", "bring" }, { "magic squash", "magic_squash" },
@@ -173,9 +199,7 @@ do
     for i = 1, 3 do TK_SOUNDS[#TK_SOUNDS + 1] = { "click " .. i,     "click/click-" .. i } end
     for i = 1, 3 do TK_SOUNDS[#TK_SOUNDS + 1] = { "glass " .. i,     "glass/glass-" .. i } end
     for i = 1, 4 do TK_SOUNDS[#TK_SOUNDS + 1] = { "moan " .. i,      "moan/moan-" .. i } end
-    -- v0.10.0: particle art for the 3D world FX + hit effects. Tiny (1-4KB each)
-    -- and needed the moment any of those features is switched on, so they ride the
-    -- blocking prefetch rather than downloading mid-fight.
+    -- v0.10.0: particle art for the 3D world FX + hit effects
     local FXTEX = { "fx_dot", "fx_flake", "fx_petal", "fx_shard", "fx_star", "fx_streak" }
     local MANIFEST = {
         { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
@@ -244,9 +268,7 @@ do
             root.BorderSizePixel = 0
             root.Parent = gui
 
-            -- v0.4.0: subtler loader. Smaller brand, thinner bar, quieter text,
-            -- slower fade. Same functional shape (brand + sub + bar + status +
-            -- retry/skip row + pct), just quieter so it doesn't scream on load.
+            -- v0.4.0: subtler loader
             local brand = Instance.new("TextLabel")
             brand.AnchorPoint = Vector2.new(0.5, 0)
             brand.Position = UDim2.new(0.5, 0, 0.5, -34)
@@ -715,7 +737,8 @@ local Theme = {
     FeiOn     = false,
     FeiSize   = 12,                       -- global text size used when FeiOn
     FeiScale  = 1.0,                      -- FeiSize / Text.Body -- multiplies base sizes
-    _fei      = { labels = {}, fonts = { Regular=true, Medium=true, Bold=true, Title=true, Mono=true } },
+    -- v0.22.0: `adds` counts registrations since the last prune. See Theme.fei.
+    _fei      = { labels = {}, adds = 0, fonts = { Regular=true, Medium=true, Bold=true, Title=true, Mono=true } },
     Sizes = {
         HudHeight    = 34,
         -- bigger overall so density stays right at larger text sizes
@@ -766,7 +789,21 @@ Theme.FeiFonts = {
 -- size the label would normally use -- scaled by FeiScale while FeiOn (preserves the
 -- name/is-on/detail hierarchy of the arraylist and the ESP tag sizes).
 function Theme.fei(label, fontKey, baseSize)
-    table.insert(Theme._fei.labels, { label = label, fontKey = fontKey, baseSize = baseSize })
+    -- v0.22.0 leak fix: labels re-register per CharacterAdded / per module toggle,
+    -- and applyFei() only prunes when the user touches a font setting. Sweep the
+    -- unparented (Destroy nils Parent) every 64 registrations instead.
+    local F = Theme._fei
+    F.adds = (F.adds or 0) + 1
+    if F.adds >= 64 then
+        F.adds = 0
+        local live, n = {}, 0
+        for i = 1, #F.labels do
+            local e = F.labels[i]
+            if e.label and e.label.Parent then n = n + 1; live[n] = e end
+        end
+        F.labels = live
+    end
+    table.insert(F.labels, { label = label, fontKey = fontKey, baseSize = baseSize })
     if Theme.FeiOn then
         local sz = math.round(baseSize * Theme.FeiScale)
         local f = Theme.FeiFonts[fontKey] or Theme.Fonts[fontKey]
@@ -1229,6 +1266,15 @@ local KID = (function()
     }
 end)()
 
+-- v0.22.0: session generation. Unload and re-exec both bump it, so a surviving
+-- loop can tell it belongs to a dead run. Lives on Koffee (not a chunk local) --
+-- the main chunk is already near Luau's 200-local ceiling.
+KID.ctx.gen = (KID.ctx.gen or 0) + 1
+Koffee._gen = KID.ctx.gen
+function Koffee.dead()
+    return Koffee._unloaded == true or KID.ctx.gen ~= Koffee._gen
+end
+
 -- v0.3.8: broader executor GUI-parent discovery + protection call.
 -- Passive ACs that iterate CoreGui:GetChildren()/PlayerGui:GetChildren()
 -- (or listen on ChildAdded) flag Koffee if we land there. gethui() puts
@@ -1432,6 +1478,7 @@ end
 local snowFade = 0  -- 0 = hidden, 1 = fully visible
 local SNOW_FADE_SPEED = 1 / 0.18  -- match WindowFade duration -- linear ~5.5/s
 RunService.RenderStepped:Connect(function(dt)
+    if Koffee.dead() then return end
     local target = snowActive and 1 or 0
     if target > snowFade then
         snowFade = math.min(snowFade + dt * SNOW_FADE_SPEED, 1)
@@ -1650,6 +1697,7 @@ local frameCount  = 0
 local lastSample  = tick()
 
 RunService.RenderStepped:Connect(function()
+    if Koffee.dead() then return end
     frameCount = frameCount + 1
     local now = tick()
     if now - lastSample >= 0.5 then
@@ -1896,6 +1944,7 @@ local function addToActiveArray(mod)
     if mod.GetDetail or mod.IsActive then
         local accum = 0
         mod._detailConn = RunService.Heartbeat:Connect(function(dt)
+            if Koffee.dead() then return end
             accum = accum + dt
             if accum < 0.2 then return end
             accum = 0
@@ -2384,7 +2433,18 @@ registerConfig = function(name, tbl) end
 -- v0.0.37: OS-level input from the Koffee Helper (Roblox can't see mouse 4/5).
 -- The poll loop at the bottom of the file fills XB1/XB2; binds can be the virtual
 -- strings "XButton1"/"XButton2" which the helper-driven Heartbeats resolve.
-local Helper = { Connected = false, XB1 = false, XB2 = false }
+-- v0.22.0: single source for the helper contract. :7912 feeds XButton state,
+-- :27374 is the External silent-aim bridge. Both now send the key header.
+-- NOTE: Key is a constant in a distributed script -- a seam, not real auth.
+local Helper = {
+    Connected = false, XB1 = false, XB2 = false,
+    Host = "http://127.0.0.1", PortInput = 7912, PortAim = 27374,
+    Key = "KoffeeBetaDevelopmentTesting",
+}
+function Helper.Url(port, path) return Helper.Host .. ":" .. port .. (path or "") end
+function Helper.Headers()
+    return { ["X-Koffee-Key"] = Helper.Key, ["Content-Type"] = "application/json" }
+end
 local VIRTUAL_LABELS = { XButton1 = "xb1", XButton2 = "xb2" }
 -- display text for ANY bind: virtual string, Roblox EnumItem, or nil.
 -- v0.0.94: short-name modifier map for combo pill display ("LeftShift" -> "Shift").
@@ -4698,6 +4758,7 @@ local textGradSeq = nil
 local gradOffset = nil
 local lineGradSeq = nil
 RunService.Heartbeat:Connect(function()
+    if Koffee.dead() then return end
     local on = ESP.Config.Outline == true
     local col = ESP.Boxes.OutlineColor
     -- v0.0.95: text gradient sync -- same loop for the KArrayGrad UIGradient.
@@ -6537,6 +6598,7 @@ end
 do
     local accum = 0
     RunService.Heartbeat:Connect(function(dt)
+        if Koffee.dead() then return end
         accum = accum + dt
         if accum < 0.15 then return end
         accum = 0
@@ -6926,7 +6988,7 @@ registerConfig("bullets", Koffee.Bullets)
     end
 
     local function onFire(ev, ...)
-        if Koffee._unloaded or not B.Enabled then return end
+        if Koffee.dead() or not B.Enabled then return end
         -- once a remote has proven itself, every other one is noise
         if pinned and pinned ~= ev then return end
         local st = stats[ev]
@@ -7152,7 +7214,7 @@ registerConfig("bullets", Koffee.Bullets)
     ------------------------------------------------------------------ render
 
     RunService.RenderStepped:Connect(function()
-        if Koffee._unloaded then return end
+        if Koffee.dead() then return end
         if not B.Enabled then
             for i = #shots, 1, -1 do release(shots[i]); shots[i] = nil end
             for i = #outQ, 1, -1 do outQ[i] = nil end
@@ -7404,7 +7466,7 @@ registerConfig("world_skybox", World.SkyBox)
 
     -- Heartbeat-driven (not callback), so loaded configs apply sky too.
     RunService.Heartbeat:Connect(function()
-        if Koffee._unloaded or busy then return end
+        if Koffee.dead() or busy then return end
         local key = keyOf()
         if key ~= applied then apply(World.SkyBox.Name, key); return end
         -- v0.10.1: keep it ours. Games re-add Sky (day/night), re-park new ones.
@@ -7936,6 +7998,7 @@ FEAT.float = {
 -- edge + step driver (Heartbeat). pcall-guarded so one feature erroring can't kill it.
 local prev = {}
 RunService.Heartbeat:Connect(function(dt)
+    if Koffee.dead() then return end
     for id, f in pairs(FEAT) do
         local a = isActive(id)
         if a ~= prev[id] then
@@ -7973,6 +8036,7 @@ local function ensureIndicator()
     return part
 end
 RunService.RenderStepped:Connect(function()
+    if Koffee.dead() then return end
     if isActive("clicktp") then
         local ind = ensureIndicator()
         local g = ind:FindFirstChildWhichIsA("SurfaceGui")
@@ -7985,6 +8049,7 @@ end)
 
 --== noclip + antifling (Stepped -- beats physics; noclip snapshots on first frame) ==--
 RunService.Stepped:Connect(function()
+    if Koffee.dead() then return end
     if isActive("noclip") then
         local c = char()
         if c then
@@ -8176,6 +8241,7 @@ end)
 ;(function()
     local pXB1, pXB2 = false, false
     RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
         local xb1, xb2 = Helper.XB1, Helper.XB2
         local e1, e2 = (xb1 and not pXB1), (xb2 and not pXB2)
         local function down(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
@@ -8529,6 +8595,7 @@ local function stopOtherTracks(animator)
     end
 end
 RunService.Heartbeat:Connect(function()
+    if Koffee.dead() then return end
     local active = Modules.customanim and Modules.customanim.IsActive()
     if not active then
         if currentAnimTrack then
@@ -8597,6 +8664,7 @@ registerModule("staticff",     "Static Forcefield", function() end, function() c
 registerModule("bodyremoval",  "Body Removal",      function() end, function() restoreBodyRemoval() end)
 registerModule("thirdperson",  "3rd Person",        function() tpOnEnable() end, function() tpOnDisable() end)
 RunService.RenderStepped:Connect(function()
+    if Koffee.dead() then return end
     if Modules.armsoffset   and Modules.armsoffset.Enabled   then pcall(applyArms) end
     if Modules.headoffset   and Modules.headoffset.Enabled   then pcall(applyHead) end
     if Modules.charmaterial and Modules.charmaterial.Enabled then pcall(applyMaterial) end
@@ -10322,6 +10390,7 @@ local Combat = {
 
     -- both FOV circles render independently of the aimbot/silent master toggles.
     RunService.RenderStepped:Connect(function()
+        if Koffee.dead() then return end
         stepFovFollow(Combat.Aim.FOV)
         stepFovFollow(Combat.Silent.FOV)
         drawFov(aimFov, Combat.Aim.FOV)
@@ -10445,6 +10514,7 @@ local Combat = {
         return crosshairEnemyNoOcclusion() ~= nil
     end
     RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
         if not Combat.Trigger.Enabled then return end
         if Combat.Trigger.UseKey and not trigHeld then return end
         if trigBusy then return end
@@ -10736,6 +10806,7 @@ local Combat = {
     -- set the instant a weapon reads mouse.Hit. The LMB gate is applied at redirect
     -- time inside the hook (isArmed), which kills the one-frame "RequireLMB misses".
     RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
         -- v0.0.36: authoritative LMB backfill -- if InputBegan's edge was ever missed
         -- (input consumed / gpe ordering), the poll re-sets it so RequireLMB can't get
         -- stuck "not held" while you're firing. Release still comes from InputEnded.
@@ -10948,6 +11019,7 @@ local Combat = {
     -- can't) + hold/toggle activation for aim / silent / trigger.
     local pXB = { false, false }   -- last two locals this frame may hold
     RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
         local xb1, xb2 = Helper.XB1, Helper.XB2
         local e1, e2 = (xb1 and not pXB[1]), (xb2 and not pXB[2])   -- press edges
         local function down(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
@@ -11028,8 +11100,8 @@ local Combat = {
     --     waiting out its keepalive TTL.
     Koffee.External = (function()
         local M = {}
-        local URL = "http://127.0.0.1:27374"
-        local KEY = "KoffeeBetaDevelopmentTesting"
+        -- v0.22.0: host/port/key moved onto the shared Helper table.
+        local URL = Helper.Url(Helper.PortAim)
 
         local function pickReq()
             return (syn and syn.request) or (http and http.request)
@@ -11042,10 +11114,7 @@ local Combat = {
             local ok, res = pcall(req, {
                 Url = URL .. path,
                 Method = method,
-                Headers = {
-                    ["X-Koffee-Key"] = KEY,
-                    ["Content-Type"] = "application/json",
-                },
+                Headers = Helper.Headers(),
                 Body = body,
             })
             if not ok then return false, tostring(res) end
@@ -11137,6 +11206,9 @@ local Combat = {
         local wasActive = false
         task.spawn(function()
             while true do
+                -- v0.22.0: was immortal. Unload left it pushing config at 30Hz and
+                -- every re-exec stacked another pusher on top.
+                if Koffee.dead() then M.clear(); break end
                 local isActive = Combat.Silent.Enabled
                     and Combat.Silent.Method == "External"
                 if isActive then
@@ -11644,6 +11716,7 @@ local Combat = {
         end
         tlStatusUpdater()
         RunService.Heartbeat:Connect(function()
+            if Koffee.dead() then return end
             if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return end
             if not Shared.targetLockPlayer() then
                 Shared.TargetLock._active = false
@@ -11762,7 +11835,7 @@ if Koffee._gunGame then
     end)
 
     RunService.Heartbeat:Connect(function()
-        if Koffee._unloaded or not G.AntiSpread then return end
+        if Koffee.dead() or not G.AntiSpread then return end
         local now = os.clock()
         if now < nextSweep then return end
         nextSweep = now + 2
@@ -12434,6 +12507,7 @@ end
     end
 
     RunService.RenderStepped:Connect(function(dt)
+        if Koffee.dead() then return end
         drawCrosshair(dt)
         drawHitNumbers()
     end)
@@ -13162,6 +13236,7 @@ end)()
         LocalPlayer.CharacterAdded:Connect(function() task.wait(0.2); bindAntiAnim() end)
         bindAntiAnim()
         RunService.Heartbeat:Connect(function()
+            if Koffee.dead() then return end
             -- polling backstop: some games play tracks before the AnimationPlayed
             -- signal fires (or bypass Animator). This catches them within a frame.
             local anyAnti = false
@@ -13187,6 +13262,7 @@ end)()
 
     ------------------------------------------------------------- render loop
     RunService.RenderStepped:Connect(function(dt)
+        if Koffee.dead() then return end
         for _, r in ipairs(WorldRules.List) do
             if r.type == "ObjectOffset" then
                 if not r._target and r.targetPath then r._target = resolvePath(r.targetPath) end
@@ -13971,7 +14047,7 @@ end)()
     RunService.RenderStepped:Connect(function()
         -- unlike the GUI layers, these hosts survive `screen:Destroy()` -- without
         -- this guard the loop would just rebuild them after an unload.
-        if Koffee._unloaded then return end
+        if Koffee.dead() then return end
         stepSnow()
         stepRain()
         stepSakura()
@@ -14749,7 +14825,7 @@ registerConfig("options", KoffeeOptions)
     end
 
     RunService.Heartbeat:Connect(function()
-        if Koffee._unloaded then return end
+        if Koffee.dead() then return end
         local want = KoffeeOptions.UIColors
         if not want then return end
         local now = os.clock()
@@ -14928,10 +15004,11 @@ addTab("Options", function(root)
         end)
         UserInputService.MouseBehavior    = Enum.MouseBehavior.Default
         UserInputService.MouseIconEnabled = true
-        -- 7. global unloaded flag -- surviving Heartbeat/RenderStep connections
-        -- read this and early-return.
+        -- 7. kill every surviving loop. v0.22.0: bumping the generation ends the
+        -- ones a re-exec would otherwise leave running against a dead run too.
         if getgenv then getgenv().KoffeeUnloaded = true end
         Koffee._unloaded = true
+        KID.ctx.gen = (KID.ctx.gen or 0) + 1
     end
     -- confirm popup: centered on popupScreen so it survives the window fade
     -- + can be seen even if the user closes the menu underneath.
@@ -15002,6 +15079,8 @@ registerConfig("custom", Koffee.Custom)
 ;(function()
     local CF = Koffee.Custom
     local layer, vis, st = nil, {}, {}
+    -- v0.22.0: key -> frameId a GUI first went unused. Grace period before Destroy.
+    local visGone = {}
     local GCTX = { key = "g", player = nil }
 
     local function ensureLayer()
@@ -15013,9 +15092,31 @@ registerConfig("custom", Koffee.Custom)
         })
         return layer
     end
+    -- v0.22.0: id -> node index. This was a linear scan of CF.Nodes, hit once per
+    -- wire per node per context per frame -- six figures of table steps on a
+    -- 40-node graph under For Each Player. Miss falls back to a reindex so a
+    -- freshly added or deleted node can never read stale.
+    local NIDX = {}
+    local function reindex()
+        table.clear(NIDX)
+        for _, n in ipairs(CF.Nodes) do NIDX[n.id] = n end
+    end
     local function nodeById(id)
-        for _, n in ipairs(CF.Nodes) do if n.id == id then return n end end
-        return nil
+        local n = NIDX[id]
+        if n then return n end
+        reindex()
+        return NIDX[id]
+    end
+    -- v0.22.0: memoised "id|ctx" keys. Built three times per node per context per
+    -- frame (alive set, slot, guiFor) -- ~2900 throwaway strings a frame at 40
+    -- nodes x 24 players. Cleared on graph edit and swept periodically.
+    local KEYC = {}
+    local function ckey(node, ctx)
+        local a = KEYC[node.id]
+        if not a then a = {}; KEYC[node.id] = a end
+        local k = a[ctx.key]
+        if not k then k = node.id .. "|" .. ctx.key; a[ctx.key] = k end
+        return k
     end
     local function playerAt(plr)
         local ch = plr and plr.Character
@@ -15027,7 +15128,7 @@ registerConfig("custom", Koffee.Custom)
     -- per-(block, context) scratch for the blocks that remember things
     local frameId = 0
     local function slot(node, ctx)
-        local k = node.id .. "|" .. ctx.key
+        local k = ckey(node, ctx)
         local v = st[k]
         if not v then v = {}; st[k] = v end
         v._f = frameId
@@ -16669,30 +16770,49 @@ registerConfig("custom", Koffee.Custom)
     end
 
     guiFor = function(node, K, ctx)
-        local key = node.id .. "|" .. ctx.key
+        local key = ckey(node, ctx)
         local g = vis[key]
-        if g and g.Parent then return g end
+        if g and g.Parent then
+            -- v0.22.0: revived inside its grace window -- unhide. paint runs after
+            -- this and re-hides if the block's own logic wants it hidden.
+            if visGone[key] then
+                visGone[key] = nil
+                pcall(function() g.Visible = true end)
+            end
+            return g
+        end
         local ok, made = pcall(K.make)
         if not ok then return nil end
         vis[key] = made
+        visGone[key] = nil
         return made
     end
 
     RunService.RenderStepped:Connect(function(dt)
-        if Koffee._unloaded then return end
+        if Koffee.dead() then return end
         frameDt, frameId = dt, frameId + 1
         fpsAcc, fpsN = fpsAcc + dt, fpsN + 1
         if fpsAcc >= 0.25 then FPS = fpsN / fpsAcc; fpsAcc, fpsN = 0, 0 end
         local alive = {}
         if CF.Enabled then
-            local cache, memo = {}, {}
+            reindex()
+            -- v0.22.0: ctxMemo. playersFor ran once per SINK, so five draw blocks
+            -- under one For Each Player meant five identical Players sweeps +
+            -- distance passes + sorts per frame. Memoised by the For Each node.
+            local cache, memo, ctxMemo = {}, {}, {}
             for _, node in ipairs(CF.Nodes) do
                 local K = KINDS[node.kind]
                 if K and K.sink then
                     local fe = feOf(node, memo, 0)
-                    local ctxs = fe and playersFor(fe.opts) or { GCTX }
+                    local ctxs
+                    if fe then
+                        ctxs = ctxMemo[fe.id]
+                        if not ctxs then ctxs = playersFor(fe.opts); ctxMemo[fe.id] = ctxs end
+                    else
+                        ctxs = { GCTX }
+                    end
                     for _, ctx in ipairs(ctxs) do
-                        alive[node.id .. "|" .. ctx.key] = true
+                        alive[ckey(node, ctx)] = true
                         -- action blocks (Sound) have no GUI of their own
                         local g = K.make and guiFor(node, K, ctx) or nil
                         if g or not K.make then
@@ -16703,12 +16823,28 @@ registerConfig("custom", Koffee.Custom)
                 end
             end
         end
+        -- v0.22.0: hide first, Destroy after a grace window. A target that blinks
+        -- out for one frame (dies, clips out of FOV) used to tear its whole GUI
+        -- subtree down and rebuild it next frame -- the cost AND the visual pop.
         for key, g in pairs(vis) do
-            if not alive[key] then g:Destroy(); vis[key] = nil end
+            if alive[key] then
+                visGone[key] = nil
+            else
+                local since = visGone[key]
+                if not since then
+                    visGone[key] = frameId
+                    pcall(function() g.Visible = false end)
+                elseif frameId - since > 120 then
+                    g:Destroy(); vis[key] = nil; visGone[key] = nil
+                end
+            end
         end
         for key, v in pairs(st) do
             if v._f ~= frameId then st[key] = nil end
         end
+        -- v0.22.0: KEYC keys off UserId, so a long session with lots of unique
+        -- players would creep. Full clear every ~10s; rebuild cost is one concat.
+        if frameId % 600 == 0 then table.clear(KEYC) end
     end)
 
     ------------------------------------------------------------- graph edits
@@ -16718,6 +16854,9 @@ registerConfig("custom", Koffee.Custom)
             local w = n.wires
             if w and w.text and not w.a then w.a = w.text; w.text = nil end
         end
+        -- v0.22.0: config load swaps CF.Nodes contents; NIDX has to follow.
+        reindex()
+        table.clear(KEYC)
     end
 
     local function enc(v)
@@ -16797,6 +16936,7 @@ registerConfig("custom", Koffee.Custom)
                 added = added + 1
             end
         end
+        reindex()
         return added > 0, added > 0 and ("pasted " .. added) or "nothing to paste"
     end
 
@@ -16809,6 +16949,7 @@ registerConfig("custom", Koffee.Custom)
         for k, v in pairs(K.opts or {}) do o[k] = v end
         table.insert(CF.Nodes, { id = id, kind = kind, opts = o, wires = {},
                                  x = x or 24, y = y or 24 })
+        reindex()
         return id
     end
     local function removeNode(id)
@@ -16820,6 +16961,9 @@ registerConfig("custom", Koffee.Custom)
                 if ref == id then n.wires[k] = nil end
             end
         end
+        -- v0.22.0: NIDX would keep handing out the deleted node otherwise.
+        reindex()
+        KEYC[id] = nil
     end
 
     -- headers keyed off ORDER's own grouping, so the reference below is generated
@@ -17703,8 +17847,9 @@ addTab("Configs", function(root)
     rebuildManager()
 end)
 
-addTab("NPC")
-addTab("Teams")
+-- v0.22.0: NPC and Teams unregistered. They shipped as clickable tabs with no
+-- build function, so clicking either gave you an empty panel. Still planned --
+-- re-add the addTab call with a builder when there's something behind it.
 
 -- select first tab AFTER layout AND positioning have settled.
 -- v0.0.5 only checked AbsoluteSize -- but AbsolutePosition can still be zero
@@ -17918,6 +18063,7 @@ end)
 ;(function()
     local pXB1, pXB2 = false, false
     RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
         local xb1, xb2 = Helper.XB1, Helper.XB2
         local e1, e2 = (xb1 and not pXB1), (xb2 and not pXB2)
         if pendingRebind then
@@ -17948,7 +18094,16 @@ end)()
     if reqFn then
         task.spawn(function()
             while true do
-                local ok, res = pcall(reqFn, { Url = "http://127.0.0.1:7912/", Method = "GET" })
+                -- v0.22.0: was immortal. Unload kept polling the helper forever and
+                -- each re-exec added another poller (3 runs = ~90 req/s at :7912).
+                if Koffee.dead() then
+                    Helper.Connected, Helper.XB1, Helper.XB2 = false, false, false
+                    break
+                end
+                local ok, res = pcall(reqFn, {
+                    Url = Helper.Url(Helper.PortInput, "/"), Method = "GET",
+                    Headers = Helper.Headers(),
+                })
                 local body = ok and res and res.Body
                 local data
                 if body then
