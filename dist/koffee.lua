@@ -1,7 +1,7 @@
--- koffee v0.24.0
+-- koffee v0.25.0
 
 local Koffee = {}
-Koffee.Version = "0.24.0"
+Koffee.Version = "0.25.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -16858,6 +16858,255 @@ registerConfig("custom", Koffee.Custom)
         return made
     end
 
+    ---------------------------------------------------------- design mode
+    -- v0.25.0: direct manipulation of the live output. Click a drawn widget,
+    -- then drag to move, pull a handle to resize, or use the arc to rotate.
+    -- Writes back into node.opts, so gizmo and sliders are two views of one value.
+    local DM = { on = false, sel = nil, key = nil, drag = nil }
+
+    -- what a resize handle edits, per block kind. Kinds absent here move and
+    -- rotate but do not resize.
+    local DM_SIZE = {
+        Box   = { w = "W", h = "H" },  Group = { w = "W", h = "H" },
+        Bar   = { w = "W", h = "H" },  Image = { w = "W", h = "H" },
+        Circle = { r = "Radius" },     Ring  = { r = "Radius" },
+        Text  = { s = "Size" },
+    }
+    local DM_HANDLES = { "nw", "n", "ne", "w", "e", "sw", "s", "se" }
+    local dmGui, dmBox, dmDots, dmRot, dmTip = nil, nil, {}, nil, nil
+
+    local function dmBuild()
+        if dmGui and dmGui.Parent then return end
+        dmGui = KID.track(new("Frame", {
+            Name = KID.name("dm"), Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1, Visible = false, ZIndex = 60, Parent = screen,
+        }))
+        dmBox = new("Frame", {
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 61, Parent = dmGui,
+        }, { stroke(Theme.Palette.Accent) })
+        for _, h in ipairs(DM_HANDLES) do
+            dmDots[h] = new("Frame", {
+                Name = h, Size = UDim2.new(0, 8, 0, 8),
+                AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0,
+                BackgroundColor3 = Theme.Palette.Accent, ZIndex = 62, Parent = dmGui,
+            }, { corner(2) })
+        end
+        dmRot = new("Frame", {
+            Size = UDim2.new(0, 10, 0, 10), AnchorPoint = Vector2.new(0.5, 0.5),
+            BorderSizePixel = 0, BackgroundColor3 = Theme.Palette.Success,
+            ZIndex = 62, Parent = dmGui,
+        }, { pillCorner() })
+        dmTip = new("TextLabel", {
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Panel,
+            BackgroundTransparency = 0.15, BorderSizePixel = 0, Text = "",
+            AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 16),
+            AnchorPoint = Vector2.new(0.5, 1), ZIndex = 63, Parent = dmGui,
+        }, { corner(4), new("UIPadding", { PaddingLeft = UDim.new(0, 5),
+             PaddingRight = UDim.new(0, 5) }) })
+    end
+
+    -- node id out of a "id|ctx" vis key
+    local function dmNodeOf(key)
+        local id = tonumber(key:match("^(%d+)|"))
+        return id and nodeById(id) or nil
+    end
+    local function dmRect(g)
+        if not (g and g.Parent) then return nil end
+        local p, s = g.AbsolutePosition, g.AbsoluteSize
+        return p.X, p.Y, s.X, s.Y
+    end
+    local function dmInside(x, y, rx, ry, rw, rh, pad)
+        pad = pad or 0
+        return x >= rx - pad and x <= rx + rw + pad and y >= ry - pad and y <= ry + rh + pad
+    end
+
+    -- topmost drawn widget under the cursor. Hit test is the UNROTATED rect --
+    -- AbsolutePosition/Size ignore Rotation, so a spun block grabs by its box.
+    local function dmPick(x, y)
+        local bk, bz = nil, -1
+        for key, g in pairs(vis) do
+            if g and g.Parent and g.Visible then
+                local rx, ry, rw, rh = dmRect(g)
+                if rx and dmInside(x, y, rx, ry, rw, rh) then
+                    local z = g.ZIndex or 0
+                    if z >= bz then bk, bz = key, z end
+                end
+            end
+        end
+        return bk
+    end
+
+    local function dmSelGui()
+        return DM.key and vis[DM.key] or nil
+    end
+    local function dmClear()
+        DM.sel, DM.key, DM.drag = nil, nil, nil
+        if dmGui then dmGui.Visible = false end
+    end
+
+    -- follow the selected widget. Runs at the end of the frame, after paint.
+    local function dmSync()
+        if not DM.on then if dmGui then dmGui.Visible = false end return end
+        dmBuild()
+        local g = dmSelGui()
+        local node = DM.sel and nodeById(DM.sel) or nil
+        if not (g and g.Parent and node) then dmGui.Visible = false; return end
+        local rx, ry, rw, rh = dmRect(g)
+        if not rx then dmGui.Visible = false; return end
+        dmGui.Visible = true
+        dmBox.Position = UDim2.new(0, rx, 0, ry)
+        dmBox.Size = UDim2.new(0, rw, 0, rh)
+        local mx, my = rx + rw * 0.5, ry + rh * 0.5
+        local px = { nw = { rx, ry }, n = { mx, ry }, ne = { rx + rw, ry },
+                     w = { rx, my }, e = { rx + rw, my },
+                     sw = { rx, ry + rh }, s = { mx, ry + rh }, se = { rx + rw, ry + rh } }
+        local sz = DM_SIZE[node.kind]
+        for h, d in pairs(dmDots) do
+            d.Visible = sz ~= nil
+            d.Position = UDim2.new(0, px[h][1], 0, px[h][2])
+        end
+        dmRot.Position = UDim2.new(0, mx, 0, ry - 20)
+        dmTip.Position = UDim2.new(0, mx, 0, ry - 30)
+        dmTip.Text = ("%s  %d,%d"):format(node.kind:lower(),
+            math.floor(node.opts.OffX or 0), math.floor(node.opts.OffY or 0))
+    end
+
+    -- which gizmo part is under the cursor, if any
+    local function dmHandleAt(x, y)
+        if not (dmGui and dmGui.Visible) then return nil end
+        for h, d in pairs(dmDots) do
+            if d.Visible then
+                local p = d.AbsolutePosition
+                if dmInside(x, y, p.X, p.Y, 8, 8, 4) then return h end
+            end
+        end
+        local rp = dmRot.AbsolutePosition
+        if dmInside(x, y, rp.X, rp.Y, 10, 10, 5) then return "rot" end
+        return nil
+    end
+
+    -- snap the widget's centre to the screen centre lines
+    local function dmSnap(v, target)
+        return (math.abs(v - target) <= 6) and target or v
+    end
+
+    local function dmBegin(x, y)
+        local h = dmHandleAt(x, y)
+        local node = DM.sel and nodeById(DM.sel) or nil
+        if h and node then
+            local g = dmSelGui()
+            local rx, ry, rw, rh = dmRect(g)
+            DM.drag = { mode = (h == "rot") and "rot" or "size", h = h, x = x, y = y,
+                        ox = node.opts.OffX or 0, oy = node.opts.OffY or 0,
+                        w = node.opts.W, hh = node.opts.H, r = node.opts.Radius,
+                        ts = node.opts.Size, rot = node.opts.Rotation or 0,
+                        cx = (rx or 0) + (rw or 0) * 0.5, cy = (ry or 0) + (rh or 0) * 0.5 }
+            return true
+        end
+        local g = dmSelGui()
+        if g then
+            local rx, ry, rw, rh = dmRect(g)
+            if rx and dmInside(x, y, rx, ry, rw, rh) and node then
+                DM.drag = { mode = "move", x = x, y = y,
+                            ox = node.opts.OffX or 0, oy = node.opts.OffY or 0 }
+                return true
+            end
+        end
+        local key = dmPick(x, y)
+        if key then
+            local n = dmNodeOf(key)
+            if n then DM.sel, DM.key, DM.drag = n.id, key, nil; return true end
+        end
+        dmClear()
+        return false
+    end
+
+    local function dmMove(x, y)
+        local d = DM.drag
+        if not d then return end
+        local node = DM.sel and nodeById(DM.sel)
+        if not node then return end
+        local o = node.opts
+        local dx, dy = (x - d.x) / lscale, (y - d.y) / lscale
+        if d.mode == "move" then
+            local g = dmSelGui()
+            o.OffX, o.OffY = d.ox + dx, d.oy + dy
+            -- snap the widget's centre to the middle of the screen
+            local vp = viewport()
+            local rx, ry, rw, rh = dmRect(g)
+            if rx and vp then
+                local cx, cy = rx + rw * 0.5, ry + rh * 0.5
+                o.OffX = o.OffX + (dmSnap(cx, vp.X * 0.5) - cx) / lscale
+                o.OffY = o.OffY + (dmSnap(cy, vp.Y * 0.5) - cy) / lscale
+            end
+            o.OffX, o.OffY = math.floor(o.OffX + 0.5), math.floor(o.OffY + 0.5)
+        elseif d.mode == "rot" then
+            local a0 = math.atan2(d.y - d.cy, d.x - d.cx)
+            local a1 = math.atan2(y - d.cy, x - d.cx)
+            o.Rotation = math.floor(d.rot + math.deg(a1 - a0) + 0.5)
+        else
+            local sz = DM_SIZE[node.kind]
+            if not sz then return end
+            local h = d.h
+            if sz.w then
+                -- east/west handles push width, north/south push height. Anchor is
+                -- the block's own pivot, so a drag grows around it, not from a corner.
+                local sx = (h == "e" or h == "ne" or h == "se") and 1
+                    or ((h == "w" or h == "nw" or h == "sw") and -1 or 0)
+                local sy = (h == "s" or h == "sw" or h == "se") and 1
+                    or ((h == "n" or h == "nw" or h == "ne") and -1 or 0)
+                if sx ~= 0 then o.W = math.max(1, math.floor((d.w or 1) + dx * sx + 0.5)) end
+                if sy ~= 0 then o.H = math.max(1, math.floor((d.hh or 1) + dy * sy + 0.5)) end
+            elseif sz.r then
+                local m = (math.abs(dx) > math.abs(dy)) and dx or dy
+                local sgn = (h == "e" or h == "se" or h == "s" or h == "ne") and 1 or -1
+                o.Radius = math.max(1, math.floor((d.r or 1) + m * sgn + 0.5))
+            elseif sz.s then
+                o.Size = math.clamp(math.floor((d.ts or 12) + dy * -1 + 0.5), 8, 96)
+            end
+        end
+    end
+
+    Koffee._designMode = function(on)
+        DM.on = on == true
+        if not DM.on then dmClear() end
+        if DM.on and Shared.setWindowOpen then Shared.setWindowOpen(false) end
+    end
+
+    UserInputService.InputBegan:Connect(function(input, gpe)
+        if Koffee.dead() or not DM.on or gpe then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local m = UserInputService:GetMouseLocation()
+            dmBegin(m.X, m.Y)
+        elseif input.KeyCode == Enum.KeyCode.Escape then
+            dmClear()
+        elseif DM.sel then
+            local node = nodeById(DM.sel)
+            local step = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and 10 or 1
+            local k = input.KeyCode
+            if node then
+                local o = node.opts
+                if k == Enum.KeyCode.Left  then o.OffX = (o.OffX or 0) - step
+                elseif k == Enum.KeyCode.Right then o.OffX = (o.OffX or 0) + step
+                elseif k == Enum.KeyCode.Up    then o.OffY = (o.OffY or 0) - step
+                elseif k == Enum.KeyCode.Down  then o.OffY = (o.OffY or 0) + step end
+            end
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if Koffee.dead() or not DM.on or not DM.drag then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            local m = UserInputService:GetMouseLocation()
+            dmMove(m.X, m.Y)
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then DM.drag = nil end
+    end)
+
     RunService.RenderStepped:Connect(function(dt)
         if Koffee.dead() then return end
         frameDt, frameId = dt, frameId + 1
@@ -16882,6 +17131,9 @@ registerConfig("custom", Koffee.Custom)
                     if fe then
                         ctxs = ctxMemo[fe.id]
                         if not ctxs then ctxs = playersFor(fe.opts); ctxMemo[fe.id] = ctxs end
+                        -- v0.25.0: nothing renders in an empty lobby, so there is
+                        -- nothing to grab. Design Mode forces one preview context.
+                        if DM.on and #ctxs == 0 then ctxs = { GCTX } end
                     else
                         ctxs = { GCTX }
                     end
@@ -16919,6 +17171,7 @@ registerConfig("custom", Koffee.Custom)
         -- v0.22.0: KEYC keys off UserId, so a long session with lots of unique
         -- players would creep. Full clear every ~10s; rebuild cost is one concat.
         if frameId % 600 == 0 then table.clear(KEYC) end
+        dmSync()
     end)
 
     ------------------------------------------------------------- graph edits
@@ -17746,6 +17999,10 @@ registerConfig("custom", Koffee.Custom)
         -- v0.24.0: design-pixel scale. Auto tracks screen height off a 1080p base.
         dropdown(card, "UI Scale", SCALE_NAMES, CF.Scale, function(v) CF.Scale = v end)
         labelRow(card, "scales every custom widget together. Auto follows screen height")
+        -- v0.25.0: not persisted -- design mode is a session tool, never a saved state
+        configCheckbox(card, "Design Mode", false, function(v) Koffee._designMode(v) end)
+        labelRow(card, "closes the window. click a widget to select, drag to move")
+        labelRow(card, "corner dots resize, green dot rotates, arrows nudge, esc deselects")
 
         local frame = new("Frame", {
             Size = UDim2.new(1, 0, 0, 452), BackgroundColor3 = Theme.Palette.Background,
@@ -18057,6 +18314,8 @@ local function setWindowOpen(open)
     end
     setBackgroundActive(open)
 end
+-- v0.25.0: Design Mode closes the window so the whole screen is the canvas.
+Shared.setWindowOpen = setWindowOpen
 
 -- initial state
 window.GroupTransparency = 0
