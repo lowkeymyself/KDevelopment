@@ -1,7 +1,7 @@
--- koffee v0.26.0
+-- koffee v0.26.1
 
 local Koffee = {}
-Koffee.Version = "0.26.0"
+Koffee.Version = "0.26.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -16901,7 +16901,7 @@ registerConfig("custom", Koffee.Custom)
         Text  = { s = "Size" },
     }
     local DM_HANDLES = { "nw", "n", "ne", "w", "e", "sw", "s", "se" }
-    local dmGui, dmBox, dmDots, dmRot, dmTip = nil, nil, {}, nil, nil
+    local dmGui, dmBox, dmDots, dmRot, dmTip, dmBan = nil, nil, {}, nil, nil, nil
 
     local function dmBuild()
         if dmGui and dmGui.Parent then return end
@@ -16932,6 +16932,28 @@ registerConfig("custom", Koffee.Custom)
             AnchorPoint = Vector2.new(0.5, 1), ZIndex = 63, Parent = dmGui,
         }, { corner(4), new("UIPadding", { PaddingLeft = UDim.new(0, 5),
              PaddingRight = UDim.new(0, 5) }) })
+        -- v0.26.1: banner. Without it, design mode with nothing selected looked
+        -- identical to design mode being off, which read as "it does nothing".
+        dmBan = new("TextLabel", {
+            Text = "design mode -- click a widget to select it, esc to exit",
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Panel,
+            BackgroundTransparency = 0.1, BorderSizePixel = 0,
+            AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 22),
+            AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 44),
+            ZIndex = 63, Parent = dmGui,
+        }, { corner(6), stroke(Theme.Palette.Accent),
+             new("UIPadding", { PaddingLeft = UDim.new(0, 10),
+                                PaddingRight = UDim.new(0, 10) }) })
+    end
+
+    -- v0.26.1: a full-screen frame at Position 0,0 does NOT report AbsolutePosition
+    -- (0,0) here -- IgnoreGuiInset drift, same trap popupOffsetFor works around.
+    -- Everything below works in LAYER-LOCAL pixels, which is also GetMouseLocation's
+    -- space, so hit tests and gizmo placement agree. This was the "clicks miss" bug.
+    local function dmOrigin()
+        local f = dmGui or layer
+        return f and f.AbsolutePosition or Vector2.new(0, 0)
     end
 
     -- node id out of a "id|ctx" vis key
@@ -16941,8 +16963,8 @@ registerConfig("custom", Koffee.Custom)
     end
     local function dmRect(g)
         if not (g and g.Parent) then return nil end
-        local p, s = g.AbsolutePosition, g.AbsoluteSize
-        return p.X, p.Y, s.X, s.Y
+        local p, s, o = g.AbsolutePosition, g.AbsoluteSize, dmOrigin()
+        return p.X - o.X, p.Y - o.Y, s.X, s.Y
     end
     local function dmInside(x, y, rx, ry, rw, rh, pad)
         pad = pad or 0
@@ -16977,12 +16999,20 @@ registerConfig("custom", Koffee.Custom)
     local function dmSync()
         if not DM.on then if dmGui then dmGui.Visible = false end return end
         dmBuild()
+        -- v0.26.1: the frame stays visible for the banner even with no selection.
+        -- Only the box, handles and readout follow a selected widget.
+        dmGui.Visible = true
         local g = dmSelGui()
         local node = DM.sel and nodeById(DM.sel) or nil
-        if not (g and g.Parent and node) then dmGui.Visible = false; return end
         local rx, ry, rw, rh = dmRect(g)
-        if not rx then dmGui.Visible = false; return end
-        dmGui.Visible = true
+        local has = (g and g.Parent and node and rx) and true or false
+        dmBox.Visible = has
+        dmRot.Visible = has
+        dmTip.Visible = has
+        for _, d in pairs(dmDots) do d.Visible = has end
+        dmBan.Text = has and "design mode -- drag to move, dots resize, esc deselects"
+            or "design mode -- click a widget to select it, esc to exit"
+        if not has then return end
         dmBox.Position = UDim2.new(0, rx, 0, ry)
         dmBox.Size = UDim2.new(0, rw, 0, rh)
         local mx, my = rx + rw * 0.5, ry + rh * 0.5
@@ -17000,17 +17030,21 @@ registerConfig("custom", Koffee.Custom)
             math.floor(node.opts.OffX or 0), math.floor(node.opts.OffY or 0))
     end
 
-    -- which gizmo part is under the cursor, if any
+    -- which gizmo part is under the cursor, if any. Handles are anchor-centred,
+    -- so their rect is offset by half their size.
     local function dmHandleAt(x, y)
         if not (dmGui and dmGui.Visible) then return nil end
+        local o = dmOrigin()
         for h, d in pairs(dmDots) do
             if d.Visible then
                 local p = d.AbsolutePosition
-                if dmInside(x, y, p.X, p.Y, 8, 8, 4) then return h end
+                if dmInside(x, y, p.X - o.X, p.Y - o.Y, 8, 8, 5) then return h end
             end
         end
-        local rp = dmRot.AbsolutePosition
-        if dmInside(x, y, rp.X, rp.Y, 10, 10, 5) then return "rot" end
+        if dmRot.Visible then
+            local rp = dmRot.AbsolutePosition
+            if dmInside(x, y, rp.X - o.X, rp.Y - o.Y, 10, 10, 6) then return "rot" end
+        end
         return nil
     end
 
@@ -17044,7 +17078,13 @@ registerConfig("custom", Koffee.Custom)
         local key = dmPick(x, y)
         if key then
             local n = dmNodeOf(key)
-            if n then DM.sel, DM.key, DM.drag = n.id, key, nil; return true end
+            if n then
+                DM.sel, DM.key, DM.drag = n.id, key, nil
+                -- v0.26.1: point the editor's inspector at whatever you clicked,
+                -- so selecting on screen and selecting in the graph are one action
+                if Koffee._cfSelect then pcall(Koffee._cfSelect, n.id) end
+                return true
+            end
         end
         dmClear()
         return false
@@ -17098,8 +17138,10 @@ registerConfig("custom", Koffee.Custom)
 
     Koffee._designMode = function(on)
         DM.on = on == true
-        if not DM.on then dmClear() end
-        if DM.on and Shared.setWindowOpen then Shared.setWindowOpen(false) end
+        if not DM.on then dmClear(); return end
+        dmBuild()            -- build now so the banner shows the instant it's on
+        dmGui.Visible = true
+        if Shared.setWindowOpen then Shared.setWindowOpen(false) end
     end
 
     UserInputService.InputBegan:Connect(function(input, gpe)
@@ -17891,6 +17933,12 @@ registerConfig("custom", Koffee.Custom)
             end
         end
 
+        -- v0.26.1: Design Mode selects the node whose widget you clicked, so the
+        -- inspector follows the screen. Last editor built wins, which is the open one.
+        Koffee._cfSelect = function(id)
+            sel = id
+            if rebuildAll then rebuildAll() end
+        end
         rebuildAll = function()
             migrate()
             buildNodes()
