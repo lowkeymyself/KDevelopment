@@ -4436,11 +4436,9 @@ function ConfigIO.setAuto(name)
     elseif fileAPI.delfile then pcall(fileAPI.delfile, autoPath()) end
 end
 
--- === CLOUD CONFIGS (v0.29.0) ===============================================
--- Mirrors the Konstant Aero cloud service (Cloudflare Worker + KV). Each config's
--- raw .koffee text rides as the `data` field; owner auth is honor-system via the
--- Roblox UserId (?actor= on mutate). Koffee is private, so that's sized right.
--- Reusing the deployed Aero endpoint -- it stores arbitrary data, so no redeploy.
+-- v0.29.0 Cloud Configs: mirrors the Aero worker (CF + KV). Each config's raw
+-- .koffee text rides as `data`; honor-system owner auth via UserId (?actor=).
+-- Reuses the deployed Aero endpoint (stores arbitrary data, so no redeploy).
 local CLOUD_ENDPOINT = "https://konstant-aero-cloud.kar-cloud.workers.dev"
 local CLOUD_META = CFG_DIR .. "/_cloudmeta.json"   -- name -> {id,owner,ownerName,cloudName}
 local function myId()   return LocalPlayer and LocalPlayer.UserId or 0 end
@@ -7634,10 +7632,9 @@ registerConfig("world_skybox", World.SkyBox)
         if busy then return end
         busy = true
         task.spawn(function()
-            -- v0.28.0: protect the whole body. An uncaught throw (getcustomasset on a
-            -- locked runtime, an Instance edge) used to leave busy=true forever, which
-            -- froze the heartbeat and stuck the sky on the last pick ("can't choose
-            -- another"). busy is released unconditionally after the pcall below.
+            -- v0.28.0: protect the whole body. An uncaught throw used to leave
+            -- busy=true forever, freezing the heartbeat and sticking the sky on the
+            -- last pick. busy is released unconditionally after the pcall below.
             local ok = pcall(function()
             if name == "None" then
                 if ownSky then ownSky:Destroy(); ownSky = nil end
@@ -9425,10 +9422,9 @@ local Combat = {
                             local worldDist = (part.Position - camPos).Magnitude
                             if worldDist <= (cfg.Distance or math.huge) then
                                 local sp = cam:WorldToViewportPoint(part.Position)
-                                -- v0.27.0 Behind Cam: killaura-style targeting. Ignores
-                                -- camera facing + the FOV ring entirely and scores by world
-                                -- distance alone, so people behind the camera still count
-                                -- (MC melee: arm Silent Aim + Trigger Bot with this on).
+                                -- v0.27.0 Behind Cam: killaura targeting. Ignores camera
+                                -- facing + the FOV ring, scores by world distance alone, so
+                                -- people behind the camera still count (MC melee).
                                 local pass, crossDist
                                 if cfg.BehindCam then
                                     pass, crossDist = true, worldDist
@@ -10395,11 +10391,9 @@ local Combat = {
         end
 
         if Combat.Aim.PerfectLock then
-            -- v0.27.0: TRUE snap. Publish the silent redirect, then set the camera
-            -- CFrame directly to an exact lookAt this frame -- no sensitivity, no
-            -- smoothing, no aimCFrame euler roundtrip, and AimType is ignored (a
-            -- mousemoverel nudge can never be a same-frame snap). Third Person still
-            -- drives the cursor at full delta so it lands in one frame.
+            -- v0.27.0: TRUE snap. Publish the redirect, then set cam.CFrame to an
+            -- exact lookAt this frame -- no sensitivity/smoothing/euler, AimType
+            -- ignored. Third Person still drives the cursor at full delta.
             plPos, plPart = tpos, part
             if Combat.Aim.ThirdPerson then
                 local sp = cam:WorldToViewportPoint(tpos)
@@ -11197,11 +11191,9 @@ local Combat = {
                 pendingActivation.cfg.ActivationKey = nil
                 pendingActivation.refresh(); pendingActivation = nil; return
             end
-            -- v0.27.0: allow mouse buttons to bind even over the koffee UI. The
-            -- pill is explicitly armed ("...") so the next button press is meant
-            -- as the bind, and the arming click's press edge fired before
-            -- pendingActivation was set, so it can't self-bind. (Was gpe-gated,
-            -- which forced a game-world click and read as "can't bind mouse buttons".)
+            -- v0.27.0: bind mouse buttons even over the koffee UI. The pill is armed
+            -- ("...") so the next press is the intended bind, and the arming click's
+            -- edge already fired. (gpe-gating this read as "can't bind mouse buttons".)
             -- v0.0.36: accept ANY key + ANY button-like input (mouse 1/2/3 and
             -- whatever else the runtime surfaces through InputBegan, e.g. XButton1/2
             -- on executors that deliver them). Only movement/wheel/focus are ignored.
@@ -15541,10 +15533,9 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
-    -- v0.31.0: game-specific building blocks. Find Instance grabs ANY instance
-    -- (a remote, a value, a part); Read Value pulls a number/text/bool off one;
-    -- Fire Remote + Set Value (actions, below) push back to the game. Together they
-    -- let a graph drive a game's own remotes -- scaffold, autofarm, etc. -- with no code.
+    -- v0.31.0: game-specific blocks. Find Instance grabs ANY instance; Read Value
+    -- pulls a number/text/bool off one; Fire Remote + Set Value (below) push back.
+    -- Together they let a graph drive a game's own remotes with no code.
     KINDS["Find Instance"] = {
         blurb = "pick or type a path to ANY instance -- a remote, a value, a part",
         ins = {}, outs = { part = true, text = true },
@@ -19313,12 +19304,9 @@ UserInputService.InputBegan:Connect(function(input, processed)
             pendingRebind = nil
             return
         end
-        -- v0.27.0: allow mouse buttons to bind even when the click lands on the
-        -- koffee UI. Rebind is an explicit armed mode (pill shows "..."), so the
-        -- NEXT button press is intentional -- and the arming click's own press edge
-        -- already fired before pendingRebind was set, so it can't self-bind. This
-        -- is what makes "click pill, then click the mouse button you want" work
-        -- with the menu open (the old gpe guard forced a game-world click).
+        -- v0.27.0: bind mouse buttons even when the click lands on the koffee UI.
+        -- Rebind is armed ("...") so the next press is intentional, and the arming
+        -- click's own edge already fired. (gpe-gating forced a game-world click.)
         -- v0.0.94: pressing JUST a modifier alone (Shift/Ctrl/Alt without another key)
         -- doesn't complete the rebind -- user needs to press the actual key while
         -- holding the modifier. Otherwise the modifier itself gets bound as the key.
