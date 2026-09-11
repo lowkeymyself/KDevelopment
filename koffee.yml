@@ -65,6 +65,12 @@ globals:
     args: []
   mouse1release:
     args: []
+  mouse2click:
+    args: []
+  mouse2press:
+    args: []
+  mouse2release:
+    args: []
   fluxus.gethui:
     args: []
   fluxus.protect_gui:

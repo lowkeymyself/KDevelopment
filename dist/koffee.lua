@@ -1,7 +1,7 @@
--- koffee v0.31.1
+-- koffee v0.32.0
 
 local Koffee = {}
-Koffee.Version = "0.31.1"
+Koffee.Version = "0.32.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15434,16 +15434,41 @@ registerConfig("custom", Koffee.Custom)
     local ORDER = {
         "Target", "Self", "Part", "Number", "Text Value", "Colour", "Time",
         "Key Held", "Module State", "Game Info", "Camera", "Mouse", "Counter",
-        "Find Instance", "Read Value",
+        "Find Instance", "Read Value", "Find Child", "Player Part", "Raycast", "Interval",
         "For Each Player",
         "Visible", "Info", "Compare", "Math", "Logic", "Map Range", "Smooth",
         "Delay", "Format", "Colour Mix", "Colour Cycle", "Pick Number",
         "Pick Colour", "Switch",
-        "Screen Position", "Offset", "World Position",
+        "Screen Position", "Offset", "World Position", "Vector",
         "Text", "Box", "Bar", "Line", "Circle", "Ring", "Image", "Group",
         "3D Ring", "3D Box",
-        "Sound", "Notify", "Adorn Part", "Fire Remote", "Set Value", "Note",
+        "Sound", "Notify", "Adorn Part", "Fire Remote", "Set Value",
+        "Teleport", "Set Humanoid", "Set Velocity", "Click", "Note",
     }
+    -- v0.32.0: shared scripting helpers. rayParams reused across Raycast evals;
+    -- doClick drives the Click action off executor globals with a VIM fallback.
+    local scriptRayParams = RaycastParams.new()
+    scriptRayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local VIM_ok, VIM = pcall(function() return game:GetService("VirtualInputManager") end)
+    if not VIM_ok then VIM = nil end
+    local function doClick(button)
+        local right = button == "Right"
+        if right then
+            if mouse2click then return pcall(mouse2click) end
+            if mouse2press then pcall(mouse2press); return pcall(mouse2release) end
+        else
+            if mouse1click then return pcall(mouse1click) end
+            if mouse1press then pcall(mouse1press); return pcall(mouse1release) end
+        end
+        if VIM then
+            local m = UserInputService:GetMouseLocation()
+            local mb = right and 1 or 0
+            pcall(function()
+                VIM:SendMouseButtonEvent(m.X, m.Y, mb, true, game, 0)
+                VIM:SendMouseButtonEvent(m.X, m.Y, mb, false, game, 0)
+            end)
+        end
+    end
 
     ---------------------------------------------------------------- sources
     KINDS.Target = {
@@ -15578,6 +15603,108 @@ registerConfig("custom", Koffee.Custom)
             api:dropdown("Read", { "Value", "Attribute", "Property" }, o.Kind, function(v) o.Kind = v end)
             api:text("Name", o.Field, function(v) o.Field = v end)
             api:label("Value = a NumberValue/StringValue/etc. else the attribute/property name")
+        end,
+    }
+
+    KINDS["Find Child"] = {
+        blurb = "finds something by name or class under an instance (remotes, parts)",
+        ins = { { key = "parent", type = "part", label = "In" } },
+        outs = { part = true, text = true, bool = true },
+        opts = { Name = "", Class = "", Deep = true },
+        eval = function(o, ins)
+            local parent = (ins.parent and ins.parent.part) or game
+            local found
+            local nm, cls = o.Name or "", o.Class or ""
+            if nm ~= "" then
+                local ok, r = pcall(parent.FindFirstChild, parent, nm, o.Deep ~= false)
+                if ok then found = r end
+                if found and cls ~= "" and not found:IsA(cls) then found = nil end
+            elseif cls ~= "" then
+                local ok, r
+                if o.Deep ~= false then ok, r = pcall(parent.FindFirstChildWhichIsA, parent, cls, true)
+                else ok, r = pcall(parent.FindFirstChildOfClass, parent, cls) end
+                if ok then found = r end
+            end
+            return { part = found, text = found and found.Name or "", bool = found ~= nil }
+        end,
+        ui = function(api, o)
+            api:text("Name", o.Name, function(v) o.Name = v end)
+            api:text("Class", o.Class, function(v) o.Class = v end)
+            api:toggle("Search deep", o.Deep ~= false, function(v) o.Deep = v end)
+            api:label("blank Name -> find by Class (eg RemoteEvent). In unwired = whole game")
+        end,
+    }
+
+    KINDS["Player Part"] = {
+        blurb = "a named part of a player -- Head, HumanoidRootPart, a tool...",
+        ins = { { key = "player", type = "player", label = "Player" } },
+        outs = { part = true, world = true, bool = true },
+        opts = { Part = "HumanoidRootPart" },
+        eval = function(o, ins)
+            local plr = ins.player and ins.player.player
+            local ch = plr and plr.Character
+            local p = ch and ch:FindFirstChild(o.Part or "HumanoidRootPart")
+            if not p and ch then p = ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Head") end
+            return { part = p, world = p and p.Position or nil, bool = p ~= nil }
+        end,
+        ui = function(api, o)
+            api:text("Part name", o.Part, function(v) o.Part = v end)
+            api:label("HumanoidRootPart, Head, Torso, a limb name, a held Tool...")
+        end,
+    }
+
+    KINDS.Raycast = {
+        blurb = "casts a ray and tells you what it hit",
+        ins = { { key = "from", type = "world", label = "From" },
+                { key = "to", type = "world", label = "To / Dir" },
+                { key = "ignore", type = "part", label = "Ignore" } },
+        outs = { bool = true, part = true, world = true, number = true },
+        opts = { Mode = "To Point", Length = 500 },
+        eval = function(o, ins)
+            local cam = Workspace.CurrentCamera
+            local from = (ins.from and ins.from.world) or (cam and cam.CFrame.Position) or Vector3.zero
+            local dir
+            if o.Mode == "Direction" then
+                dir = (ins.to and ins.to.world) or (cam and cam.CFrame.LookVector) or Vector3.new(0, 0, -1)
+                dir = (dir.Magnitude > 0) and (dir.Unit * (o.Length or 500)) or Vector3.zero
+            else
+                dir = ((ins.to and ins.to.world) or from) - from
+            end
+            local ignore = { LocalPlayer.Character }
+            if ins.ignore and ins.ignore.part then ignore[2] = ins.ignore.part end
+            scriptRayParams.FilterDescendantsInstances = ignore
+            local res = Workspace:Raycast(from, dir, scriptRayParams)
+            if res then
+                return { bool = true, part = res.Instance, world = res.Position,
+                         number = (res.Position - from).Magnitude }
+            end
+            return { bool = false, part = nil, world = from + dir, number = dir.Magnitude }
+        end,
+        ui = function(api, o)
+            api:dropdown("Mode", { "To Point", "Direction" }, o.Mode, function(v) o.Mode = v end)
+            api:slider("Length", 1, 5000, o.Length, 0, function(v) o.Length = v end)
+            api:label("From/To wired = world points. Unwired = camera. Length is Direction mode only")
+        end,
+    }
+
+    KINDS.Interval = {
+        blurb = "turns yes for a moment every N seconds -- a loop clock for autofarm",
+        ins = {}, outs = { bool = true, number = true },
+        opts = { Every = 1, Active = true },
+        eval = function(o, _, ctx, node)
+            local s, now = slot(node, ctx), os.clock()
+            local every = math.max(o.Every or 1, 0.03)
+            s.count = s.count or 0
+            local fired = false
+            if o.Active ~= false and now - (s.at or 0) >= every then
+                s.at, s.count, fired = now, s.count + 1, true
+            end
+            return { bool = fired, number = s.count }
+        end,
+        ui = function(api, o)
+            api:slider("Every (s)", 0.03, 30, o.Every, 2, function(v) o.Every = v end)
+            api:toggle("Active", o.Active ~= false, function(v) o.Active = v end)
+            api:label("bool pulses yes one frame per interval; number = tick count")
         end,
     }
 
@@ -16167,6 +16294,31 @@ registerConfig("custom", Koffee.Custom)
             api:dropdown("Anchor", { "Centre", "Above", "Feet" }, o.Anchor,
                 function(v) o.Anchor = v end)
             api:slider("Height", -20, 20, o.Height, 2, function(v) o.Height = v end)
+        end,
+    }
+
+    KINDS.Vector = {
+        blurb = "builds or offsets a world point from X / Y / Z (for teleport, aim, etc)",
+        ins = { { key = "base", type = "world", label = "Base" },
+                { key = "x", type = "number", label = "X" },
+                { key = "y", type = "number", label = "Y" },
+                { key = "z", type = "number", label = "Z" } },
+        outs = { world = true, number = true },
+        opts = { X = 0, Y = 0, Z = 0, Mode = "Offset" },
+        eval = function(o, ins)
+            local base = (ins.base and ins.base.world) or Vector3.zero
+            local x = (ins.x and ins.x.number) or o.X or 0
+            local y = (ins.y and ins.y.number) or o.Y or 0
+            local z = (ins.z and ins.z.number) or o.Z or 0
+            local v = (o.Mode == "Absolute") and Vector3.new(x, y, z) or (base + Vector3.new(x, y, z))
+            return { world = v, number = v.Magnitude }
+        end,
+        ui = function(api, o)
+            api:dropdown("Mode", { "Offset", "Absolute" }, o.Mode, function(v) o.Mode = v end)
+            api:slider("X", -500, 500, o.X, 1, function(v) o.X = v end)
+            api:slider("Y", -500, 500, o.Y, 1, function(v) o.Y = v end)
+            api:slider("Z", -500, 500, o.Z, 1, function(v) o.Z = v end)
+            api:label("Offset = Base + XYZ (Base unwired = origin). Absolute = XYZ as the point")
         end,
     }
 
@@ -17230,6 +17382,148 @@ registerConfig("custom", Koffee.Custom)
             api:dropdown("Write when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
             api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
             api:label("Value = a NumberValue/etc. else the attribute/property name")
+        end,
+    }
+
+    -- v0.32.0: local-character actions. edge/cooldown like Sound; helper below picks
+    -- the destination for Teleport from whichever of To / To Part / To Player is wired.
+    local function edgeFire(o, ins, node, ctx)
+        local want = (ins.when and ins.when.bool) == true
+        local s, now = slot(node, ctx), os.clock()
+        local fire
+        if o.Edge == "becomes no" then fire = (s.prev == true) and not want
+        elseif o.Edge == "while yes" then fire = want
+        else fire = want and (s.prev ~= true) end
+        s.prev = want
+        if not fire then return false end
+        if now - (s.at or 0) < (o.Cooldown or 0) then return false end
+        s.at = now
+        return true
+    end
+    local function myHRP()
+        local c = LocalPlayer.Character
+        return c and c:FindFirstChild("HumanoidRootPart"), c
+    end
+
+    KINDS.Teleport = {
+        blurb = "teleports you to a point, part or player when something becomes true",
+        sink = true,
+        ins = { { key = "to", type = "world", label = "To Point" },
+                { key = "part", type = "part", label = "To Part" },
+                { key = "player", type = "player", label = "To Player" },
+                { key = "when", type = "bool", label = "When" } },
+        outs = {},
+        opts = { Edge = "becomes yes", Cooldown = 0, OffsetY = 3, KeepLook = true },
+        paint = function(_, o, ins, node, ctx)
+            if not edgeFire(o, ins, node, ctx) then return end
+            local dest
+            if ins.to and ins.to.world then dest = ins.to.world
+            elseif ins.part and ins.part.part then
+                local p = ins.part.part
+                if p:IsA("BasePart") then dest = p.Position
+                else local ok, pv = pcall(function() return p:GetPivot().Position end); if ok then dest = pv end end
+            elseif ins.player and ins.player.player then
+                local ch = ins.player.player.Character
+                local h = ch and ch:FindFirstChild("HumanoidRootPart")
+                dest = h and h.Position
+            end
+            if not dest then return end
+            local hrp = myHRP()
+            if not hrp then return end
+            dest = dest + Vector3.new(0, o.OffsetY or 0, 0)
+            hrp.CFrame = o.KeepLook ~= false and (CFrame.new(dest) * hrp.CFrame.Rotation) or CFrame.new(dest)
+        end,
+        ui = function(api, o)
+            api:label("wire ONE of To Point / To Part / To Player")
+            api:dropdown("Fire when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
+            api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
+            api:slider("Y Offset", -20, 20, o.OffsetY, 1, function(v) o.OffsetY = v end)
+            api:toggle("Keep facing", o.KeepLook ~= false, function(v) o.KeepLook = v end)
+        end,
+    }
+
+    KINDS["Set Humanoid"] = {
+        blurb = "forces a Humanoid stat (WalkSpeed, JumpPower...) while something is true",
+        sink = true,
+        ins = { { key = "when", type = "bool", label = "While" },
+                { key = "value", type = "number", label = "Value" } },
+        outs = {},
+        opts = { Field = "WalkSpeed", Value = 50, Restore = true },
+        paint = function(_, o, ins, node, ctx)
+            local want = (ins.when and ins.when.bool) == true
+            local s = slot(node, ctx)
+            local c = LocalPlayer.Character
+            local hum = c and c:FindFirstChildOfClass("Humanoid")
+            if not hum then s.on = false; return end
+            local field = o.Field or "WalkSpeed"
+            if want then
+                if not s.on then
+                    s.on = true
+                    local ok, cur = pcall(function() return hum[field] end)
+                    s.orig = ok and cur or nil
+                end
+                local v = (ins.value and ins.value.number) or o.Value or 0
+                pcall(function() hum[field] = v end)
+            elseif s.on then
+                s.on = false
+                if o.Restore ~= false and s.orig ~= nil then pcall(function() hum[field] = s.orig end) end
+            end
+        end,
+        ui = function(api, o)
+            api:dropdown("Stat", { "WalkSpeed", "JumpPower", "JumpHeight", "HipHeight", "MaxHealth" }, o.Field, function(v) o.Field = v end)
+            api:slider("Value", 0, 500, o.Value, 1, function(v) o.Value = v end)
+            api:toggle("Restore when off", o.Restore ~= false, function(v) o.Restore = v end)
+            api:label("Value input overrides the slider. Re-asserts every frame while yes")
+        end,
+    }
+
+    KINDS["Set Velocity"] = {
+        blurb = "pushes you at a speed and direction while something is true (fly, speed)",
+        sink = true,
+        ins = { { key = "when", type = "bool", label = "While" },
+                { key = "dir", type = "world", label = "Direction" },
+                { key = "speed", type = "number", label = "Speed" } },
+        outs = {},
+        opts = { Speed = 60, Mode = "Look", UpDown = 0 },
+        paint = function(_, o, ins)
+            local want = (ins.when and ins.when.bool) == true
+            if not want then return end
+            local hrp = myHRP()
+            if not hrp then return end
+            local speed = (ins.speed and ins.speed.number) or o.Speed or 0
+            local dir
+            if ins.dir and ins.dir.world then dir = ins.dir.world
+            else
+                local cam = Workspace.CurrentCamera
+                dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+                if o.Mode == "Look Flat" then dir = Vector3.new(dir.X, 0, dir.Z) end
+            end
+            dir = (dir.Magnitude > 0) and dir.Unit or Vector3.zero
+            hrp.AssemblyLinearVelocity = dir * speed + Vector3.new(0, o.UpDown or 0, 0)
+        end,
+        ui = function(api, o)
+            api:dropdown("Direction", { "Look", "Look Flat" }, o.Mode, function(v) o.Mode = v end)
+            api:slider("Speed", 0, 500, o.Speed, 0, function(v) o.Speed = v end)
+            api:slider("Up / Down", -200, 200, o.UpDown, 0, function(v) o.UpDown = v end)
+            api:label("wire Direction (a world point) to steer; else it follows the camera")
+        end,
+    }
+
+    KINDS.Click = {
+        blurb = "clicks the mouse when something becomes true (autoclicker, autofarm)",
+        sink = true,
+        ins = { { key = "when", type = "bool", label = "When" } },
+        outs = {},
+        opts = { Edge = "becomes yes", Cooldown = 0.05, Button = "Left" },
+        paint = function(_, o, ins, node, ctx)
+            if not edgeFire(o, ins, node, ctx) then return end
+            doClick(o.Button)
+        end,
+        ui = function(api, o)
+            api:dropdown("Button", { "Left", "Right" }, o.Button, function(v) o.Button = v end)
+            api:dropdown("Fire when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
+            api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
+            api:label("pair with Interval for a steady autoclicker")
         end,
     }
 
