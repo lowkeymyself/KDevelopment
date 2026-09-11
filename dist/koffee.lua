@@ -1,7 +1,7 @@
--- koffee v0.32.0
+-- koffee v0.32.1
 
 local Koffee = {}
-Koffee.Version = "0.32.0"
+Koffee.Version = "0.32.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -5056,7 +5056,9 @@ end
 -- ("menu takes a second to open with fill on"). 40 strips at step 5 still reads as
 -- a smooth solid (the cube edges draw on top and hide any stair-stepping) for a
 -- fraction of the frames + fill/hull work.
-local FILL = { max = 40, step = 5 }
+-- v0.32.1: finer strips (was 40/5) so the intersection-bounded fill stays tight to
+-- the silhouette up close, where a large box would otherwise get tall, gappy strips.
+local FILL = { max = 64, step = 4 }
 
 local function makeFillRows(parent)
     -- v0.0.22: CanvasGroup flattens overlapping strips into ONE layer before transparency,
@@ -6438,14 +6440,17 @@ local function updateESPRigs()
                     local f = rig.fillRows[i]
                     if i <= rowCount then
                         local yTop = hy0 + (i - 1) * rowH
-                        -- widest span across the strip (sample near top AND bottom
-                        -- edges) so the fill edges track the slanted silhouette
-                        -- instead of stair-stepping off a single centre sample.
+                        -- v0.32.1: bound each strip by the NARROWER of its top+bottom
+                        -- spans (intersection), so it stays inside the slanted
+                        -- silhouette. The old union overshot outward -- fill squares
+                        -- poked past the edges up close, where strips are tall.
                         local l1, r1 = hullSpanAtY(hull, yTop + 0.5)
                         local l2, r2 = hullSpanAtY(hull, yTop + rowH - 0.5)
-                        local xl = math.min(l1 or math.huge,  l2 or math.huge)
-                        local xr = math.max(r1 or -math.huge, r2 or -math.huge)
-                        if xl < xr then
+                        local xl, xr
+                        if l1 and l2 then xl, xr = math.max(l1, l2), math.min(r1, r2)
+                        elseif l1 then xl, xr = l1, r1
+                        elseif l2 then xl, xr = l2, r2 end
+                        if xl and xr and xl < xr then
                             -- opaque strip; the CanvasGroup carries the translucency
                             -- so overlaps don't double-darken (no seams). +1 height
                             -- overlap defeats fractional-rounding gaps for free.
