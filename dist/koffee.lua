@@ -1,7 +1,7 @@
--- koffee v0.31.0
+-- koffee v0.31.1
 
 local Koffee = {}
-Koffee.Version = "0.31.0"
+Koffee.Version = "0.31.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -6195,6 +6195,10 @@ end
 -- broken -> hide immediately). Every visible ESP element is opt-in via its own
 -- config toggle -- master ESP shows nothing on its own. v0.0.17: Outline is a
 -- thickness accent, NOT a gate for box line existence.
+-- v0.31.1: one reusable params for the per-rig occlusion ray -- was allocated fresh
+-- per rig per frame (one GC-churning table per player, every frame).
+local espRayParams = RaycastParams.new()
+espRayParams.FilterType = Enum.RaycastFilterType.Exclude
 local function updateESPRigs()
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -6254,10 +6258,8 @@ local function updateESPRigs()
         -- behind geometry even with Visible Check (colour mode) switched off.
         local hidden = false
         if (ESP.Config.VisibleCheck or not ESP.Boxes.ThroughWalls) and rig.torso and rig.torso.Parent then
-            local rp = RaycastParams.new()
-            rp.FilterType = Enum.RaycastFilterType.Exclude
-            rp.FilterDescendantsInstances = { rig.character, LocalPlayer.Character }
-            local hit = Workspace:Raycast(camPos, rig.torso.Position - camPos, rp)
+            espRayParams.FilterDescendantsInstances = { rig.character, LocalPlayer.Character }
+            local hit = Workspace:Raycast(camPos, rig.torso.Position - camPos, espRayParams)
             hidden = hit ~= nil
         end
         local boxHidden = (not ESP.Boxes.ThroughWalls) and hidden   -- v0.30.0 gate
@@ -9380,11 +9382,13 @@ local Combat = {
         return findTorso(character)
     end
 
+    -- v0.31.1: reused params -- occluded() runs per candidate per frame (aim + silent
+    -- + crosshair), so a fresh RaycastParams each call was real per-frame GC churn.
+    local occludeParams = RaycastParams.new()
+    occludeParams.FilterType = Enum.RaycastFilterType.Exclude
     local function occluded(character, fromPos, toPos)
-        local rp = RaycastParams.new()
-        rp.FilterType = Enum.RaycastFilterType.Exclude
-        rp.FilterDescendantsInstances = { character, LocalPlayer.Character }
-        return Workspace:Raycast(fromPos, toPos - fromPos, rp) ~= nil
+        occludeParams.FilterDescendantsInstances = { character, LocalPlayer.Character }
+        return Workspace:Raycast(fromPos, toPos - fromPos, occludeParams) ~= nil
     end
 
     -- HealthCheck: skip protected targets (ForceField / spawn shield) or dead.
