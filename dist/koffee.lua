@@ -1,7 +1,7 @@
--- koffee v0.27.0
+-- koffee v0.28.0
 
 local Koffee = {}
-Koffee.Version = "0.27.0"
+Koffee.Version = "0.28.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -7439,6 +7439,11 @@ registerConfig("world_skybox", World.SkyBox)
         if busy then return end
         busy = true
         task.spawn(function()
+            -- v0.28.0: protect the whole body. An uncaught throw (getcustomasset on a
+            -- locked runtime, an Instance edge) used to leave busy=true forever, which
+            -- froze the heartbeat and stuck the sky on the last pick ("can't choose
+            -- another"). busy is released unconditionally after the pcall below.
+            local ok = pcall(function()
             if name == "None" then
                 if ownSky then ownSky:Destroy(); ownSky = nil end
                 task.wait()
@@ -7475,9 +7480,13 @@ registerConfig("world_skybox", World.SkyBox)
             sky.SunAngularSize  = want and 21 or 0
             sky.MoonAngularSize = want and 11 or 0
             sky.Parent = Lighting
-            ownSky, busy = sky, false
+            ownSky = sky
             setStatus("")
             kick(sky, want)
+            end)
+            -- guaranteed release + edge-consume so an error can't retry-loop or freeze.
+            if not ok then applied = key; setStatus("(error, pick again)") end
+            busy = false
         end)
     end
 
@@ -8510,6 +8519,7 @@ local TP = {
     _origCam    = nil,   -- Camera.CameraType before enable
     _origMB     = nil,   -- MouseBehavior before enable
 }
+registerConfig("thirdperson_cam", TP)   -- v0.28.0: persist right-click camera settings
 local function tpOnEnable()
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -8865,6 +8875,16 @@ Koffee._characterTab = function(root)
     -- No default keybind so it doesn't conflict with anything the user has bound.
     local tpRow = moduleCheckbox(vis, "3rd Person", "thirdperson")
     keybindPill(tpRow.row, "thirdperson", nil)
+    -- v0.28.0: right-click the row for the camera settings (sens, zoom, shoulder
+    -- offset / height, zoom clamps). TP is registered below so these persist.
+    rightClickSettings(tpRow.row, "3rd person", function(api)
+        api:slider("Sensitivity", 0.02, 1, TP.Sensitivity, 2, function(v) TP.Sensitivity = v end)
+        api:slider("Zoom",        TP.MinZoom, TP.MaxZoom, TP.Zoom, 1, function(v) TP.Zoom = math.clamp(v, TP.MinZoom, TP.MaxZoom) end)
+        api:slider("Shoulder X",  -6, 6, TP.ShoulderX, 2, function(v) TP.ShoulderX = v end)
+        api:slider("Height (Y)",  -6, 6, TP.ShoulderY, 2, function(v) TP.ShoulderY = v end)
+        api:slider("Min Zoom",    0.5, 20, TP.MinZoom, 1, function(v) TP.MinZoom = math.min(v, TP.MaxZoom) end)
+        api:slider("Max Zoom",    5,  60, TP.MaxZoom, 1, function(v) TP.MaxZoom = math.max(v, TP.MinZoom) end)
+    end)
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
     moduleCheckbox(vis, "Arms Offset", "armsoffset")
