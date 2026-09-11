@@ -1,7 +1,7 @@
--- koffee v0.33.0
+-- koffee v0.34.0
 
 local Koffee = {}
-Koffee.Version = "0.33.0"
+Koffee.Version = "0.34.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9188,7 +9188,7 @@ local Combat = {
         ActivationMode= "Hold",
         Priority      = "Crosshair",
         HitPart       = "Head",
-        Method        = "Forced Magic-Bullet",            -- our fake-camera fire-read redirect
+        Method        = "Forced Camera",                  -- our fake-camera fire-read redirect (was "Forced Magic-Bullet")
         Distance      = 500,
         -- v0.27.0: 360 targeting for killaura -- pairs with Trigger Bot on MC games.
         BehindCam     = false,
@@ -9197,14 +9197,9 @@ local Combat = {
         HealthCheck   = false,
         Sticky        = false,
         RequireLMB    = true,
-        -- v0.2.0: Wallbang (renamed from Pos Spoof). Under Raycast method,
-        -- rewrites the workspace:Raycast ORIGIN to 3 studs in front of the target so
-        -- the client ray reaches them through any wall.
-        -- v0.3.0: Wallbang now also flows to the External method via POST /config -->
-        -- KoffeeHelper reads the flag and widens its raycast-inline-hook rewrite
-        -- (origin shift + visibility-filter bypass) inside Roblox. Under Forced MB /
-        -- Second-Camera the checkbox is inert -- neither Lua-side arm nor helper
-        -- config reads it there.
+        -- Wallbang (was Pos Spoof): shifts the shot origin to ~3 studs in front of the
+        -- target so the ray reaches them through walls. v0.34.0: honoured on every
+        -- method -- Raycast/External origin rewrite, Forced Camera read, Second-Camera ray.
         Wallbang      = false,
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
@@ -9861,6 +9856,15 @@ local Combat = {
             d = d.Unit
             return silentPos - d * 3, d
         end
+        -- v0.34.0: wallbang for Forced Camera -- shifts the spoofed Camera.CFrame to the
+        -- wallshot location, so every weapon-facing read of the camera fires through walls.
+        -- (Second-Camera wallbang lives on the outbound Ray rewrite instead -- write scripts.)
+        local function camWallbang()
+            return Combat.Silent.Wallbang and not Combat.Silent._safe
+                and Combat.Silent.Method == "Forced Camera"
+                and silentPos ~= nil and silentTarget ~= nil
+                and (not Combat.Silent.ActivationKey or silentHeld)
+        end
         -- optional diagnostic: getgenv().KoffeePosDebug -> throttled log of what got spoofed
         -- for which calling script (confirms the weapon's reads are being caught).
         local lastDbg = 0
@@ -9951,8 +9955,8 @@ local Combat = {
             if Combat.Silent.Method == "Second-Camera" then
                 scCam = silentPos ~= nil
                     and (not Combat.Silent.ActivationKey or silentHeld)
-            elseif Combat.Silent.Method == "Forced Magic-Bullet" and silentPos then
-                -- Forced MB. v0.1.8: Require Left-Click OFF is now TRULY continuous --
+            elseif Combat.Silent.Method == "Forced Camera" and silentPos then
+                -- Forced Camera. v0.1.8: Require Left-Click OFF is now TRULY continuous --
                 -- v0.2.0: explicit method match -- Raycast method never spoofs Camera.CFrame.
                 -- the CFrame bend no longer collapses to the click window, EXCEPT for
                 -- learned camera WRITERS (writer-detector set), which stay window-gated
@@ -9985,6 +9989,11 @@ local Combat = {
                         if (silentPos - SR.camPos).Magnitude > 1e-3 then
                             dbg("Camera.CFrame")
                             if posFire() then
+                                local o, d = wallShot(); return true, CFrame.new(o, o + d)
+                            end
+                            -- v0.34.0: Forced Camera wallbang -- spoof the read to the
+                            -- wallshot origin so camera-origin guns shoot through walls.
+                            if camWallbang() then
                                 local o, d = wallShot(); return true, CFrame.new(o, o + d)
                             end
                             return true, CFrame.new(SR.camPos, silentPos)
@@ -10121,6 +10130,16 @@ local Combat = {
                         end
                     elseif t == "Ray" then
                         local o = a.Origin
+                        -- v0.34.0: Second-Camera wallbang -- shift the outgoing ORIGIN to
+                        -- 3 studs in front of the target so a server-side wall check
+                        -- between shooter and target passes. Off = keep the real origin.
+                        if Combat.Silent.Wallbang and SR.camPos then
+                            local dx, dy, dz = silentPos.X - SR.camPos.X, silentPos.Y - SR.camPos.Y, silentPos.Z - SR.camPos.Z
+                            local dl = (dx * dx + dy * dy + dz * dz) ^ 0.5
+                            if dl > 1e-3 then
+                                o = Vector3.new(silentPos.X - dx / dl * 3, silentPos.Y - dy / dl * 3, silentPos.Z - dz / dl * 3)
+                            end
+                        end
                         local nd = silentPos - o
                         local nl = (nd.X * nd.X + nd.Y * nd.Y + nd.Z * nd.Z) ^ 0.5
                         if nl > 1e-3 then
@@ -11083,6 +11102,8 @@ local Combat = {
             local ps = LocalPlayer:FindFirstChild("PlayerScripts")
             SR.pm = ps and ps:FindFirstChild("PlayerModule")
         end
+        -- v0.34.0: migrate the pre-rename method string off old saved configs.
+        if Combat.Silent.Method == "Forced Magic-Bullet" then Combat.Silent.Method = "Forced Camera" end
         if not Combat.Silent.Enabled then silentTarget = nil; silentPos = nil; Combat.Silent._target = nil; Combat.Silent._lastGoodAt = nil; return end
         -- v0.0.34: if the user bound an arm key it must be held (per its mode);
         -- with no key bound (default) this gate is skipped entirely.
@@ -11996,12 +12017,12 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
-        dropdown(R["Silent Aim"], "Method", { "Forced Magic-Bullet", "Second-Camera", "Raycast", "External" }, Combat.Silent.Method,
+        dropdown(R["Silent Aim"], "Method", { "Forced Camera", "Second-Camera", "Raycast", "External" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v; if Koffee.External then Koffee.External.onMethodChange(v) end end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
-        -- v0.2.0/v0.3.0: Wallbang is honoured under Raycast (Lua-side origin
-        -- rewrite) AND External (helper-side inline-hook wallbang). Silently
-        -- no-ops under Forced MB / Second-Camera.
+        -- v0.34.0: Wallbang works on every method now -- Raycast + External (origin
+        -- rewrite), Forced Camera (shifts the camera read = everything), Second-Camera
+        -- (shifts the outbound ray origin = write scripts only).
         configCheckbox(R["Silent Aim"], "Wallbang", Combat.Silent.Wallbang, function(v) Combat.Silent.Wallbang = v end)
         -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on) --
         -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
