@@ -1,7 +1,7 @@
--- koffee v0.28.0
+-- koffee v0.29.0
 
 local Koffee = {}
-Koffee.Version = "0.28.0"
+Koffee.Version = "0.29.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4434,6 +4434,151 @@ function ConfigIO.setAuto(name)
     ensureDir()
     if name and name ~= "" then pcall(fileAPI.write, autoPath(), name)
     elseif fileAPI.delfile then pcall(fileAPI.delfile, autoPath()) end
+end
+
+-- === CLOUD CONFIGS (v0.29.0) ===============================================
+-- Mirrors the Konstant Aero cloud service (Cloudflare Worker + KV). Each config's
+-- raw .koffee text rides as the `data` field; owner auth is honor-system via the
+-- Roblox UserId (?actor= on mutate). Koffee is private, so that's sized right.
+-- Reusing the deployed Aero endpoint -- it stores arbitrary data, so no redeploy.
+local CLOUD_ENDPOINT = "https://konstant-aero-cloud.kar-cloud.workers.dev"
+local CLOUD_META = CFG_DIR .. "/_cloudmeta.json"   -- name -> {id,owner,ownerName,cloudName}
+local function myId()   return LocalPlayer and LocalPlayer.UserId or 0 end
+local function myName() return LocalPlayer and LocalPlayer.Name or "unknown" end
+
+-- blocking HTTP (call inside task.spawn). Returns decoded, err.
+local function cloudCall(method, path, body)
+    local httpReq = (syn and syn.request) or (http and http.request) or http_request or request
+    if not httpReq then return nil, "executor has no request()" end
+    local HttpService = game:GetService("HttpService")
+    local opts = { Url = CLOUD_ENDPOINT .. path, Method = method,
+                   Headers = { ["Content-Type"] = "application/json" } }
+    if body ~= nil then opts.Body = HttpService:JSONEncode(body) end
+    local ok, resp = pcall(httpReq, opts)
+    if not ok then return nil, tostring(resp) end
+    if not resp then return nil, "no response" end
+    local decoded
+    if resp.Body and resp.Body ~= "" then
+        local dok, dval = pcall(function() return HttpService:JSONDecode(resp.Body) end)
+        if dok then decoded = dval end
+    end
+    local status = resp.StatusCode or resp.Status or 0
+    if status >= 400 then return nil, (decoded and decoded.error) or ("HTTP " .. tostring(status)) end
+    return decoded, nil
+end
+
+-- cloud pushes/pulls the .koffee file text verbatim (same format load() eats)
+local function readConfigText(name)
+    if not filesReady() then return nil end
+    local p = CFG_DIR .. "/" .. name .. ".koffee"
+    if not fileAPI.isfile(p) then return nil end
+    local ok, t = pcall(fileAPI.read, p)
+    if ok and type(t) == "string" then return t end
+    return nil
+end
+local function writeConfigText(name, text)
+    if not filesReady() then return false end
+    ensureDir()
+    return (pcall(fileAPI.write, CFG_DIR .. "/" .. name .. ".koffee", text))
+end
+
+-- cloud meta map (JSON sidecar, skipped by list()'s .koffee filter)
+local cloudMeta = nil
+local function loadCloudMeta()
+    if cloudMeta then return cloudMeta end
+    cloudMeta = {}
+    if filesReady() and fileAPI.isfile(CLOUD_META) then
+        local ok, t = pcall(fileAPI.read, CLOUD_META)
+        if ok and type(t) == "string" and t ~= "" then
+            local dok, d = pcall(function() return game:GetService("HttpService"):JSONDecode(t) end)
+            if dok and type(d) == "table" then cloudMeta = d end
+        end
+    end
+    return cloudMeta
+end
+local function saveCloudMeta()
+    if not filesReady() then return end
+    ensureDir()
+    local ok, text = pcall(function() return game:GetService("HttpService"):JSONEncode(cloudMeta or {}) end)
+    if ok then pcall(fileAPI.write, CLOUD_META, text) end
+end
+
+function ConfigIO.cloudMetaFor(name) return loadCloudMeta()[name] end
+function ConfigIO.cloudIsOwner(name)
+    local m = loadCloudMeta()[name]
+    return m ~= nil and m.owner == myId()
+end
+
+-- upload (create) or overwrite (owner). Returns id, err. Blocks.
+function ConfigIO.cloudUpload(name)
+    if not filesReady() then return nil, "no file access" end
+    local text = readConfigText(name)
+    if not text then return nil, "config not found" end
+    loadCloudMeta()
+    local meta = cloudMeta[name]
+    if meta and meta.owner == myId() then
+        local doc, err = cloudCall("PUT", "/config/" .. meta.id .. "?actor=" .. myId(),
+            { name = meta.cloudName or name, data = text })
+        if not doc then return nil, err end
+        meta.cloudName = doc.name; saveCloudMeta()
+        return meta.id, nil
+    end
+    local doc, err = cloudCall("POST", "/config",
+        { name = name, owner = myId(), ownerName = myName(), data = text })
+    if not doc then return nil, err end
+    cloudMeta[name] = { id = doc.id, owner = doc.owner, ownerName = doc.ownerName or myName(), cloudName = doc.name }
+    saveCloudMeta()
+    return doc.id, nil
+end
+
+-- download by id -> writes a local .koffee file. Returns localName, err. Blocks.
+function ConfigIO.cloudDownload(id)
+    id = tostring(id):upper():gsub("%s+", "")
+    if #id ~= 8 then return nil, "enter an 8-char cloud id" end
+    local doc, err = cloudCall("GET", "/config/" .. id)
+    if not doc then return nil, err end
+    if type(doc.data) ~= "string" then return nil, "bad cloud data" end
+    loadCloudMeta()
+    local localName = tostring(doc.name or ("cloud-" .. id)):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if localName == "" then localName = "cloud-" .. id end
+    -- collision: a DIFFERENT cloud config already sits at this name -> tag with id
+    if cloudMeta[localName] and cloudMeta[localName].id ~= id then
+        localName = localName .. " (" .. id .. ")"
+    end
+    if not writeConfigText(localName, doc.data) then return nil, "write failed" end
+    cloudMeta[localName] = { id = id, owner = doc.owner, ownerName = doc.ownerName or "", cloudName = doc.name or localName }
+    saveCloudMeta()
+    return localName, nil
+end
+
+function ConfigIO.cloudDelete(name)
+    loadCloudMeta()
+    local meta = cloudMeta[name]
+    if not (meta and meta.owner == myId()) then return false, "not the owner" end
+    local ok, err = cloudCall("DELETE", "/config/" .. meta.id .. "?actor=" .. myId())
+    if not ok then return false, err end
+    cloudMeta[name] = nil; saveCloudMeta()   -- local file stays
+    return true, nil
+end
+
+function ConfigIO.cloudRename(name)
+    loadCloudMeta()
+    local meta = cloudMeta[name]
+    if not (meta and meta.owner == myId()) then return false, "not the owner" end
+    local doc, err = cloudCall("PATCH", "/config/" .. meta.id .. "?actor=" .. myId(), { name = name })
+    if not doc then return false, err end
+    meta.cloudName = doc.name; saveCloudMeta()
+    return true, nil
+end
+
+-- keep the meta map in step with local rename / delete
+function ConfigIO.cloudMetaRename(old, newName)
+    loadCloudMeta()
+    if cloudMeta[old] then cloudMeta[newName] = cloudMeta[old]; cloudMeta[old] = nil; saveCloudMeta() end
+end
+function ConfigIO.cloudMetaDrop(name)
+    loadCloudMeta()
+    if cloudMeta[name] then cloudMeta[name] = nil; saveCloudMeta() end
 end
 
 Koffee.Config = ConfigIO
@@ -18187,6 +18332,7 @@ addTab("Configs", function(root)
     -- (create / delete / refresh) so it always mirrors what's actually saved.
     local selectedName, hasConfigs, currentDD = nil, false, nil
     local rebuildManager   -- fwd decl
+    local refreshCloud     -- v0.29.0 fwd decl: cloud card reacts to selection changes
 
     local ddHolder = new("Frame", {
         Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1,
@@ -18256,6 +18402,7 @@ addTab("Configs", function(root)
             if not ok then setStatus("rename failed: " .. tostring(msg), false); return end
             -- carry the auto-load marker across, or it points at a file that is gone
             if CIO.getAuto() == from then CIO.setAuto(msg) end
+            CIO.cloudMetaRename(from, msg)   -- v0.29.0: keep the cloud link on the new name
             selectedName = msg
             rebuildManager()
             setStatus("renamed: " .. from .. " -> " .. msg, true)
@@ -18272,6 +18419,7 @@ addTab("Configs", function(root)
         --      did nothing every session with no way to notice from the UI.
         local ok = CIO.delete(nm)
         if ok and CIO.getAuto() == nm then CIO.setAuto(nil) end
+        if ok then CIO.cloudMetaDrop(nm) end   -- v0.29.0: drop the local cloud link (cloud entry stays)
         selectedName = nil
         rebuildManager()
         if ok then setStatus("deleted: " .. nm, true)
@@ -18312,9 +18460,145 @@ addTab("Configs", function(root)
         local options = hasConfigs and names or { "no saved configs" }
         currentDD = dropdown(ddHolder, "saved configs", options,
             selectedName or "no saved configs", function(v)
-                if hasConfigs then selectedName = v; refreshAutoLabel() end
+                if hasConfigs then selectedName = v; refreshAutoLabel(); if refreshCloud then refreshCloud() end end
             end)
         refreshAutoLabel()
+        if refreshCloud then refreshCloud() end
+    end
+
+    --== cloud configs card (v0.29.0) ==--
+    -- Share/sync configs through the cloud. Operates on the SELECTED config above.
+    -- Upload creates (you become owner) or overwrites (owner only); download pulls
+    -- any 8-char id into a local config; delete/rename hit the cloud (owner only).
+    local cloudCard = panel(root, "Cloud Configs")
+    local cloudStatus = new("TextLabel", {
+        Text = "select a config above, then upload -- or paste an id to download",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 1, ZIndex = 35, Parent = cloudCard,
+    })
+    local function setCloud(msg, ok)
+        cloudStatus.Text = msg
+        cloudStatus.TextColor3 = ok and Theme.Palette.Success or Theme.Palette.Danger
+    end
+
+    -- download row: id box + button
+    local dlRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1,
+        LayoutOrder = 2, ZIndex = 35, Parent = cloudCard,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local idBox = new("TextBox", {
+        Text = "", PlaceholderText = "cloud id (8 chars)...", ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+        BorderSizePixel = 0, Size = UDim2.new(1, -130, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, ZIndex = 36, Parent = dlRow,
+    }, { corner(5), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
+
+    -- cloud action rows (buttons created up front, visibility toggled by refreshCloud)
+    local function cloudActionRow(order)
+        return new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+            LayoutOrder = order, ZIndex = 35, Parent = cloudCard,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+    end
+    local cloudRow  = cloudActionRow(3)   -- upload + copy id
+    local cloudRow2 = cloudActionRow(4)   -- delete cloud + rename cloud (owner only)
+
+    local busyCloud = false
+    local function guard() if busyCloud then return false end busyCloud = true return true end
+
+    local dlBtn = mkBtn(dlRow, "download", 118, function()
+        if not guard() then return end
+        local id = idBox.Text
+        setCloud("downloading " .. tostring(id):upper():gsub("%s+", "") .. "...", true)
+        task.spawn(function()
+            local name, err = CIO.cloudDownload(id)
+            if name then
+                idBox.Text = ""
+                selectedName = name
+                rebuildManager()
+                setCloud('downloaded "' .. name .. '"', true)
+            else
+                setCloud("download failed: " .. tostring(err), false)
+            end
+            busyCloud = false
+        end)
+    end, true)
+    dlBtn.LayoutOrder = 2
+
+    local upBtn = mkBtn(cloudRow, "upload", 100, function()
+        if not (hasConfigs and selectedName) then setCloud("no config selected", false); return end
+        if not guard() then return end
+        local nm = selectedName
+        setCloud('uploading "' .. nm .. '"...', true)
+        task.spawn(function()
+            local id, err = CIO.cloudUpload(nm)
+            if id then
+                if setclipboard then pcall(setclipboard, id) end
+                setCloud("cloud id: " .. id .. (setclipboard and " (copied)" or ""), true)
+            else
+                setCloud("upload failed: " .. tostring(err), false)
+            end
+            rebuildManager()
+            busyCloud = false
+        end)
+    end, true)
+    upBtn.LayoutOrder = 1
+
+    local copyBtn = mkBtn(cloudRow, "copy id", 78, function()
+        local meta = selectedName and CIO.cloudMetaFor(selectedName)
+        if not (meta and meta.id) then setCloud("not cloud-linked", false); return end
+        if setclipboard and pcall(setclipboard, meta.id) then setCloud("copied " .. meta.id, true)
+        else setCloud("id: " .. meta.id .. " (no clipboard)", true) end
+    end)
+    copyBtn.LayoutOrder = 2
+
+    local delBtn = mkBtn(cloudRow2, "delete cloud", 108, function()
+        if not (hasConfigs and selectedName) then return end
+        if not guard() then return end
+        local nm = selectedName
+        setCloud("deleting from cloud...", true)
+        task.spawn(function()
+            local ok, err = CIO.cloudDelete(nm)
+            if ok then setCloud("deleted from cloud (local kept)", true)
+            else setCloud("delete failed: " .. tostring(err), false) end
+            rebuildManager()
+            busyCloud = false
+        end)
+    end)
+    delBtn.LayoutOrder = 3
+
+    local rnBtn = mkBtn(cloudRow2, "rename cloud", 108, function()
+        if not (hasConfigs and selectedName) then return end
+        if not guard() then return end
+        local nm = selectedName
+        setCloud("renaming cloud entry...", true)
+        task.spawn(function()
+            local ok, err = CIO.cloudRename(nm)   -- pushes the local name up to the cloud
+            if ok then setCloud('cloud renamed to "' .. nm .. '"', true)
+            else setCloud("rename failed: " .. tostring(err), false) end
+            busyCloud = false
+        end)
+    end)
+    rnBtn.LayoutOrder = 4
+
+    -- upload always shows; copy/delete/rename are contextual (linked / owner-only)
+    refreshCloud = function()
+        local has   = hasConfigs and selectedName ~= nil
+        local meta  = has and CIO.cloudMetaFor(selectedName) or nil
+        local owner = has and CIO.cloudIsOwner(selectedName)
+        upBtn.Text        = (meta and owner) and "overwrite" or "upload"
+        copyBtn.Visible   = meta ~= nil
+        delBtn.Visible    = has and owner and meta ~= nil
+        rnBtn.Visible     = has and owner and meta ~= nil
     end
 
     rebuildManager()
