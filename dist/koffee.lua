@@ -1,7 +1,7 @@
--- koffee v0.37.0
+-- koffee v0.38.0
 
 local Koffee = {}
-Koffee.Version = "0.37.0"
+Koffee.Version = "0.38.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -3945,7 +3945,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
     local body, spawned = nil, {}
     -- v0.36.0: cap the popup height and scroll the body, so tall setting lists
     -- (Fire Remote, big colour panels) don't run off the bottom of the screen.
-    local POP_MAXH = 340
+    local BODY_MAX = 300   -- v0.37.1: hard cap; body scrolls past this
     local function ensurePopup()
         if popupFrame then return end
         popupFrame = new("Frame", {
@@ -3961,7 +3961,6 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
             Parent = popupScreen,
         }, {
             corner(6), stroke(Theme.Palette.Border, 1),
-            new("UISizeConstraint", { MaxSize = Vector2.new(210, POP_MAXH) }),
             new("UIPadding", {
                 PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
                 PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12),
@@ -3978,18 +3977,21 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
             Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
             LayoutOrder = 0, ZIndex = 211, Parent = popupFrame,
         })
-        -- content lives in a scrolling body; grows to fit, scrolls past POP_MAXH.
+        -- content lives in a scrolling body; grows to its content, then scrolls once
+        -- it hits BODY_MAX (a hard cap, not a fraction of anything).
         body = new("ScrollingFrame", {
             Name = "Body", Size = UDim2.fromScale(1, 0),
-            AutomaticSize = Enum.AutomaticSize.Y, AutomaticCanvasSize = Enum.AutomaticSize.Y,
-            CanvasSize = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
-            ScrollBarThickness = 3, ScrollBarImageColor3 = Theme.Palette.TextFaint,
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(0, 0, 0, 0),
+            BackgroundTransparency = 1, ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.TextFaint,
             ScrollingDirection = Enum.ScrollingDirection.Y, LayoutOrder = 1, ZIndex = 210, Parent = popupFrame,
         }, {
-            new("UISizeConstraint", { MaxSize = Vector2.new(math.huge, POP_MAXH - 30) }),
             new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
                 Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
         })
+        local bl = body:FindFirstChildOfClass("UIListLayout")
+        bl:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            body.Size = UDim2.new(1, 0, 0, math.min(bl.AbsoluteContentSize.Y, BODY_MAX))
+        end)
     end
 
     -- dropdowns park their option list on popupScreen, NOT under the popup, so a
@@ -15502,7 +15504,8 @@ registerConfig("custom", Koffee.Custom)
         "Text", "Box", "Bar", "Line", "Circle", "Ring", "Image", "Group",
         "3D Ring", "3D Box",
         "Sound", "Notify", "Adorn Part", "Fire Remote", "Set Value",
-        "Teleport", "Set Humanoid", "Set Velocity", "Click", "Note",
+        "Teleport", "Set Humanoid", "Set Velocity", "Click",
+        "Koffee Toggle", "Koffee Set", "Note",
     }
     -- v0.32.0: shared scripting helpers. rayParams reused across Raycast evals;
     -- doClick drives the Click action off executor globals with a VIM fallback.
@@ -17585,6 +17588,71 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
+    -- v0.38.0: Koffee-connected blocks -- drive Koffee's own features from the graph.
+    KINDS["Koffee Toggle"] = {
+        blurb = "turns a Koffee feature on/off from the graph (triggerbot, aimbot, esp...)",
+        sink = true,
+        ins = { { key = "on", type = "bool", label = "On When" } },
+        outs = {},
+        opts = { Module = "triggerbot", Mode = "Match" },
+        paint = function(_, o, ins, node, ctx)
+            local m = Modules and Modules[o.Module]
+            if not m then return end
+            local want = (ins.on and ins.on.bool) == true
+            local s = slot(node, ctx)
+            if o.Mode == "Turn On (edge)" then
+                if want and not s.prev and not m.Enabled then toggleModule(o.Module) end
+                s.prev = want
+            elseif o.Mode == "Turn Off (edge)" then
+                if want and not s.prev and m.Enabled then toggleModule(o.Module) end
+                s.prev = want
+            else   -- Match: feature follows the bool continuously
+                if m.Enabled ~= want then toggleModule(o.Module) end
+            end
+        end,
+        ui = function(api, o)
+            local names = {}
+            for id in pairs(Modules or {}) do names[#names + 1] = id end
+            table.sort(names)
+            api:dropdown("Feature", names, o.Module, function(v) o.Module = v end)
+            api:dropdown("Mode", { "Match", "Turn On (edge)", "Turn Off (edge)" }, o.Mode, function(v) o.Mode = v end)
+            api:label("Match = feature follows On When. edge = fire once on the rising edge")
+        end,
+    }
+
+    -- curated settable Koffee numbers (via Shared.Combat, guarded)
+    local KSET = {
+        { name = "Aim Sensitivity", set = function(v) Shared.Combat.Aim.Sensitivity = v end },
+        { name = "Aim FOV Size",    set = function(v) Shared.Combat.Aim.FOV.Size = v end },
+        { name = "Aim Distance",    set = function(v) Shared.Combat.Aim.Distance = v end },
+        { name = "Silent FOV Size", set = function(v) Shared.Combat.Silent.FOV.Size = v end },
+        { name = "Silent Distance", set = function(v) Shared.Combat.Silent.Distance = v end },
+        { name = "Hit Effect Scale",  set = function(v) Shared.Combat.HitEffects.Hit.Scale = v end },
+        { name = "Kill Effect Scale", set = function(v) Shared.Combat.HitEffects.Kill.Scale = v end },
+        { name = "Trigger Delay (ms)",   set = function(v) Shared.Combat.Trigger.Delay = v end },
+        { name = "Trigger Release (ms)", set = function(v) Shared.Combat.Trigger.Release = v end },
+    }
+    local KSET_NAMES, KSET_BY = {}, {}
+    for _, e in ipairs(KSET) do KSET_NAMES[#KSET_NAMES + 1] = e.name; KSET_BY[e.name] = e end
+    KINDS["Koffee Set"] = {
+        blurb = "sets a Koffee number (sensitivity, FOV, hit-effect size...) from the graph",
+        sink = true,
+        ins = { { key = "when", type = "bool", label = "While" }, { key = "value", type = "number", label = "Value" } },
+        outs = {},
+        opts = { Target = "Aim Sensitivity" },
+        paint = function(_, o, ins)
+            if not ((ins.when and ins.when.bool) == true) then return end
+            local v = ins.value and ins.value.number
+            if v == nil then return end
+            local e = KSET_BY[o.Target]
+            if e then pcall(e.set, v) end
+        end,
+        ui = function(api, o)
+            api:dropdown("Target", KSET_NAMES, o.Target, function(v) o.Target = v end)
+            api:label("wire a Number into Value; applied every frame While is yes")
+        end,
+    }
+
     KINDS.Note = {
         blurb = "a label on the canvas. draws nothing in game",
         ins = {}, outs = {},
@@ -18881,6 +18949,7 @@ registerConfig("custom", Koffee.Custom)
         local fields = {}   -- { { off, type, name } }
         local addType = "f32"
         local refreshFields   -- fwd decl (used by the add-field button below)
+        local lastGuesses = {}   -- auto-detected fields, materialized by "auto fields"
 
         local function mkBtn(p, text, w, order, fn)
             local b = new("TextButton", {
@@ -19029,22 +19098,48 @@ registerConfig("custom", Koffee.Custom)
             end
             if blen > shown then lines[#lines + 1] = ("... (%d more bytes)"):format(blen - shown) end
             dump.Text = table.concat(lines, "\n")
+            -- auto-detect: sane f32s (finite, not garbage-huge), Vector3 triplets first.
+            -- This is the sanity check -- 9e19 as an X, 0 as Y is NOT a position, so
+            -- absurd floats are rejected instead of being suggested as fields.
             local guesses = {}
+            lastGuesses = {}
             local ok, b = pcall(buffer.fromstring, curBytes)
             if ok and blen > 0 then
                 local n = buffer.len(b)
-                for off = 0, n - 4, 4 do
-                    local okf, f = pcall(buffer.readf32, b, off)
-                    local oku, u = pcall(buffer.readu32, b, off)
-                    if okf and f == f and math.abs(f) > 1e-4 and math.abs(f) < 1e6 then
-                        guesses[#guesses + 1] = ("off %-4d f32 = %.3f"):format(off, f)
-                    elseif oku and u < 100000 then
-                        guesses[#guesses + 1] = ("off %-4d u32 = %d"):format(off, u)
+                local function rf(o) local okk, v = pcall(buffer.readf32, b, o); return okk and v or nil end
+                local function sane(f)
+                    return f ~= nil and f == f and math.abs(f) ~= math.huge
+                        and (f == 0 or (math.abs(f) >= 1e-3 and math.abs(f) < 5e4))
+                end
+                local off = 0
+                while off <= n - 4 and #guesses < 40 do
+                    if off <= n - 12 then
+                        local x, y, z = rf(off), rf(off + 4), rf(off + 8)
+                        if sane(x) and sane(y) and sane(z) and not (x == 0 and y == 0 and z == 0) then
+                            guesses[#guesses + 1] = ("off %-4d  vec3? (%.1f, %.1f, %.1f)"):format(off, x, y, z)
+                            lastGuesses[#lastGuesses + 1] = { off = off, type = "f32", name = "x@" .. off }
+                            lastGuesses[#lastGuesses + 1] = { off = off + 4, type = "f32", name = "y@" .. off }
+                            lastGuesses[#lastGuesses + 1] = { off = off + 8, type = "f32", name = "z@" .. off }
+                            off = off + 12
+                            continue
+                        end
                     end
-                    if #guesses >= 30 then break end
+                    local x = rf(off)
+                    if sane(x) and x ~= 0 then
+                        guesses[#guesses + 1] = ("off %-4d  f32 = %.3f"):format(off, x)
+                        lastGuesses[#lastGuesses + 1] = { off = off, type = "f32", name = "f32@" .. off }
+                    else
+                        local oku, u = pcall(buffer.readu32, b, off)
+                        if oku and u > 0 and u < 100000 then
+                            guesses[#guesses + 1] = ("off %-4d  u32 = %d"):format(off, u)
+                            lastGuesses[#lastGuesses + 1] = { off = off, type = "u32", name = "u32@" .. off }
+                        end
+                    end
+                    off = off + 4
                 end
             end
-            guess.Text = (#guesses > 0) and ("guesses:\n" .. table.concat(guesses, "\n")) or ""
+            guess.Text = (#guesses > 0) and ("auto-detected (guesses):\n" .. table.concat(guesses, "\n"))
+                or "no obvious fields -- add them by hand"
         end
 
         -- === fields / schema card (stage 2) ===
@@ -19153,7 +19248,13 @@ registerConfig("custom", Koffee.Custom)
             inspect()
             refreshFields()
         end)
-        mkBtn(pRow, "clear", 60, 2, function()
+        mkBtn(pRow, "auto fields", 92, 2, function()
+            if #lastGuesses == 0 then return end
+            fields = {}
+            for _, g in ipairs(lastGuesses) do fields[#fields + 1] = { off = g.off, type = g.type, name = g.name } end
+            refreshFields()
+        end)
+        mkBtn(pRow, "clear", 60, 3, function()
             box.Text = ""; curBytes = ""; inspect(); refreshFields()
         end)
 
