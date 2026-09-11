@@ -1,7 +1,7 @@
--- koffee v0.32.1
+-- koffee v0.33.0
 
 local Koffee = {}
-Koffee.Version = "0.32.1"
+Koffee.Version = "0.33.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1799,6 +1799,8 @@ KoffeeOptions = {
     MIFontOn   = false,
     MIFontName = "None",           -- separate catalog pick
     MIFontSize = 12,               -- "12" = Theme mirror default; slider in right-click
+    -- v0.33.0: the arraylist accent line colour (white-only since v0.0.1). nil = Snow.
+    ArraylistLineColor = Color3.fromRGB(255, 253, 248),
     -- v0.11.0 CUSTOM UI COLORS. Seven palette roles the user can repaint. Defaults
     -- are the stock Theme.Palette values, so an untouched config is a no-op.
     UIColors = {
@@ -1811,6 +1813,14 @@ KoffeeOptions = {
         TextMuted     = Color3.fromRGB(142, 129, 116),
     },
 }
+-- v0.33.0: recolour the arraylist accent line from KoffeeOptions. Called on the
+-- swatch change and after a config load; activeLine predates KoffeeOptions so it
+-- starts Snow and this repaints it.
+local function applyArrayLineColor()
+    if activeLine then activeLine.BackgroundColor3 = KoffeeOptions.ArraylistLineColor or Theme.Palette.Snow end
+end
+applyArrayLineColor()
+
 local nextLayoutOrder = 0
 local ROW = {
     height = 20,
@@ -4332,6 +4342,7 @@ local function loadSnapshot(data)
     -- it -- re-apply the actual column visibility (the rebuilt tab's checkbox
     -- reads KoffeeOptions but nothing drives the live column off it).
     if activeArray then activeArray.Visible = KoffeeOptions.Arraylist == true end
+    if applyArrayLineColor then pcall(applyArrayLineColor) end   -- v0.33.0
     if applyTopBar then pcall(applyTopBar) end
     -- v0.0.97: a loaded config can flip CustomFontOn / change the font / size --
     -- push those into the Theme so the feature interface reflects the saved state.
@@ -15143,6 +15154,11 @@ addTab("Options", function(root)
         setBackgroundActive(bgActive)
     end)
     rightClickSettings(arrRow.row, "arraylist", function(menu)
+        -- v0.33.0: the accent line was white-only since v0.0.1 -- now recolourable.
+        menu:swatch("Line Colour", KoffeeOptions.ArraylistLineColor or Theme.Palette.Snow, function(c)
+            KoffeeOptions.ArraylistLineColor = c
+            applyArrayLineColor()
+        end)
         menu:toggle("Overwrite Outline", KoffeeOptions.ArraylistOutline, function(v)
             KoffeeOptions.ArraylistOutline = v
         end)
