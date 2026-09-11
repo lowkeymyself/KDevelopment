@@ -1,7 +1,7 @@
--- koffee v0.35.0
+-- koffee v0.36.0
 
 local Koffee = {}
-Koffee.Version = "0.35.0"
+Koffee.Version = "0.36.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -3936,7 +3936,10 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
     if not btn then return end
 
     local popupFrame, isOpen = nil, false
-    local titleLbl, spawned = nil, {}
+    local body, spawned = nil, {}
+    -- v0.36.0: cap the popup height and scroll the body, so tall setting lists
+    -- (Fire Remote, big colour panels) don't run off the bottom of the screen.
+    local POP_MAXH = 340
     local function ensurePopup()
         if popupFrame then return end
         popupFrame = new("Frame", {
@@ -3946,11 +3949,13 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
             BackgroundColor3 = Theme.Palette.Panel,
             BackgroundTransparency = 0.02,
             BorderSizePixel = 0,
+            ClipsDescendants = true,
             Visible = false,
             ZIndex = 210,
             Parent = popupScreen,
         }, {
             corner(6), stroke(Theme.Palette.Border, 1),
+            new("UISizeConstraint", { MaxSize = Vector2.new(210, POP_MAXH) }),
             new("UIPadding", {
                 PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
                 PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12),
@@ -3961,11 +3966,23 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
                 SortOrder = Enum.SortOrder.LayoutOrder,
             }),
         })
-        titleLbl = new("TextLabel", {
+        new("TextLabel", {
             Text = title, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
             Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
-            ZIndex = 211, Parent = popupFrame,
+            LayoutOrder = 0, ZIndex = 211, Parent = popupFrame,
+        })
+        -- content lives in a scrolling body; grows to fit, scrolls past POP_MAXH.
+        body = new("ScrollingFrame", {
+            Name = "Body", Size = UDim2.fromScale(1, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            CanvasSize = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 3, ScrollBarImageColor3 = Theme.Palette.TextFaint,
+            ScrollingDirection = Enum.ScrollingDirection.Y, LayoutOrder = 1, ZIndex = 210, Parent = popupFrame,
+        }, {
+            new("UISizeConstraint", { MaxSize = Vector2.new(math.huge, POP_MAXH - 30) }),
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+                Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
         })
     end
 
@@ -3974,18 +3991,20 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
     local function buildBody()
         for _, kill in ipairs(spawned) do pcall(kill) end
         table.clear(spawned)
-        for _, c in ipairs(popupFrame:GetChildren()) do
-            if c:IsA("GuiObject") and c ~= titleLbl then c:Destroy() end
+        -- v0.36.0: clear the scrolling body's items (its layout is not a GuiObject,
+        -- so it survives); popupFrame's own children (title, body) are kept.
+        for _, c in ipairs(body:GetChildren()) do
+            if c:IsA("GuiObject") then c:Destroy() end
         end
-        local api = { frame = popupFrame }   -- v0.0.46: expose parent for custom content
+        local api = { frame = body }   -- v0.0.46: expose parent for custom content
         function api:slider(label, mn, mx, initial, precision, onChange)
-            slider(popupFrame, label, mn, mx, initial, precision, onChange)
+            slider(body, label, mn, mx, initial, precision, onChange)
         end
         function api:toggle(label, initial, onChange)
-            return configCheckbox(popupFrame, label, initial, onChange)
+            return configCheckbox(body, label, initial, onChange)
         end
         function api:dropdown(label, options, initial, onChange)
-            local d = dropdown(popupFrame, label, options, initial, onChange)
+            local d = dropdown(body, label, options, initial, onChange)
             spawned[#spawned + 1] = d.destroy
             return d
         end
@@ -3994,7 +4013,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         function api:swatch(label, initial, onChange, sopts)
             local r = new("Frame", {
                 Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1,
-                ZIndex = 211, Parent = popupFrame,
+                ZIndex = 211, Parent = body,
             })
             new("TextLabel", {
                 Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
@@ -4015,7 +4034,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         -- v0.0.32: a row of N colour swatches (transparency is separate sliders now).
         function api:swatchRow(colors, onColor)
             local r = new("Frame", {
-                Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1, ZIndex = 211, Parent = popupFrame,
+                Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1, ZIndex = 211, Parent = body,
             }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
                 Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
             for i = 1, #colors do
@@ -4029,7 +4048,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
                 Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.Text, AutoButtonColor = false,
                 BackgroundColor3 = Theme.Palette.PanelElevated, BorderSizePixel = 0,
-                Size = UDim2.new(1, 0, 0, 20), ZIndex = 211, Parent = popupFrame,
+                Size = UDim2.new(1, 0, 0, 20), ZIndex = 211, Parent = body,
             }, { corner(4), stroke(Theme.Palette.Border, 1) })
             b.MouseButton1Click:Connect(function() pcall(onClick, b) end)
             popFx(b)
@@ -6905,18 +6924,6 @@ registerConfig("world_fx", World.FX)
 
 -- v0.17.0 BULLET TRACERS: listen on server rebroadcast (only way to see others'
 -- shots), shape-match args, gate on muzzle near character. Own IIFE for registers.
--- v0.35.0 BUFFER LAB (stage 1: capture + inspect). Logs buffer arguments games send
--- over remotes, plus a namecall-safe state snapshot, for reversing their layout.
-Koffee.Buffers = {
-    Capturing = false,
-    Paused    = false,
-    Max       = 200,
-    ByteCap   = 4096,   -- cap stored bytes per capture so a huge buffer can't bloat memory
-    List      = {},     -- newest last: { id, remote, method, arg, bytes(str), len, t, cam, look, root, hit, tool }
-    _state    = {},     -- per-frame cache the capture hook reads (no namecalls in the hook)
-    _seq      = 0,
-}
-
 Koffee.Bullets = {
     Enabled     = false,
     Bindables   = false,   -- also watch BindableEvents (games that hop remote -> localscript)
@@ -10056,30 +10063,6 @@ local Combat = {
                     q[#q + 1] = { r = self, a = args, lk = Shared._bulletLook }
                 end
             end
-            -- v0.35.0 BUFFER LAB capture: log any buffer argument, no rewrite. buffer.*
-            -- are library calls (not namecalls) so this is safe inside the hook. State
-            -- comes from Koffee.Buffers._state (filled by a heartbeat, not read here).
-            if (method == "FireServer" or method == "InvokeServer")
-               and Koffee.Buffers.Capturing and not Koffee.Buffers.Paused then
-                local B = Koffee.Buffers
-                for i = 1, args.n do
-                    if typeof(args[i]) == "buffer" then
-                        local okL, len = pcall(buffer.len, args[i])
-                        local okB, bytes = pcall(buffer.tostring, args[i])
-                        -- string.sub (not bytes:sub) -- a ':' namecall here would corrupt
-                        -- the in-flight FireServer dispatch (the file's core hook rule).
-                        if okB and okL and #bytes > B.ByteCap then bytes = string.sub(bytes, 1, B.ByteCap) end
-                        B._seq = B._seq + 1
-                        local st = B._state
-                        B.List[#B.List + 1] = {
-                            id = B._seq, remote = self, method = method, arg = i,
-                            bytes = okB and bytes or "", len = okL and len or 0, t = os.clock(),
-                            cam = st.cam, look = st.look, root = st.root, hit = st.hit, tool = st.tool,
-                        }
-                        if #B.List > B.Max then table.remove(B.List, 1) end
-                    end
-                end
-            end
             -- v0.3.0: External method offloads everything to KoffeeHelper (see
             -- resolveIndex head comment). Every namecall passes through vanilla.
             if Combat.Silent.Method == "External" then return PASS_H, PASS_V end
@@ -11373,24 +11356,6 @@ local Combat = {
         end
 
         pXB[2], pXB[1] = xb2, xb1
-    end)
-
-    -- v0.35.0 Buffer Lab: install the shared hooks on demand (idempotent) and cache
-    -- namecall-safe state for the capture hook. No-op while capture is off. The hook
-    -- itself only reads _state (no FindFirstChild/GetMouse inside the __namecall hook).
-    RunService.Heartbeat:Connect(function()
-        if Koffee.dead() or not Koffee.Buffers.Capturing then return end
-        if not Combat.Silent._hooked then pcall(installSilentHooks) end
-        local st = Koffee.Buffers._state
-        local cam = Workspace.CurrentCamera
-        if cam then st.cam = cam.CFrame.Position; st.look = cam.CFrame.LookVector end
-        local ch = LocalPlayer.Character
-        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
-        st.root = hrp and hrp.Position or nil
-        local m = LocalPlayer:GetMouse()
-        st.hit = (m and m.Hit) and m.Hit.Position or nil
-        local tool = ch and ch:FindFirstChildOfClass("Tool")
-        st.tool = tool and tool.Name or nil
     end)
 
     --== modules (arraylist + master toggles) ==--
@@ -18895,54 +18860,50 @@ registerConfig("custom", Koffee.Custom)
 
     local tabConns = {}
 
-    -- v0.35.0 BUFFER LAB UI (stage 1): capture list + byte inspector. Reads
-    -- Koffee.Buffers (filled by the capture hook + state heartbeat in the combat IIFE).
-    local function buildBufferLab(parent, conns)
-        local B = Koffee.Buffers
-        local function smallBtn(p, text, w, order, fn)
-            local b = new("TextButton", {
-                Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Medium,
-                TextSize = Theme.Text.Small, BackgroundColor3 = Theme.Palette.PanelElevated,
-                BackgroundTransparency = 0.2, BorderSizePixel = 0, Size = UDim2.fromOffset(w, 24),
-                TextColor3 = Theme.Palette.TextMuted, LayoutOrder = order, ZIndex = 36, Parent = p,
-            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
-            b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
-            b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted }) end)
-            b.MouseButton1Click:Connect(fn)
-            return b
+    -- v0.36.0 BUFFER LAB (paste + inspect): capture was removed -- grab a remote's
+    -- buffer from an external spy (Turtle Spy / Cobalt) and paste it here to decode.
+    local function buildBufferLab(parent)
+        local function unescape(s)
+            s = s:gsub("\\x(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+            s = s:gsub("\\(%d%d?%d?)", function(d) local n = tonumber(d); return (n and n < 256) and string.char(n) or "" end)
+            s = s:gsub("\\n", "\n"):gsub("\\t", "\t"):gsub("\\r", "\r")
+            s = s:gsub('\\"', '"'):gsub("\\\\", "\\")
+            return s
         end
-        local function nameOf(e)
-            if not e.remote then return "?" end
-            local ok, nm = pcall(function() return e.remote.Name end)
-            return ok and nm or "?"
+        local function parsePaste(txt)
+            if not txt or txt == "" then return nil, "nothing pasted" end
+            -- 1) a buffer.fromstring("...") pulled straight out of copied code
+            local lit = txt:match('fromstring%s*%(%s*"(.-)"') or txt:match("fromstring%s*%(%s*'(.-)'")
+            if lit then return unescape(lit) end
+            -- 2) hex, when the paste is only hex digits + separators
+            local stripped = txt:gsub("0[xX]", ""):gsub("[%s,]", "")
+            if #stripped >= 2 and stripped:match("^%x+$") then
+                if #stripped % 2 ~= 0 then stripped = stripped:sub(1, #stripped - 1) end
+                local out = {}
+                for h in stripped:gmatch("..") do out[#out + 1] = string.char(tonumber(h, 16)) end
+                return table.concat(out)
+            end
+            -- 3) raw bytes
+            return txt
         end
 
-        local ctl = panel(parent, "Buffer Lab")
-        configCheckbox(ctl, "Capture", B.Capturing, function(v) B.Capturing = v end)
-        configCheckbox(ctl, "Pause", B.Paused, function(v) B.Paused = v end)
-        labelRow(ctl, "logs buffer args games send over remotes -- pick one to read the bytes")
-        local ctlRow = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, ZIndex = 35, Parent = ctl,
-        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
-            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
-        local countLbl = new("TextLabel", {
-            Text = "0 captures", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-            Size = UDim2.new(1, -80, 1, 0), LayoutOrder = 1, ZIndex = 36, Parent = ctlRow,
-        })
+        local card = panel(parent, "Buffer Lab")
+        labelRow(card, "capture was removed -- grab a remote's buffer from Turtle Spy / Cobalt")
+        labelRow(card, "paste it below: hex, a buffer.fromstring(\"...\") snippet, or raw bytes")
 
-        -- capture list
-        local listScroll = new("ScrollingFrame", {
-            Size = UDim2.new(1, 0, 0, 150), BackgroundColor3 = Theme.Palette.Background,
-            BackgroundTransparency = 0.2, BorderSizePixel = 0, ScrollBarThickness = 4,
-            ScrollBarImageColor3 = Theme.Palette.TextFaint, CanvasSize = UDim2.new(0, 0, 0, 0),
-            AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 60, ZIndex = 34, Parent = parent,
+        local box = new("TextBox", {
+            Text = "", PlaceholderText = "paste buffer bytes / fromstring code / hex...",
+            ClearTextOnFocus = false, MultiLine = true, TextWrapped = true,
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 90),
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+            LayoutOrder = 59, ZIndex = 35, Parent = parent,
         }, { corner(6), stroke(Theme.Palette.BorderSubtle),
-            new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }),
-            new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
-                PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4) }) })
+            new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+                PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
 
-        -- inspector
         local insp = new("Frame", {
             Size = UDim2.new(1, 0, 0, 300), BackgroundColor3 = Theme.Palette.Background,
             BackgroundTransparency = 0.2, BorderSizePixel = 0, LayoutOrder = 61, ZIndex = 34, Parent = parent,
@@ -18952,7 +18913,7 @@ registerConfig("custom", Koffee.Custom)
             new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 6),
                 SortOrder = Enum.SortOrder.LayoutOrder }) })
         local header = new("TextLabel", {
-            Text = "select a capture", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "paste a buffer and hit decode", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
             Size = UDim2.new(1, 0, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 1, ZIndex = 35, Parent = insp,
         })
@@ -18969,10 +18930,9 @@ registerConfig("custom", Koffee.Custom)
             Size = UDim2.new(1, 0, 0, 110), LayoutOrder = 3, ZIndex = 35, Parent = insp,
         })
 
-        local function inspect(e)
-            local bytes = e.bytes or ""
+        local function inspect(bytes)
             local blen = #bytes
-            header.Text = ("%s  ::  %s  arg %d  ::  %d bytes"):format(nameOf(e), e.method, e.arg, e.len)
+            header.Text = ("%d bytes"):format(blen)
             local lines, shown = {}, math.min(blen, 256)
             for off = 0, shown - 1, 16 do
                 local parts = {}
@@ -18984,7 +18944,6 @@ registerConfig("custom", Koffee.Custom)
             end
             if blen > shown then lines[#lines + 1] = ("... (%d more bytes)"):format(blen - shown) end
             dump.Text = table.concat(lines, "\n")
-            -- auto-decode: aligned f32 / small u32 guesses (Stage 2 turns these into a schema)
             local guesses = {}
             local ok, b = pcall(buffer.fromstring, bytes)
             if ok then
@@ -19003,40 +18962,29 @@ registerConfig("custom", Koffee.Custom)
             decode.Text = (#guesses > 0) and table.concat(guesses, "\n") or "no obvious numeric fields"
         end
 
-        local rows, selectedId = {}, nil
-        local function refreshList()
-            for _, r in ipairs(rows) do pcall(function() r:Destroy() end) end
-            table.clear(rows)
-            countLbl.Text = (#B.List) .. " captures"
-            local first = math.max(1, #B.List - 60)
-            for idx = #B.List, first, -1 do
-                local e = B.List[idx]
-                local sel = (e.id == selectedId)
-                local rb = smallBtn(listScroll,
-                    ("#%d  %s  %s  %dB"):format(e.id, nameOf(e), e.method == "InvokeServer" and "inv" or "fire", e.len),
-                    0, (#B.List - idx) + 1, function() selectedId = e.id; inspect(e); refreshList() end)
-                rb.Size = UDim2.new(1, 0, 0, 22)
-                rb.TextXAlignment = Enum.TextXAlignment.Left
-                rb.FontFace = Theme.Fonts.Mono
-                if sel then rb.BackgroundColor3 = Theme.Palette.Accent; rb.BackgroundTransparency = 0.15 end
-                rows[#rows + 1] = rb
-            end
+        local btnRow = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 60, ZIndex = 35, Parent = parent,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local function mkBtn(text, order, w, fn)
+            local b = new("TextButton", {
+                Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+                Size = UDim2.fromOffset(w, 24), TextColor3 = Theme.Palette.TextMuted,
+                LayoutOrder = order, ZIndex = 36, Parent = btnRow,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
+            b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted }) end)
+            b.MouseButton1Click:Connect(fn)
+            return b
         end
-        refreshList()
-
-        -- auto-refresh the list while the tab is up (throttled; only when count moves).
-        local lastCount, acc = -1, 0
-        conns[#conns + 1] = RunService.Heartbeat:Connect(function(dt)
-            acc = acc + dt
-            if acc < 0.4 then return end
-            acc = 0
-            if #B.List ~= lastCount then lastCount = #B.List; refreshList() end
+        mkBtn("decode", 1, 90, function()
+            local bytes, err = parsePaste(box.Text)
+            if not bytes then header.Text = err or "nothing to decode"; dump.Text = ""; decode.Text = ""; return end
+            inspect(bytes)
         end)
-
-        smallBtn(ctlRow, "clear", 60, 2, function()
-            table.clear(B.List); B._seq = 0; selectedId = nil
-            header.Text = "select a capture"; dump.Text = ""; decode.Text = ""
-            lastCount = -1; refreshList()
+        mkBtn("clear", 2, 66, function()
+            box.Text = ""; header.Text = "paste a buffer and hit decode"; dump.Text = ""; decode.Text = ""
         end)
     end
 
@@ -19078,7 +19026,7 @@ registerConfig("custom", Koffee.Custom)
             end })
         end })
 
-        buildBufferLab(buffs, tabConns)
+        buildBufferLab(buffs)
     end)
 end)()
 
