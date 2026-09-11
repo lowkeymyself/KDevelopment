@@ -1,7 +1,7 @@
--- koffee v0.36.0
+-- koffee v0.37.0
 
 local Koffee = {}
-Koffee.Version = "0.36.0"
+Koffee.Version = "0.37.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1100,6 +1100,12 @@ local function new(class, props, children)
                 if r then inst:SetAttribute("KR" .. k, r) end
             end
         end
+    end
+    -- v0.37.0: kill Roblox's default 1px widget border everywhere unless a call sets
+    -- it explicitly. Real borders use UIStroke, so this only removes the ugly default.
+    -- pcall covers classes without the property (UIStroke / UICorner / layouts).
+    if not (props and props.BorderSizePixel ~= nil) then
+        pcall(function() inst.BorderSizePixel = 0 end)
     end
     if children then for _, c in ipairs(children) do c.Parent = inst end end
     return inst
@@ -18776,6 +18782,10 @@ registerConfig("custom", Koffee.Custom)
                 SortOrder = Enum.SortOrder.LayoutOrder }) })
         end
         local bar, bar2 = barAt(8, 48), barAt(60)
+        -- v0.37.0: bottom-align the top row so "add block" lines up with the dropdown's
+        -- box instead of centering against the taller dropdown (it read as "too high").
+        local barLayout = bar:FindFirstChildOfClass("UIListLayout")
+        if barLayout then barLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom end
         local pick = ORDER[1]
         local ddw = new("Frame", {
             Size = UDim2.new(0, 216, 0, 48), BackgroundTransparency = 1,
@@ -18860,9 +18870,41 @@ registerConfig("custom", Koffee.Custom)
 
     local tabConns = {}
 
-    -- v0.36.0 BUFFER LAB (paste + inspect): capture was removed -- grab a remote's
-    -- buffer from an external spy (Turtle Spy / Cobalt) and paste it here to decode.
+    -- v0.37.0 BUFFER LAB (paste + inspect + schema): grab a buffer from an external
+    -- spy (Turtle Spy / Cobalt), paste it, decode it, then label its fields into a
+    -- reusable schema. Stage 3 (build + fire from a schema) is still to come.
     local function buildBufferLab(parent)
+        local RTYPES = { "u8", "i8", "u16", "i16", "u32", "i32", "f32", "f64", "string" }
+        local SDIR = "Koffee/buffers"
+        local HttpService = game:GetService("HttpService")
+        local curBytes = ""
+        local fields = {}   -- { { off, type, name } }
+        local addType = "f32"
+        local refreshFields   -- fwd decl (used by the add-field button below)
+
+        local function mkBtn(p, text, w, order, fn)
+            local b = new("TextButton", {
+                Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                Size = UDim2.fromOffset(w, 24), TextColor3 = Theme.Palette.TextMuted,
+                LayoutOrder = order, ZIndex = 36, Parent = p,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
+            b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted }) end)
+            b.MouseButton1Click:Connect(fn)
+            return b
+        end
+        local function inputBox(p, place, w, order)
+            return new("TextBox", {
+                Text = "", PlaceholderText = place, ClearTextOnFocus = false,
+                FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                Size = w, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = order, ZIndex = 36, Parent = p,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle),
+                new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        end
+
         local function unescape(s)
             s = s:gsub("\\x(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
             s = s:gsub("\\(%d%d?%d?)", function(d) local n = tonumber(d); return (n and n < 256) and string.char(n) or "" end)
@@ -18872,10 +18914,8 @@ registerConfig("custom", Koffee.Custom)
         end
         local function parsePaste(txt)
             if not txt or txt == "" then return nil, "nothing pasted" end
-            -- 1) a buffer.fromstring("...") pulled straight out of copied code
             local lit = txt:match('fromstring%s*%(%s*"(.-)"') or txt:match("fromstring%s*%(%s*'(.-)'")
             if lit then return unescape(lit) end
-            -- 2) hex, when the paste is only hex digits + separators
             local stripped = txt:gsub("0[xX]", ""):gsub("[%s,]", "")
             if #stripped >= 2 and stripped:match("^%x+$") then
                 if #stripped % 2 ~= 0 then stripped = stripped:sub(1, #stripped - 1) end
@@ -18883,70 +18923,115 @@ registerConfig("custom", Koffee.Custom)
                 for h in stripped:gmatch("..") do out[#out + 1] = string.char(tonumber(h, 16)) end
                 return table.concat(out)
             end
-            -- 3) raw bytes
             return txt
         end
+        local function readField(off, ty)
+            if curBytes == "" then return nil end
+            local ok, b = pcall(buffer.fromstring, curBytes)
+            if not ok then return nil end
+            local n = buffer.len(b)
+            local ok2, v = pcall(function()
+                if ty == "u8" then return buffer.readu8(b, off) end
+                if ty == "i8" then return buffer.readi8(b, off) end
+                if ty == "u16" then return buffer.readu16(b, off) end
+                if ty == "i16" then return buffer.readi16(b, off) end
+                if ty == "u32" then return buffer.readu32(b, off) end
+                if ty == "i32" then return buffer.readi32(b, off) end
+                if ty == "f32" then return buffer.readf32(b, off) end
+                if ty == "f64" then return buffer.readf64(b, off) end
+                if ty == "string" then return buffer.readstring(b, off, math.max(0, math.min(16, n - off))) end
+            end)
+            return ok2 and v or nil
+        end
 
+        -- schema files (guarded)
+        local function filesOk() return writefile and readfile and isfile and listfiles end
+        local function ensureDir()
+            if isfolder and makefolder then
+                if not isfolder("Koffee") then pcall(makefolder, "Koffee") end
+                if not isfolder(SDIR) then pcall(makefolder, SDIR) end
+            end
+        end
+        local function listSchemas()
+            local out = {}
+            if not filesOk() then return out end
+            ensureDir()
+            local ok, files = pcall(listfiles, SDIR)
+            if ok and type(files) == "table" then
+                for _, p in ipairs(files) do
+                    local nm = tostring(p):match("([^/\\]+)%.json$")
+                    if nm then out[#out + 1] = nm end
+                end
+            end
+            table.sort(out)
+            return out
+        end
+
+        -- === paste card ===
         local card = panel(parent, "Buffer Lab")
-        labelRow(card, "capture was removed -- grab a remote's buffer from Turtle Spy / Cobalt")
-        labelRow(card, "paste it below: hex, a buffer.fromstring(\"...\") snippet, or raw bytes")
-
+        labelRow(card, "grab a remote's buffer from Turtle Spy / Cobalt and paste it below")
+        labelRow(card, "hex, a buffer.fromstring(\"...\") snippet, or raw bytes")
         local box = new("TextBox", {
             Text = "", PlaceholderText = "paste buffer bytes / fromstring code / hex...",
             ClearTextOnFocus = false, MultiLine = true, TextWrapped = true,
             FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
-            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
-            BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 90),
-            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-            LayoutOrder = 59, ZIndex = 35, Parent = parent,
+            BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.15,
+            Size = UDim2.new(1, 0, 0, 80), TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = 20, ZIndex = 36, Parent = card,
         }, { corner(6), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
                 PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        local pRow = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 21, ZIndex = 36, Parent = card,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
 
-        local insp = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 300), BackgroundColor3 = Theme.Palette.Background,
-            BackgroundTransparency = 0.2, BorderSizePixel = 0, LayoutOrder = 61, ZIndex = 34, Parent = parent,
-        }, { corner(6), stroke(Theme.Palette.BorderSubtle),
-            new("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8),
-                PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }),
-            new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 6),
-                SortOrder = Enum.SortOrder.LayoutOrder }) })
+        -- === inspector card ===
+        local icard = panel(parent, "Inspector")
         local header = new("TextLabel", {
             Text = "paste a buffer and hit decode", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-            Size = UDim2.new(1, 0, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 1, ZIndex = 35, Parent = insp,
+            Size = UDim2.new(1, 0, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 1, ZIndex = 36, Parent = icard,
         })
+        local ibody = new("ScrollingFrame", {
+            Size = UDim2.new(1, 0, 0, 210), BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.2,
+            ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.TextFaint,
+            CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, LayoutOrder = 2, ZIndex = 35, Parent = icard,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+                PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 6),
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
         local dump = new("TextLabel", {
-            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
-            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-            Size = UDim2.new(1, 0, 0, 150), LayoutOrder = 2, ZIndex = 35, Parent = insp,
+            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+            AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.fromScale(1, 0), LayoutOrder = 1, ZIndex = 36, Parent = ibody,
         })
-        local decode = new("TextLabel", {
-            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.Accent, BackgroundTransparency = 1,
-            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-            Size = UDim2.new(1, 0, 0, 110), LayoutOrder = 3, ZIndex = 35, Parent = insp,
+        local guess = new("TextLabel", {
+            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Accent,
+            BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+            AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.fromScale(1, 0), LayoutOrder = 2, ZIndex = 36, Parent = ibody,
         })
 
-        local function inspect(bytes)
-            local blen = #bytes
-            header.Text = ("%d bytes"):format(blen)
+        local function inspect()
+            local blen = #curBytes
+            header.Text = (blen > 0) and (blen .. " bytes") or "paste a buffer and hit decode"
             local lines, shown = {}, math.min(blen, 256)
             for off = 0, shown - 1, 16 do
                 local parts = {}
                 for j = 0, 15 do
                     local k = off + j
-                    if k < shown then parts[#parts + 1] = ("%02X"):format(bytes:byte(k + 1)) end
+                    if k < shown then parts[#parts + 1] = ("%02X"):format(curBytes:byte(k + 1)) end
                 end
                 lines[#lines + 1] = ("%04X  %s"):format(off, table.concat(parts, " "))
             end
             if blen > shown then lines[#lines + 1] = ("... (%d more bytes)"):format(blen - shown) end
             dump.Text = table.concat(lines, "\n")
             local guesses = {}
-            local ok, b = pcall(buffer.fromstring, bytes)
-            if ok then
+            local ok, b = pcall(buffer.fromstring, curBytes)
+            if ok and blen > 0 then
                 local n = buffer.len(b)
                 for off = 0, n - 4, 4 do
                     local okf, f = pcall(buffer.readf32, b, off)
@@ -18959,33 +19044,122 @@ registerConfig("custom", Koffee.Custom)
                     if #guesses >= 30 then break end
                 end
             end
-            decode.Text = (#guesses > 0) and table.concat(guesses, "\n") or "no obvious numeric fields"
+            guess.Text = (#guesses > 0) and ("guesses:\n" .. table.concat(guesses, "\n")) or ""
         end
 
-        local btnRow = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 60, ZIndex = 35, Parent = parent,
+        -- === fields / schema card (stage 2) ===
+        local fcard = panel(parent, "Fields")
+        labelRow(fcard, "label the bytes: an offset + type + name becomes a reusable schema")
+        local offBox = inputBox(fcard, "offset (e.g. 4)", UDim2.new(1, 0, 0, 24), 10)
+        offBox.LayoutOrder = 10
+        local tHold = new("Frame", { Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, LayoutOrder = 11, ZIndex = 36, Parent = fcard })
+        dropdown(tHold, "type", RTYPES, addType, function(v) addType = v end)
+        local nameBox = inputBox(fcard, "name (e.g. targetX)", UDim2.new(1, 0, 0, 24), 12)
+        nameBox.LayoutOrder = 12
+        mkBtn(fcard, "add field", 84, 13, function()
+            local off = tonumber((offBox.Text or ""):match("%d+"))
+            if not off then return end
+            local nm = (nameBox.Text ~= "" and nameBox.Text) or (addType .. "@" .. off)
+            fields[#fields + 1] = { off = off, type = addType, name = nm }
+            offBox.Text, nameBox.Text = "", ""
+            refreshFields()
+        end).LayoutOrder = 13
+
+        local fieldList = new("Frame", {
+            Size = UDim2.fromScale(1, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+            LayoutOrder = 20, ZIndex = 36, Parent = fcard,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 3),
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local fieldRows = {}
+        refreshFields = function()
+            for _, r in ipairs(fieldRows) do pcall(function() r:Destroy() end) end
+            table.clear(fieldRows)
+            for i, fd in ipairs(fields) do
+                local v = readField(fd.off, fd.type)
+                local vs = (v == nil) and "?" or (type(v) == "number" and (fd.type == "f32" or fd.type == "f64") and ("%.3f"):format(v) or tostring(v))
+                local rr = new("Frame", {
+                    Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.3,
+                    LayoutOrder = i, ZIndex = 36, Parent = fieldList,
+                }, { corner(4) })
+                new("TextLabel", {
+                    Text = ("%s   %s@%d = %s"):format(fd.name, fd.type, fd.off, vs),
+                    FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+                    BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                    Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -34, 1, 0), ZIndex = 37, Parent = rr,
+                })
+                local xb = new("TextButton", {
+                    Text = "x", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Danger,
+                    BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0),
+                    Size = UDim2.fromOffset(16, 16), ZIndex = 37, Parent = rr,
+                })
+                xb.MouseButton1Click:Connect(function() table.remove(fields, i); refreshFields() end)
+                fieldRows[#fieldRows + 1] = rr
+            end
+        end
+
+        -- schema save / load
+        local schemaBox = inputBox(fcard, "schema name...", UDim2.new(1, -160, 0, 24), 30)
+        local sRow = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 33, ZIndex = 36, Parent = fcard,
         }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
             VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
-        local function mkBtn(text, order, w, fn)
-            local b = new("TextButton", {
-                Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
-                Size = UDim2.fromOffset(w, 24), TextColor3 = Theme.Palette.TextMuted,
-                LayoutOrder = order, ZIndex = 36, Parent = btnRow,
-            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
-            b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
-            b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted }) end)
-            b.MouseButton1Click:Connect(fn)
-            return b
+        local loadHold = new("Frame", { Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, LayoutOrder = 32, ZIndex = 36, Parent = fcard })
+        local pickSchema, loadDd = (listSchemas()[1] or ""), nil
+        local function rebuildLoadDd()
+            if loadDd then pcall(loadDd.destroy) end
+            local names = listSchemas()
+            if #names == 0 then names = { "no schemas" } end
+            loadDd = dropdown(loadHold, "saved schemas", names, pickSchema ~= "" and pickSchema or names[1],
+                function(v) pickSchema = v end)
         end
-        mkBtn("decode", 1, 90, function()
+
+        mkBtn(fcard, "save schema", 96, 31, function()
+            local nm = (schemaBox.Text or ""):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+            if nm == "" or not filesOk() then return end
+            ensureDir()
+            local ok = pcall(function() writefile(SDIR .. "/" .. nm .. ".json", HttpService:JSONEncode(fields)) end)
+            if ok then pickSchema = nm; rebuildLoadDd() end
+        end).LayoutOrder = 31
+        mkBtn(sRow, "load", 60, 1, function()
+            if not filesOk() or pickSchema == "" then return end
+            local p = SDIR .. "/" .. pickSchema .. ".json"
+            if not isfile(p) then return end
+            local ok, txt = pcall(readfile, p)
+            if not ok then return end
+            local dok, data = pcall(function() return HttpService:JSONDecode(txt) end)
+            if dok and type(data) == "table" then
+                fields = {}
+                for _, fd in ipairs(data) do
+                    if type(fd) == "table" and fd.off and fd.type then
+                        fields[#fields + 1] = { off = fd.off, type = fd.type, name = fd.name or (fd.type .. "@" .. fd.off) }
+                    end
+                end
+                refreshFields()
+            end
+        end)
+        mkBtn(sRow, "delete", 66, 2, function()
+            if not (filesOk() and delfile) or pickSchema == "" then return end
+            local p = SDIR .. "/" .. pickSchema .. ".json"
+            if isfile(p) then pcall(delfile, p) end
+            pickSchema = ""
+            rebuildLoadDd()
+        end)
+
+        -- decode / clear in the paste card
+        mkBtn(pRow, "decode", 84, 1, function()
             local bytes, err = parsePaste(box.Text)
-            if not bytes then header.Text = err or "nothing to decode"; dump.Text = ""; decode.Text = ""; return end
-            inspect(bytes)
+            if not bytes then header.Text = err or "nothing to decode"; return end
+            curBytes = bytes
+            inspect()
+            refreshFields()
         end)
-        mkBtn("clear", 2, 66, function()
-            box.Text = ""; header.Text = "paste a buffer and hit decode"; dump.Text = ""; decode.Text = ""
+        mkBtn(pRow, "clear", 60, 2, function()
+            box.Text = ""; curBytes = ""; inspect(); refreshFields()
         end)
+
+        inspect()
+        refreshFields()
+        rebuildLoadDd()
     end
 
     addTab("Custom", function(root)
