@@ -1,7 +1,7 @@
--- koffee v0.30.0
+-- koffee v0.31.0
 
 local Koffee = {}
-Koffee.Version = "0.30.0"
+Koffee.Version = "0.31.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -12894,6 +12894,11 @@ end)()
     -- descendants. Color-coded 8px square icon next to each row.
     local function openInstancePicker(onSelect, opts)
         opts = opts or {}
+        -- v0.31.0: anyInstance mode shows and lets you pick NON-physical instances
+        -- (RemoteEvent / RemoteFunction / Values) for the Custom Features game blocks.
+        local anyInst = opts.anyInstance == true
+        local function showP(inst) return anyInst or shouldShow(inst) end
+        local function pickP(inst) return anyInst or isSelectableAsTarget(inst) end
         local m = openModal(520, 460)
         -- header
         new("TextLabel", {
@@ -12961,11 +12966,14 @@ end)()
         -- than under its own parent. Nesting makes the ordering structural: children
         -- physically live inside the parent entry, so they cannot land anywhere else.
         buildRow = function(inst, depth, parentContainer)
-            local expandable = (inst:IsA("Folder") or inst:IsA("Configuration") or inst:IsA("Model")
+            -- v0.31.0: in anyInstance mode any node with children can expand (remotes
+            -- often nest under plain non-Folder containers).
+            local expandable = (anyInst and #inst:GetChildren() > 0)
+                or ((inst:IsA("Folder") or inst:IsA("Configuration") or inst:IsA("Model")
                 or inst:IsA("Tool") or inst:IsA("Backpack")
                 or inst == game:GetService("Workspace")
                 or inst:IsA("ServiceProvider") or inst.ClassName:find("Service", 1, true))
-                and #inst:GetChildren() > 0
+                and #inst:GetChildren() > 0)
             local wrapper = new("Frame", {
                 Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
                 BackgroundTransparency = 1, BorderSizePixel = 0,
@@ -13038,7 +13046,7 @@ end)()
                     SortOrder = Enum.SortOrder.LayoutOrder }) })
                 local kids = {}
                 for _, c in ipairs(inst:GetChildren()) do
-                    if shouldShow(c) or force[c] then table.insert(kids, c) end
+                    if showP(c) or force[c] then table.insert(kids, c) end
                 end
                 table.sort(kids, function(a, b) return a.Name:lower() < b.Name:lower() end)
                 for _, c in ipairs(kids) do
@@ -13071,12 +13079,12 @@ end)()
                 if expandable then
                     if isOpen then collapse() else expand() end
                 end
-                if isSelectableAsTarget(inst) then pickRow(row, inst) end
+                if pickP(inst) then pickRow(row, inst) end
             end)
 
             nodes[inst] = {
                 expand = expand, wrapper = wrapper, dispose = collapse,
-                pick = function() if isSelectableAsTarget(inst) then pickRow(row, inst) end end,
+                pick = function() if pickP(inst) then pickRow(row, inst) end end,
             }
         end
 
@@ -15422,6 +15430,7 @@ registerConfig("custom", Koffee.Custom)
     local ORDER = {
         "Target", "Self", "Part", "Number", "Text Value", "Colour", "Time",
         "Key Held", "Module State", "Game Info", "Camera", "Mouse", "Counter",
+        "Find Instance", "Read Value",
         "For Each Player",
         "Visible", "Info", "Compare", "Math", "Logic", "Map Range", "Smooth",
         "Delay", "Format", "Colour Mix", "Colour Cycle", "Pick Number",
@@ -15429,7 +15438,7 @@ registerConfig("custom", Koffee.Custom)
         "Screen Position", "Offset", "World Position",
         "Text", "Box", "Bar", "Line", "Circle", "Ring", "Image", "Group",
         "3D Ring", "3D Box",
-        "Sound", "Notify", "Adorn Part", "Note",
+        "Sound", "Notify", "Adorn Part", "Fire Remote", "Set Value", "Note",
     }
 
     ---------------------------------------------------------------- sources
@@ -15500,6 +15509,71 @@ registerConfig("custom", Koffee.Custom)
                     done()
                 end, { title = "pick a part" })
             end)
+        end,
+    }
+
+    -- v0.31.0: game-specific building blocks. Find Instance grabs ANY instance
+    -- (a remote, a value, a part); Read Value pulls a number/text/bool off one;
+    -- Fire Remote + Set Value (actions, below) push back to the game. Together they
+    -- let a graph drive a game's own remotes -- scaffold, autofarm, etc. -- with no code.
+    KINDS["Find Instance"] = {
+        blurb = "pick or type a path to ANY instance -- a remote, a value, a part",
+        ins = {}, outs = { part = true, text = true },
+        opts = { Path = "" },
+        eval = function(o)
+            local inst = o._inst
+            if (not inst or not inst.Parent) and o.Path ~= "" and Shared.resolvePath then
+                inst = Shared.resolvePath(o.Path)
+                o._inst = inst
+            end
+            return { part = inst, text = inst and inst.Name or "" }
+        end,
+        ui = function(api, o)
+            api:label(o.Path ~= "" and o.Path or "nothing picked")
+            api:button("pick any instance", function(done)
+                if not Shared.openInstancePicker then return end
+                Shared.openInstancePicker(function(inst, path)
+                    o.Path, o._inst = path or "", inst
+                    done()
+                end, { title = "pick any instance", anyInstance = true })
+            end)
+            api:text("or type a path", o.Path, function(v) o.Path, o._inst = v, nil end)
+            api:label("eg game.ReplicatedStorage.Remotes.PlaceBlock")
+        end,
+    }
+
+    KINDS["Read Value"] = {
+        blurb = "reads a Value, attribute or property off an instance",
+        ins = { { key = "inst", type = "part", label = "Instance" } },
+        outs = { number = true, text = true, bool = true },
+        opts = { Kind = "Value", Field = "Value" },
+        eval = function(o, ins)
+            local inst = ins.inst and ins.inst.part
+            if not inst then return { number = 0, text = "", bool = false } end
+            local v
+            if o.Kind == "Attribute" then
+                local ok, r = pcall(inst.GetAttribute, inst, o.Field)
+                if ok then v = r end
+            elseif o.Kind == "Property" then
+                local ok, r = pcall(function() return inst[o.Field] end)
+                if ok then v = r end
+            else   -- Value: a ValueBase (NumberValue / StringValue / BoolValue / ...)
+                local ok, r = pcall(function() return inst.Value end)
+                if ok then v = r end
+            end
+            local num, txt, bool = 0, "", false
+            local t = typeof(v)
+            if t == "number" then num, txt, bool = v, tostring(v), v ~= 0
+            elseif t == "boolean" then bool, num, txt = v, v and 1 or 0, tostring(v)
+            elseif t == "string" then txt, num, bool = v, tonumber(v) or 0, v ~= ""
+            elseif t == "Vector3" then num, txt, bool = v.Magnitude, tostring(v), true
+            elseif v ~= nil then txt, bool = tostring(v), true end
+            return { number = num, text = txt, bool = bool }
+        end,
+        ui = function(api, o)
+            api:dropdown("Read", { "Value", "Attribute", "Property" }, o.Kind, function(v) o.Kind = v end)
+            api:text("Name", o.Field, function(v) o.Field = v end)
+            api:label("Value = a NumberValue/StringValue/etc. else the attribute/property name")
         end,
     }
 
@@ -17021,6 +17095,137 @@ registerConfig("custom", Koffee.Custom)
             api:slider("Outline Fade", 0, 1, o.OutlineAlpha, 2, function(v) o.OutlineAlpha = v end)
             api:toggle("See Through Walls", o.AlwaysOnTop, function(v) o.AlwaysOnTop = v end)
             api:label("roblox stops drawing highlights past about 30 at once")
+        end,
+    }
+
+    -- v0.31.0: resolve one Fire Remote / Set Value argument from the wired inputs
+    -- or a computed convenience. Second return = false ONLY for "(none)".
+    local ARG_SOURCES = { "(none)", "Number", "Text", "Instance", "Boolean true",
+        "Boolean false", "My Character", "My HRP", "My Position",
+        "Mouse Hit Position", "Mouse Target", "Camera Position", "Camera CFrame" }
+    local function argVal(src, ins)
+        if src == "Number" then return ins.num and ins.num.number or 0, true end
+        if src == "Text" then return ins.txt and ins.txt.text or "", true end
+        if src == "Instance" then return ins.inst and ins.inst.part or nil, true end
+        if src == "Boolean true" then return true, true end
+        if src == "Boolean false" then return false, true end
+        local c = LocalPlayer.Character
+        if src == "My Character" then return c, true end
+        if src == "My HRP" then return c and c:FindFirstChild("HumanoidRootPart"), true end
+        if src == "My Position" then
+            local h = c and c:FindFirstChild("HumanoidRootPart")
+            return h and h.Position or Vector3.zero, true
+        end
+        if src == "Mouse Hit Position" then
+            local m = LocalPlayer:GetMouse()
+            return (m and m.Hit and m.Hit.Position) or Vector3.zero, true
+        end
+        if src == "Mouse Target" then
+            local m = LocalPlayer:GetMouse(); return m and m.Target or nil, true
+        end
+        if src == "Camera Position" then
+            local cam = Workspace.CurrentCamera; return cam and cam.CFrame.Position or Vector3.zero, true
+        end
+        if src == "Camera CFrame" then
+            local cam = Workspace.CurrentCamera; return cam and cam.CFrame or CFrame.new(), true
+        end
+        return nil, false   -- "(none)": stop building the arg list here
+    end
+
+    KINDS["Fire Remote"] = {
+        blurb = "fires a RemoteEvent/Function with your args when something becomes true",
+        sink = true,
+        ins = { { key = "remote", type = "part", label = "Remote" },
+                { key = "when", type = "bool", label = "When" },
+                { key = "num", type = "number", label = "Number In" },
+                { key = "txt", type = "text", label = "Text In" },
+                { key = "inst", type = "part", label = "Instance In" } },
+        outs = {},
+        opts = { Type = "FireServer", Edge = "becomes yes", Cooldown = 0.1,
+                 Arg1 = "(none)", Arg2 = "(none)", Arg3 = "(none)", Arg4 = "(none)" },
+        paint = function(_, o, ins, node, ctx)
+            local remote = ins.remote and ins.remote.part
+            if not remote then return end
+            local want = (ins.when and ins.when.bool) == true
+            local s, now = slot(node, ctx), os.clock()
+            local fire
+            if o.Edge == "becomes no" then fire = (s.prev == true) and not want
+            elseif o.Edge == "while yes" then fire = want
+            else fire = want and (s.prev ~= true) end
+            s.prev = want
+            if not fire then return end
+            if now - (s.at or 0) < (o.Cooldown or 0) then return end
+            s.at = now
+            local args, n = {}, 0
+            for _, src in ipairs({ o.Arg1, o.Arg2, o.Arg3, o.Arg4 }) do
+                local v, has = argVal(src, ins)
+                if not has then break end
+                n = n + 1; args[n] = v
+            end
+            pcall(function()
+                local m = o.Type
+                if m == "InvokeServer" then remote:InvokeServer(table.unpack(args, 1, n))
+                elseif m == "Fire" then remote:Fire(table.unpack(args, 1, n))
+                elseif m == "Invoke" then remote:Invoke(table.unpack(args, 1, n))
+                else remote:FireServer(table.unpack(args, 1, n)) end
+            end)
+        end,
+        ui = function(api, o)
+            api:label("wire the Remote input to a Find Instance block")
+            api:dropdown("Call", { "FireServer", "InvokeServer", "Fire", "Invoke" }, o.Type, function(v) o.Type = v end)
+            api:dropdown("Fire when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
+            api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
+            api:section("arguments (in order, stops at the first none)")
+            api:dropdown("Arg 1", ARG_SOURCES, o.Arg1, function(v) o.Arg1 = v end)
+            api:dropdown("Arg 2", ARG_SOURCES, o.Arg2, function(v) o.Arg2 = v end)
+            api:dropdown("Arg 3", ARG_SOURCES, o.Arg3, function(v) o.Arg3 = v end)
+            api:dropdown("Arg 4", ARG_SOURCES, o.Arg4, function(v) o.Arg4 = v end)
+        end,
+    }
+
+    KINDS["Set Value"] = {
+        blurb = "writes a Value, attribute or property on an instance when something becomes true",
+        sink = true,
+        ins = { { key = "inst", type = "part", label = "Instance" },
+                { key = "when", type = "bool", label = "When" },
+                { key = "num", type = "number", label = "Number In" },
+                { key = "txt", type = "text", label = "Text In" },
+                { key = "flag", type = "bool", label = "Bool In" } },
+        outs = {},
+        opts = { Kind = "Value", Field = "Value", From = "Number",
+                 Edge = "becomes yes", Cooldown = 0 },
+        paint = function(_, o, ins, node, ctx)
+            local inst = ins.inst and ins.inst.part
+            if not inst then return end
+            local want = (ins.when and ins.when.bool) == true
+            local s, now = slot(node, ctx), os.clock()
+            local fire
+            if o.Edge == "becomes no" then fire = (s.prev == true) and not want
+            elseif o.Edge == "while yes" then fire = want
+            else fire = want and (s.prev ~= true) end
+            s.prev = want
+            if not fire then return end
+            if now - (s.at or 0) < (o.Cooldown or 0) then return end
+            s.at = now
+            local val
+            if o.From == "Text" then val = ins.txt and ins.txt.text or ""
+            elseif o.From == "Boolean" then val = (ins.flag and ins.flag.bool) == true
+            elseif o.From == "Boolean true" then val = true
+            elseif o.From == "Boolean false" then val = false
+            else val = ins.num and ins.num.number or 0 end
+            pcall(function()
+                if o.Kind == "Attribute" then inst:SetAttribute(o.Field, val)
+                elseif o.Kind == "Property" then inst[o.Field] = val
+                else inst.Value = val end
+            end)
+        end,
+        ui = function(api, o)
+            api:dropdown("Write", { "Value", "Attribute", "Property" }, o.Kind, function(v) o.Kind = v end)
+            api:text("Name", o.Field, function(v) o.Field = v end)
+            api:dropdown("From", { "Number", "Text", "Boolean", "Boolean true", "Boolean false" }, o.From, function(v) o.From = v end)
+            api:dropdown("Write when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
+            api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
+            api:label("Value = a NumberValue/etc. else the attribute/property name")
         end,
     }
 
