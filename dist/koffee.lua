@@ -1,7 +1,7 @@
--- koffee v0.29.0
+-- koffee v0.30.0
 
 local Koffee = {}
-Koffee.Version = "0.29.0"
+Koffee.Version = "0.30.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4681,6 +4681,11 @@ local ESP = {
         FillColor    = Color3.fromRGB(212, 145, 90),
         FillBox      = false,
         FillTransparency = 0.72,   -- v0.0.28: right-click Fill Box to tune (0=solid, 1=invisible)
+        -- v0.30.0: Through Walls -- box (2D or Cube) drawn even when occluded. Off
+        -- hides it behind geometry. Fill3D swaps the Cube's screen-strip fill for a
+        -- real 3D box (BoxHandleAdornment) that respects perspective and occlusion.
+        ThroughWalls = true,
+        Fill3D       = false,
         BoxType      = "2D",       -- "2D" | "Cube"
         Corners      = false,
         CornerLength = 0.3,        -- 0-1, fraction of edge length
@@ -4767,6 +4772,7 @@ local ESP = {
     Rigs = {},
     UpdateConn = nil,
     BoxLayer = nil,
+    AdornLayer = nil,   -- v0.30.0: world-space container for 3D fill adornments
 }
 
 -- v0.0.34: expose ESP state to the config system.
@@ -4996,6 +5002,15 @@ local function ensureBoxLayer()
         Parent = screen,
     })
     return ESP.BoxLayer
+end
+
+-- v0.30.0: BoxHandleAdornments (the 3D Cube fill) render in world space, so they
+-- can't live under a ScreenGui. A plain Folder beside the root screen (the hidden
+-- host) holds them; they render off their Adornee regardless.
+local function ensureAdornLayer()
+    if ESP.AdornLayer and ESP.AdornLayer.Parent then return ESP.AdornLayer end
+    ESP.AdornLayer = KID.track(new("Folder", { Name = KID.name("esp_adorn"), Parent = screen.Parent }))
+    return ESP.AdornLayer
 end
 
 -- helper: build 8 corner brackets around a rect. returns list of 8 Frame handles.
@@ -5386,6 +5401,14 @@ local function makeRig(plr, character)
     local boxCorners = makeBoxCorners(boxRoot)
     local cubeEdges = makeCubeEdges(ESP.BoxLayer)
     local fillGroup, fillRows = makeFillRows(ESP.BoxLayer)   -- v0.0.20 cube 3D fill
+    -- v0.30.0: real 3D box fill (Cube). A world-space adornment on the torso;
+    -- AlwaysOnTop tracks Through Walls. Hidden until Fill3D + FillBox + Cube.
+    local fill3D = KID.track(new("BoxHandleAdornment", {
+        Name = KID.name("esp_fill3d"), Adornee = torso, AlwaysOnTop = true,
+        ZIndex = 0, Transparency = 1, Size = Vector3.new(0, 0, 0),
+        Color3 = Color3.fromRGB(212, 145, 90), Visible = false,
+        Parent = ensureAdornLayer(),
+    }))
 
     -- v0.0.21 overlays. 2D screen-space elements in ESP.BoxLayer.
     local skeleton = makeSkeletonLines(ESP.BoxLayer)
@@ -5413,6 +5436,7 @@ local function makeRig(plr, character)
         cubeEdges  = cubeEdges,
         fillGroup  = fillGroup,                        -- v0.0.22 CanvasGroup wrapping fill strips
         fillRows   = fillRows,                        -- v0.0.20 cube 3D fill strips
+        fill3D     = fill3D,                           -- v0.30.0 real 3D box fill adornment
         -- v0.0.21 overlays
         skeleton   = skeleton,
         lookLine   = lookLine,
@@ -5443,6 +5467,7 @@ local function cleanRig(rig)
         end
     end
     pcall(function() rig.fillGroup:Destroy() end)   -- v0.0.22 destroys child fill strips
+    pcall(function() rig.fill3D:Destroy() end)      -- v0.30.0 3D fill adornment
     -- v0.0.21 overlays
     if rig.skeleton then
         for _, l in ipairs(rig.skeleton) do pcall(function() l:Destroy() end) end
@@ -5798,7 +5823,9 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
         screenCorners[i] = { x = sp.X, y = sp.Y, z = sp.Z }
         if sp.Z > 0 then anyInFront = true else allInFront = false end
     end
-    return screenCorners, anyInFront, allInFront
+    -- v0.30.0: also hand back the world box so the 3D fill adornment matches the
+    -- wireframe exactly (same cf/size the corners were built from).
+    return screenCorners, anyInFront, allInFront, cf, size
 end
 
 local function hideRigVisuals(rig)
@@ -5806,6 +5833,7 @@ local function hideRigVisuals(rig)
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
     rig.fillGroup.Visible = false
+    if rig.fill3D then rig.fill3D.Visible = false end
     -- v0.0.21 overlays
     for _, l in ipairs(rig.skeleton) do l.Visible = false end
     rig.headDot.Visible = false
@@ -6222,14 +6250,17 @@ local function updateESPRigs()
         --   color, else nil -> each element falls back to its own configured color.
         -- Visible Check does a single camera->torso raycast, excluding the local
         -- and target characters so only environment occlusion counts.
+        -- v0.30.0: also raycast when Through Walls is off, so the box can be hidden
+        -- behind geometry even with Visible Check (colour mode) switched off.
         local hidden = false
-        if ESP.Config.VisibleCheck and rig.torso and rig.torso.Parent then
+        if (ESP.Config.VisibleCheck or not ESP.Boxes.ThroughWalls) and rig.torso and rig.torso.Parent then
             local rp = RaycastParams.new()
             rp.FilterType = Enum.RaycastFilterType.Exclude
             rp.FilterDescendantsInstances = { rig.character, LocalPlayer.Character }
             local hit = Workspace:Raycast(camPos, rig.torso.Position - camPos, rp)
             hidden = hit ~= nil
         end
+        local boxHidden = (not ESP.Boxes.ThroughWalls) and hidden   -- v0.30.0 gate
         -- v0.11.0: the colour mode gets first say. Static returns nil, which falls
         -- through to exactly the v0.10 team/visible logic below -- so the default
         -- path is unchanged and only an explicitly picked mode overrides.
@@ -6271,7 +6302,7 @@ local function updateESPRigs()
         --   Static -> aspect-locked, distance-linked screen box (no camera-angle warp).
         --             Cube auto-falls-through to Bounding (Static has no depth info).
         --   Bounding / Prediction -> 8-corner world projection with optional CharacterOnly.
-        local corners, anyInFront, allInFront
+        local corners, anyInFront, allInFront, worldCF, worldSize
         local isCube = ESP.Boxes.BoxType == "Cube"
         local effectiveSizing = ESP.Config.SizingType
         if isCube and effectiveSizing == "Static" then
@@ -6280,7 +6311,7 @@ local function updateESPRigs()
         if effectiveSizing == "Static" then
             corners, anyInFront, allInFront = projectStatic(rig.torso, rig.character)
         else
-            corners, anyInFront, allInFront =
+            corners, anyInFront, allInFront, worldCF, worldSize =
                 project8(rig.character, effectiveSizing,
                          ESP.Config.CharacterOnly, rig.bodyParts, rig)
         end
@@ -6348,7 +6379,7 @@ local function updateESPRigs()
         -- v0.0.21: the box itself is gated by Boxes.Enabled; the other 2D
         -- features (head dot / health bar / tracer) render below off the same
         -- projection whether or not the box widget is on.
-        if ESP.Boxes.Enabled then
+        if ESP.Boxes.Enabled and not boxHidden then
         rig.boxRoot.Position = UDim2.new(0, tX, 0, tY)
         rig.boxRoot.Size = UDim2.new(0, tW, 0, tH)
         rig.boxRoot.BackgroundColor3 = fillColor
@@ -6365,7 +6396,20 @@ local function updateESPRigs()
             if rig.boxOutline then rig.boxOutline.Enabled = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
 
-            if fillOn then
+            if fillOn and ESP.Boxes.Fill3D and worldCF and rig.fill3D and rig.torso and rig.torso.Parent then
+                -- v0.30.0: real 3D box fill -- adornment sits on the exact world box
+                -- the wireframe was built from. Screen-strip fill stays off here.
+                rig.fillGroup.Visible = false
+                local a = rig.fill3D
+                a.Adornee     = rig.torso
+                a.CFrame      = rig.torso.CFrame:ToObjectSpace(worldCF)
+                a.Size        = worldSize
+                a.Color3      = fillColor
+                a.Transparency= ESP.Boxes.FillTransparency
+                a.AlwaysOnTop = ESP.Boxes.ThroughWalls
+                a.Visible     = true
+            elseif fillOn then
+                if rig.fill3D then rig.fill3D.Visible = false end
                 local hull = convexHull(corners)
                 local hx0, hx1 = math.huge, -math.huge
                 local hy0, hy1 = math.huge, -math.huge
@@ -6419,6 +6463,7 @@ local function updateESPRigs()
                 end
             else
                 rig.fillGroup.Visible = false
+                if rig.fill3D then rig.fill3D.Visible = false end
             end
 
             -- v0.0.17: cube edges always render when box visible -- they ARE
@@ -6494,6 +6539,7 @@ local function updateESPRigs()
             -- 2D bounding box. boxRoot IS the box. cube frames + fill strips off.
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             rig.fillGroup.Visible = false
+            if rig.fill3D then rig.fill3D.Visible = false end   -- v0.30.0 3D fill is Cube-only
             rig.boxRoot.Visible = true
             rig.boxRoot.BackgroundTransparency = fillOn and ESP.Boxes.FillTransparency or 1
             rig.boxRoot.BackgroundColor3 = fillColor
@@ -6561,12 +6607,14 @@ local function updateESPRigs()
             end
         end
         else
-            -- Boxes widget off: hide every box element. Head dot / health bar /
-            -- tracer below still render off the shared projection.
+            -- Boxes widget off (or hidden behind a wall with Through Walls off):
+            -- hide every box element. Head dot / health bar / tracer below still
+            -- render off the shared projection.
             rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
             for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
             rig.fillGroup.Visible = false
+            if rig.fill3D then rig.fill3D.Visible = false end
         end
 
         -- v0.0.22 HEAD DOT: centered on the REAL Head part (was pinned to the
@@ -14397,11 +14445,15 @@ addTab("Visuals", function(root)
     rightClickSettings(boxesMaster.row, "box", function(popup)
         popup:slider("Thickness", 0.1, 8, ESP.Boxes.Thickness > 0 and ESP.Boxes.Thickness or ESP.Render.Thickness, 1, function(v) ESP.Boxes.Thickness = v end)
         popup:slider("Outline Thickness", 0, 6, ESP.Boxes.OutlineThickness, 1, function(v) ESP.Boxes.OutlineThickness = v end)
+        -- v0.30.0: applies to the whole box (2D or Cube). Off hides it behind walls.
+        popup:toggle("Through Walls", ESP.Boxes.ThroughWalls, function(v) ESP.Boxes.ThroughWalls = v end)
     end)
     -- v0.0.28: right-click Fill Box to tune its transparency.
     local fillRow = configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox, function(v) ESP.Boxes.FillBox = v end)
     rightClickSettings(fillRow.row, "fill box", function(popup)
         popup:slider("Transparency", 0, 1, ESP.Boxes.FillTransparency, 2, function(v) ESP.Boxes.FillTransparency = v end)
+        -- v0.30.0: Cube only -- a real 3D box in the world instead of screen strips.
+        popup:toggle("3D (real box)", ESP.Boxes.Fill3D, function(v) ESP.Boxes.Fill3D = v end)
     end)
     -- v0.0.26: Corners is 2D-only. Switching to Cube forces it off; you can't turn
     -- it on while Cube is selected.
