@@ -1,7 +1,7 @@
--- koffee v0.26.1
+-- koffee v0.27.0
 
 local Koffee = {}
-Koffee.Version = "0.26.1"
+Koffee.Version = "0.27.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -2465,10 +2465,15 @@ local MOD_SHORT = {
     LeftControl = "Ctrl", RightControl = "Ctrl",
     LeftAlt = "Alt",   RightAlt = "Alt",
 }
+-- v0.27.0: compact mouse-button labels for module pills (matches combat's inputName).
+local MOUSE_SHORT_LBL = { MouseButton1 = "lmb", MouseButton2 = "rmb", MouseButton3 = "mmb" }
 local function keyLabel(bind)
     if bind == nil then return nil end
     if type(bind) == "string" then return VIRTUAL_LABELS[bind] or bind end
-    if typeof(bind) == "EnumItem" then return bind.Name end
+    if typeof(bind) == "EnumItem" then
+        if bind.EnumType == Enum.UserInputType then return MOUSE_SHORT_LBL[bind.Name] or bind.Name end
+        return bind.Name
+    end
     -- v0.0.94 combo bind: { mod = KeyCode, key = KeyCode } -> "Shift+C"
     if type(bind) == "table" and bind.mod and bind.key then
         local m = (typeof(bind.mod) == "EnumItem") and (MOD_SHORT[bind.mod.Name] or bind.mod.Name) or tostring(bind.mod)
@@ -8917,6 +8922,8 @@ local Combat = {
         -- onto the target -- zero travel, and Sensitivity / Smooth / Aim Type stop
         -- applying. Needs the __index hook, which it installs on demand.
         PerfectLock   = false,
+        -- v0.27.0: target players behind the camera too, by world distance (killaura).
+        BehindCam     = false,
         TeamCheck     = true,
         VisibleCheck  = false,
         HealthCheck   = false,
@@ -8955,6 +8962,8 @@ local Combat = {
         HitPart       = "Head",
         Method        = "Forced Magic-Bullet",            -- our fake-camera fire-read redirect
         Distance      = 500,
+        -- v0.27.0: 360 targeting for killaura -- pairs with Trigger Bot on MC games.
+        BehindCam     = false,
         TeamCheck     = true,
         VisibleCheck  = false,
         HealthCheck   = false,
@@ -9199,15 +9208,23 @@ local Combat = {
                             local worldDist = (part.Position - camPos).Magnitude
                             if worldDist <= (cfg.Distance or math.huge) then
                                 local sp = cam:WorldToViewportPoint(part.Position)
-                                if sp.Z > 0 then
-                                    local crossDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                                    if crossDist <= maxRadius then
-                                        local vis = not (cfg.VisibleCheck and occluded(char, camPos, part.Position))
-                                        if vis then
-                                            local score = (cfg.Priority == "Nearest") and worldDist or crossDist
-                                            if score < bestScore then
-                                                bestScore, best, bestPart = score, plr, part
-                                            end
+                                -- v0.27.0 Behind Cam: killaura-style targeting. Ignores
+                                -- camera facing + the FOV ring entirely and scores by world
+                                -- distance alone, so people behind the camera still count
+                                -- (MC melee: arm Silent Aim + Trigger Bot with this on).
+                                local pass, crossDist
+                                if cfg.BehindCam then
+                                    pass, crossDist = true, worldDist
+                                elseif sp.Z > 0 then
+                                    crossDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                                    pass = crossDist <= maxRadius
+                                end
+                                if pass then
+                                    local vis = not (cfg.VisibleCheck and occluded(char, camPos, part.Position))
+                                    if vis then
+                                        local score = (cfg.Priority == "Nearest" or cfg.BehindCam) and worldDist or crossDist
+                                        if score < bestScore then
+                                            bestScore, best, bestPart = score, plr, part
                                         end
                                     end
                                 end
@@ -10161,12 +10178,22 @@ local Combat = {
         end
 
         if Combat.Aim.PerfectLock then
-            -- v0.12.1: publish the redirect AND aim at full alpha. v0.11.1 published
-            -- only, which moved nothing -- so in any game that doesn't read Mouse.Hit
-            -- the aimbot looked dead and prediction had nothing to show. Alpha 1 is
-            -- still zero drag (one frame, no sensitivity/smoothness curve).
+            -- v0.27.0: TRUE snap. Publish the silent redirect, then set the camera
+            -- CFrame directly to an exact lookAt this frame -- no sensitivity, no
+            -- smoothing, no aimCFrame euler roundtrip, and AimType is ignored (a
+            -- mousemoverel nudge can never be a same-frame snap). Third Person still
+            -- drives the cursor at full delta so it lands in one frame.
             plPos, plPart = tpos, part
-            aX, aY = 1, 1
+            if Combat.Aim.ThirdPerson then
+                local sp = cam:WorldToViewportPoint(tpos)
+                if sp.Z > 0 and mousemoverel then
+                    local ml = UserInputService:GetMouseLocation()
+                    pcall(mousemoverel, sp.X - ml.X, sp.Y - ml.Y)
+                end
+            else
+                cam.CFrame = CFrame.new(cam.CFrame.Position, tpos)
+            end
+            return
         end
         if Combat.Aim.ThirdPerson then
             -- v0.0.36.1: drive the REAL mouse onto the target's screen point. Measured
@@ -10953,18 +10980,11 @@ local Combat = {
                 pendingActivation.cfg.ActivationKey = nil
                 pendingActivation.refresh(); pendingActivation = nil; return
             end
-            -- v0.3.3: mouse buttons that were routed to a GUI element
-            -- (gpe=true) are almost always the user clicking somewhere on
-            -- the koffee window itself (the pill to cancel, the Armed
-            -- checkbox, the target name TextBox, another pill). Binding
-            -- MouseButton1 to the activation key in that case is never
-            -- what the user wanted. Bind mouse buttons only when the
-            -- click landed OUTSIDE all GUIs (game-world click).
-            if gpe and (it == Enum.UserInputType.MouseButton1
-                     or it == Enum.UserInputType.MouseButton2
-                     or it == Enum.UserInputType.MouseButton3) then
-                return
-            end
+            -- v0.27.0: allow mouse buttons to bind even over the koffee UI. The
+            -- pill is explicitly armed ("...") so the next button press is meant
+            -- as the bind, and the arming click's press edge fired before
+            -- pendingActivation was set, so it can't self-bind. (Was gpe-gated,
+            -- which forced a game-world click and read as "can't bind mouse buttons".)
             -- v0.0.36: accept ANY key + ANY button-like input (mouse 1/2/3 and
             -- whatever else the runtime surfaces through InputBegan, e.g. XButton1/2
             -- on executors that deliver them). Only movement/wheel/focus are ignored.
@@ -11463,6 +11483,7 @@ local Combat = {
         activationPill(aimRow.row, Combat.Aim)
         rightClickSettings(configCheckbox(L.Aimbot, "Team Check", Combat.Aim.TeamCheck, function(v) Combat.Aim.TeamCheck = v end).row, "team check", teamCheckSettings)
         configCheckbox(L.Aimbot, "Visible Check", Combat.Aim.VisibleCheck, function(v) Combat.Aim.VisibleCheck = v end)
+        configCheckbox(L.Aimbot, "Behind Cam", Combat.Aim.BehindCam, function(v) Combat.Aim.BehindCam = v end)
         configCheckbox(L.Aimbot, "Health Check", Combat.Aim.HealthCheck, function(v) Combat.Aim.HealthCheck = v end)
         configCheckbox(L.Aimbot, "Sticky Aim", Combat.Aim.Sticky, function(v) Combat.Aim.Sticky = v end)
         -- v0.0.36: third-person cursor aim (move mouse, not camera). Bind aimbot to a
@@ -11745,6 +11766,7 @@ local Combat = {
         activationPill(sRow.row, Combat.Silent)
         rightClickSettings(configCheckbox(R["Silent Aim"], "Team Check", Combat.Silent.TeamCheck, function(v) Combat.Silent.TeamCheck = v end).row, "team check", teamCheckSettings)
         configCheckbox(R["Silent Aim"], "Visible Check", Combat.Silent.VisibleCheck, function(v) Combat.Silent.VisibleCheck = v end)
+        configCheckbox(R["Silent Aim"], "Behind Cam", Combat.Silent.BehindCam, function(v) Combat.Silent.BehindCam = v end)
         configCheckbox(R["Silent Aim"], "Health Check", Combat.Silent.HealthCheck, function(v) Combat.Silent.HealthCheck = v end)
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
@@ -18432,14 +18454,12 @@ UserInputService.InputBegan:Connect(function(input, processed)
             pendingRebind = nil
             return
         end
-        -- v0.3.3: same gpe-mouse-button guard as pendingBind/pendingActivation --
-        -- clicking on the koffee UI (pill, checkbox, textbox) shouldn't bind
-        -- MouseButton1 as the module keybind.
-        if processed and (it == Enum.UserInputType.MouseButton1
-                       or it == Enum.UserInputType.MouseButton2
-                       or it == Enum.UserInputType.MouseButton3) then
-            return
-        end
+        -- v0.27.0: allow mouse buttons to bind even when the click lands on the
+        -- koffee UI. Rebind is an explicit armed mode (pill shows "..."), so the
+        -- NEXT button press is intentional -- and the arming click's own press edge
+        -- already fired before pendingRebind was set, so it can't self-bind. This
+        -- is what makes "click pill, then click the mouse button you want" work
+        -- with the menu open (the old gpe guard forced a game-world click).
         -- v0.0.94: pressing JUST a modifier alone (Shift/Ctrl/Alt without another key)
         -- doesn't complete the rebind -- user needs to press the actual key while
         -- holding the modifier. Otherwise the modifier itself gets bound as the key.
