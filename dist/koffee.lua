@@ -20033,7 +20033,316 @@ end)
 -- mods land here once mapped). NPC stays a placeholder. v0.23.1 restored
 -- both after a wrong removal; Teams goes only on He's explicit call.
 addTab("NPC")
-addTab("Extra")
+-- v0.46.0: Extra grows its first sub-tab, Mods -- the universal stat mod
+-- from gun research. Pick a source (held tool / any instance), tick values,
+-- pin them held or set-once. Session-only, unpin to restore.
+addTab("Extra", function(epanel)
+    local card = panel(epanel, "Gun Mods")
+    local R = Shared.subTabs and Shared.subTabs(card, { "Mods" }) or nil
+    local host = (R and R["Mods"]) or card
+    -- pins live across rescans, keyed so a rebuild re-attaches, not dupes.
+    -- { on, want, orig, kind } / kind = number|bool|string.
+    local pins = {}
+    local rows = {}   -- id -> { cur, entry } for the heartbeat refresh
+    local srcLabel, listBox
+    local current = { mode = "none", inst = nil, path = "" }
+
+    local function entryId(srcId, sub, name) return srcId .. "|" .. sub .. "|" .. name end
+    local function srcId()
+        if current.mode == "tool" then return "tool" end
+        return "path:" .. current.path
+    end
+    local function resolveRoot()
+        if current.mode == "tool" then
+            local ch = LocalPlayer and LocalPlayer.Character
+            return ch and ch:FindFirstChildOfClass("Tool") or nil
+        elseif current.mode == "picked" then
+            if current.inst and current.inst.Parent then return current.inst end
+            if current.path ~= "" and Shared.resolvePath then
+                local ok, inst = pcall(Shared.resolvePath, current.path)
+                if ok and inst and inst.Parent then
+                    current.inst = inst
+                    return inst
+                end
+            end
+        end
+        return nil
+    end
+    local function resolveEntry(e)
+        local root = resolveRoot()
+        if not root then return nil end
+        local node = root
+        if e.sub ~= "" then
+            node = root:FindFirstChild(e.sub)
+            if not node then return nil end
+        end
+        if e.isAttr then
+            local v = node:GetAttribute(e.name)
+            return (v ~= nil) and { attr = true, node = node } or nil
+        end
+        local v = node:FindFirstChild(e.name)
+        if v and (v:IsA("IntValue") or v:IsA("NumberValue")
+            or v:IsA("BoolValue") or v:IsA("StringValue")) then return v end
+        return nil
+    end
+    local function readEntry(e)
+        local h = resolveEntry(e)
+        if not h then return nil end
+        if e.isAttr then return h.node:GetAttribute(e.name) end
+        return h.Value
+    end
+    local function writeEntry(e, want)
+        local h = resolveEntry(e)
+        if not h then return false end
+        if e.isAttr then
+            local ok = pcall(function() h.node:SetAttribute(e.name, want) end)
+            return ok
+        end
+        local ok = pcall(function() h.Value = want end)
+        return ok
+    end
+    local function fmt(v)
+        local t = typeof(v)
+        if t == "number" then
+            return tostring(math.floor(v * 1000 + 0.5) / 1000)
+        elseif t == "boolean" then
+            return v and "true" or "false"
+        elseif t == "string" then
+            return #v > 18 and (v:sub(1, 17) .. "..") or v
+        end
+        return "?"
+    end
+    -- one row: pin toggle | name | live value | editor (box or bool flip).
+    -- Enter in the box = set once now. Pin = hold against rewrites.
+    local function buildRow(list, e, id, kind)
+        local pin = pins[id]
+        if not pin then
+            pin = { on = false, want = nil, orig = nil, kind = kind }
+            pins[id] = pin
+        end
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+            ZIndex = 34, Parent = list,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local pinBtn = new("TextButton", {
+            Size = UDim2.new(0, 30, 0, 20), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = 0.2, BorderSizePixel = 0, AutoButtonColor = false,
+            Text = pin.on and "on" or "off", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = pin.on and Theme.Palette.Accent or Theme.Palette.TextMuted,
+            LayoutOrder = 1, ZIndex = 35, Parent = row,
+        }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+        new("TextLabel", {
+            Text = (e.sub ~= "" and (e.sub .. ".") or "") .. e.name .. (e.isAttr and " *" or ""),
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            Size = UDim2.new(1, -190, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            LayoutOrder = 2, ZIndex = 35, Parent = row,
+        })
+        local cur = new("TextLabel", {
+            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(0, 64, 1, 0), TextXAlignment = Enum.TextXAlignment.Right,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            LayoutOrder = 3, ZIndex = 35, Parent = row,
+        })
+        rows[id] = { cur = cur, entry = e }
+        local function paintPin()
+            pinBtn.Text = pin.on and "on" or "off"
+            pinBtn.TextColor3 = pin.on and Theme.Palette.Accent or Theme.Palette.TextMuted
+        end
+        local function snapOrig()
+            if pin.orig == nil then
+                local v = readEntry(e)
+                if v ~= nil then pin.orig = v end
+            end
+        end
+        pinBtn.MouseButton1Click:Connect(function()
+            pin.on = not pin.on
+            if pin.on then
+                snapOrig()
+                if pin.want ~= nil then writeEntry(e, pin.want) end
+            else
+                if pin.orig ~= nil then writeEntry(e, pin.orig) end
+            end
+            paintPin()
+        end)
+        if kind == "bool" then
+            local flip = new("TextButton", {
+                Size = UDim2.new(0, 80, 0, 20), BackgroundColor3 = Theme.Palette.PanelElevated,
+                BackgroundTransparency = 0.2, BorderSizePixel = 0, AutoButtonColor = false,
+                Text = pin.want ~= nil and tostring(pin.want) or "set?",
+                FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+                TextColor3 = Theme.Palette.Text, LayoutOrder = 4, ZIndex = 35, Parent = row,
+            }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+            flip.MouseButton1Click:Connect(function()
+                local v = readEntry(e)
+                pin.want = not (v == true)
+                if pin.want == false and v == false then pin.want = true end
+                snapOrig()
+                writeEntry(e, pin.want)
+                flip.Text = tostring(pin.want)
+            end)
+        else
+            local box = new("TextBox", {
+                Size = UDim2.new(0, 80, 0, 20),
+                Text = pin.want ~= nil and tostring(pin.want) or "",
+                PlaceholderText = kind == "number" and "num" or "text",
+                ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+                TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, LayoutOrder = 4, ZIndex = 35, Parent = row,
+            }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+            box.FocusLost:Connect(function(enter)
+                if not enter then return end
+                local w = kind == "number" and tonumber(box.Text) or box.Text
+                if w == nil or (kind ~= "number" and w == "") then return end
+                pin.want = w
+                snapOrig()
+                writeEntry(e, w)
+            end)
+        end
+    end
+    local function scan()
+        for _, c in ipairs(listBox:GetChildren()) do
+            if c:IsA("Frame") then c:Destroy() end
+        end
+        rows = {}
+        local root = resolveRoot()
+        if not root then
+            srcLabel.Text = current.mode == "none" and "hold a gun, or pick an instance"
+                or "source gone -- rescan"
+            return
+        end
+        srcLabel.Text = (current.mode == "tool" and "tool: " or "instance: ") .. root.Name
+        local sid = srcId()
+        local seen, n = {}, 0
+        local function add(sub, v, isAttr, aname)
+            local key = sub .. "|" .. (isAttr and ("@" .. aname) or v.Name)
+            if seen[key] then return end
+            seen[key] = true
+            n = n + 1
+            local kind = "string"
+            if not isAttr then
+                kind = v:IsA("BoolValue") and "bool"
+                    or ((v:IsA("IntValue") or v:IsA("NumberValue")) and "number" or "string")
+            else
+                local av = root:GetAttribute(aname)
+                local at = typeof(av)
+                kind = (at == "number" and "number") or (at == "boolean" and "bool") or "string"
+                if at ~= "number" and at ~= "boolean" and at ~= "string" then return end
+            end
+            local e = { sub = sub, name = isAttr and aname or v.Name, isAttr = isAttr }
+            buildRow(listBox, e, entryId(sid, sub, e.name), kind)
+        end
+        for _, c in ipairs(root:GetChildren()) do
+            if c:IsA("IntValue") or c:IsA("NumberValue")
+                or c:IsA("BoolValue") or c:IsA("StringValue") then
+                add("", c, false)
+            end
+        end
+        local okA, attrs = pcall(function() return root:GetAttributes() end)
+        if okA and attrs then
+            for aname in pairs(attrs) do add("", nil, true, aname) end
+        end
+        -- one level into Folders (Gunfight-style Variables pattern).
+        for _, c in ipairs(root:GetChildren()) do
+            if c:IsA("Folder") then
+                for _, k in ipairs(c:GetChildren()) do
+                    if k:IsA("IntValue") or k:IsA("NumberValue")
+                        or k:IsA("BoolValue") or k:IsA("StringValue") then
+                        add(c.Name, k, false)
+                    end
+                end
+            end
+        end
+        if n == 0 then srcLabel.Text = root.Name .. " -- no tunable values" end
+    end
+    -- header: source buttons + rescan + restore-all.
+    local bar = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+        LayoutOrder = 1, ZIndex = 34, Parent = host,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local function hdrBtn(label, order, fn)
+        local b = new("TextButton", {
+            Size = UDim2.new(0, 86, 0, 22), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = 0.2, BorderSizePixel = 0, AutoButtonColor = false,
+            Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, LayoutOrder = order, ZIndex = 35, Parent = bar,
+        }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+        b.MouseButton1Click:Connect(fn)
+        return b
+    end
+    hdrBtn("held tool", 1, function()
+        current = { mode = "tool", inst = nil, path = "" }
+        scan()
+    end)
+    hdrBtn("pick...", 2, function()
+        if not Shared.openInstancePicker then return end
+        Shared.openInstancePicker(function(inst, path)
+            if inst then
+                current = { mode = "picked", inst = inst, path = path or "" }
+                scan()
+            end
+        end, { title = "pick a gun or template" })
+    end)
+    hdrBtn("rescan", 3, function() scan() end)
+    hdrBtn("restore all", 4, function()
+        for id, pin in pairs(pins) do
+            if pin.orig ~= nil and rows[id] then
+                writeEntry(rows[id].entry, pin.orig)
+            end
+            pin.on = false
+        end
+        scan()
+    end)
+    srcLabel = new("TextLabel", {
+        Text = "hold a gun, or pick an instance", FontFace = Theme.Fonts.Regular,
+        TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = 2, ZIndex = 34, Parent = host,
+    })
+    listBox = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, LayoutOrder = 3, ZIndex = 34, Parent = host,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+        Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    new("TextLabel", {
+        Text = "* = attribute. enter in a box = set once. pin = hold. unpin restores.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Tiny,
+        TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+        TextWrapped = true, Size = UDim2.new(1, 0, 0, 22),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = 4, ZIndex = 34, Parent = host,
+    })
+    -- reassert pins + refresh live values, throttled. Resolves fresh per
+    -- tick so round rebuilds re-attach instead of dying on stale refs.
+    local lastTick = 0
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
+        local now = os.clock()
+        if now - lastTick < 0.5 then return end
+        lastTick = now
+        for id, pin in pairs(pins) do
+            local r = rows[id]
+            if r then
+                local v = readEntry(r.entry)
+                if v == nil then
+                    r.cur.Text = "gone"
+                else
+                    r.cur.Text = fmt(v)
+                    if pin.on and pin.want ~= nil and v ~= pin.want then
+                        writeEntry(r.entry, pin.want)
+                    end
+                end
+            end
+        end
+    end)
+end)
 
 -- select first tab AFTER layout AND positioning have settled.
 -- v0.0.5 only checked AbsoluteSize -- but AbsolutePosition can still be zero
