@@ -1,7 +1,7 @@
--- koffee v0.43.2
+-- koffee v0.44.0
 
 local Koffee = {}
-Koffee.Version = "0.43.2"
+Koffee.Version = "0.44.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15491,6 +15491,7 @@ registerConfig("custom", Koffee.Custom)
     local ORDER = {
         "Target", "Self", "Part", "Number", "Text Value", "Colour", "Time",
         "Key Held", "Module State", "Game Info", "Camera", "Mouse", "Counter",
+        "Button", "Text Input",
         "Find Instance", "Read Value", "Find Child", "Player Part", "Raycast", "Interval",
         "For Each Player",
         "Visible", "Info", "Compare", "Math", "Logic", "Map Range", "Smooth",
@@ -17202,6 +17203,134 @@ registerConfig("custom", Koffee.Custom)
     }
 
     ---------------------------------------------------------------- actions
+    KINDS["Text Input"] = {
+        blurb = "a box you type in while playing -- outputs text + number",
+        sink = true, visual = true,
+        ins = visIns({}),
+        outs = { text = true, number = true },
+        opts = visOpts({ Label = "speed", Default = "40", W = 120, H = 28,
+                 Size = 14, Color = Color3.fromRGB(242, 234, 223),
+                 BgColor = Color3.fromRGB(41, 33, 29) }),
+        make = function()
+            local box = new("TextBox", {
+                Text = "", PlaceholderText = "",
+                ClearTextOnFocus = false, FontFace = Theme.Fonts.Medium, TextSize = 14,
+                TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 17, Parent = ensureLayer(),
+            }, { corner(4), stroke(Theme.Palette.BorderSubtle),
+                new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+            box:SetAttribute("KUserColor", true)
+            return box
+        end,
+        -- v0.44.0: sink owns the widget (make + alive tracking), eval hands
+        -- the live text downstream. Your typed text beats Starting value.
+        eval = function(o, _, ctx, node)
+            local s = slot(node, ctx)
+            local t = s.text
+            if t == nil then t = tostring(o.Default or "") end
+            return { text = t, number = tonumber(t) or 0 }
+        end,
+        paint = function(box, o, ins, node, ctx, dt)
+            if not placeVis(box, o, ins, node, ctx, dt) then return end
+            local s = slot(node, ctx)
+            if s.hooked ~= box then
+                s.hooked = box
+                box:GetPropertyChangedSignal("Text"):Connect(function()
+                    s.text = box.Text
+                    if box:IsFocused() then s.typed = true end
+                end)
+            end
+            if not box:IsFocused() and not s.typed then
+                box.Text = tostring(o.Default or "")
+            end
+            if s.text == nil then s.text = box.Text end
+            local op = math.clamp(o.Opacity or 1, 0, 1)
+            box.PlaceholderText = o.Label or ""
+            box.Size = UDim2.new(0, math.max(o.W or 120, 20), 0, math.max(o.H or 28, 16))
+            box.TextSize = o.Size or 14
+            box.TextColor3 = (ins.color and ins.color.color) or o.Color
+            box.TextTransparency = 1 - op
+            box.BackgroundColor3 = o.BgColor
+            box.BackgroundTransparency = 1 - 0.8 * op
+        end,
+        ui = function(api, o)
+            api:section("input")
+            api:text("Placeholder label", o.Label, function(v) o.Label = v end)
+            api:text("Starting value", o.Default, function(v) o.Default = v end)
+            api:slider("Text Size", 8, 48, o.Size, 0, function(v) o.Size = v end)
+            api:slider("Width", 40, 600, o.W, 0, function(v) o.W = v end)
+            api:slider("Height", 20, 120, o.H, 0, function(v) o.H = v end)
+            api:swatch("Text Colour", o.Color, function(c) o.Color = c end)
+            api:swatch("Box Colour", o.BgColor, function(c) o.BgColor = c end)
+            api:label("type in-game, wire the number out -- typed text wins")
+            visUiTail(api, o)
+        end,
+    }
+
+    KINDS.Button = {
+        blurb = "a button you press while playing -- outputs yes / no",
+        sink = true, visual = true,
+        ins = visIns({}),
+        outs = { bool = true },
+        opts = visOpts({ Text = "GO", Mode = "Hold", W = 120, H = 32,
+                 Size = 14, Color = Color3.fromRGB(242, 234, 223),
+                 BgColor = Color3.fromRGB(41, 33, 29) }),
+        make = function()
+            local btn = new("TextButton", {
+                Text = "", AutoButtonColor = false,
+                FontFace = Theme.Fonts.Medium, TextSize = 14,
+                TextColor3 = Theme.Palette.Text,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, ZIndex = 17, Parent = ensureLayer(),
+            }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+            btn:SetAttribute("KUserColor", true)
+            return btn
+        end,
+        -- same hybrid as Text Input: sink owns the widget, eval reports it.
+        eval = function(o, _, ctx, node)
+            local s = slot(node, ctx)
+            if (o.Mode or "Hold") == "Toggle" then return { bool = s.on == true } end
+            return { bool = s.down == true }
+        end,
+        paint = function(btn, o, ins, node, ctx, dt)
+            if not placeVis(btn, o, ins, node, ctx, dt) then return end
+            local s = slot(node, ctx)
+            if s.hooked ~= btn then
+                s.hooked = btn
+                btn.MouseButton1Down:Connect(function() s.down = true end)
+                btn.MouseButton1Up:Connect(function() s.down = false end)
+                btn.MouseButton1Click:Connect(function()
+                    if (o.Mode or "Hold") == "Toggle" then s.on = not s.on end
+                end)
+            end
+            local mode = o.Mode or "Hold"
+            local active = (mode == "Toggle" and s.on or s.down) == true
+            local op = math.clamp(o.Opacity or 1, 0, 1)
+            btn.Text = o.Text or "GO"
+            btn.Size = UDim2.new(0, math.max(o.W or 120, 20), 0, math.max(o.H or 32, 16))
+            btn.TextSize = o.Size or 14
+            btn.BackgroundColor3 = active and Theme.Palette.Accent or o.BgColor
+            btn.BackgroundTransparency = active and (1 - op) or (1 - 0.8 * op)
+            btn.TextColor3 = active and Color3.fromRGB(15, 12, 10)
+                or ((ins.color and ins.color.color) or o.Color)
+            btn.TextTransparency = 1 - op
+        end,
+        ui = function(api, o)
+            api:section("button")
+            api:text("Label", o.Text, function(v) o.Text = v end)
+            api:dropdown("Mode", { "Hold", "Toggle" }, o.Mode, function(v) o.Mode = v end)
+            api:slider("Text Size", 8, 48, o.Size, 0, function(v) o.Size = v end)
+            api:slider("Width", 40, 600, o.W, 0, function(v) o.W = v end)
+            api:slider("Height", 20, 120, o.H, 0, function(v) o.H = v end)
+            api:swatch("Text Colour", o.Color, function(c) o.Color = c end)
+            api:swatch("Box Colour", o.BgColor, function(c) o.BgColor = c end)
+            api:label("Hold = yes while pressed. Toggle = flip per click")
+            visUiTail(api, o)
+        end,
+    }
+
     KINDS.Sound = {
         blurb = "plays a sound the moment something becomes true",
         sink = true,
