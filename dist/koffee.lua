@@ -1,7 +1,7 @@
--- koffee v0.39.0
+-- koffee v0.39.1
 
 local Koffee = {}
-Koffee.Version = "0.39.0"
+Koffee.Version = "0.39.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9488,15 +9488,7 @@ local Combat = {
         return best, bestPart
     end
 
-    -- v0.9.0: entry point for the crosshair's Follow Target, so it can pick a target
-    -- with the aimbot switched off. Radius = the LARGEST FOV that's actually on
-    -- (both rings can be live at different sizes; honouring the smaller one would
-    -- drop targets sitting plainly inside a ring on screen). With neither enabled,
-    -- fall back to the bigger of the two sizes. cfg follows whichever ring won, so
-    -- team / distance / visible checks match it.
-    -- v0.11.2: per-source, and an unchecked FOV means NO radius gate at all. It used
-    -- to fall back to the slider value with the ring switched off, which quietly
-    -- imposed an FOV nobody had asked for.
+    -- v0.9.0: entry point for the crosshair's Follow Target
     function Shared.crosshairTarget(which)
         local cfg = (which == "Silent") and Combat.Silent or Combat.Aim
         local F = cfg.FOV
@@ -9791,9 +9783,12 @@ local Combat = {
     local function clickMouse()
         if mouseOverKoffee() then return end
         if VIM then
+            -- v0.39.1: click at the live cursor, never 0,0 (that pressed
+            -- the top-left pixel and stole selection on every trigger fire).
+            local m = UserInputService:GetMouseLocation()
             pcall(function()
-                VIM:SendMouseButtonEvent(0, 0, 0, true,  game, 0)
-                VIM:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+                VIM:SendMouseButtonEvent(m.X, m.Y, 0, true,  game, 0)
+                VIM:SendMouseButtonEvent(m.X, m.Y, 0, false, game, 0)
             end)
             return
         end
@@ -11958,7 +11953,8 @@ local Combat = {
             pendingActivation = { pill = tlKeyPill, cfg = proxy, refresh = function()
                 tlKeyPill.Text = keyLabel(Shared.TargetLock.Key) or "set"
             end }
-            local _g = proxy
+            -- v0.39.1: rawset, never self[k]=v (that re-enters __newindex and
+            -- throws, leaving pendingActivation stuck on "..." forever).
             setmetatable(proxy, { __index = function() end, __newindex = function(self, k, v)
                 if k == "ActivationKey" then
                     Shared.TargetLock.Key = v
@@ -11966,7 +11962,7 @@ local Combat = {
                     -- v0.3.1: fold the new key into the "ready -- press ..." line.
                     if tlStatusUpdater then tlStatusUpdater() end
                 end
-                _g[k] = v
+                rawset(self, k, v)
             end })
         end)
         -- v0.3.1: right-click the target-lock pill to UNBIND (mirror of the
