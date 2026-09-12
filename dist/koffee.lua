@@ -1,7 +1,7 @@
--- koffee v0.43.0
+-- koffee v0.43.1
 
 local Koffee = {}
-Koffee.Version = "0.43.0"
+Koffee.Version = "0.43.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -17611,14 +17611,18 @@ registerConfig("custom", Koffee.Custom)
         opts = { Speed = 40, Mode = "Look Flat" },
         -- v0.43.0: TP Walk's CFrame stepping as a graph block. Unlike Velocity
         -- it never writes physics velocity, so gravity + jump arc run untouched.
+        -- v0.43.1: Move Dir follows Humanoid.MoveDirection (no input = drift down).
         paint = function(_, o, ins, node, ctx, dt)
             local want = (ins.when and ins.when.bool) == true
             if not want then return end
-            local hrp = myHRP()
+            local hrp, c = myHRP()
             if not hrp then return end
             local speed = (ins.speed and ins.speed.number) or o.Speed or 0
             local dir
             if ins.dir and ins.dir.world then dir = ins.dir.world
+            elseif o.Mode == "Move Dir" then
+                local hum = c and c:FindFirstChildOfClass("Humanoid")
+                dir = (hum and hum.MoveDirection) or Vector3.zero
             else
                 local cam = Workspace.CurrentCamera
                 dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
@@ -17628,7 +17632,7 @@ registerConfig("custom", Koffee.Custom)
             hrp.CFrame = hrp.CFrame + dir * (speed * (dt or 1 / 60))
         end,
         ui = function(api, o)
-            api:dropdown("Direction", { "Look", "Look Flat" }, o.Mode, function(v) o.Mode = v end)
+            api:dropdown("Direction", { "Look", "Look Flat", "Move Dir" }, o.Mode, function(v) o.Mode = v end)
             api:slider("Speed", 0, 500, o.Speed, 0, function(v) o.Speed = v end)
             api:label("teleport steps, physics untouched -- jump, it carries you")
         end,
