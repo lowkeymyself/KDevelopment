@@ -1,7 +1,7 @@
--- koffee v0.38.0
+-- koffee v0.39.0
 
 local Koffee = {}
-Koffee.Version = "0.38.0"
+Koffee.Version = "0.39.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -11762,7 +11762,7 @@ local Combat = {
         -- v0.0.36: third-person cursor aim (move mouse, not camera). Bind aimbot to a
         -- non-RMB key (e.g. XButton2) so it doesn't clash with the game's shift-lock.
         configCheckbox(L.Aimbot, "Third Person", Combat.Aim.ThirdPerson, function(v) Combat.Aim.ThirdPerson = v end)
-        slider(L.Aimbot, "Distance", 50, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end, { infinite = true })
+        slider(L.Aimbot, "Distance", 1, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end, { infinite = true })
         slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
         configCheckbox(L.Aimbot, "Perfect Lock", Combat.Aim.PerfectLock, function(v) Combat.Aim.PerfectLock = v end)
         dropdown(L.Aimbot, "Hit Part", HITPARTS, Combat.Aim.HitPart, function(v) Combat.Aim.HitPart = v end)
@@ -12042,7 +12042,7 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Behind Cam", Combat.Silent.BehindCam, function(v) Combat.Silent.BehindCam = v end)
         configCheckbox(R["Silent Aim"], "Health Check", Combat.Silent.HealthCheck, function(v) Combat.Silent.HealthCheck = v end)
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
-        slider(R["Silent Aim"], "Distance", 50, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
+        slider(R["Silent Aim"], "Distance", 1, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
         dropdown(R["Silent Aim"], "Method", { "Forced Camera", "Second-Camera", "Raycast", "External" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v; if Koffee.External then Koffee.External.onMethodChange(v) end end)
@@ -14748,7 +14748,7 @@ addTab("Visuals", function(root)
     end)
     slider(btPanel, "Thickness", 1, 10, Koffee.Bullets.Thickness, 1, function(v) Koffee.Bullets.Thickness = v end)
     slider(btPanel, "Duration", 0.1, 3, Koffee.Bullets.Duration, 2, function(v) Koffee.Bullets.Duration = v end)
-    slider(btPanel, "Max Distance", 100, 6000, Koffee.Bullets.MaxDistance, 0, function(v) Koffee.Bullets.MaxDistance = v end)
+    slider(btPanel, "Max Distance", 1, 6000, Koffee.Bullets.MaxDistance, 0, function(v) Koffee.Bullets.MaxDistance = v end)
 
     --------------------------------------------------------------- Crosshair
     -- v0.11.2: one builder used twice. "Double Crosshairs" (card A only) retitles A
@@ -15505,7 +15505,7 @@ registerConfig("custom", Koffee.Custom)
         "3D Ring", "3D Box",
         "Sound", "Notify", "Adorn Part", "Fire Remote", "Set Value",
         "Teleport", "Set Humanoid", "Set Velocity", "Click",
-        "Koffee Toggle", "Koffee Set", "Note",
+        "Koffee Toggle", "Koffee Set", "Build Buffer", "Note",
     }
     -- v0.32.0: shared scripting helpers. rayParams reused across Raycast evals;
     -- doClick drives the Click action off executor globals with a VIM fallback.
@@ -17317,13 +17317,14 @@ registerConfig("custom", Koffee.Custom)
 
     -- v0.31.0: resolve one Fire Remote / Set Value argument from the wired inputs
     -- or a computed convenience. Second return = false ONLY for "(none)".
-    local ARG_SOURCES = { "(none)", "Number", "Text", "Instance", "Boolean true",
+    local ARG_SOURCES = { "(none)", "Number", "Text", "Instance", "Buffer", "Boolean true",
         "Boolean false", "My Character", "My HRP", "My Position",
         "Mouse Hit Position", "Mouse Target", "Camera Position", "Camera CFrame" }
     local function argVal(src, ins)
         if src == "Number" then return ins.num and ins.num.number or 0, true end
         if src == "Text" then return ins.txt and ins.txt.text or "", true end
         if src == "Instance" then return ins.inst and ins.inst.part or nil, true end
+        if src == "Buffer" then return ins.buf and ins.buf.buffer or nil, true end
         if src == "Boolean true" then return true, true end
         if src == "Boolean false" then return false, true end
         local c = LocalPlayer.Character
@@ -17356,7 +17357,8 @@ registerConfig("custom", Koffee.Custom)
                 { key = "when", type = "bool", label = "When" },
                 { key = "num", type = "number", label = "Number In" },
                 { key = "txt", type = "text", label = "Text In" },
-                { key = "inst", type = "part", label = "Instance In" } },
+                { key = "inst", type = "part", label = "Instance In" },
+                { key = "buf", type = "buffer", label = "Buffer In" } },
         outs = {},
         opts = { Type = "FireServer", Edge = "becomes yes", Cooldown = 0.1,
                  Arg1 = "(none)", Arg2 = "(none)", Arg3 = "(none)", Arg4 = "(none)" },
@@ -17650,6 +17652,82 @@ registerConfig("custom", Koffee.Custom)
         ui = function(api, o)
             api:dropdown("Target", KSET_NAMES, o.Target, function(v) o.Target = v end)
             api:label("wire a Number into Value; applied every frame While is yes")
+        end,
+    }
+
+    -- v0.39.0 Stage 3: build a buffer from a saved schema (template + your live values)
+    -- and hand it to Fire Remote via a buffer wire. Scaffold = Position -> x/y/z fields.
+    local BUFSIZE = { u8 = 1, i8 = 1, u16 = 2, i16 = 2, u32 = 4, i32 = 4, f32 = 4, f64 = 8, string = 0 }
+    KINDS["Build Buffer"] = {
+        blurb = "builds a buffer from a saved schema, patched with your live values -> Fire Remote",
+        ins = { { key = "world", type = "world", label = "Position" }, { key = "num", type = "number", label = "Number" } },
+        outs = { buffer = true, text = true },
+        opts = { Schema = "", NumField = "" },
+        eval = function(o, ins, ctx, node)
+            local s = slot(node, ctx)
+            if s.schemaName ~= o.Schema then
+                s.schemaName, s.tmpl, s.fields = o.Schema, nil, nil
+                if o.Schema ~= "" and readfile and isfile then
+                    local p = "Koffee/buffers/" .. o.Schema .. ".json"
+                    if isfile(p) then
+                        local ok, txt = pcall(readfile, p)
+                        local dok, data = false, nil
+                        if ok then dok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(txt) end) end
+                        if dok and type(data) == "table" then
+                            s.fields = (type(data.fields) == "table") and data.fields or data
+                            if type(data.template) == "string" then
+                                local out = {}
+                                for h in data.template:gmatch("%x%x") do out[#out + 1] = string.char(tonumber(h, 16)) end
+                                s.tmpl = table.concat(out)
+                            end
+                        end
+                    end
+                end
+            end
+            if not s.tmpl then return { buffer = nil, text = "no template" } end
+            local ok, b = pcall(buffer.fromstring, s.tmpl)
+            if not ok then return { buffer = nil, text = "bad template" } end
+            local n = buffer.len(b)
+            local function w(off, ty, val)
+                if not val or off + (BUFSIZE[ty] or 4) > n then return end
+                pcall(function()
+                    if ty == "u8" then buffer.writeu8(b, off, val)
+                    elseif ty == "i8" then buffer.writei8(b, off, val)
+                    elseif ty == "u16" then buffer.writeu16(b, off, val)
+                    elseif ty == "i16" then buffer.writei16(b, off, val)
+                    elseif ty == "u32" then buffer.writeu32(b, off, val)
+                    elseif ty == "i32" then buffer.writei32(b, off, val)
+                    elseif ty == "f32" then buffer.writef32(b, off, val)
+                    elseif ty == "f64" then buffer.writef64(b, off, val) end
+                end)
+            end
+            local wpos = ins.world and ins.world.world
+            local num = ins.num and ins.num.number
+            for _, fd in ipairs(s.fields or {}) do
+                local nm = tostring(fd.name or ""):lower()
+                if wpos and (nm == "x" or nm:match("^x@")) then w(fd.off, fd.type, wpos.X)
+                elseif wpos and (nm == "y" or nm:match("^y@")) then w(fd.off, fd.type, wpos.Y)
+                elseif wpos and (nm == "z" or nm:match("^z@")) then w(fd.off, fd.type, wpos.Z)
+                elseif num and o.NumField ~= "" and fd.name == o.NumField then w(fd.off, fd.type, num)
+                end
+            end
+            return { buffer = b, text = o.Schema }
+        end,
+        ui = function(api, o)
+            local names = {}
+            pcall(function()
+                if listfiles and isfolder and isfolder("Koffee/buffers") then
+                    for _, p in ipairs(listfiles("Koffee/buffers")) do
+                        local nm = tostring(p):match("([^/\\]+)%.json$")
+                        if nm then names[#names + 1] = nm end
+                    end
+                end
+            end)
+            if #names == 0 then names = { "(save one in Buffer Lab)" } end
+            api:dropdown("Schema", names, o.Schema ~= "" and o.Schema or names[1], function(v) o.Schema = v end)
+            api:text("Number -> field", o.NumField, function(v) o.NumField = v end)
+            api:label("Position fills x/y/z fields; Number fills the named field")
+            api:label("wire the buffer output into a Fire Remote arg set to Buffer")
         end,
     }
 
@@ -18950,6 +19028,7 @@ registerConfig("custom", Koffee.Custom)
         local addType = "f32"
         local refreshFields   -- fwd decl (used by the add-field button below)
         local lastGuesses = {}   -- auto-detected fields, materialized by "auto fields"
+        local saneMax = 50000    -- v0.39.0: customizable "plausible float" ceiling for auto-detect
 
         local function mkBtn(p, text, w, order, fn)
             local b = new("TextButton", {
@@ -19055,6 +19134,9 @@ registerConfig("custom", Koffee.Custom)
             Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 21, ZIndex = 36, Parent = card,
         }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
             VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        -- v0.39.0: customizable sanity ceiling -- floats bigger than this are treated
+        -- as garbage by auto-detect (raise it for big-coordinate maps, lower to be strict).
+        local saneBox = inputBox(card, "auto-detect max |value| (default 50000)", UDim2.new(1, 0, 0, 24), 22)
 
         -- === inspector card ===
         local icard = panel(parent, "Inspector")
@@ -19109,7 +19191,7 @@ registerConfig("custom", Koffee.Custom)
                 local function rf(o) local okk, v = pcall(buffer.readf32, b, o); return okk and v or nil end
                 local function sane(f)
                     return f ~= nil and f == f and math.abs(f) ~= math.huge
-                        and (f == 0 or (math.abs(f) >= 1e-3 and math.abs(f) < 5e4))
+                        and (f == 0 or (math.abs(f) >= 1e-3 and math.abs(f) < saneMax))
                 end
                 local off = 0
                 while off <= n - 4 and #guesses < 40 do
@@ -19212,7 +19294,14 @@ registerConfig("custom", Koffee.Custom)
             local nm = (schemaBox.Text or ""):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
             if nm == "" or not filesOk() then return end
             ensureDir()
-            local ok = pcall(function() writefile(SDIR .. "/" .. nm .. ".json", HttpService:JSONEncode(fields)) end)
+            -- v0.39.0: store the pasted bytes as a hex TEMPLATE too, so Build Buffer
+            -- can start from this known-good buffer and patch only the labeled fields.
+            local tmplHex = {}
+            for i = 1, #curBytes do tmplHex[i] = ("%02x"):format(curBytes:byte(i)) end
+            local ok = pcall(function()
+                writefile(SDIR .. "/" .. nm .. ".json",
+                    HttpService:JSONEncode({ fields = fields, template = table.concat(tmplHex) }))
+            end)
             if ok then pickSchema = nm; rebuildLoadDd() end
         end).LayoutOrder = 31
         mkBtn(sRow, "load", 60, 1, function()
@@ -19223,8 +19312,10 @@ registerConfig("custom", Koffee.Custom)
             if not ok then return end
             local dok, data = pcall(function() return HttpService:JSONDecode(txt) end)
             if dok and type(data) == "table" then
+                -- v0.39.0: new format is { fields, template }; old was a bare fields array.
+                local flds = (type(data.fields) == "table") and data.fields or data
                 fields = {}
-                for _, fd in ipairs(data) do
+                for _, fd in ipairs(flds) do
                     if type(fd) == "table" and fd.off and fd.type then
                         fields[#fields + 1] = { off = fd.off, type = fd.type, name = fd.name or (fd.type .. "@" .. fd.off) }
                     end
@@ -19244,6 +19335,7 @@ registerConfig("custom", Koffee.Custom)
         mkBtn(pRow, "decode", 84, 1, function()
             local bytes, err = parsePaste(box.Text)
             if not bytes then header.Text = err or "nothing to decode"; return end
+            saneMax = tonumber((saneBox.Text or ""):match("[%d%.]+")) or 50000
             curBytes = bytes
             inspect()
             refreshFields()
