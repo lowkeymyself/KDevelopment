@@ -1,7 +1,7 @@
--- koffee v0.46.1
+-- koffee v0.46.2
 
 local Koffee = {}
-Koffee.Version = "0.46.1"
+Koffee.Version = "0.46.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -12982,6 +12982,31 @@ end)()
     -- Modal explorer. Roots list = common containers people target. Lazy
     -- expansion; filtered to physical instances + containers with physical
     -- descendants. Color-coded 8px square icon next to each row.
+    -- v0.46.2: lucide glyphs for the picker tree. Spritesheet slices from
+    -- latte-soft/lucide-roblox (MIT/ISC); fixed-size ImageLabels so rows
+    -- never shift when a caret flips (the old text glyph did).
+    local LUCIDE = {
+        ["chevron-right"] = { 16898617509, 0, 514 },
+        ["chevron-down"]  = { 16898617411, 514, 257 },
+        box    = { 16898616650, 0, 514 },
+        folder = { 16898671684, 257, 0 },
+        file   = { 16898670620, 0, 514 },
+    }
+    local function lucideIcon(parent, name, px, color, x, y)
+        local d = LUCIDE[name]
+        if not d then return nil end
+        return new("ImageLabel", {
+            Image = "rbxassetid://" .. d[1],
+            ImageRectOffset = Vector2.new(d[2], d[3]),
+            ImageRectSize = Vector2.new(256, 256),
+            ImageColor3 = color or Color3.new(1, 1, 1),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, x, 0.5, y or 0),
+            Size = UDim2.new(0, px, 0, px),
+            ZIndex = 205, Parent = parent,
+        })
+    end
     local function openInstancePicker(onSelect, opts)
         opts = opts or {}
         -- v0.31.0: anyInstance mode shows and lets you pick NON-physical instances
@@ -13091,18 +13116,27 @@ end)()
                 })
             end
             local isOpen = false
-            local caret = new("TextLabel", {
-                Text = expandable and "\u{25B8}" or "", FontFace = Theme.Fonts.Medium,
-                TextSize = 11, TextColor3 = Theme.Palette.TextMuted,
-                BackgroundTransparency = 1,
-                Position = UDim2.new(0, x + 2, 0, 0), Size = UDim2.new(0, 12, 1, 0),
-                TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 205, Parent = row,
-            })
-            new("Frame", {
-                Position = UDim2.new(0, x + 18, 0.5, -4), Size = UDim2.new(0, 8, 0, 8),
-                BackgroundColor3 = iconColor(inst), BorderSizePixel = 0,
-                ZIndex = 205, Parent = row,
-            }, { corner(2) })
+            local caretImg = expandable
+                and lucideIcon(row, "chevron-right", 12, Theme.Palette.TextMuted, x + 2, 0)
+                or nil
+            local function setCaret(open)
+                if not caretImg then return end
+                local d = open and LUCIDE["chevron-down"] or LUCIDE["chevron-right"]
+                caretImg.Image = "rbxassetid://" .. d[1]
+                caretImg.ImageRectOffset = Vector2.new(d[2], d[3])
+            end
+            local clsIcon = (inst:IsA("Folder") or inst:IsA("Configuration")) and "folder"
+                or (inst:IsA("BasePart") and "box")
+                or (inst:IsA("LuaSourceContainer") and "file") or nil
+            if clsIcon then
+                lucideIcon(row, clsIcon, 12, Theme.Palette.TextMuted, x + 16, 0)
+            else
+                new("Frame", {
+                    Position = UDim2.new(0, x + 18, 0.5, -4), Size = UDim2.new(0, 8, 0, 8),
+                    BackgroundColor3 = iconColor(inst), BorderSizePixel = 0,
+                    ZIndex = 205, Parent = row,
+                }, { corner(2) })
+            end
             new("TextLabel", {
                 Text = inst.Name, FontFace = Theme.Fonts.Medium,
                 TextSize = Theme.Text.Body, TextColor3 = Theme.Palette.Text,
@@ -13127,7 +13161,7 @@ end)()
             local function expand()
                 if kidsBox then return end
                 isOpen = true
-                caret.Text = "\u{25BE}"
+                setCaret(true)
                 kidsBox = new("Frame", {
                     Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
                     BackgroundTransparency = 1, LayoutOrder = 2,
@@ -13149,7 +13183,7 @@ end)()
             -- whose Frames were already destroyed and build orphans.
             collapse = function()
                 isOpen = false
-                caret.Text = expandable and "\u{25B8}" or ""
+                setCaret(false)
                 for _, c in ipairs(builtKids) do
                     local n = nodes[c]
                     if n then n.dispose() end
@@ -20049,13 +20083,21 @@ addTab("Extra", function(epanel)
 
     local function entryId(srcId, sub, name) return srcId .. "|" .. sub .. "|" .. name end
     local function srcId()
-        if current.mode == "tool" then return "tool" end
+        if current.mode == "tool" then return "tool:" .. (current.toolName or "?") end
         return "path:" .. current.path
     end
     local function resolveRoot()
         if current.mode == "tool" then
             local ch = LocalPlayer and LocalPlayer.Character
-            return ch and ch:FindFirstChildOfClass("Tool") or nil
+            -- follow the gun into the backpack: Tools leave the character
+            -- on unequip, and pins silently dying with them is a trap.
+            local nm = current.toolName
+            local t = ch and nm and ch:FindFirstChild(nm)
+            if t and t:IsA("Tool") then return t end
+            local bp = LocalPlayer and LocalPlayer:FindFirstChildOfClass("Backpack")
+            t = bp and nm and bp:FindFirstChild(nm)
+            if t and t:IsA("Tool") then return t end
+            return nil
         elseif current.mode == "picked" then
             if current.inst and current.inst.Parent then return current.inst end
             if current.path ~= "" and Shared.resolvePath then
@@ -20112,6 +20154,31 @@ addTab("Extra", function(epanel)
         end
         return "?"
     end
+    -- v0.46.2: instant re-assert. Polling loses to games that rewrite the
+    -- value every frame (spread bloom) -- the changed signal wins it back
+    -- the same frame. Heartbeat re-hooks after round rebuilds.
+    local function unhookPin(pin)
+        if pin.conn then pcall(function() pin.conn:Disconnect() end) end
+        pin.conn, pin.hookInst = nil, nil
+    end
+    local function hookPin(pin, e)
+        unhookPin(pin)
+        local h = resolveEntry(e)
+        if not h then return end
+        local inst = e.isAttr and h.node or h
+        local sig = e.isAttr and h.node:GetAttributeChangedSignal(e.name)
+            or h:GetPropertyChangedSignal("Value")
+        if not sig then return end
+        pin.hookInst = inst
+        pin.conn = sig:Connect(function()
+            if not pin.on then return end
+            local cur = readEntry(e)
+            if cur ~= nil and pin.want ~= nil and cur ~= pin.want then
+                writeEntry(e, pin.want)
+            end
+        end)
+        if pin.want ~= nil then writeEntry(e, pin.want) end
+    end
     -- one row: pin toggle | name | live value | editor (box or bool flip).
     -- Enter in the box = set once now. Pin = hold against rewrites.
     local function buildRow(list, e, id, kind)
@@ -20132,7 +20199,7 @@ addTab("Extra", function(epanel)
             Text = pin.on and "on" or "off", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
             TextColor3 = pin.on and Theme.Palette.Accent or Theme.Palette.TextMuted,
             LayoutOrder = 1, ZIndex = 35, Parent = row,
-        }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+        }, { pillCorner() })
         new("TextLabel", {
             Text = (e.sub ~= "" and (e.sub .. ".") or "") .. e.name .. (e.isAttr and " *" or ""),
             FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
@@ -20163,8 +20230,9 @@ addTab("Extra", function(epanel)
             pin.on = not pin.on
             if pin.on then
                 snapOrig()
-                if pin.want ~= nil then writeEntry(e, pin.want) end
+                hookPin(pin, e)
             else
+                unhookPin(pin)
                 if pin.orig ~= nil then writeEntry(e, pin.orig) end
             end
             paintPin()
@@ -20176,7 +20244,7 @@ addTab("Extra", function(epanel)
                 Text = pin.want ~= nil and tostring(pin.want) or "set?",
                 FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
                 TextColor3 = Theme.Palette.Text, LayoutOrder = 4, ZIndex = 35, Parent = row,
-            }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+            }, { pillCorner() })
             flip.MouseButton1Click:Connect(function()
                 local v = readEntry(e)
                 pin.want = not (v == true)
@@ -20194,7 +20262,7 @@ addTab("Extra", function(epanel)
                 TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
                 BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
                 BorderSizePixel = 0, LayoutOrder = 4, ZIndex = 35, Parent = row,
-            }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+            }, { pillCorner() })
             box.FocusLost:Connect(function(enter)
                 if not enter then return end
                 local w = kind == "number" and tonumber(box.Text) or box.Text
@@ -20305,12 +20373,15 @@ addTab("Extra", function(epanel)
             BackgroundTransparency = 0.2, BorderSizePixel = 0, AutoButtonColor = false,
             Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, LayoutOrder = order, ZIndex = 35, Parent = bar,
-        }, { pillCorner(), stroke(Theme.Palette.BorderSubtle) })
+        }, { pillCorner() })
         b.MouseButton1Click:Connect(fn)
         return b
     end
     hdrBtn("held tool", 1, function()
-        current = { mode = "tool", inst = nil, path = "" }
+        local ch = LocalPlayer and LocalPlayer.Character
+        local tool = ch and ch:FindFirstChildOfClass("Tool")
+        current = { mode = "tool", toolName = tool and tool.Name or nil,
+                    inst = nil, path = "" }
         scan()
     end)
     hdrBtn("pick...", 2, function()
@@ -20325,6 +20396,7 @@ addTab("Extra", function(epanel)
     hdrBtn("rescan", 3, function() scan() end)
     hdrBtn("restore all", 4, function()
         for id, pin in pairs(pins) do
+            unhookPin(pin)
             if pin.orig ~= nil and rows[id] then
                 writeEntry(rows[id].entry, pin.orig)
             end
@@ -20368,8 +20440,15 @@ addTab("Extra", function(epanel)
                     r.cur.Text = "gone"
                 else
                     r.cur.Text = fmt(v)
-                    if pin.on and pin.want ~= nil and v ~= pin.want then
-                        writeEntry(r.entry, pin.want)
+                    if pin.on then
+                        -- re-hook after rebuilds (fresh instance, dead signal).
+                        local h = resolveEntry(r.entry)
+                        local inst = h and (r.entry.isAttr and h.node or h)
+                        if pin.conn == nil or pin.hookInst ~= inst then
+                            hookPin(pin, r.entry)
+                        elseif pin.want ~= nil and v ~= pin.want then
+                            writeEntry(r.entry, pin.want)
+                        end
                     end
                 end
             end
