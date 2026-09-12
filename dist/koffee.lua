@@ -1,7 +1,7 @@
--- koffee v0.42.0
+-- koffee v0.43.0
 
 local Koffee = {}
-Koffee.Version = "0.42.0"
+Koffee.Version = "0.43.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15500,7 +15500,7 @@ registerConfig("custom", Koffee.Custom)
         "Text", "Box", "Bar", "Line", "Circle", "Ring", "Image", "Group",
         "3D Ring", "3D Box",
         "Sound", "Notify", "Adorn Part", "Fire Remote", "Set Value",
-        "Teleport", "Set Humanoid", "Velocity", "Click",
+        "Teleport", "Set Humanoid", "Velocity", "TP Walk", "Click",
         "Koffee Toggle", "Koffee Set", "Build Buffer", "Note",
     }
     -- v0.32.0: shared scripting helpers. rayParams reused across Raycast evals;
@@ -17598,6 +17598,39 @@ registerConfig("custom", Koffee.Custom)
             api:slider("Up / Down", -200, 200, o.UpDown, 0, function(v) o.UpDown = v end)
             api:label("Set = held every frame. Add = one kick, re-arms on land")
             api:label("wire Direction (a world point) to steer; else it follows the camera")
+        end,
+    }
+
+    KINDS["TP Walk"] = {
+        blurb = "steps you forward in small teleports while yes (keeps your jump arc)",
+        sink = true,
+        ins = { { key = "when", type = "bool", label = "While" },
+                { key = "dir", type = "world", label = "Direction" },
+                { key = "speed", type = "number", label = "Speed" } },
+        outs = {},
+        opts = { Speed = 40, Mode = "Look Flat" },
+        -- v0.43.0: TP Walk's CFrame stepping as a graph block. Unlike Velocity
+        -- it never writes physics velocity, so gravity + jump arc run untouched.
+        paint = function(_, o, ins, node, ctx, dt)
+            local want = (ins.when and ins.when.bool) == true
+            if not want then return end
+            local hrp = myHRP()
+            if not hrp then return end
+            local speed = (ins.speed and ins.speed.number) or o.Speed or 0
+            local dir
+            if ins.dir and ins.dir.world then dir = ins.dir.world
+            else
+                local cam = Workspace.CurrentCamera
+                dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+                if o.Mode == "Look Flat" then dir = Vector3.new(dir.X, 0, dir.Z) end
+            end
+            dir = (dir.Magnitude > 0) and dir.Unit or Vector3.zero
+            hrp.CFrame = hrp.CFrame + dir * (speed * (dt or 1 / 60))
+        end,
+        ui = function(api, o)
+            api:dropdown("Direction", { "Look", "Look Flat" }, o.Mode, function(v) o.Mode = v end)
+            api:slider("Speed", 0, 500, o.Speed, 0, function(v) o.Speed = v end)
+            api:label("teleport steps, physics untouched -- jump, it carries you")
         end,
     }
 
