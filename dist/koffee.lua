@@ -1,7 +1,7 @@
--- koffee v0.45.0
+-- koffee v0.45.1
 
 local Koffee = {}
-Koffee.Version = "0.45.0"
+Koffee.Version = "0.45.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -47,7 +47,9 @@ pcall(function()
         end
     end)
 
-    pcall(function()
+    -- v0.45.1: only hook the global debug.info when Adonis was actually
+    -- found. Good ACs watch this primitive; hooking it blind is a flag.
+    if flagged then pcall(function()
         local realInfo = getrenv().debug.info
         local wrapper  = newcclosure or function(f) return f end
         local o; o = hookfunction(realInfo, wrapper(function(...)
@@ -58,7 +60,7 @@ pcall(function()
             end
             return o(...)
         end))
-    end)
+    end) end
 
     setthreadidentity(7)
 end)
@@ -79,6 +81,22 @@ pcall(function()
     local function noop() end
 
     task.spawn(function()
+        -- v0.45.1: presence-gated + deferred. The old code walked GC and hung
+        -- closures on every game, and the 8s WaitForChild grabs stalled load.
+        -- Now: nothing runs unless the pipeline remote exists, past boot.
+        task.wait(6)
+        local RS0 = game:GetService("ReplicatedStorage")
+        local present = false
+        pcall(function()
+            local remotes = RS0:FindFirstChild("Remotes")
+            local pipe = remotes and remotes:FindFirstChild("AnalyticsPipeline")
+            if pipe and pipe:FindFirstChild("RemoteEvent") then present = true return end
+            for _, d in ipairs(RS0:GetDescendants()) do
+                if d:IsA("RemoteEvent") and d.Parent
+                   and d.Parent.Name:find("Analytics", 1, true) then present = true break end
+            end
+        end)
+        if not present then return end
         local ok, gc = pcall(getgc)
         if ok and type(gc) == "table" then
             local n = 0
@@ -105,22 +123,19 @@ pcall(function()
         if not getconnections then return end
         local RS = game:GetService("ReplicatedStorage")
 
-        local function grab(parent, name)
-            if not parent then return nil end
-            local o, inst = pcall(function() return parent:WaitForChild(name, 8) end)
-            return o and inst or nil
-        end
-
-        local ev = grab(grab(grab(RS, "Remotes"), "AnalyticsPipeline"), "RemoteEvent")
-        if not ev then
-            local o, kids = pcall(function() return RS:GetDescendants() end)
-            if o then
-                for _, d in ipairs(kids) do
+        -- presence confirmed above; re-resolve the handle instantly, no waits.
+        local ev
+        pcall(function()
+            local remotes = RS:FindFirstChild("Remotes")
+            local pipe = remotes and remotes:FindFirstChild("AnalyticsPipeline")
+            ev = pipe and pipe:FindFirstChild("RemoteEvent")
+            if not ev then
+                for _, d in ipairs(RS:GetDescendants()) do
                     if d:IsA("RemoteEvent") and d.Parent
                        and d.Parent.Name:find("Analytics", 1, true) then ev = d break end
                 end
             end
-        end
+        end)
         if not ev then return end
 
         for pass = 1, 3 do
