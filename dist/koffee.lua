@@ -1,7 +1,7 @@
--- koffee v0.43.1
+-- koffee v0.43.2
 
 local Koffee = {}
-Koffee.Version = "0.43.1"
+Koffee.Version = "0.43.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15990,10 +15990,18 @@ registerConfig("custom", Koffee.Custom)
             local hum = ch and ch:FindFirstChildOfClass("Humanoid")
             -- v0.40.0: humanoid state. Grounded reads FloorMaterial (Air =
             -- airborne); State names the GetState enum.
+            -- v0.43.2: state leads FloorMaterial. Jumping/Freefall flip the
+            -- frame you press jump; FloorMaterial lags panels behind takeoff.
             local grounded = false
             if hum then
-                local ok, fm = pcall(function() return hum.FloorMaterial end)
-                grounded = ok and fm ~= Enum.Material.Air
+                local ok, st = pcall(function() return hum:GetState() end)
+                if ok and (st == Enum.HumanoidStateType.Jumping
+                    or st == Enum.HumanoidStateType.Freefall) then
+                    grounded = false
+                else
+                    local ok2, fm = pcall(function() return hum.FloorMaterial end)
+                    grounded = ok2 and fm ~= Enum.Material.Air
+                end
             end
             local f, num, txt = o.Field, nil, nil
             if f == "Name" then txt = plr.Name
