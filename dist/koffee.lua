@@ -1,7 +1,7 @@
--- koffee v0.45.1
+-- koffee v0.45.2
 
 local Koffee = {}
-Koffee.Version = "0.45.1"
+Koffee.Version = "0.45.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -20010,10 +20010,11 @@ addTab("Configs", function(root)
     rebuildManager()
 end)
 
--- Empty on purpose. Per He: these stay registered with no build function.
--- v0.22.0 removed them as "dead tabs", v0.23.1 put them back. Do not remove again.
+-- v0.45.2: Teams is now Extra, an empty shell for future sub-tabs (gun
+-- mods land here once mapped). NPC stays a placeholder. v0.23.1 restored
+-- both after a wrong removal; Teams goes only on He's explicit call.
 addTab("NPC")
-addTab("Teams")
+addTab("Extra")
 
 -- select first tab AFTER layout AND positioning have settled.
 -- v0.0.5 only checked AbsoluteSize -- but AbsolutePosition can still be zero
