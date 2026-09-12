@@ -1,7 +1,7 @@
--- koffee v0.44.0
+-- koffee v0.45.0
 
 local Koffee = {}
-Koffee.Version = "0.44.0"
+Koffee.Version = "0.45.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15491,7 +15491,7 @@ registerConfig("custom", Koffee.Custom)
     local ORDER = {
         "Target", "Self", "Part", "Number", "Text Value", "Colour", "Time",
         "Key Held", "Module State", "Game Info", "Camera", "Mouse", "Counter",
-        "Button", "Text Input",
+        "Button", "Text Input", "Stopwatch", "Snapshot",
         "Find Instance", "Read Value", "Find Child", "Player Part", "Raycast", "Interval",
         "For Each Player",
         "Visible", "Info", "Compare", "Math", "Logic", "Map Range", "Smooth",
@@ -15811,6 +15811,56 @@ registerConfig("custom", Koffee.Custom)
             api:dropdown("Mode", { "Ping-Pong", "Sine", "Seconds", "Blink" }, o.Mode,
                 function(v) o.Mode = v end)
             api:slider("Speed", 0, 10, o.Speed, 2, function(v) o.Speed = v end)
+        end,
+    }
+
+    KINDS.Stopwatch = {
+        blurb = "seconds since something became yes (resets when no)",
+        ins = { { key = "when", type = "bool", label = "When" } },
+        outs = { number = true, text = true, bool = true },
+        opts = {},
+        eval = function(o, ins, ctx, node)
+            local s = slot(node, ctx)
+            local want = (ins.when and ins.when.bool) == true
+            local now = os.clock()
+            if want then
+                if not s.on then s.on, s.t0 = true, now end
+            else
+                s.on, s.t0 = false, nil
+            end
+            local t = (s.on and s.t0) and (now - s.t0) or 0
+            return { number = t, text = string.format("%.2f", t), bool = want }
+        end,
+        ui = function(api, o)
+            api:label("counts up while When is yes, back to 0 when no")
+        end,
+    }
+
+    KINDS.Snapshot = {
+        blurb = "freezes its inputs the moment When flips yes -- a snapshot",
+        ins = { { key = "when", type = "bool", label = "When" },
+                { key = "world", type = "world", label = "World" },
+                { key = "num", type = "number", label = "Number" },
+                { key = "txt", type = "text", label = "Text" },
+                { key = "part", type = "part", label = "Instance" } },
+        outs = { world = true, number = true, text = true, part = true, bool = true },
+        opts = {},
+        eval = function(o, ins, ctx, node)
+            local s = slot(node, ctx)
+            local want = (ins.when and ins.when.bool) == true
+            if want and not s.prev then
+                s.w = ins.world and ins.world.world
+                s.n = ins.num and ins.num.number
+                s.t = ins.txt and ins.txt.text
+                s.p = ins.part and ins.part.part
+                s.got = true
+            end
+            s.prev = want
+            return { world = s.w, number = s.n or 0, text = s.t or "",
+                     part = s.p, bool = s.got == true }
+        end,
+        ui = function(api, o)
+            api:label("snapshots on the rising edge; bool = has one yet")
         end,
     }
 
