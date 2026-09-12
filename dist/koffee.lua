@@ -1,7 +1,7 @@
--- koffee v0.40.1
+-- koffee v0.41.0
 
 local Koffee = {}
-Koffee.Version = "0.40.1"
+Koffee.Version = "0.41.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15500,7 +15500,7 @@ registerConfig("custom", Koffee.Custom)
         "Text", "Box", "Bar", "Line", "Circle", "Ring", "Image", "Group",
         "3D Ring", "3D Box",
         "Sound", "Notify", "Adorn Part", "Fire Remote", "Set Value",
-        "Teleport", "Set Humanoid", "Set Velocity", "Click",
+        "Teleport", "Set Humanoid", "Velocity", "Click",
         "Koffee Toggle", "Koffee Set", "Build Buffer", "Note",
     }
     -- v0.32.0: shared scripting helpers. rayParams reused across Raycast evals;
@@ -17555,17 +17555,21 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
-    KINDS["Set Velocity"] = {
+    KINDS["Velocity"] = {
         blurb = "pushes you at a speed and direction while something is true (fly, speed)",
         sink = true,
         ins = { { key = "when", type = "bool", label = "While" },
                 { key = "dir", type = "world", label = "Direction" },
                 { key = "speed", type = "number", label = "Speed" } },
         outs = {},
-        opts = { Speed = 60, Mode = "Look", UpDown = 0 },
-        paint = function(_, o, ins)
+        opts = { Speed = 60, Mode = "Look", UpDown = 0, Apply = "Set" },
+        -- v0.41.0: Apply Set re-asserts every frame (the long-jump hold);
+        -- Add kicks once on the rising edge, then leaves physics alone
+        -- until re-armed (landing flips When false, resetting the edge).
+        paint = function(_, o, ins, node, ctx)
             local want = (ins.when and ins.when.bool) == true
-            if not want then return end
+            local s = slot(node, ctx)
+            if not want then s.prev = false; return end
             local hrp = myHRP()
             if not hrp then return end
             local speed = (ins.speed and ins.speed.number) or o.Speed or 0
@@ -17577,12 +17581,21 @@ registerConfig("custom", Koffee.Custom)
                 if o.Mode == "Look Flat" then dir = Vector3.new(dir.X, 0, dir.Z) end
             end
             dir = (dir.Magnitude > 0) and dir.Unit or Vector3.zero
-            hrp.AssemblyLinearVelocity = dir * speed + Vector3.new(0, o.UpDown or 0, 0)
+            local v = dir * speed + Vector3.new(0, o.UpDown or 0, 0)
+            if (o.Apply or "Set") == "Add" then
+                if s.prev then return end
+                s.prev = true
+                hrp.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity + v
+            else
+                hrp.AssemblyLinearVelocity = v
+            end
         end,
         ui = function(api, o)
             api:dropdown("Direction", { "Look", "Look Flat" }, o.Mode, function(v) o.Mode = v end)
+            api:dropdown("Apply", { "Set", "Add" }, o.Apply or "Set", function(v) o.Apply = v end)
             api:slider("Speed", 0, 500, o.Speed, 0, function(v) o.Speed = v end)
             api:slider("Up / Down", -200, 200, o.UpDown, 0, function(v) o.UpDown = v end)
+            api:label("Set = held every frame. Add = one kick, re-arms on land")
             api:label("wire Direction (a world point) to steer; else it follows the camera")
         end,
     }
@@ -18209,6 +18222,8 @@ registerConfig("custom", Koffee.Custom)
     -- the Text block's single "text" slot became "a" in v0.13.3
     local function migrate()
         for _, n in ipairs(CF.Nodes) do
+            -- v0.41.0: Set Velocity renamed to Velocity, old saves follow.
+            if n.kind == "Set Velocity" then n.kind = "Velocity" end
             local w = n.wires
             if w and w.text and not w.a then w.a = w.text; w.text = nil end
         end
@@ -18276,6 +18291,7 @@ registerConfig("custom", Koffee.Custom)
         for _, n in ipairs(CF.Nodes) do if n.id > base then base = n.id end end
         local map = {}
         for _, n in ipairs(data) do
+            if n.kind == "Set Velocity" then n.kind = "Velocity" end
             if type(n) == "table" and tonumber(n.id) and KINDS[n.kind] then
                 base = base + 1
                 map[n.id] = base
