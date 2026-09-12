@@ -1,7 +1,7 @@
--- koffee v0.39.1
+-- koffee v0.40.0
 
 local Koffee = {}
-Koffee.Version = "0.39.1"
+Koffee.Version = "0.40.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15981,13 +15981,20 @@ registerConfig("custom", Koffee.Custom)
     KINDS.Info = {
         blurb = "reads a detail off a player",
         ins = { { key = "player", type = "player", label = "Player" } },
-        outs = { text = true, number = true },
+        outs = { text = true, number = true, bool = true },
         opts = { Field = "Name", Decimals = 0 },
         eval = function(o, ins)
             local plr = ins.player and ins.player.player
-            if not plr then return { text = "", number = 0 } end
+            if not plr then return { text = "", number = 0, bool = false } end
             local ch = plr.Character
             local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            -- v0.40.0: humanoid state. Grounded reads FloorMaterial (Air =
+            -- airborne); State names the GetState enum. bool always = grounded.
+            local grounded = false
+            if hum then
+                local ok, fm = pcall(function() return hum.FloorMaterial end)
+                grounded = ok and fm ~= Enum.Material.Air
+            end
             local f, num, txt = o.Field, nil, nil
             if f == "Name" then txt = plr.Name
             elseif f == "Display Name" then txt = plr.DisplayName
@@ -16001,18 +16008,27 @@ registerConfig("custom", Koffee.Custom)
             elseif f == "Health 0-1" then
                 local mh = hum and hum.MaxHealth or 0
                 num = (hum and mh > 0) and (hum.Health / mh) or 0
+            elseif f == "State" then
+                local ok, st = pcall(function() return hum and hum:GetState() end)
+                txt = (ok and st and st.Name) or "none"
+            elseif f == "Grounded" then
+                num, txt = grounded and 1 or 0, grounded and "yes" or "no"
+            elseif f == "Airborne" then
+                num, txt = (not grounded) and 1 or 0, (not grounded) and "yes" or "no"
             end
             if num then
                 local m = 10 ^ math.max(math.floor(o.Decimals or 0), 0)
                 txt = tostring(math.floor(num * m + 0.5) / m)
             end
-            return { text = txt or "", number = num or 0 }
+            return { text = txt or "", number = num or 0, bool = grounded }
         end,
         ui = function(api, o)
             api:dropdown("Field", { "Name", "Display Name", "Team", "Distance",
-                "Health", "Max Health", "Health %", "Health 0-1" },
+                "Health", "Max Health", "Health %", "Health 0-1",
+                "State", "Grounded", "Airborne" },
                 o.Field, function(v) o.Field = v end)
             api:slider("Decimals", 0, 3, o.Decimals, 0, function(v) o.Decimals = v end)
+            api:label("State = Running, Jumping, Freefall... bool = grounded")
         end,
     }
 
