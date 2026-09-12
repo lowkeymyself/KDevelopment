@@ -1,7 +1,7 @@
--- koffee v0.41.0
+-- koffee v0.42.0
 
 local Koffee = {}
-Koffee.Version = "0.41.0"
+Koffee.Version = "0.42.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -15989,7 +15989,7 @@ registerConfig("custom", Koffee.Custom)
             local ch = plr.Character
             local hum = ch and ch:FindFirstChildOfClass("Humanoid")
             -- v0.40.0: humanoid state. Grounded reads FloorMaterial (Air =
-            -- airborne); State names the GetState enum. bool always = grounded.
+            -- airborne); State names the GetState enum.
             local grounded = false
             if hum then
                 local ok, fm = pcall(function() return hum.FloorMaterial end)
@@ -16020,9 +16020,10 @@ registerConfig("custom", Koffee.Custom)
                 local m = 10 ^ math.max(math.floor(o.Decimals or 0), 0)
                 txt = tostring(math.floor(num * m + 0.5) / m)
             end
-            -- v0.40.1: the bool follows the field -- Airborne inverts it, so
-            -- wiring Airborne.bool reads naturally instead of backwards.
-            local gate = (f == "Airborne") and (not grounded) or grounded
+            -- v0.42.0: bool follows the field. (The old one-liner read
+            -- `(A and B) or C` -- precedence kept it true on the ground.)
+            local gate = grounded
+            if f == "Airborne" then gate = not grounded end
             return { text = txt or "", number = num or 0, bool = gate }
         end,
         ui = function(api, o)
@@ -18963,18 +18964,44 @@ registerConfig("custom", Koffee.Custom)
         -- box instead of centering against the taller dropdown (it read as "too high").
         local barLayout = bar:FindFirstChildOfClass("UIListLayout")
         if barLayout then barLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom end
+        local function say(msg) note, noteAt = msg, os.clock() end
         local pick = ORDER[1]
         local ddw = new("Frame", {
             Size = UDim2.new(0, 216, 0, 48), BackgroundTransparency = 1,
             LayoutOrder = 1, ZIndex = 36, Parent = bar,
         })
-        dropdown(ddw, "block", ORDER, pick, function(v) pick = v end)
+        -- v0.42.0: filterable block picker. Typing rebuilds the dropdown
+        -- from matching ORDER names (plain substring); empty = full list.
+        local searchBox = new("TextBox", {
+            Size = UDim2.new(0, 110, 0, 26),
+            Text = "", PlaceholderText = "search",
+            ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, LayoutOrder = 0, ZIndex = 36, Parent = bar,
+        }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+        local pickDD = nil
+        local function rebuildPick()
+            local q = (searchBox.Text or ""):lower()
+            local opts = {}
+            for _, n in ipairs(ORDER) do
+                if q == "" or n:lower():find(q, 1, true) then opts[#opts + 1] = n end
+            end
+            if #opts == 0 then opts = { "(no match)" } end
+            local keep = false
+            for _, n in ipairs(opts) do if n == pick then keep = true break end end
+            pick = keep and pick or opts[1]
+            if pickDD then pickDD.destroy() end
+            pickDD = dropdown(ddw, "block", opts, pick, function(v) pick = v end)
+        end
+        searchBox:GetPropertyChangedSignal("Text"):Connect(rebuildPick)
+        rebuildPick()
         toolBtn(bar, "add block", 84, 2, function()
+            if not KINDS[pick] then say("nothing matches"); return end
             local x, y = freeSpot()
             sel = addNode(pick, x, y)
             rebuildAll()
         end)
-        local function say(msg) note, noteAt = msg, os.clock() end
         toolBtn(bar2, "duplicate", 78, 1, function()
             local n = sel and nodeById(sel)
             if not n then say("select a block first"); rebuildAll(); return end
