@@ -1,7 +1,7 @@
--- koffee v0.40.0
+-- koffee v0.40.1
 
 local Koffee = {}
-Koffee.Version = "0.40.0"
+Koffee.Version = "0.40.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -16020,7 +16020,10 @@ registerConfig("custom", Koffee.Custom)
                 local m = 10 ^ math.max(math.floor(o.Decimals or 0), 0)
                 txt = tostring(math.floor(num * m + 0.5) / m)
             end
-            return { text = txt or "", number = num or 0, bool = grounded }
+            -- v0.40.1: the bool follows the field -- Airborne inverts it, so
+            -- wiring Airborne.bool reads naturally instead of backwards.
+            local gate = (f == "Airborne") and (not grounded) or grounded
+            return { text = txt or "", number = num or 0, bool = gate }
         end,
         ui = function(api, o)
             api:dropdown("Field", { "Name", "Display Name", "Team", "Distance",
@@ -16028,7 +16031,7 @@ registerConfig("custom", Koffee.Custom)
                 "State", "Grounded", "Airborne" },
                 o.Field, function(v) o.Field = v end)
             api:slider("Decimals", 0, 3, o.Decimals, 0, function(v) o.Decimals = v end)
-            api:label("State = Running, Jumping, Freefall... bool = grounded")
+            api:label("State = Running, Jumping, Freefall... bool = gate")
         end,
     }
 
