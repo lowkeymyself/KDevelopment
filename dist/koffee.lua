@@ -1,7 +1,7 @@
--- koffee v0.45.3
+-- koffee v0.46.1
 
 local Koffee = {}
-Koffee.Version = "0.45.3"
+Koffee.Version = "0.46.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -20205,9 +20205,31 @@ addTab("Extra", function(epanel)
             end)
         end
     end
+    -- v0.46.1: common gun-value patterns. Substring match on the lowercase
+    -- name -- games rename everything, but ammo/damage/rate always read alike.
+    local COMMON_GUN = { "ammo", "clip", "mag", "reserve", "storedammo",
+        "bullet", "damage", "dmg", "headshot", "firerate", "rateoffire",
+        "rpm", "burst", "cooldown", "reload", "range", "falloff", "spread",
+        "recoil", "bloom", "kick", "auto", "suppres", "velocity", "equip",
+        "aim", "zoom", "fov", "penetrat", "pellet", "shot" }
+    local function isCommonGun(name)
+        local q = tostring(name):lower()
+        for _, p in ipairs(COMMON_GUN) do
+            if q:find(p, 1, true) then return true end
+        end
+        return false
+    end
+    local function sectionLbl(list, text)
+        new("TextLabel", {
+            Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Tiny,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 12), TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 34, Parent = list,
+        })
+    end
     local function scan()
         for _, c in ipairs(listBox:GetChildren()) do
-            if c:IsA("Frame") then c:Destroy() end
+            if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
         end
         rows = {}
         local root = resolveRoot()
@@ -20218,12 +20240,12 @@ addTab("Extra", function(epanel)
         end
         srcLabel.Text = (current.mode == "tool" and "tool: " or "instance: ") .. root.Name
         local sid = srcId()
-        local seen, n = {}, 0
+        local seen = {}
+        local common, rest = {}, {}
         local function add(sub, v, isAttr, aname)
             local key = sub .. "|" .. (isAttr and ("@" .. aname) or v.Name)
             if seen[key] then return end
             seen[key] = true
-            n = n + 1
             local kind = "string"
             if not isAttr then
                 kind = v:IsA("BoolValue") and "bool"
@@ -20235,7 +20257,8 @@ addTab("Extra", function(epanel)
                 if at ~= "number" and at ~= "boolean" and at ~= "string" then return end
             end
             local e = { sub = sub, name = isAttr and aname or v.Name, isAttr = isAttr }
-            buildRow(listBox, e, entryId(sid, sub, e.name), kind)
+            local bucket = isCommonGun(e.name) and common or rest
+            bucket[#bucket + 1] = { e = e, kind = kind }
         end
         for _, c in ipairs(root:GetChildren()) do
             if c:IsA("IntValue") or c:IsA("NumberValue")
@@ -20258,7 +20281,17 @@ addTab("Extra", function(epanel)
                 end
             end
         end
-        if n == 0 then srcLabel.Text = root.Name .. " -- no tunable values" end
+        local function emit(bucket)
+            for _, item in ipairs(bucket) do
+                buildRow(listBox, item.e, entryId(sid, item.e.sub, item.e.name), item.kind)
+            end
+        end
+        if #common + #rest == 0 then
+            srcLabel.Text = root.Name .. " -- no tunable values"
+            return
+        end
+        if #common > 0 then sectionLbl(listBox, "common") emit(common) end
+        if #rest > 0 then sectionLbl(listBox, "everything else") emit(rest) end
     end
     -- header: source buttons + rescan + restore-all.
     local bar = new("Frame", {
