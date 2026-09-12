@@ -1,7 +1,7 @@
--- koffee v0.45.2
+-- koffee v0.45.3
 
 local Koffee = {}
-Koffee.Version = "0.45.2"
+Koffee.Version = "0.45.3"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -497,6 +497,25 @@ do
         Koffee._assetsReady = true
     end
 end
+
+-- Hood Customs speed-anchor neutra. Framework anchors YOUR hrp for 1s when
+-- horizontal velocity >= 100 (private-server toggle). Un-anchor on sight;
+-- fly/velocity reassert motion per frame, so the stop never sticks. CFrame
+-- fly uses head.Anchored, TP Walk touches nothing -- neither is disturbed.
+if game.PlaceId == 9825515356 then pcall(function()
+    -- chunk locals (RunService/LocalPlayer) don't exist this early; resolve
+    -- everything off game so the neutra actually runs instead of no-op'ing.
+    local rs = game:GetService("RunService")
+    local ps = game:GetService("Players")
+    if not (rs and ps) then return end
+    rs.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
+        local lp = ps.LocalPlayer
+        local ch = lp and lp.Character
+        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+        if hrp and hrp.Anchored then pcall(function() hrp.Anchored = false end) end
+    end)
+end) end
 
 -- v0.0.96 EXECUTOR PROFILING + SAFE MODE PROMPT. Weak executors crash when
 -- silent aim installs the full __namecall hook (newcclosure+hookmetamethod is a
