@@ -1,7 +1,7 @@
--- koffee v0.51.1
+-- koffee v0.52.0
 
 local Koffee = {}
-Koffee.Version = "0.51.1"
+Koffee.Version = "0.52.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -216,6 +216,14 @@ do
     for i = 1, 4 do TK_SOUNDS[#TK_SOUNDS + 1] = { "moan " .. i,      "moan/moan-" .. i } end
     -- v0.10.0: particle art for the 3D world FX + hit effects
     local FXTEX = { "fx_dot", "fx_flake", "fx_petal", "fx_shard", "fx_star", "fx_streak" }
+    -- Lucide line icons (from latte-soft/lucide-roblox, re-hosted). Tinted at use
+    -- time via ImageColor3, so the shipped PNGs stay palette-neutral.
+    local ICONS = {
+        "x", "plus", "minus", "check", "search", "list", "ban", "box",
+        "folder", "folder-open", "folder-plus", "chevron-right", "chevron-down",
+        "eye", "eye-off", "trash-2", "pencil", "crosshair", "target",
+        "user", "users", "rotate-cw", "refresh-cw", "circle-plus", "sliders-horizontal",
+    }
     local MANIFEST = {
         { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
         { name = "font: minecraft bold",   path = "Koffee/fonts/MinecraftBold.otf",     url = BASE .. "MinecraftBold.otf",     min = 512 },
@@ -246,6 +254,14 @@ do
             path = "Koffee/fx/" .. t .. ".png",
             url  = BASE .. t .. ".png",
             min  = 256,
+        })
+    end
+    for _, ic in ipairs(ICONS) do
+        table.insert(MANIFEST, {
+            name = "icon: " .. ic,
+            path = "Koffee/icons/" .. ic .. ".png",
+            url  = BASE .. "icons/" .. ic .. ".png",
+            min  = 128,
         })
     end
 
@@ -1164,19 +1180,46 @@ Koffee.LUCIDE = {
     pin    = { 16898731819, 514, 257 },
     check  = { 16898617411, 257, 0 },
 }
+-- v0.52.0: self-hosted Lucide PNGs (koffee-assets/icons/*.png, downloaded by the
+-- preloader). Resolve once per session via getcustomasset; "" if unavailable so
+-- lucideIcon can fall back to the spritesheet map above.
+Koffee._iconCache = {}
+function Koffee.icon(name)
+    local c = Koffee._iconCache[name]
+    if c ~= nil then return c end
+    local id, path = "", "Koffee/icons/" .. name .. ".png"
+    if getcustomasset and ((not isfile) or isfile(path)) then
+        local ok, r = pcall(getcustomasset, path)
+        if ok and type(r) == "string" then id = r end
+    end
+    Koffee._iconCache[name] = id
+    return id
+end
 function Koffee.lucideIcon(parent, name, px, color, z)
-    local d = Koffee.LUCIDE[name]
-    if not d then return nil end
-    return new("ImageLabel", {
-        Image = "rbxassetid://" .. d[1],
-        ImageRectOffset = Vector2.new(d[2], d[3]),
-        ImageRectSize = Vector2.new(256, 256),
-        ImageColor3 = color or Color3.new(1, 1, 1),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Size = UDim2.new(0, px, 0, px),
-        ZIndex = z or 37, Parent = parent,
-    })
+    -- prefer the self-hosted full-image PNG (no rect); fall back to spritesheet;
+    -- else a blank image, so callers can always index the returned label safely.
+    local selfId = Koffee.icon(name)
+    local props
+    if selfId ~= "" then
+        props = { Image = selfId }
+    else
+        local d = Koffee.LUCIDE[name]
+        if d then
+            props = { Image = "rbxassetid://" .. d[1],
+                ImageRectOffset = Vector2.new(d[2], d[3]),
+                ImageRectSize = Vector2.new(256, 256) }
+        else
+            props = { Image = "" }
+        end
+    end
+    props.ImageColor3 = color or Color3.new(1, 1, 1)
+    props.BackgroundTransparency = 1
+    props.BorderSizePixel = 0
+    props.AnchorPoint = Vector2.new(0.5, 0.5)
+    props.Size = UDim2.new(0, px, 0, px)
+    props.ZIndex = z or 37
+    props.Parent = parent
+    return new("ImageLabel", props)
 end
 local function stroke(color, thick)
     return new("UIStroke", {
@@ -9579,7 +9622,7 @@ local Combat = {
         Smooth        = { Enabled = false, X = 1.0, Y = 1.0 },
         -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
         -- v0.51.0: Deadzone holds the mouse while the point sits close.
-        Legit         = { Jitter = 0, Overshoot = 0, Reaction = 0, Deadzone = 0 },
+        Legit         = { Enabled = false, Jitter = 0, Overshoot = 0, Reaction = 0, Deadzone = 0, PartMode = "Single Part", Parts = {} },
         _target       = nil,
         _rageLock     = nil,   -- locked ragebot victim (held for the key duration)
     },
@@ -9843,6 +9886,10 @@ local Combat = {
     -- does not flicker every frame. Absent pool entries read enabled.
     local function poolPick(char, plr, cfg, center)
         local L = cfg.Legit
+        -- v0.52.0: aim's Legit is master-gated, so its part pool only applies when
+        -- Legit is on (else the Aimbot tab's single Hit Part wins). Silent's Legit
+        -- has no Enabled field, so it is never gated here.
+        if L and L.Enabled == false then return nil end
         local mode = L and L.PartMode or "Single Part"
         if mode == "Single Part" then return nil end
         local pool = L and L.Parts
@@ -9946,6 +9993,46 @@ local Combat = {
                                             bestScore, best, bestPart = score, plr, part
                                         end
                                     end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        -- v0.52.0: NPC entities join the same scoring, minus team / friend / lock.
+        -- targetEntities honours the folder's per-feature exclusions.
+        if Shared.NPC then
+            local feat = (cfg == Combat.Silent) and "Silent" or "Aimbot"
+            for _, e in ipairs(Shared.NPC.targetEntities(feat)) do
+                local char, hum = e.char, e.hum
+                if char and hum and hum.Health > 0
+                    and ((not cfg.HealthCheck) or healthOk(char, hum)) then
+                    local part = aimPart(char, cfg.HitPart)
+                    if part then
+                        part = poolPick(char, e.wrapper, cfg, center) or part
+                        local worldDist = (part.Position - camPos).Magnitude
+                        if worldDist <= (cfg.Distance or math.huge) then
+                            local sp = cam:WorldToViewportPoint(part.Position)
+                            local pass, crossDist
+                            if cfg.BehindCam then
+                                pass, crossDist = true, worldDist
+                            elseif sp.Z > 0 then
+                                crossDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                                pass = crossDist <= maxRadius
+                            end
+                            if pass and not (cfg.VisibleCheck and occluded(char, camPos, part.Position)) then
+                                local pri = cfg.Priority
+                                local score
+                                if pri == "Nearest" or pri == "Distance" or cfg.BehindCam then
+                                    score = worldDist
+                                elseif pri == "Health" then
+                                    score = hum.Health / math.max(hum.MaxHealth or 100, 1)
+                                else
+                                    score = crossDist
+                                end
+                                if score < bestScore then
+                                    bestScore, best, bestPart = score, e.wrapper, part
                                 end
                             end
                         end
@@ -10911,8 +10998,9 @@ local Combat = {
             local a = math.random() * math.pi * 2
             LG._osPlr, LG._osX, LG._osY, LG._osAt = plr, math.cos(a), math.sin(a), now
         end
-        if (LG.Reaction or 0) > 0 and (now - (LG._acqAt or now)) * 1000 < LG.Reaction then return end
-        if ((LG.Jitter or 0) > 0 or (LG.Overshoot or 0) > 0) and cam then
+        -- v0.52.0: the whole legit kit is gated behind the Legit master toggle.
+        if LG.Enabled and (LG.Reaction or 0) > 0 and (now - (LG._acqAt or now)) * 1000 < LG.Reaction then return end
+        if LG.Enabled and ((LG.Jitter or 0) > 0 or (LG.Overshoot or 0) > 0) and cam then
             local toT = tpos - cam.CFrame.Position
             local dist = toT.Magnitude
             if dist > 1e-3 then
@@ -10936,7 +11024,7 @@ local Combat = {
         -- pixels of the aim center, touch nothing. The mouse only moves once
         -- the target truly leaves it. Sticky stays locked throughout.
         local dz = LG.Deadzone or 0
-        if dz > 0 and cam then
+        if LG.Enabled and dz > 0 and cam then
             local dsp = cam:WorldToViewportPoint(tpos)
             if dsp.Z > 0 then
                 local dd = (Vector2.new(dsp.X, dsp.Y) - aimCenter).Magnitude
@@ -12322,7 +12410,7 @@ local Combat = {
 
         -- :: LEFT COLUMN ::
         local leftCard = panel(leftCol)
-        local L = subTabs(leftCard, { "Aimbot", "Prediction", "Smoothness", "Legit", "FOV" })
+        local L = subTabs(leftCard, { "Aimbot", "Prediction", "Legit", "FOV" })
 
         -- Aimbot
         local aimRow = moduleCheckbox(L.Aimbot, "Enabled", "aimbot")
@@ -12360,18 +12448,25 @@ local Combat = {
         slider(L.Prediction, "X (Division)", 0.1, 10, Combat.Aim.Predict.X, 2, function(v) Combat.Aim.Predict.X = v end)
         slider(L.Prediction, "Y (Division)", 0.1, 10, Combat.Aim.Predict.Y, 2, function(v) Combat.Aim.Predict.Y = v end)
 
-        -- Smoothness
-        configCheckbox(L.Smoothness, "Enabled", Combat.Aim.Smooth.Enabled, function(v) Combat.Aim.Smooth.Enabled = v end)
-        slider(L.Smoothness, "Smoothness X", 0.1, 20, Combat.Aim.Smooth.X, 1, function(v) Combat.Aim.Smooth.X = v end)
-        slider(L.Smoothness, "Smoothness Y", 0.1, 20, Combat.Aim.Smooth.Y, 1, function(v) Combat.Aim.Smooth.Y = v end)
-
-        -- v0.50.0 legit kit: human frailty as sliders. Jitter scatters the aim
-        -- point by true angle; Overshoot starts past the target and glides on;
-        -- Reaction holds fire on fresh locks. All zero by default.
+        -- v0.52.0 Legit tab. Master toggle gates the frailty kit + the part pool,
+        -- so the Aimbot tab's single Hit Part and this tab's multi-part pool never
+        -- both apply. Smoothness moved here (its own enable) as a legit behaviour.
+        configCheckbox(L.Legit, "Enabled", Combat.Aim.Legit.Enabled, function(v) Combat.Aim.Legit.Enabled = v end)
         slider(L.Legit, "Jitter (deg)", 0, 5, Combat.Aim.Legit.Jitter, 1, function(v) Combat.Aim.Legit.Jitter = v end)
         slider(L.Legit, "Overshoot (deg)", 0, 10, Combat.Aim.Legit.Overshoot, 1, function(v) Combat.Aim.Legit.Overshoot = v end)
         slider(L.Legit, "Reaction (ms)", 0, 500, Combat.Aim.Legit.Reaction, 0, function(v) Combat.Aim.Legit.Reaction = v end)
         slider(L.Legit, "Deadzone (px)", 0, 50, Combat.Aim.Legit.Deadzone, 0, function(v) Combat.Aim.Legit.Deadzone = v end)
+        configCheckbox(L.Legit, "Smoothing", Combat.Aim.Smooth.Enabled, function(v) Combat.Aim.Smooth.Enabled = v end)
+        slider(L.Legit, "Smoothness X", 0.1, 20, Combat.Aim.Smooth.X, 1, function(v) Combat.Aim.Smooth.X = v end)
+        slider(L.Legit, "Smoothness Y", 0.1, 20, Combat.Aim.Smooth.Y, 1, function(v) Combat.Aim.Smooth.Y = v end)
+        dropdown(L.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, Combat.Aim.Legit.PartMode,
+            function(v) Combat.Aim.Legit.PartMode = v end)
+        for _, pname in ipairs(HITPARTS) do
+            local nm = pname
+            configCheckbox(L.Legit, nm, Combat.Aim.Legit.Parts[nm] ~= false, function(v)
+                Combat.Aim.Legit.Parts[nm] = v
+            end)
+        end
 
         -- FOV (shared control set)
         buildFovTab(L.FOV, Combat.Aim.FOV, Combat.Aim)
@@ -20708,10 +20803,655 @@ addTab("Configs", function(root)
     rebuildManager()
 end)
 
--- v0.45.2: Teams is now Extra, an empty shell for future sub-tabs (gun
--- mods land here once mapped). NPC stays a placeholder. v0.23.1 restored
--- both after a wrong removal; Teams goes only on He's explicit call.
-addTab("NPC")
+-- v0.52.0: NPC subsystem. Adds custom models (or whole directories) as targets
+-- so aimbot, silent aim and a dedicated ESP treat them like players. Own IIFE
+-- for its register budget; publishes Shared.NPC for the Combat engine to read.
+;(function()
+local NPC = { Entries = {}, Folders = {}, _nid = 0, _fid = 0 }
+Shared.NPC = NPC
+local UIS = game:GetService("UserInputService")
+
+local function newFolderSettings()
+    return {
+        DisplayName = "",
+        Color = Theme.Palette.Accent,
+        Exclude = { ESP = false, Aimbot = false, Silent = false },
+        Scale = 1.0,
+        YOff = 0,
+        Rules = {},
+    }
+end
+local DEFAULTS = newFolderSettings()
+
+-- :: re-acquire ::
+-- A model deleted and re-added (even renamed) is matched by class shape under
+-- its old parent, so its folder + settings survive within a session.
+local function signature(inst)
+    if not inst then return "" end
+    local counts = {}
+    for _, ch in ipairs(inst:GetChildren()) do
+        counts[ch.ClassName] = (counts[ch.ClassName] or 0) + 1
+    end
+    local keys = {}
+    for k in pairs(counts) do keys[#keys + 1] = k end
+    table.sort(keys)
+    local parts = { inst.ClassName }
+    for _, k in ipairs(keys) do parts[#parts + 1] = k .. ":" .. counts[k] end
+    return table.concat(parts, ",")
+end
+local function findBySig(parent, sig)
+    if not parent then return nil end
+    for _, ch in ipairs(parent:GetChildren()) do
+        if ch:IsA("Model") and signature(ch) == sig then return ch end
+    end
+    return nil
+end
+
+local function folderById(id)
+    for _, f in ipairs(NPC.Folders) do if f.id == id then return f end end
+    return nil
+end
+local function settingsFor(entry)
+    local f = entry.folderId and folderById(entry.folderId)
+    return (f and f.settings) or DEFAULTS
+end
+
+local function resolveEntry(entry)
+    local inst = entry._inst
+    if not (inst and inst.Parent) then
+        inst = Shared.resolvePath(entry.path)
+        if not (inst and inst.Parent) then
+            local parent = entry._parentPath and Shared.resolvePath(entry._parentPath)
+            inst = (parent and findBySig(parent, entry.sig)) or nil
+        end
+        entry._inst = inst
+        if inst then entry.path = Shared.pathOf(inst); entry.name = inst.Name end
+    end
+    if not inst then return {} end
+    if entry.kind == "dir" then
+        local out = {}
+        for _, ch in ipairs(inst:GetChildren()) do
+            if ch:IsA("Model") and ch:FindFirstChildOfClass("Humanoid") then out[#out + 1] = ch end
+        end
+        return out
+    end
+    return { inst }
+end
+
+-- read a value off a model for a Name or Health rule (child value, attribute,
+-- or a direct property). Missing reads return nil so the default is kept.
+local function readByRule(model, rule)
+    if not (model and rule and rule.key and rule.key ~= "") then return nil end
+    local src = rule.src or "child"
+    if src == "attribute" then
+        return model:GetAttribute(rule.key)
+    elseif src == "property" then
+        local ok, v = pcall(function() return model[rule.key] end)
+        return ok and v or nil
+    end
+    local ch = model:FindFirstChild(rule.key, true)
+    if not ch then return nil end
+    local ok, v = pcall(function() return ch.Value end)
+    if ok and v ~= nil then return v end
+    return ch.Name
+end
+
+local function wrapperFor(entry, model)
+    entry._wrappers = entry._wrappers or {}
+    local w = entry._wrappers[model]
+    if not w then
+        w = { Character = model, Name = model.Name, DisplayName = model.Name, _npc = true }
+        entry._wrappers[model] = w
+    end
+    return w
+end
+
+-- flat list of live NPC entities, TTL-memoised so aim + silent + trigger + ESP
+-- share one resolve per frame. Each row quacks like a player for the engine.
+function NPC.entities()
+    local now = os.clock()
+    if NPC._cache and (now - (NPC._cacheAt or 0)) < 0.03 then return NPC._cache end
+    local out = {}
+    for _, entry in ipairs(NPC.Entries) do
+        local m = Modules[entry.moduleId]
+        if m and m.Enabled then
+            local st = settingsFor(entry)
+            for _, model in ipairs(resolveEntry(entry)) do
+                local hum = model:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    local nm = st.DisplayName ~= "" and st.DisplayName or model.Name
+                    local hp = hum.Health
+                    for _, rule in ipairs(st.Rules) do
+                        if rule.kind == "Name" then
+                            local v = readByRule(model, rule)
+                            if v ~= nil then nm = tostring(v) end
+                        elseif rule.kind == "Health" then
+                            local v = tonumber(readByRule(model, rule))
+                            if v then hp = v end
+                        end
+                    end
+                    local w = wrapperFor(entry, model)
+                    w.Name, w.DisplayName = nm, nm
+                    out[#out + 1] = {
+                        wrapper = w, char = model, hum = hum, name = nm, health = hp,
+                        exclude = st.Exclude, color = st.Color, scale = st.Scale, yoff = st.YOff,
+                    }
+                end
+            end
+        end
+    end
+    NPC._cache, NPC._cacheAt = out, now
+    return out
+end
+function NPC.targetEntities(feature)
+    local out = {}
+    for _, e in ipairs(NPC.entities()) do
+        if not (e.exclude and e.exclude[feature]) then out[#out + 1] = e end
+    end
+    return out
+end
+
+-- :: dedicated NPC ESP (player ESP is deeply player-keyed, left untouched) ::
+local espLayer = KID.track(new("Folder", { Name = KID.name("npc_esp"), Parent = screen }))
+local espPool = {}
+local function espItem(model)
+    local it = espPool[model]
+    if it then return it end
+    local box = new("Frame", {
+        BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false, ZIndex = 10, Parent = espLayer,
+    }, { stroke(Theme.Palette.Accent, 1) })
+    local nameL = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Bold, TextSize = 13, TextColor3 = Theme.Palette.Text,
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 0, -16),
+        ZIndex = 11, Parent = box,
+    }, { textStroke(Color3.new(0, 0, 0), 1) })
+    local infoL = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Mono, TextSize = 11, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, 2),
+        ZIndex = 11, Parent = box,
+    }, { textStroke(Color3.new(0, 0, 0), 1) })
+    it = { box = box, nameL = nameL, infoL = infoL }
+    espPool[model] = it
+    return it
+end
+RunService.RenderStepped:Connect(function()
+    if Koffee.dead() then return end
+    local cam = Workspace.CurrentCamera
+    local seen = {}
+    if cam and NPC.Enabled ~= false then
+        local camPos = cam.CFrame.Position
+        for _, e in ipairs(NPC.entities()) do
+            if not (e.exclude and e.exclude.ESP) then
+                local model = e.char
+                local okbb, cf, size = pcall(function() return model:GetBoundingBox() end)
+                if okbb and cf and size then
+                    local sc = e.scale or 1
+                    local hx, hy, hz = size.X * 0.5 * sc, size.Y * 0.5 * sc, size.Z * 0.5 * sc
+                    local center = cf.Position + Vector3.new(0, e.yoff or 0, 0)
+                    local base = cf - cf.Position + center
+                    local minx, miny, maxx, maxy, front = math.huge, math.huge, -math.huge, -math.huge, 0
+                    for xi = -1, 1, 2 do for yi = -1, 1, 2 do for zi = -1, 1, 2 do
+                        local sp = cam:WorldToViewportPoint(base * Vector3.new(hx * xi, hy * yi, hz * zi))
+                        if sp.Z > 0 then
+                            front = front + 1
+                            if sp.X < minx then minx = sp.X end
+                            if sp.Y < miny then miny = sp.Y end
+                            if sp.X > maxx then maxx = sp.X end
+                            if sp.Y > maxy then maxy = sp.Y end
+                        end
+                    end end end
+                    if front >= 4 and maxx > minx and maxy > miny then
+                        seen[model] = true
+                        local it = espItem(model)
+                        it.box.Position = UDim2.fromOffset(minx, miny)
+                        it.box.Size = UDim2.fromOffset(maxx - minx, maxy - miny)
+                        it.box.Visible = true
+                        local uis = it.box:FindFirstChildOfClass("UIStroke")
+                        if uis then uis.Color = e.color or Theme.Palette.Accent end
+                        it.nameL.Text = e.name
+                        it.nameL.TextColor3 = e.color or Theme.Palette.Text
+                        it.infoL.Text = string.format("%d hp  %dm",
+                            math.floor(e.health or 0), math.floor((center - camPos).Magnitude + 0.5))
+                    end
+                end
+            end
+        end
+    end
+    for model, it in pairs(espPool) do
+        if not seen[model] then
+            if not (model and model.Parent) then it.box:Destroy(); espPool[model] = nil
+            else it.box.Visible = false end
+        end
+    end
+end)
+
+-- :: model preview + profile viewport ::
+local function makeViewport(parent, model, opts)
+    opts = opts or {}
+    local vp = new("ViewportFrame", {
+        BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.2,
+        Size = opts.size or UDim2.fromOffset(40, 40), LayoutOrder = opts.order or 0,
+        ZIndex = opts.z or 11, Parent = parent,
+    }, { corner(opts.round or 6), stroke(Theme.Palette.BorderSubtle) })
+    local cam = new("Camera", { Parent = vp })
+    vp.CurrentCamera = cam
+    local okc, clone = pcall(function() return model:Clone() end)
+    if not okc or not clone then return vp end
+    clone.Parent = vp
+    local cf, size = model:GetBoundingBox()
+    local center, radius = cf.Position, math.max(size.X, size.Y, size.Z)
+    if opts.top then
+        center = cf.Position + Vector3.new(0, size.Y * 0.30, 0)
+        radius = math.max(size.X, size.Y * 0.55)
+    end
+    local dist = radius * (opts.zoom or 1.6) + 2
+    local function look(angle)
+        local off = Vector3.new(math.sin(angle), 0.15, math.cos(angle)) * dist
+        cam.CFrame = CFrame.lookAt(center + off, center)
+    end
+    look(opts.angle or 0)
+    if opts.spin then
+        local a, conn = 0, nil
+        conn = RunService.RenderStepped:Connect(function(dt)
+            if Koffee.dead() or not vp.Parent then conn:Disconnect(); return end
+            a = a + dt * 1.2
+            look(a)
+        end)
+    end
+    return vp
+end
+local function openPreview(model)
+    local holder = new("Frame", {
+        Size = UDim2.fromOffset(240, 264), BackgroundColor3 = Theme.Palette.Panel,
+        BorderSizePixel = 0, ZIndex = 250, Parent = popupScreen,
+    }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
+    local mp = UIS:GetMouseLocation()
+    local vpx = math.clamp(mp.X, 8, math.max(8, workspace.CurrentCamera.ViewportSize.X - 248))
+    local vpy = math.clamp(mp.Y, 8, math.max(8, workspace.CurrentCamera.ViewportSize.Y - 272))
+    holder.Position = UDim2.fromOffset(vpx, vpy)
+    new("TextLabel", {
+        Text = model.Name, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -44, 0, 16), ZIndex = 251, Parent = holder,
+    })
+    local closeBtn = new("TextButton", {
+        Text = "", BackgroundColor3 = Theme.Palette.Pill, Size = UDim2.fromOffset(22, 22),
+        Position = UDim2.new(1, -28, 0, 6), ZIndex = 251, Parent = holder,
+    }, { corner(6) })
+    Koffee.lucideIcon(closeBtn, "x", 13, Theme.Palette.TextMuted)
+    closeBtn.MouseButton1Click:Connect(function() holder:Destroy() end)
+    makeViewport(holder, model, {
+        size = UDim2.new(1, -20, 1, -44), z = 251, spin = true,
+    }).Position = UDim2.fromOffset(10, 34)
+end
+
+-- :: entry / folder mutation ::
+local function addEntry(inst, kind)
+    NPC._nid = NPC._nid + 1
+    local id = NPC._nid
+    local entry = {
+        id = id, kind = kind, path = Shared.pathOf(inst),
+        _parentPath = inst.Parent and Shared.pathOf(inst.Parent) or nil,
+        sig = signature(inst), name = inst.Name, folderId = nil, _inst = inst,
+        moduleId = "npc_" .. id,
+    }
+    registerModule(entry.moduleId, "npc: " .. inst.Name, function() end, function() end)
+    NPC.Entries[#NPC.Entries + 1] = entry
+    toggleModule(entry.moduleId)   -- active by default (also lists it in the arraylist)
+    return entry
+end
+local function removeEntry(entry)
+    local m = Modules[entry.moduleId]
+    if m and m.Enabled then toggleModule(entry.moduleId) end
+    for i, e in ipairs(NPC.Entries) do if e == entry then table.remove(NPC.Entries, i) break end end
+end
+local function addFolder(name)
+    NPC._fid = NPC._fid + 1
+    local f = { id = NPC._fid, name = name or ("Folder " .. NPC._fid), settings = newFolderSettings() }
+    NPC.Folders[#NPC.Folders + 1] = f
+    return f
+end
+local function removeFolder(f)
+    for _, e in ipairs(NPC.Entries) do if e.folderId == f.id then e.folderId = nil end end
+    for i, x in ipairs(NPC.Folders) do if x == f then table.remove(NPC.Folders, i) break end end
+end
+
+-- :: small UI helpers (mkBtn / labelRow are tab-local elsewhere) ::
+local function clearKids(f)
+    for _, c in ipairs(f:GetChildren()) do
+        if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then c:Destroy() end
+    end
+end
+local function hintRow(parent, s, order)
+    return new("TextLabel", {
+        Text = s, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left, AutomaticSize = Enum.AutomaticSize.Y,
+        Size = UDim2.new(1, 0, 0, 14), LayoutOrder = order or 0, Parent = parent,
+    })
+end
+local function iconBtn(parent, icon, tip, cb, order)
+    local b = new("TextButton", {
+        Text = "", BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+        Size = UDim2.fromOffset(22, 22), LayoutOrder = order or 0, Parent = parent,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+    Koffee.lucideIcon(b, icon, 13, Theme.Palette.TextMuted)
+    b.MouseButton1Click:Connect(cb)
+    if tip and tip ~= "" then b.Name = tip end
+    return b
+end
+local function textBtn(parent, label, cb, order)
+    local b = new("TextButton", {
+        Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+        AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 26), LayoutOrder = order or 0, Parent = parent,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }) })
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
+local function textInput(parent, placeholder, initial, order, onCommit)
+    local tb = new("TextBox", {
+        Text = initial or "", PlaceholderText = placeholder, ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+        PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
+        BackgroundTransparency = 0.15, Size = UDim2.new(1, 0, 0, 26), TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = order or 0, Parent = parent,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+    tb.FocusLost:Connect(function() onCommit(tb.Text) end)
+    return tb
+end
+local function vlist(parent, pad, order, width)
+    return new("Frame", {
+        Size = width or UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, LayoutOrder = order or 0, Parent = parent,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+        Padding = UDim.new(0, pad or 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+end
+local function hrow(parent, height, order)
+    return new("Frame", {
+        Size = UDim2.new(1, 0, 0, height or 26), BackgroundTransparency = 1, LayoutOrder = order or 0, Parent = parent,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+end
+
+-- :: PICKER sub-tab ::
+local function buildPicker(host, onChange)
+    hintRow(host, "Scan finds models with a Humanoid. Add one, or Browse to pick any model or directory. Right-click a result for a 360 preview.", 0)
+    local controls = hrow(host, 28, 1)
+    local listWrap = new("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 0, 240), BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.35,
+        BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.TextFaint,
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 2, Parent = host,
+    }, { corner(6), new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+        PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
+        new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+    local function scanCandidates()
+        local out, seen = {}, {}
+        local function consider(m)
+            if m:IsA("Model") and m ~= LocalPlayer.Character and not seen[m]
+                and m:FindFirstChildOfClass("Humanoid") then
+                local isPlayer = false
+                for _, pl in ipairs(Players:GetPlayers()) do
+                    if pl.Character == m then isPlayer = true break end
+                end
+                if not isPlayer then seen[m] = true; out[#out + 1] = m end
+            end
+        end
+        for _, c in ipairs(Workspace:GetChildren()) do
+            consider(c)
+            if c:IsA("Folder") or c:IsA("Model") then
+                for _, gc in ipairs(c:GetChildren()) do consider(gc) end
+            end
+        end
+        return out
+    end
+
+    local function candRow(model)
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = 0.4, BorderSizePixel = 0, Parent = listWrap,
+        }, { corner(6) })
+        makeViewport(row, model, { size = UDim2.fromOffset(32, 32), round = 6, top = true }).Position = UDim2.new(0, 4, 0.5, -16)
+        new("TextLabel", {
+            Text = model.Name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.new(0, 44, 0, 0),
+            Size = UDim2.new(1, -140, 1, 0), Parent = row,
+        })
+        local addB = new("TextButton", {
+            Text = "Add", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Background, BackgroundColor3 = Theme.Palette.Accent, AutoButtonColor = true,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(56, 26), Parent = row,
+        }, { corner(6) })
+        addB.MouseButton1Click:Connect(function()
+            addEntry(model, "model")
+            addB.Text = "Added"
+            if onChange then onChange() end
+        end)
+        row.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton2 then openPreview(model) end
+        end)
+    end
+
+    local function rescan()
+        for _, c in ipairs(listWrap:GetChildren()) do
+            if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then c:Destroy() end
+        end
+        local found = scanCandidates()
+        if #found == 0 then hintRow(listWrap, "No Humanoid models found in Workspace. Use Browse.", 0) return end
+        for _, m in ipairs(found) do candRow(m) end
+    end
+
+    textBtn(controls, "Scan", rescan, 1)
+    textBtn(controls, "Browse", function()
+        if not Shared.openInstancePicker then return end
+        Shared.openInstancePicker(function(inst)
+            if not inst then return end
+            local kind = (inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid")) and "model" or "dir"
+            addEntry(inst, kind)
+            if onChange then onChange() end
+        end, { anyInstance = true, title = "Pick an NPC model or a directory",
+            subtitle = "A Humanoid model becomes one NPC; any other container becomes a directory of NPCs." })
+    end, 2)
+    rescan()
+end
+
+-- :: MANAGER sub-tab ::
+local function buildManager(host)
+    local selected = nil   -- selected folder (settings target)
+    local expanded = {}
+    local cols = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = host,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 10),
+        SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local left = vlist(cols, 6, 1, UDim2.new(0.52, -5, 0, 0))
+    local right = vlist(cols, 6, 2, UDim2.new(0.48, -5, 0, 0))
+    local listBox = nil
+    local rebuild, showSettings
+
+    local function entryRow(parent, entry, indent)
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = 0.5, BorderSizePixel = 0, Parent = parent,
+        }, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, indent or 8), PaddingRight = UDim.new(0, 6) }),
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+                VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        Koffee.lucideIcon(row, entry.kind == "dir" and "folder-open" or "user", 14, Theme.Palette.TextMuted).LayoutOrder = 0
+        new("TextLabel", {
+            Text = entry.name, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -70, 1, 0), LayoutOrder = 1, Parent = row,
+        })
+        -- assign to / remove from a folder. Its own wrapper so rightClickSettings
+        -- (which grabs the first TextButton it finds) targets exactly this button.
+        local assignWrap = new("Frame", {
+            Size = UDim2.fromOffset(22, 22), BackgroundTransparency = 1, LayoutOrder = 2, Parent = row,
+        })
+        local assignBtn = new("TextButton", {
+            Text = "", BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true, Size = UDim2.fromScale(1, 1), Parent = assignWrap,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        Koffee.lucideIcon(assignBtn, "folder", 13, Theme.Palette.TextMuted)
+        rightClickSettings(assignWrap, "Assign folder", function(api)
+            local names = { "None" }
+            for _, f in ipairs(NPC.Folders) do names[#names + 1] = f.name end
+            local cur = "None"
+            if entry.folderId then local f = folderById(entry.folderId); if f then cur = f.name end end
+            api:dropdown("Folder", names, cur, function(v)
+                if v == "None" then entry.folderId = nil
+                else
+                    for _, f in ipairs(NPC.Folders) do if f.name == v then entry.folderId = f.id break end end
+                end
+                rebuild()
+            end)
+        end, true)
+        iconBtn(row, "trash-2", "remove", function() removeEntry(entry); rebuild() end, 3)
+    end
+
+    local function folderHeader(parent, folder)
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = Theme.Palette.Pill,
+            BackgroundTransparency = (selected == folder) and 0.1 or 0.5, BorderSizePixel = 0, Parent = parent,
+        }, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+                VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local chev = iconBtn(row, expanded[folder.id] and "chevron-down" or "chevron-right", "", function()
+            expanded[folder.id] = not expanded[folder.id]; rebuild()
+        end, 0)
+        chev.BackgroundTransparency = 1
+        -- name is a button so the whole label selects the folder (no overlay button,
+        -- which a horizontal UIListLayout would lay out inline instead of stacking).
+        local nameBtn = new("TextButton", {
+            Text = folder.name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
+            AutoButtonColor = false, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, -96, 1, 0), LayoutOrder = 1, Parent = row,
+        })
+        nameBtn.MouseButton1Click:Connect(function() selected = folder; showSettings(); rebuild() end)
+        iconBtn(row, "pencil", "rename", function()
+            nameBtn.Visible = false
+            local tb = textInput(row, "folder name", folder.name, 1, function(t)
+                if t ~= "" then folder.name = t end
+                rebuild()
+            end)
+            tb.Size = UDim2.new(1, -96, 0, 22)
+            tb:CaptureFocus()
+        end, 2)
+        iconBtn(row, "trash-2", "delete folder", function()
+            if selected == folder then selected = nil; showSettings() end
+            removeFolder(folder); rebuild()
+        end, 3)
+    end
+
+    rebuild = function()
+        clearKids(left)
+        textBtn(left, "New Folder", function() local f = addFolder(); expanded[f.id] = true; rebuild() end, 0)
+        listBox = vlist(left, 4, 1)
+        for _, folder in ipairs(NPC.Folders) do
+            folderHeader(listBox, folder)
+            if expanded[folder.id] then
+                local any = false
+                for _, e in ipairs(NPC.Entries) do
+                    if e.folderId == folder.id then entryRow(listBox, e, 20); any = true end
+                end
+                if not any then hintRow(listBox, "  (empty, assign NPCs from Ungrouped)", 0) end
+            end
+        end
+        -- ungrouped
+        local ung = {}
+        for _, e in ipairs(NPC.Entries) do if not e.folderId then ung[#ung + 1] = e end end
+        if #ung > 0 then
+            new("TextLabel", {
+                Text = "Ungrouped", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                Size = UDim2.new(1, 0, 0, 16), Parent = listBox,
+            })
+            for _, e in ipairs(ung) do entryRow(listBox, e, 8) end
+        end
+        if #NPC.Entries == 0 then hintRow(listBox, "No NPCs yet. Add some in the Picker tab.", 0) end
+    end
+
+    showSettings = function()
+        clearKids(right)
+        if not selected then
+            hintRow(right, "Select a folder to edit its name, exclusions, offsets and rules.", 0)
+            return
+        end
+        local f, st = selected, selected.settings
+        new("TextLabel", {
+            Text = "Folder: " .. f.name, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 0, Parent = right,
+        })
+        -- right panel uses pure creation order (all LayoutOrder 0), like the rest
+        -- of the file: sliders never set LayoutOrder, so mixing explicit orders in
+        -- would jump them to the top.
+        hintRow(right, "Display name (blank uses the model name):", 0)
+        textInput(right, "override name", st.DisplayName, 0, function(t) st.DisplayName = t end)
+        local cRow = hrow(right, 20, 0)
+        new("TextLabel", {
+            Text = "ESP Color", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, -30, 1, 0), LayoutOrder = 0, Parent = cRow,
+        })
+        colorSwatch(cRow, st.Color, 16, { onChange = function(c) st.Color = c end })
+        configCheckbox(right, "Exclude from ESP", st.Exclude.ESP, function(v) st.Exclude.ESP = v end)
+        configCheckbox(right, "Exclude from Aimbot", st.Exclude.Aimbot, function(v) st.Exclude.Aimbot = v end)
+        configCheckbox(right, "Exclude from Silent", st.Exclude.Silent, function(v) st.Exclude.Silent = v end)
+        slider(right, "ESP Scale", 0.2, 3, st.Scale, 2, function(v) st.Scale = v end)
+        slider(right, "Vertical Offset", -10, 10, st.YOff, 1, function(v) st.YOff = v end)
+        hintRow(right, "Rules read a value off each model (child .Value, attribute, or property):", 0)
+        local ruleBox = vlist(right, 4, 0)
+        local addRow = hrow(right, 26, 0)
+        local function drawRules()
+            clearKids(ruleBox)
+            for _, rule in ipairs(st.Rules) do
+                local rr = hrow(ruleBox, 26, 0)
+                new("TextLabel", {
+                    Text = rule.kind, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                    TextColor3 = Theme.Palette.Accent, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                    Size = UDim2.fromOffset(52, 22), LayoutOrder = 0, Parent = rr,
+                })
+                local dd = dropdown(rr, "", { "child", "attribute", "property" }, rule.src or "child",
+                    function(v) rule.src = v end)
+                dd.frame.Size = UDim2.fromOffset(90, 26)
+                dd.frame.LayoutOrder = 1
+                local ti = textInput(rr, "key / name", rule.key, 2, function(t) rule.key = t end)
+                ti.Size = UDim2.new(1, -180, 0, 26)
+                iconBtn(rr, "trash-2", "remove rule", function()
+                    for i, x in ipairs(st.Rules) do if x == rule then table.remove(st.Rules, i) break end end
+                    drawRules()
+                end, 3)
+            end
+        end
+        textBtn(addRow, "+ Name Rule", function()
+            st.Rules[#st.Rules + 1] = { kind = "Name", src = "child", key = "" }; drawRules()
+        end, 0)
+        textBtn(addRow, "+ Health Rule", function()
+            st.Rules[#st.Rules + 1] = { kind = "Health", src = "child", key = "" }; drawRules()
+        end, 1)
+        drawRules()
+    end
+
+    rebuild()
+    showSettings()
+    return rebuild
+end
+
+function NPC.buildTab(root)
+    local card = panel(root)
+    local S = Shared.subTabs(card, { "Picker", "Manager" })
+    local managerRebuild
+    buildPicker(S.Picker, function() if managerRebuild then managerRebuild() end end)
+    managerRebuild = buildManager(S.Manager)
+end
+end)()
+
+-- v0.45.2: Teams is now Extra. NPC now has a real builder (v0.52.0); the IIFE
+-- above owns the subsystem and publishes Shared.NPC.buildTab.
+addTab("NPC", function(root) Shared.NPC.buildTab(root) end)
 -- v0.46.0: Extra grows its first sub-tab, Mods: the universal stat mod
 -- from gun research. Pick a source (held tool / any instance), tick values,
 -- pin them held or set-once. Session-only, unpin to restore.
