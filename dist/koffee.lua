@@ -1,7 +1,7 @@
--- koffee v0.58.1
+-- koffee v0.58.2
 
 local Koffee = {}
-Koffee.Version = "0.58.1"
+Koffee.Version = "0.58.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -21271,16 +21271,23 @@ addTab("Configs", function(root)
         autoStatusLbl.TextColor3 = ok and Theme.Palette.Success or Theme.Palette.Danger
     end
 
+    -- compact add row: a scope pill (toggles This Game / Global), a fixed Add Rule
+    -- button, and a muted label naming the config the button will pin.
     local addRow = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 50), BackgroundTransparency = 1, LayoutOrder = 3, ZIndex = 35, Parent = autoCard,
+        Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, LayoutOrder = 3, ZIndex = 35, Parent = autoCard,
     }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
-        VerticalAlignment = Enum.VerticalAlignment.Bottom, SortOrder = Enum.SortOrder.LayoutOrder }) })
-    local scopeHolder = new("Frame", {
-        Size = UDim2.new(0, 150, 0, 48), BackgroundTransparency = 1, LayoutOrder = 1, ZIndex = 36, Parent = addRow,
-    })
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
     local scopeVal = "This Game"
-    dropdown(scopeHolder, "Scope", { "This Game", "Global" }, scopeVal, function(v) scopeVal = v end)
-    local addBtn = mkBtn(addRow, "Add Rule", 92, function()
+    local scopePill = new("TextButton", {
+        Text = "This Game", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.Accent, BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+        Size = UDim2.fromOffset(104, 26), LayoutOrder = 1, ZIndex = 36, Parent = addRow,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+    scopePill.MouseButton1Click:Connect(function()
+        scopeVal = (scopeVal == "This Game") and "Global" or "This Game"
+        scopePill.Text = scopeVal
+    end)
+    local addBtn = mkBtn(addRow, "Add Rule", 84, function()
         if not (hasConfigs and selectedName) then setAutoStatus("Select a config above first", false); return end
         if scopeVal == "Global" then CIO.autoSetGlobal(selectedName); setAutoStatus("Global auto-load: " .. selectedName, true)
         else CIO.autoSetGame(selectedName); setAutoStatus("This game auto-load: " .. selectedName, true) end
@@ -21288,6 +21295,11 @@ addTab("Configs", function(root)
         refreshAutoLabel()
     end, true)
     addBtn.LayoutOrder = 2
+    local selInfo = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+        Size = UDim2.new(1, -204, 1, 0), LayoutOrder = 3, ZIndex = 35, Parent = addRow,
+    })
 
     local rulesList = new("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
@@ -21296,7 +21308,7 @@ addTab("Configs", function(root)
         SortOrder = Enum.SortOrder.LayoutOrder }) })
 
     refreshAuto = function()
-        addBtn.Text = (hasConfigs and selectedName) and ("Add: " .. selectedName) or "Add Rule"
+        selInfo.Text = (hasConfigs and selectedName) and ("-> " .. selectedName) or "(select a config above)"
         for _, c in ipairs(rulesList:GetChildren()) do
             if not c:IsA("UIListLayout") then c:Destroy() end
         end
