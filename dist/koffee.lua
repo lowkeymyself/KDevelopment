@@ -1,7 +1,7 @@
--- koffee v0.53.1
+-- koffee v0.54.0
 
 local Koffee = {}
-Koffee.Version = "0.53.1"
+Koffee.Version = "0.54.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -2830,7 +2830,7 @@ local function rebuildTabPanel(name)
 end
 rebuildConfigTabs = function()
     for _, m in pairs(Modules) do m.Watchers = {} end
-    for _, n in ipairs({ "Visuals", "Combat", "World", "Character", "Custom", "Options" }) do
+    for _, n in ipairs({ "Visuals", "Combat", "World", "Character", "Custom", "Options", "NPC" }) do
         rebuildTabPanel(n)
     end
 end
@@ -4640,7 +4640,10 @@ end
 -- where a missing key means "this config predates the field", not "unset it".
 -- v0.13.0: Custom Features' node array is REPLACE too: it's a list, so merging
 -- would resurrect every node the user deleted since the config was written.
-local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true }
+-- v0.54.0: NPC Entries / Folders / a folder's Rules are lists, so REPLACE like
+-- Nodes: merging would resurrect entries/rules the user deleted since the save.
+local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true,
+    Entries = true, Folders = true, Rules = true }
 local function applyInto(target, src)
     for k, v in pairs(src) do
         if type(v) == "table" and type(target[k]) == "table" then
@@ -4665,6 +4668,9 @@ local function loadSnapshot(data)
             if target and type(tbl) == "table" then applyInto(target, tbl) end
         end
     end
+    -- v0.54.0: NPC entries loaded above carry no modules yet; register them before
+    -- the module-enable loop below so their saved on/off state can re-apply.
+    if Shared.NPC and Shared.NPC.reconcile then pcall(Shared.NPC.reconcile) end
     -- per-game custom-anim list (place 155615604): a config saved in another
     -- game can carry an animation Name that doesn't exist in THIS game's list.
     -- Snap it before the tab rebuild renders the dropdown (reads the live
@@ -5182,6 +5188,7 @@ registerConfig("esp_colors",     ESP.Colors)
     N.Config.ColorMode = "Gradient"
     N.Config.GradientColorA2 = Color3.fromRGB(120, 230, 140)
     N.Config.GradientColorB2 = Color3.fromRGB(18, 26, 22)
+    N.Config.MasterOn = false   -- v0.54.0: NPC ESP master gate, persisted with the config
     Shared.NPCESP = N
     local KEYS = { "Config", "Render", "Boxes", "Names", "Indicators", "Health", "Tracer", "Colors" }
     function Shared.espSwap(bundle)
@@ -5193,7 +5200,6 @@ registerConfig("esp_colors",     ESP.Colors)
         for _, k in ipairs(KEYS) do ESP[k] = saved[k] end
     end
 end)()
-Shared.NPCEspOn = false   -- master gate for the NPC ESP renderer
 registerConfig("npc_esp_config",     Shared.NPCESP.Config)
 registerConfig("npc_esp_render",     Shared.NPCESP.Render)
 registerConfig("npc_esp_boxes",      Shared.NPCESP.Boxes)
@@ -7234,7 +7240,7 @@ end
     local npcRigs = {}
     function Shared.updateNpcRigs(cam, camPos)
         local NPC = Shared.NPC
-        if not (Shared.NPCEspOn and NPC and NPC.entities) then
+        if not (Shared.NPCESP and Shared.NPCESP.Config.MasterOn and NPC and NPC.entities) then
             for m, r in pairs(npcRigs) do cleanRig(r.rig); npcRigs[m] = nil end
             return
         end
@@ -20966,6 +20972,35 @@ end)
 ;(function()
 local NPC = { Entries = {}, Folders = {}, _nid = 0, _fid = 0 }
 Shared.NPC = NPC
+-- v0.54.0: persist entries + folders. The serializer skips underscore keys
+-- (_inst/_wrappers/_cache/_nid/_fid) and functions, so only kind/path/sig/name/
+-- parentPath/folderId/moduleId + folder name/settings save. Lists REPLACE on load.
+registerConfig("npc", NPC)
+function NPC.reconcile()
+    -- after a config load: re-register each entry's module so its saved on/off
+    -- state can re-apply below, retire modules for NPCs this config dropped (so
+    -- no ghost arraylist rows), and advance the id counters past the loaded max.
+    local present = {}
+    local maxN, maxF = NPC._nid or 0, NPC._fid or 0
+    for _, e in ipairs(NPC.Entries) do
+        if e.moduleId then
+            present[e.moduleId] = true
+            if not Modules[e.moduleId] then
+                registerModule(e.moduleId, "npc: " .. (e.name or "?"), function() end, function() end)
+            else
+                Modules[e.moduleId].DisplayName = "npc: " .. (e.name or "?")
+            end
+        end
+        if (e.id or 0) > maxN then maxN = e.id end
+    end
+    for id, m in pairs(Modules) do
+        if type(id) == "string" and id:sub(1, 4) == "npc_" and not present[id] and m.Enabled then
+            toggleModule(id)
+        end
+    end
+    for _, f in ipairs(NPC.Folders) do if (f.id or 0) > maxF then maxF = f.id end end
+    NPC._nid, NPC._fid = maxN, maxF
+end
 local UIS = game:GetService("UserInputService")
 
 local function newFolderSettings()
@@ -21017,7 +21052,7 @@ local function resolveEntry(entry)
     if not (inst and inst.Parent) then
         inst = Shared.resolvePath(entry.path)
         if not (inst and inst.Parent) then
-            local parent = entry._parentPath and Shared.resolvePath(entry._parentPath)
+            local parent = entry.parentPath and Shared.resolvePath(entry.parentPath)
             inst = (parent and findBySig(parent, entry.sig)) or nil
         end
         entry._inst = inst
@@ -21206,7 +21241,7 @@ local function addEntry(inst, kind)
     local id = NPC._nid
     local entry = {
         id = id, kind = kind, path = Shared.pathOf(inst),
-        _parentPath = inst.Parent and Shared.pathOf(inst.Parent) or nil,
+        parentPath = inst.Parent and Shared.pathOf(inst.Parent) or nil,
         sig = signature(inst), name = inst.Name, folderId = nil, _inst = inst,
         moduleId = "npc_" .. id,
     }
@@ -21608,7 +21643,7 @@ local function buildEspTab(host)
         })
         colorSwatch(r, get(), 16, { onChange = set })
     end
-    configCheckbox(host, "Enabled (NPC ESP master)", Shared.NPCEspOn, function(v) Shared.NPCEspOn = v end)
+    configCheckbox(host, "Enabled (NPC ESP master)", N.Config.MasterOn, function(v) N.Config.MasterOn = v end)
     hintRow(host, "NPC ESP mirrors player ESP with its own independent settings.", 0)
     configCheckbox(host, "Box", N.Boxes.Enabled, function(v) N.Boxes.Enabled = v end)
     dropdown(host, "Box Type", { "2D", "Cube" }, N.Boxes.BoxType, function(v) N.Boxes.BoxType = v end)
