@@ -1,7 +1,7 @@
--- koffee v0.50.0
+-- koffee v0.51.0
 
 local Koffee = {}
-Koffee.Version = "0.50.0"
+Koffee.Version = "0.51.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9578,7 +9578,8 @@ local Combat = {
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         Smooth        = { Enabled = false, X = 1.0, Y = 1.0 },
         -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
-        Legit         = { Jitter = 0, Overshoot = 0, Reaction = 0 },
+        -- v0.51.0: Deadzone holds the mouse while the point sits close.
+        Legit         = { Jitter = 0, Overshoot = 0, Reaction = 0, Deadzone = 0 },
         _target       = nil,
         _rageLock     = nil,   -- locked ragebot victim (held for the key duration)
     },
@@ -9600,6 +9601,9 @@ local Combat = {
         HeadOnly      = false,
         Reaction      = 0,        -- ms base, added to Delay
         Spread        = 0,        -- ms extra random, added to Delay
+        -- v0.51.0: HitChance gates the click itself. A failed roll still
+        -- pays the Release wait, so the cadence reads human either way.
+        HitChance     = 100,      -- %
         TeamCheck     = false,
         VisibleCheck  = false,
     },
@@ -9627,7 +9631,9 @@ local Combat = {
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
-        Legit         = { Jitter = 0, HitChance = 100 },
+        -- v0.51.0: PartMode picks from the enabled Parts pool; Spread sprays
+        -- the redirect in a disc. Empty pool means everything enabled.
+        Legit         = { Jitter = 0, HitChance = 100, PartMode = "Single Part", Parts = {}, Spread = 0 },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default: fire-read is always
         -- on. The ~90% of games that don't read mouse.Hit build their shot from
         -- Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON
@@ -9831,6 +9837,44 @@ local Combat = {
         return true
     end
 
+    -- v0.51.0 multi-part pool. Single Part keeps the Hit Part dropdown;
+    -- Closest Part takes the enabled pool part nearest the crosshair;
+    -- Random Part rolls one per target and holds it briefly, so the point
+    -- does not flicker every frame. Absent pool entries read enabled.
+    local function poolPick(char, plr, cfg, center)
+        local L = cfg.Legit
+        local mode = L and L.PartMode or "Single Part"
+        if mode == "Single Part" then return nil end
+        local pool = L and L.Parts
+        local names = {}
+        for _, n in ipairs(HITPARTS) do
+            if not pool or pool[n] ~= false then names[#names + 1] = n end
+        end
+        if #names == 0 then return nil end
+        if mode == "Random Part" then
+            local now = os.clock()
+            if L._rpPlr ~= plr or (now - (L._rpAt or 0)) > 0.4 then
+                L._rpPlr, L._rpAt = plr, now
+                L._rpName = names[math.random(#names)]
+            end
+            return aimPart(char, L._rpName)
+        end
+        local cam = Workspace.CurrentCamera
+        if not cam then return nil end
+        local bestP, bestD = nil, math.huge
+        for _, n in ipairs(names) do
+            local p = aimPart(char, n)
+            if p then
+                local sp = cam:WorldToViewportPoint(p.Position)
+                if sp.Z > 0 then
+                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if d < bestD then bestD, bestP = d, p end
+                end
+            end
+        end
+        return bestP
+    end
+
     -- returns player, part. maxRadius in screen px (math.huge = no FOV limit).
     local function getBestTarget(cfg, maxRadius, center)
         local cam = Workspace.CurrentCamera
@@ -9855,6 +9899,7 @@ local Combat = {
                        or Shared.targetLockPlayer() == plr then
                         local part = aimPart(char, cfg.HitPart)
                         if part then
+                            part = poolPick(char, plr, cfg, center) or part
                             local worldDist = (part.Position - camPos).Magnitude
                             if worldDist <= (cfg.Distance or math.huge) then
                                 local sp = cam:WorldToViewportPoint(part.Position)
@@ -10874,6 +10919,17 @@ local Combat = {
                 tpos = tpos + cf.RightVector * ox + cf.UpVector * oy
             end
         end
+        -- v0.51.0 deadzone: while the (fully humanized) point sits within N
+        -- pixels of the aim center, touch nothing. The mouse only moves once
+        -- the target truly leaves it. Sticky stays locked throughout.
+        local dz = LG.Deadzone or 0
+        if dz > 0 and cam then
+            local dsp = cam:WorldToViewportPoint(tpos)
+            if dsp.Z > 0 then
+                local dd = (Vector2.new(dsp.X, dsp.Y) - aimCenter).Magnitude
+                if dd <= dz then return end
+            end
+        end
 
         -- sensitivity (base pull) + optional per-axis smoothness (higher = slower)
         -- v0.0.86 sensitivity curve reshape. Was linear 0.01..1: 0.08 was already
@@ -11290,7 +11346,10 @@ local Combat = {
                 + math.random() * (Combat.Trigger.Spread or 0)
             if waitMs > 0 then task.wait(waitMs / 1000) end
             -- re-confirm right before firing (silent target might have died / crosshair moved)
-            if Combat.Trigger.Enabled and triggerShouldFire() then pcall(clickMouse) end
+            if Combat.Trigger.Enabled and triggerShouldFire() then
+                local hc = Combat.Trigger.HitChance or 100
+                if math.random(100) <= hc then pcall(clickMouse) end
+            end
             if Combat.Trigger.Release > 0 then task.wait(Combat.Trigger.Release / 1000) end
             trigBusy = false
         end)
@@ -11637,6 +11696,19 @@ local Combat = {
                     (math.random() * 2 - 1) * sj,
                     (math.random() * 2 - 1) * sj,
                     (math.random() * 2 - 1) * sj)
+            end
+            -- v0.51.0 fake spread: lateral disc around the point, uniform area,
+            -- so bursts walk like real spray instead of stacking one hole.
+            local spread = Combat.Silent.Legit.Spread or 0
+            if spread > 0 then
+                local sc = Workspace.CurrentCamera
+                if sc then
+                    local cf = sc.CFrame
+                    local a = math.random() * math.pi * 2
+                    local rr = math.sqrt(math.random()) * spread
+                    silentPos = silentPos
+                        + (cf.RightVector * math.cos(a) + cf.UpVector * math.sin(a)) * rr
+                end
             end
             -- v0.0.39: cache the real camera + target's screen point so the fire-read
             -- resolvers never re-read Camera.* inside the __index hook (recursion).
@@ -12274,6 +12346,7 @@ local Combat = {
         slider(L.Legit, "Jitter (deg)", 0, 5, Combat.Aim.Legit.Jitter, 1, function(v) Combat.Aim.Legit.Jitter = v end)
         slider(L.Legit, "Overshoot (deg)", 0, 10, Combat.Aim.Legit.Overshoot, 1, function(v) Combat.Aim.Legit.Overshoot = v end)
         slider(L.Legit, "Reaction (ms)", 0, 500, Combat.Aim.Legit.Reaction, 0, function(v) Combat.Aim.Legit.Reaction = v end)
+        slider(L.Legit, "Deadzone (px)", 0, 50, Combat.Aim.Legit.Deadzone, 0, function(v) Combat.Aim.Legit.Deadzone = v end)
 
         -- FOV (shared control set)
         buildFovTab(L.FOV, Combat.Aim.FOV, Combat.Aim)
@@ -12554,6 +12627,18 @@ local Combat = {
         -- studs; Hit Chance fires a clean shot on failed rolls. Both calm.
         slider(R.Legit, "Jitter (studs)", 0, 5, Combat.Silent.Legit.Jitter, 1, function(v) Combat.Silent.Legit.Jitter = v end)
         slider(R.Legit, "Hit Chance (%)", 1, 100, Combat.Silent.Legit.HitChance, 0, function(v) Combat.Silent.Legit.HitChance = v end)
+        -- v0.51.0 hit part pool. Single Part keeps the Hit Part dropdown;
+        -- Closest and Random draw from the ticked pool below (unticked parts
+        -- never picked).
+        dropdown(R.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, Combat.Silent.Legit.PartMode,
+            function(v) Combat.Silent.Legit.PartMode = v end)
+        for _, pname in ipairs(HITPARTS) do
+            local nm = pname
+            configCheckbox(R.Legit, nm, Combat.Silent.Legit.Parts[nm] ~= false, function(v)
+                Combat.Silent.Legit.Parts[nm] = v
+            end)
+        end
+        slider(R.Legit, "Spread (studs)", 0, 5, Combat.Silent.Legit.Spread, 1, function(v) Combat.Silent.Legit.Spread = v end)
 
         -- FOV (same shared control set as the aimbot side)
         buildFovTab(R.FOV, Combat.Silent.FOV, Combat.Silent)
@@ -12574,6 +12659,7 @@ local Combat = {
         configCheckbox(trigCard, "Head Only", Combat.Trigger.HeadOnly, function(v) Combat.Trigger.HeadOnly = v end)
         slider(trigCard, "Reaction (ms)", 0, 500, Combat.Trigger.Reaction, 0, function(v) Combat.Trigger.Reaction = v end)
         slider(trigCard, "Reaction Spread (ms)", 0, 500, Combat.Trigger.Spread, 0, function(v) Combat.Trigger.Spread = v end)
+        slider(trigCard, "Hit Chance (%)", 1, 100, Combat.Trigger.HitChance, 0, function(v) Combat.Trigger.HitChance = v end)
     end)
     -- v0.1.0: the Options tab (built in this file's shared scope, outside this
     -- IIFE) reads Combat state + the sound instances during unload; hand them up
