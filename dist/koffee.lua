@@ -1,7 +1,7 @@
--- koffee v0.48.1
+-- koffee v0.48.2
 
 local Koffee = {}
-Koffee.Version = "0.48.1"
+Koffee.Version = "0.48.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1150,7 +1150,8 @@ local function pillCorner() return new("UICorner", { CornerRadius = UDim.new(1, 
 
 -- v0.47.0: lucide glyphs, chunk-wide. Spritesheet slices from
 -- latte-soft/lucide-roblox (MIT/ISC); ImageRect crops one glyph each.
-local LUCIDE = {
+-- v0.48.2: Koffee fields, not chunk locals (register ceiling -- see Anim).
+Koffee.LUCIDE = {
     ["chevron-right"] = { 16898617509, 0, 514 },
     ["chevron-down"]  = { 16898617411, 514, 257 },
     ["chevron-up"]    = { 16898617509, 514, 514 },
@@ -1163,8 +1164,8 @@ local LUCIDE = {
     pin    = { 16898731819, 514, 257 },
     check  = { 16898617411, 257, 0 },
 }
-local function lucideIcon(parent, name, px, color, z)
-    local d = LUCIDE[name]
+function Koffee.lucideIcon(parent, name, px, color, z)
+    local d = Koffee.LUCIDE[name]
     if not d then return nil end
     return new("ImageLabel", {
         Image = "rbxassetid://" .. d[1],
@@ -3673,7 +3674,7 @@ local function chevron(parent, sizePx)
         ZIndex = 37,
         Parent = parent,
     })
-    local img = lucideIcon(root, "chevron-down", sizePx, Theme.Palette.TextMuted, 38)
+        local img = Koffee.lucideIcon(root, "chevron-down", sizePx, Theme.Palette.TextMuted, 38)
     if img then
         img.AnchorPoint = Vector2.new(0.5, 0.5)
         img.Position = UDim2.new(0.5, 0, 0.5, 0)
@@ -13352,12 +13353,12 @@ end)()
             local isOpen = false
             local caretImg = nil
             if expandable then
-                caretImg = lucideIcon(row, "chevron-right", 12, Theme.Palette.TextMuted, 205)
+                caretImg = Koffee.lucideIcon(row, "chevron-right", 12, Theme.Palette.TextMuted, 205)
                 caretImg.Position = UDim2.new(0, x + 2, 0.5, 0)
             end
             local function setCaret(open)
                 if not caretImg then return end
-                local d = open and LUCIDE["chevron-down"] or LUCIDE["chevron-right"]
+                local d = open and Koffee.LUCIDE["chevron-down"] or Koffee.LUCIDE["chevron-right"]
                 caretImg.Image = "rbxassetid://" .. d[1]
                 caretImg.ImageRectOffset = Vector2.new(d[2], d[3])
             end
@@ -13365,7 +13366,7 @@ end)()
                 or (inst:IsA("BasePart") and "box")
                 or (inst:IsA("LuaSourceContainer") and "file") or nil
             if clsIcon then
-                local ci = lucideIcon(row, clsIcon, 12, Theme.Palette.TextMuted, 205)
+                local ci = Koffee.lucideIcon(row, clsIcon, 12, Theme.Palette.TextMuted, 205)
                 if ci then ci.Position = UDim2.new(0, x + 16, 0.5, 0) end
             else
                 new("Frame", {
@@ -19566,7 +19567,7 @@ registerConfig("custom", Koffee.Custom)
             BorderSizePixel = 0, LayoutOrder = 0, ZIndex = 36, Parent = bar,
         }, { corner(4), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingLeft = UDim.new(0, 24) }) })
-        local searchIcon = lucideIcon(searchBox, "search", 12, Theme.Palette.TextFaint, 37)
+        local searchIcon = Koffee.lucideIcon(searchBox, "search", 12, Theme.Palette.TextFaint, 37)
         if searchIcon then
             searchIcon.AnchorPoint = Vector2.new(0, 0.5)
             searchIcon.Position = UDim2.new(0, 7, 0.5, 0)
