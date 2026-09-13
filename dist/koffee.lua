@@ -6246,6 +6246,11 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
         -- v0.0.28: cap depth in the oriented (torso-local) frame so a forward
         -- reach doesn't bloat the projected width.
         if refCF then size = Vector3.new(size.X, size.Y, math.min(size.Z, size.X)) end
+    elseif character:IsA("BasePart") then
+        -- v0.56.0: a bare-Part NPC has no GetBoundingBox; its own CFrame + Size IS
+        -- the box, so project those 8 corners for an exact on-screen height/width.
+        cf = character.CFrame
+        size = character.Size
     else
         local ok, cframe, sz = pcall(character.GetBoundingBox, character)
         if not ok or not cframe then return nil, false, false end
@@ -6532,7 +6537,7 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     if headOn and pfpOn then
         -- v0.53.0: NPC rigs use a ViewportFrame pfp (no .Image, no UserId); the
         -- short-circuit keeps us from ever touching .Image on the viewport.
-        if not plr._npc and rig.pfp.Image == "" then
+        if not rig.isNPC and rig.pfp.Image == "" then
             rig.pfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
         end
         local pfpSize = pfpCfg.Size or 40
