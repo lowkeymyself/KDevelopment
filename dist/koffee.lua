@@ -1,7 +1,7 @@
--- koffee v0.55.0
+-- koffee v0.56.0
 
 local Koffee = {}
-Koffee.Version = "0.55.0"
+Koffee.Version = "0.56.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -6506,12 +6506,27 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     local cam = Workspace.CurrentCamera
     -- v0.0.26: project the head TOP (world) so the tags sit directly above the
     -- head on screen at any camera angle. Fall back to the torso if no head.
-    local head = rig.head
+    -- v0.56.0: an NPC has no "Head"; anchor its name to the TOP of its bounding
+    -- box (model or bare part) so the name always sits above the ESP box.
     local headTopWorld
-    if head and head.Parent then
-        headTopWorld = head.Position + Vector3.new(0, head.Size.Y * 0.5 + 0.4, 0)
-    else
-        headTopWorld = rig.torso.Position + Vector3.new(0, 2.6, 0)
+    if rig.isNPC then
+        local c = rig.character
+        local bcf, bsz
+        if c:IsA("Model") then
+            local okb, cf2, s2 = pcall(function() return c:GetBoundingBox() end)
+            if okb and cf2 then bcf, bsz = cf2, s2 end
+        elseif c:IsA("BasePart") then
+            bcf, bsz = c.CFrame, c.Size
+        end
+        if bcf then headTopWorld = bcf.Position + Vector3.new(0, bsz.Y * 0.5 + 0.5, 0) end
+    end
+    if not headTopWorld then
+        local head = rig.head
+        if head and head.Parent then
+            headTopWorld = head.Position + Vector3.new(0, head.Size.Y * 0.5 + 0.4, 0)
+        else
+            headTopWorld = rig.torso.Position + Vector3.new(0, 2.6, 0)
+        end
     end
     local hp = cam and cam:WorldToViewportPoint(headTopWorld)
     local headOn = hp and hp.Z > 0
@@ -6554,7 +6569,18 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     -- DISTANCE (top-anchored just below the feet)
     local distCfg = ESP.Indicators.Distance
     if distCfg.Enabled then
+        -- v0.56.0: NPCs sit the distance below the bounding-box bottom, not a fixed
+        -- torso offset, so it lands just under the ESP box for any model / part.
         local feetWorld = rig.torso.Position - Vector3.new(0, 3.2, 0)
+        if rig.isNPC then
+            local c = rig.character
+            if c:IsA("Model") then
+                local okb, cf2, s2 = pcall(function() return c:GetBoundingBox() end)
+                if okb and cf2 then feetWorld = cf2.Position - Vector3.new(0, s2.Y * 0.5 + 0.4, 0) end
+            elseif c:IsA("BasePart") then
+                feetWorld = c.Position - Vector3.new(0, c.Size.Y * 0.5 + 0.4, 0)
+            end
+        end
         local fp = cam and cam:WorldToViewportPoint(feetWorld)
         if fp and fp.Z > 0 then
             rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
@@ -6791,9 +6817,10 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         local corners, anyInFront, allInFront, worldCF, worldSize
         local isCube = ESP.Boxes.BoxType == "Cube"
         local effectiveSizing = ESP.Config.SizingType
-        -- v0.53.0: a bare-Part NPC has no GetBoundingBox, so force the two-point
-        -- Static projection (works off the anchor part) and never Cube.
-        if rig.partOnly then isCube = false; effectiveSizing = "Static" end
+        -- v0.56.0: NPCs use the 8-corner Bounding projection (project8 now handles
+        -- bare Parts too), so the box grabs the exact on-screen height + width of
+        -- the model / part instead of the aspect-locked Static approximation.
+        if rig.isNPC then effectiveSizing = "Bounding" end
         if isCube and effectiveSizing == "Static" then
             effectiveSizing = "Bounding"
         end
@@ -21819,6 +21846,9 @@ local function buildEspTab(host)
     configCheckbox(host, "Distance", N.Indicators.Distance.Enabled, function(v) N.Indicators.Distance.Enabled = v end)
     configCheckbox(host, "Health Bar", N.Health.Bar.Enabled, function(v) N.Health.Bar.Enabled = v end)
     configCheckbox(host, "Health Color By %", N.Health.Based, function(v) N.Health.Based = v end)
+    configCheckbox(host, "Health Text", N.Health.Text, function(v) N.Health.Text = v end)
+    dropdown(host, "Health Text Pos", { "Above Name", "On Health Bar" }, N.Health.TextPos,
+        function(v) N.Health.TextPos = v end)
     configCheckbox(host, "Head Dot", N.Indicators.HeadDot.Enabled, function(v) N.Indicators.HeadDot.Enabled = v end)
     configCheckbox(host, "Skeleton", N.Indicators.Skeleton.Enabled, function(v) N.Indicators.Skeleton.Enabled = v end)
     configCheckbox(host, "Profile Picture", N.Indicators.ProfilePicture.Enabled,
