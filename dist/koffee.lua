@@ -1,7 +1,7 @@
--- koffee v0.58.2
+-- koffee v0.58.3
 
 local Koffee = {}
-Koffee.Version = "0.58.2"
+Koffee.Version = "0.58.3"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -5105,7 +5105,7 @@ local ESP = {
         GradientRotation  = 0,     -- degrees; 0 = horizontal, 90 = vertical
         GradientSpacing   = 0.5,   -- 0..1 where the B color sits between the A ends
         GradientReverse   = false, -- flip travel direction
-        SizingType     = "Static",     -- per he: Static first + default
+        SizingType     = "Bounding",   -- v0.58.3: accurate 8-corner on-screen box by default (per he)
         RenderDistance = 1000,
         -- v0.11.0 COLOR MODE. One master that resolves the colour for every
         -- Second-Interface element (box, cube, corners, skeleton, tracer, head dot,
