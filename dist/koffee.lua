@@ -1,7 +1,7 @@
--- koffee v0.52.0
+-- koffee v0.53.0
 
 local Koffee = {}
-Koffee.Version = "0.52.0"
+Koffee.Version = "0.53.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -5148,11 +5148,60 @@ registerConfig("esp_health",     ESP.Health)
 registerConfig("esp_tracer",     ESP.Tracer)
 registerConfig("esp_colors",     ESP.Colors)
 
+-- v0.53.0: NPC ESP is a full mirror of the player ESP config, registered
+-- separately so players and NPCs keep independent looks. The shared renderer
+-- swaps ESP.* to this bundle per NPC rig (synchronous, restored same frame).
+-- IIFE so the helper locals cost no main-chunk register (file rides the 200 cap).
+;(function()
+    local function espDeepCopy(t)
+        local o = {}
+        for k, v in pairs(t) do
+            if type(v) == "table" then o[k] = espDeepCopy(v) else o[k] = v end
+        end
+        return o
+    end
+    local N = {
+        Config     = espDeepCopy(ESP.Config),
+        Render     = espDeepCopy(ESP.Render),
+        Boxes      = espDeepCopy(ESP.Boxes),
+        Names      = espDeepCopy(ESP.Names),
+        Indicators = espDeepCopy(ESP.Indicators),
+        Health     = espDeepCopy(ESP.Health),
+        Tracer     = espDeepCopy(ESP.Tracer),
+        Colors     = espDeepCopy(ESP.Colors),
+    }
+    N.Boxes.Enabled = true
+    N.Boxes.Color   = Color3.fromRGB(120, 220, 130)
+    N.Names.Enabled = true
+    N.Indicators.ProfilePicture.Enabled = true
+    N.Health.Bar.Enabled = true
+    N.Config.ColorMode = "Gradient"
+    N.Config.GradientColorA2 = Color3.fromRGB(120, 230, 140)
+    N.Config.GradientColorB2 = Color3.fromRGB(18, 26, 22)
+    Shared.NPCESP = N
+    local KEYS = { "Config", "Render", "Boxes", "Names", "Indicators", "Health", "Tracer", "Colors" }
+    function Shared.espSwap(bundle)
+        local saved = {}
+        for _, k in ipairs(KEYS) do saved[k] = ESP[k]; ESP[k] = bundle[k] end
+        return saved
+    end
+    function Shared.espRestore(saved)
+        for _, k in ipairs(KEYS) do ESP[k] = saved[k] end
+    end
+end)()
+Shared.NPCEspOn = false   -- master gate for the NPC ESP renderer
+registerConfig("npc_esp_config",     Shared.NPCESP.Config)
+registerConfig("npc_esp_render",     Shared.NPCESP.Render)
+registerConfig("npc_esp_boxes",      Shared.NPCESP.Boxes)
+registerConfig("npc_esp_names",      Shared.NPCESP.Names)
+registerConfig("npc_esp_indicators", Shared.NPCESP.Indicators)
+registerConfig("npc_esp_health",     Shared.NPCESP.Health)
+registerConfig("npc_esp_tracer",     Shared.NPCESP.Tracer)
+registerConfig("npc_esp_colors",     Shared.NPCESP.Colors)
+
 -- v0.11.0 COLOR ENGINE + CHAMS. Own IIFE for the register budget. Publishes
 -- Shared.dyeColor, the colour-mode resolver the ESP render loop calls per rig.
 ;(function()
-    local C = ESP.Config
-
     -- Stable per-target phase so a lineup fans across the ramp instead of every
     -- player being the same colour. UserId-derived: no state, survives respawns,
     -- and two players never collide unless their ids are congruent mod 97.
@@ -5164,7 +5213,10 @@ registerConfig("esp_colors",     ESP.Colors)
     -- Returns nil in Static mode, which is the signal for "element keeps its own
     -- colour": the caller falls through to the pre-existing visible/hidden logic.
     function Shared.dyeColor(ctx)
-        local m = C.ColorMode
+        -- v0.53.0: read ESP.Config / ESP.Colors live (not the captured C) so the
+        -- NPC renderer's per-rig config-swap reaches the colour engine too.
+        local C2 = ESP.Config
+        local m = C2.ColorMode
         if m == "Team" then
             if ctx.same then return ESP.Colors.Team end
             return ctx.hidden and ESP.Colors.Hidden or ESP.Colors.Visible
@@ -5175,19 +5227,19 @@ registerConfig("esp_colors",     ESP.Colors)
             end
             return Color3.fromRGB(240, 190, 70):Lerp(Color3.fromRGB(110, 225, 130), (h - 0.5) * 2)
         elseif m == "Distance" then
-            local t = math.clamp((ctx.dist or 0) / math.max(C.RenderDistance, 1), 0, 1)
-            return C.ColorNear:Lerp(C.ColorFar, t)
+            local t = math.clamp((ctx.dist or 0) / math.max(C2.RenderDistance, 1), 0, 1)
+            return C2.ColorNear:Lerp(C2.ColorFar, t)
         elseif m == "Rainbow" then
-            local h = (os.clock() * C.RainbowSpeed + (ctx.phase or 0) * C.ColorSpread) % 1
-            return Color3.fromHSV(h, C.RainbowSat, C.RainbowVal)
+            local h = (os.clock() * C2.RainbowSpeed + (ctx.phase or 0) * C2.ColorSpread) % 1
+            return Color3.fromHSV(h, C2.RainbowSat, C2.RainbowVal)
         elseif m == "Gradient" then
             -- same A2/B2 ramp the Gradient toggle animates, sampled per target
             -- rather than swept across one UIGradient.
-            local dir = C.GradientReverse and -1 or 1
-            local t = ((os.clock() * C.GradientSpeed * dir) + (ctx.phase or 0) * C.ColorSpread) % 1
-            local sp = math.clamp(C.GradientSpacing or 0.5, 0.05, 0.95)
+            local dir = C2.GradientReverse and -1 or 1
+            local t = ((os.clock() * C2.GradientSpeed * dir) + (ctx.phase or 0) * C2.ColorSpread) % 1
+            local sp = math.clamp(C2.GradientSpacing or 0.5, 0.05, 0.95)
             local f = (t <= sp) and (t / sp) or (1 - (t - sp) / (1 - sp))
-            return C.GradientColorA2:Lerp(C.GradientColorB2, math.clamp(f, 0, 1))
+            return C2.GradientColorA2:Lerp(C2.GradientColorB2, math.clamp(f, 0, 1))
         end
         return nil
     end
@@ -5655,6 +5707,31 @@ local function makeNameStack(parent)
     return pfp, nameLbl
 end
 
+-- v0.53.0: NPC profile picture. Same footprint as the player KPfp (so the
+-- billboard positioning code is identical) but a ViewportFrame snapshot of the
+-- model framed on its top, since NPCs have no avatar thumbnail.
+function Shared.makeNpcPfp(parent, model)
+    local vp = new("ViewportFrame", {
+        Name = "KPfpVp", AnchorPoint = Vector2.new(0.5, 1), Size = UDim2.new(0, 40, 0, 40),
+        BackgroundColor3 = Color3.fromRGB(20, 16, 14), BackgroundTransparency = 0.2,
+        Visible = false, ZIndex = 16, Parent = parent,
+    }, { pillCorner(), stroke(Color3.new(1, 1, 1), 1) })
+    local cam = new("Camera", { Parent = vp })
+    vp.CurrentCamera = cam
+    local ok, clone = pcall(function() return model:Clone() end)
+    if ok and clone then
+        clone.Parent = vp
+        local okb, cf, size = pcall(function() return model:GetBoundingBox() end)
+        if okb and cf and size then
+            local center = cf.Position + Vector3.new(0, size.Y * 0.32, 0)
+            local radius = math.max(size.X, size.Y * 0.55)
+            local dist = radius * 1.4 + 2
+            cam.CFrame = CFrame.lookAt(center + Vector3.new(0, 0.1, 1).Unit * dist, center)
+        end
+    end
+    return vp
+end
+
 -- v0.0.21: skeleton bone pairs. Only pairs whose BOTH parts exist are drawn,
 -- so the same table covers R6 and R15 (missing parts just skip).
 local SKELETON_BONES = {
@@ -5709,23 +5786,35 @@ end
 -- (C++ real Gaussian blur). Frame-based halo layers read as flat
 -- semi-transparent rectangles, not actual glow. Don't re-add frame halos.
 
-local function makeRig(plr, character)
+-- v0.53.0: NPCs can be ANY instance, not just characters. Resolve a BasePart to
+-- anchor on: the part itself, a rig torso, the PrimaryPart, or the first descendant part.
+local function npcAnchor(inst)
+    if inst:IsA("BasePart") then return inst end
+    return findTorso(inst) or (inst:IsA("Model") and inst.PrimaryPart)
+        or inst:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function makeRig(plr, character, isNPC)
     -- v0.0.15: anchor is torso, not head. Head is on top of the character;
     -- anchoring distance / life-gate / static projection off it produced
     -- boxes that drifted upward and read as "grabbing UI" (projected point
     -- sat above the character silhouette when close). Torso (HRP) is at hip
     -- level and centered on the visible body.
-    local torso = findTorso(character)
-    if not torso then
-        -- rig parts not loaded yet: wait briefly, then bail if still absent.
-        -- CharacterAdded fires on the fresh character before ALL descendants
-        -- are guaranteed loaded, so a short wait catches the common case
-        -- without blocking a full 3s per player.
-        torso = character:WaitForChild("HumanoidRootPart", 2)
-              or character:WaitForChild("UpperTorso", 0.5)
-              or character:WaitForChild("Torso", 0.5)
+    local torso
+    if isNPC then
+        torso = npcAnchor(character)
+    else
+        torso = findTorso(character)
+        if not torso then
+            -- rig parts not loaded yet: wait briefly, then bail if still absent.
+            torso = character:WaitForChild("HumanoidRootPart", 2)
+                  or character:WaitForChild("UpperTorso", 0.5)
+                  or character:WaitForChild("Torso", 0.5)
+        end
     end
     if not torso then return nil end
+    -- part-only NPC (not a Model): no GetBoundingBox, so it uses Static projection.
+    local partOnly = isNPC and not character:IsA("Model")
 
     -- box widget (screen-space, lives in ESP.BoxLayer)
     -- boxRoot's own bg is the FILL now (was a separate boxFill child:
@@ -5784,6 +5873,8 @@ local function makeRig(plr, character)
     -- v0.0.26: screen-space (2D) name / pfp / distance tags in the box layer.
     local head = character:FindFirstChild("Head") or torso
     local pfp, nameLbl = makeNameStack(ESP.BoxLayer)
+    -- v0.53.0: NPC rigs get a viewport pfp (model snapshot) in place of the image.
+    if isNPC then pfp:Destroy(); pfp = Shared.makeNpcPfp(ESP.BoxLayer, character) end
     local distLbl = makeTextTag(ESP.BoxLayer, 0, 13)   -- anchor top-center (sits below feet)
 
     -- v0.0.14: BillboardGui + name/dist/textBg moved to dedicated overlay modules.
@@ -5793,6 +5884,8 @@ local function makeRig(plr, character)
         character  = character,
         torso      = torso,                           -- v0.0.15 anchor
         plr        = plr,
+        isNPC      = isNPC or false,
+        partOnly   = partOnly or false,
         boxRoot    = boxRoot,
         boxOutline = boxOutline,                -- KMain stroke (main box line)
         boxOutlineFrame  = boxOutlineFrame,     -- v0.0.26 separate outline frame behind
@@ -5988,10 +6081,14 @@ local function projectStatic(torso, character)
         end
     end
     if not topWorld then
+        -- v0.53.0: bare-Part NPCs have no GetBoundingBox; size the box off the
+        -- anchor part itself so it hugs the part instead of a fixed +-3 studs.
         local pos = torso.Position
+        local half = (torso:IsA("BasePart") and torso.Size.Y * 0.5) or STATIC.top
         centerWorld = pos
-        topWorld = pos + Vector3.new(0, STATIC.top, 0)
-        botWorld = pos + Vector3.new(0, -STATIC.bot, 0)
+        topWorld = pos + Vector3.new(0, half, 0)
+        botWorld = pos - Vector3.new(0, half, 0)
+        if torso:IsA("BasePart") then girth = math.min(torso.Size.X, torso.Size.Z) end
     end
     local top2D = cam:WorldToViewportPoint(topWorld)
     local bot2D = cam:WorldToViewportPoint(botWorld)
@@ -6420,7 +6517,9 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     -- PROFILE PICTURE (stacked above the name, else above the head)
     -- v0.0.28: size / outline thickness / Y offset are right-click tunable.
     if headOn and pfpOn then
-        if rig.pfp.Image == "" then
+        -- v0.53.0: NPC rigs use a ViewportFrame pfp (no .Image, no UserId); the
+        -- short-circuit keeps us from ever touching .Image on the viewport.
+        if not plr._npc and rig.pfp.Image == "" then
             rig.pfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
         end
         local pfpSize = pfpCfg.Size or 40
@@ -6564,54 +6663,56 @@ end
 -- per rig per frame (one GC-churning table per player, every frame).
 local espRayParams = RaycastParams.new()
 espRayParams.FilterType = Enum.RaycastFilterType.Exclude
-local function updateESPRigs()
-    local cam = Workspace.CurrentCamera
-    if not cam then return end
-    rescanRigs(applyESP, stripESP)   -- self-throttled, see rescanRigs
-    local camPos = cam.CFrame.Position
-    for plr, entry in pairs(ESP.Rigs) do
+-- v0.53.0: per-rig draw, shared by players and NPCs. NPC rigs pass isNPC=true
+-- (skipping the team / friend / self / target-lock gates) with ESP.* config-
+-- swapped to Shared.NPCESP by the caller. continue became return on extraction.
+function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         local rig = entry.rig
         -- v0.0.15 hard life gate. Torso (HRP) replaces head as the anchor:
         -- head is above the visible body so anchoring there produced boxes
         -- offset upward + reading as "grabbing UI." Torso sits at hip level,
         -- centered on the visible body. If the torso reference goes stale
         -- (rig-swapping games, respawn mid-frame), re-resolve from character.
-        if not rig then continue end
+        if not rig then return end
         -- v0.18.4: .Parent alone is not enough. A character moved out of Workspace
         -- (corpse folders, ReplicatedStorage stashes) keeps a truthy Parent and its
         -- parts keep their last position, which is the ghost-ESP case.
         if not (rig.character and rig.character:IsDescendantOf(Workspace)) then
-            hideRigVisuals(rig); continue
+            hideRigVisuals(rig); return
         end
         if not (rig.torso and rig.torso.Parent) then
             rig.torso = findTorso(rig.character)
         end
         if not (rig.torso and rig.torso.Parent) then
-            hideRigVisuals(rig); continue
+            hideRigVisuals(rig); return
         end
+        -- v0.53.0: NPCs can be any instance. A Humanoid still death-gates, but an
+        -- NPC without one (a bare Part / prop) is always "alive".
         local hum = rig.character:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then
-            hideRigVisuals(rig); continue
+        if hum then
+            if hum.Health <= 0 then hideRigVisuals(rig); return end
+        elseif not isNPC then
+            hideRigVisuals(rig); return
         end
 
-        -- gates
-        if plr == LocalPlayer and not ESP.Config.SelfESP then
-            hideRigVisuals(rig); continue
+        -- gates (player-only: NPCs have no team / friend / self / target-lock)
+        if not isNPC and plr == LocalPlayer and not ESP.Config.SelfESP then
+            hideRigVisuals(rig); return
         end
         -- v0.0.46: team gate via isTeammate (manual team list or Advanced auto-detect)
         -- + Options "Ignore Friends" gate, shared with the combat systems.
-        local same = isTeammate(plr)
-        if (same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr)) then
-            hideRigVisuals(rig); continue
+        local same = (not isNPC) and isTeammate(plr)
+        if not isNPC and ((same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr))) then
+            hideRigVisuals(rig); return
         end
         -- v0.0.97 TARGET LOCK: while engaged, only the named player's rig renders.
-        if Shared.TargetLock.Enabled and Shared.TargetLock._active
+        if not isNPC and Shared.TargetLock.Enabled and Shared.TargetLock._active
         and Shared.targetLockPlayer() ~= plr then
-            hideRigVisuals(rig); continue
+            hideRigVisuals(rig); return
         end
         local dist = (rig.torso.Position - camPos).Magnitude
         if dist > ESP.Config.RenderDistance then
-            hideRigVisuals(rig); continue
+            hideRigVisuals(rig); return
         end
 
         -- v0.0.21: shared color override, computed once per rig.
@@ -6631,11 +6732,11 @@ local function updateESPRigs()
         -- v0.11.0: the colour mode gets first say. Static returns nil, which falls
         -- through to exactly the v0.10 team/visible logic below: so the default
         -- path is unchanged and only an explicitly picked mode overrides.
-        local maxHp = (hum.MaxHealth and hum.MaxHealth > 0) and hum.MaxHealth or 100
+        local maxHp = (hum and hum.MaxHealth and hum.MaxHealth > 0) and hum.MaxHealth or 100
         local overrideColor = Shared.dyeColor({
             hidden = hidden, same = same,
-            health = hum.Health / maxHp, dist = dist,
-            phase = Shared.dyePhase(plr),
+            health = hum and (hum.Health / maxHp) or 1, dist = dist,
+            phase = isNPC and (entry.phase or 0) or Shared.dyePhase(plr),
         })
         if not overrideColor then
             if ESP.Config.TeamBasedColor and same then
@@ -6662,7 +6763,7 @@ local function updateESPRigs()
             rig.headDot.Visible = false
             rig.tracer.Visible = false
             rig.healthBg.Visible = false
-            continue
+            return
         end
 
         -- BOX projection dispatch:
@@ -6672,6 +6773,9 @@ local function updateESPRigs()
         local corners, anyInFront, allInFront, worldCF, worldSize
         local isCube = ESP.Boxes.BoxType == "Cube"
         local effectiveSizing = ESP.Config.SizingType
+        -- v0.53.0: a bare-Part NPC has no GetBoundingBox, so force the two-point
+        -- Static projection (works off the anchor part) and never Cube.
+        if rig.partOnly then isCube = false; effectiveSizing = "Static" end
         if isCube and effectiveSizing == "Static" then
             effectiveSizing = "Bounding"
         end
@@ -6691,7 +6795,7 @@ local function updateESPRigs()
             rig.headDot.Visible = false
             rig.tracer.Visible = false
             rig.healthBg.Visible = false
-            continue
+            return
         end
 
         -- v0.0.24: box MAIN line colour (separate from Outline now). Team/visible
@@ -7116,7 +7220,54 @@ local function updateESPRigs()
         else
             rig.tracer.Visible = false
         end
+end
+
+-- v0.53.0: NPC ESP rigs, keyed by model, drawn through the shared espDrawRig with
+-- ESP.* config-swapped to Shared.NPCESP. Own render loop so it is independent of
+-- the player ESP module toggle; a cheap no-op until NPCs exist and the master is on.
+-- IIFE so its state costs no main-chunk register (the file rides the 200 ceiling).
+;(function()
+    local npcRigs = {}
+    function Shared.updateNpcRigs(cam, camPos)
+        local NPC = Shared.NPC
+        if not (Shared.NPCEspOn and NPC and NPC.entities) then
+            for m, r in pairs(npcRigs) do cleanRig(r.rig); npcRigs[m] = nil end
+            return
+        end
+        local live = {}
+        for _, e in ipairs(NPC.entities()) do
+            if not (e.exclude and e.exclude.ESP) and e.char and e.char.Parent then
+                local model = e.char
+                live[model] = true
+                local rr = npcRigs[model]
+                if not rr then
+                    local rig = makeRig(e.wrapper, model, true)
+                    if rig then rr = { rig = rig, phase = math.random() }; npcRigs[model] = rr end
+                end
+                if rr then
+                    local saved = Shared.espSwap(Shared.NPCESP)
+                    pcall(Shared.espDrawRig, e.wrapper, rr, cam, camPos, true)
+                    Shared.espRestore(saved)
+                end
+            end
+        end
+        for m, r in pairs(npcRigs) do
+            if not live[m] then cleanRig(r.rig); npcRigs[m] = nil end
+        end
     end
+end)()
+RunService.RenderStepped:Connect(function()
+    if Koffee.dead() then return end
+    local cam = Workspace.CurrentCamera
+    if cam then Shared.updateNpcRigs(cam, cam.CFrame.Position) end
+end)
+
+local function updateESPRigs()
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    rescanRigs(applyESP, stripESP)   -- self-throttled, see rescanRigs
+    local camPos = cam.CFrame.Position
+    for plr, entry in pairs(ESP.Rigs) do Shared.espDrawRig(plr, entry, cam, camPos, false) end
 end
 
 local espModule = registerModule("esp", "ESP",
@@ -10006,9 +10157,11 @@ local Combat = {
             local feat = (cfg == Combat.Silent) and "Silent" or "Aimbot"
             for _, e in ipairs(Shared.NPC.targetEntities(feat)) do
                 local char, hum = e.char, e.hum
-                if char and hum and hum.Health > 0
-                    and ((not cfg.HealthCheck) or healthOk(char, hum)) then
-                    local part = aimPart(char, cfg.HitPart)
+                -- v0.53.0: Humanoid optional (NPC can be any instance). Death-gate
+                -- only when it has one; anchor part stands in for aimPart on props.
+                if char and (not hum or hum.Health > 0)
+                    and ((not cfg.HealthCheck) or (not hum) or healthOk(char, hum)) then
+                    local part = aimPart(char, cfg.HitPart) or npcAnchor(char)
                     if part then
                         part = poolPick(char, e.wrapper, cfg, center) or part
                         local worldDist = (part.Position - camPos).Magnitude
@@ -10026,7 +10179,7 @@ local Combat = {
                                 local score
                                 if pri == "Nearest" or pri == "Distance" or cfg.BehindCam then
                                     score = worldDist
-                                elseif pri == "Health" then
+                                elseif pri == "Health" and hum then
                                     score = hum.Health / math.max(hum.MaxHealth or 100, 1)
                                 else
                                     score = crossDist
@@ -20812,12 +20965,11 @@ Shared.NPC = NPC
 local UIS = game:GetService("UserInputService")
 
 local function newFolderSettings()
+    -- v0.53.0: styling now lives in the global NPC ESP tab (Shared.NPCESP). Folder
+    -- settings are the per-group knobs: name override, per-feature exclusions, rules.
     return {
         DisplayName = "",
-        Color = Theme.Palette.Accent,
         Exclude = { ESP = false, Aimbot = false, Silent = false },
-        Scale = 1.0,
-        YOff = 0,
         Rules = {},
     }
 end
@@ -20869,9 +21021,11 @@ local function resolveEntry(entry)
     end
     if not inst then return {} end
     if entry.kind == "dir" then
+        -- v0.53.0: any child with a usable anchor part counts (Model or BasePart),
+        -- no Humanoid required, so a folder of props / mobs / parts all work.
         local out = {}
         for _, ch in ipairs(inst:GetChildren()) do
-            if ch:IsA("Model") and ch:FindFirstChildOfClass("Humanoid") then out[#out + 1] = ch end
+            if (ch:IsA("Model") or ch:IsA("BasePart")) and npcAnchor(ch) then out[#out + 1] = ch end
         end
         return out
     end
@@ -20917,10 +21071,11 @@ function NPC.entities()
         if m and m.Enabled then
             local st = settingsFor(entry)
             for _, model in ipairs(resolveEntry(entry)) do
-                local hum = model:FindFirstChildOfClass("Humanoid")
-                if hum then
+                -- v0.53.0: any instance with an anchor part; Humanoid is optional.
+                if npcAnchor(model) then
+                    local hum = model:FindFirstChildOfClass("Humanoid")
                     local nm = st.DisplayName ~= "" and st.DisplayName or model.Name
-                    local hp = hum.Health
+                    local hp = hum and hum.Health or 0
                     for _, rule in ipairs(st.Rules) do
                         if rule.kind == "Name" then
                             local v = readByRule(model, rule)
@@ -20934,7 +21089,7 @@ function NPC.entities()
                     w.Name, w.DisplayName = nm, nm
                     out[#out + 1] = {
                         wrapper = w, char = model, hum = hum, name = nm, health = hp,
-                        exclude = st.Exclude, color = st.Color, scale = st.Scale, yoff = st.YOff,
+                        exclude = st.Exclude,
                     }
                 end
             end
@@ -20951,81 +21106,29 @@ function NPC.targetEntities(feature)
     return out
 end
 
--- :: dedicated NPC ESP (player ESP is deeply player-keyed, left untouched) ::
-local espLayer = KID.track(new("Folder", { Name = KID.name("npc_esp"), Parent = screen }))
-local espPool = {}
-local function espItem(model)
-    local it = espPool[model]
-    if it then return it end
-    local box = new("Frame", {
-        BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false, ZIndex = 10, Parent = espLayer,
-    }, { stroke(Theme.Palette.Accent, 1) })
-    local nameL = new("TextLabel", {
-        Text = "", FontFace = Theme.Fonts.Bold, TextSize = 13, TextColor3 = Theme.Palette.Text,
-        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 0, -16),
-        ZIndex = 11, Parent = box,
-    }, { textStroke(Color3.new(0, 0, 0), 1) })
-    local infoL = new("TextLabel", {
-        Text = "", FontFace = Theme.Fonts.Mono, TextSize = 11, TextColor3 = Theme.Palette.TextMuted,
-        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, 2),
-        ZIndex = 11, Parent = box,
-    }, { textStroke(Color3.new(0, 0, 0), 1) })
-    it = { box = box, nameL = nameL, infoL = infoL }
-    espPool[model] = it
-    return it
-end
-RunService.RenderStepped:Connect(function()
-    if Koffee.dead() then return end
-    local cam = Workspace.CurrentCamera
-    local seen = {}
-    if cam and NPC.Enabled ~= false then
-        local camPos = cam.CFrame.Position
-        for _, e in ipairs(NPC.entities()) do
-            if not (e.exclude and e.exclude.ESP) then
-                local model = e.char
-                local okbb, cf, size = pcall(function() return model:GetBoundingBox() end)
-                if okbb and cf and size then
-                    local sc = e.scale or 1
-                    local hx, hy, hz = size.X * 0.5 * sc, size.Y * 0.5 * sc, size.Z * 0.5 * sc
-                    local center = cf.Position + Vector3.new(0, e.yoff or 0, 0)
-                    local base = cf - cf.Position + center
-                    local minx, miny, maxx, maxy, front = math.huge, math.huge, -math.huge, -math.huge, 0
-                    for xi = -1, 1, 2 do for yi = -1, 1, 2 do for zi = -1, 1, 2 do
-                        local sp = cam:WorldToViewportPoint(base * Vector3.new(hx * xi, hy * yi, hz * zi))
-                        if sp.Z > 0 then
-                            front = front + 1
-                            if sp.X < minx then minx = sp.X end
-                            if sp.Y < miny then miny = sp.Y end
-                            if sp.X > maxx then maxx = sp.X end
-                            if sp.Y > maxy then maxy = sp.Y end
-                        end
-                    end end end
-                    if front >= 4 and maxx > minx and maxy > miny then
-                        seen[model] = true
-                        local it = espItem(model)
-                        it.box.Position = UDim2.fromOffset(minx, miny)
-                        it.box.Size = UDim2.fromOffset(maxx - minx, maxy - miny)
-                        it.box.Visible = true
-                        local uis = it.box:FindFirstChildOfClass("UIStroke")
-                        if uis then uis.Color = e.color or Theme.Palette.Accent end
-                        it.nameL.Text = e.name
-                        it.nameL.TextColor3 = e.color or Theme.Palette.Text
-                        it.infoL.Text = string.format("%d hp  %dm",
-                            math.floor(e.health or 0), math.floor((center - camPos).Magnitude + 0.5))
-                    end
-                end
-            end
-        end
-    end
-    for model, it in pairs(espPool) do
-        if not seen[model] then
-            if not (model and model.Parent) then it.box:Destroy(); espPool[model] = nil
-            else it.box.Visible = false end
-        end
-    end
-end)
+-- v0.53.0: the standalone NPC ESP renderer was replaced by the shared player
+-- renderer (Shared.updateNpcRigs + espDrawRig), so NPCs get full ESP parity with
+-- their own Shared.NPCESP config. Nothing to draw here now.
 
 -- :: model preview + profile viewport ::
+-- Only Models (not Workspace) and bare Parts are previewable, and only up to a
+-- descendant cap, so selecting a service / huge container never clones the world.
+local function previewable(inst)
+    if inst:IsA("BasePart") then return true end
+    if inst:IsA("Model") and inst ~= Workspace then
+        local ok, d = pcall(function() return #inst:GetDescendants() end)
+        return ok and d <= 2000
+    end
+    return false
+end
+local function boundsOf(inst)
+    if inst:IsA("Model") then
+        local ok, cf, size = pcall(function() return inst:GetBoundingBox() end)
+        if ok and cf then return cf, size end
+    end
+    if inst:IsA("BasePart") then return inst.CFrame, inst.Size end
+    return CFrame.new(), Vector3.new(4, 4, 4)
+end
 local function makeViewport(parent, model, opts)
     opts = opts or {}
     local vp = new("ViewportFrame", {
@@ -21033,12 +21136,20 @@ local function makeViewport(parent, model, opts)
         Size = opts.size or UDim2.fromOffset(40, 40), LayoutOrder = opts.order or 0,
         ZIndex = opts.z or 11, Parent = parent,
     }, { corner(opts.round or 6), stroke(Theme.Palette.BorderSubtle) })
+    if not previewable(model) then
+        new("TextLabel", {
+            Text = "no preview", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+            ZIndex = (opts.z or 11) + 1, Parent = vp,
+        })
+        return vp
+    end
     local cam = new("Camera", { Parent = vp })
     vp.CurrentCamera = cam
     local okc, clone = pcall(function() return model:Clone() end)
     if not okc or not clone then return vp end
     clone.Parent = vp
-    local cf, size = model:GetBoundingBox()
+    local cf, size = boundsOf(model)
     local center, radius = cf.Position, math.max(size.X, size.Y, size.Z)
     if opts.top then
         center = cf.Position + Vector3.new(0, size.Y * 0.30, 0)
@@ -21176,87 +21287,123 @@ local function hrow(parent, height, order)
         VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
 end
 
--- :: PICKER sub-tab ::
+-- :: PICKER sub-tab :: an inline instance browser (left) + actions (right), the
+-- Manager two-column shape. Any instance can be added; the tree only expands a
+-- node when its arrow is clicked, not on select.
 local function buildPicker(host, onChange)
-    hintRow(host, "Scan finds models with a Humanoid. Add one, or Browse to pick any model or directory. Right-click a result for a 360 preview.", 0)
-    local controls = hrow(host, 28, 1)
-    local listWrap = new("ScrollingFrame", {
-        Size = UDim2.new(1, 0, 0, 240), BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.35,
+    local cols = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = host,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 10),
+        SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local left = vlist(cols, 4, 1, UDim2.new(0.6, -5, 0, 0))
+    local right = vlist(cols, 6, 2, UDim2.new(0.4, -5, 0, 0))
+    local tree = new("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 0, 320), BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.35,
         BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.TextFaint,
-        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 2, Parent = host,
-    }, { corner(6), new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
-        PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
-        new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 1, Parent = left,
+    }, { corner(6), new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4) }),
+        new("UIListLayout", { Padding = UDim.new(0, 1), SortOrder = Enum.SortOrder.LayoutOrder }) })
 
-    local function scanCandidates()
-        local out, seen = {}, {}
-        local function consider(m)
-            if m:IsA("Model") and m ~= LocalPlayer.Character and not seen[m]
-                and m:FindFirstChildOfClass("Humanoid") then
-                local isPlayer = false
-                for _, pl in ipairs(Players:GetPlayers()) do
-                    if pl.Character == m then isPlayer = true break end
-                end
-                if not isPlayer then seen[m] = true; out[#out + 1] = m end
-            end
-        end
-        for _, c in ipairs(Workspace:GetChildren()) do
-            consider(c)
-            if c:IsA("Folder") or c:IsA("Model") then
-                for _, gc in ipairs(c:GetChildren()) do consider(gc) end
-            end
-        end
-        return out
+    local selected
+    local rebuildTree, updateRight
+    local expanded = {}
+
+    local ROOTS = {}
+    for _, svc in ipairs({ "Workspace", "ReplicatedStorage", "Lighting", "Players", "StarterPack" }) do
+        local ok, s = pcall(function() return game:GetService(svc) end)
+        if ok and s then ROOTS[#ROOTS + 1] = s end
     end
 
-    local function candRow(model)
+    local function iconFor(inst)
+        if inst:FindFirstChildOfClass("Humanoid") then return "user" end
+        if inst:IsA("Model") then return "box" end
+        if inst:IsA("Folder") then return "folder" end
+        if inst:IsA("BasePart") then return "box" end
+        return "list"
+    end
+    local function nodeRow(inst, depth)
+        local expandable = #inst:GetChildren() > 0
         local row = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = Theme.Palette.PanelElevated,
-            BackgroundTransparency = 0.4, BorderSizePixel = 0, Parent = listWrap,
-        }, { corner(6) })
-        makeViewport(row, model, { size = UDim2.fromOffset(32, 32), round = 6, top = true }).Position = UDim2.new(0, 4, 0.5, -16)
-        new("TextLabel", {
-            Text = model.Name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
-            TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.new(0, 44, 0, 0),
-            Size = UDim2.new(1, -140, 1, 0), Parent = row,
+            Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = (selected == inst) and 0.2 or 1, BorderSizePixel = 0, Parent = tree,
+        }, { corner(4), new("UIPadding", { PaddingLeft = UDim.new(0, 6 + depth * 14), PaddingRight = UDim.new(0, 6) }),
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
+                VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        if expandable then
+            local arrow = iconBtn(row, expanded[inst] and "chevron-down" or "chevron-right", "", function()
+                expanded[inst] = not expanded[inst]; rebuildTree()
+            end, 0)
+            arrow.BackgroundTransparency = 1; arrow.Size = UDim2.fromOffset(16, 16)
+        else
+            new("Frame", { Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, LayoutOrder = 0, Parent = row })
+        end
+        Koffee.lucideIcon(row, iconFor(inst), 13, Theme.Palette.TextMuted).LayoutOrder = 1
+        local nameBtn = new("TextButton", {
+            Text = inst.Name, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, AutoButtonColor = false,
+            TextTruncate = Enum.TextTruncate.AtEnd, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, -24, 1, 0), LayoutOrder = 2, Parent = row,
         })
-        local addB = new("TextButton", {
-            Text = "Add", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.Background, BackgroundColor3 = Theme.Palette.Accent, AutoButtonColor = true,
-            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(56, 26), Parent = row,
-        }, { corner(6) })
-        addB.MouseButton1Click:Connect(function()
-            addEntry(model, "model")
-            addB.Text = "Added"
-            if onChange then onChange() end
-        end)
+        nameBtn.MouseButton1Click:Connect(function() selected = inst; updateRight(); rebuildTree() end)
         row.InputBegan:Connect(function(io)
-            if io.UserInputType == Enum.UserInputType.MouseButton2 then openPreview(model) end
+            if io.UserInputType == Enum.UserInputType.MouseButton2 then openPreview(inst) end
         end)
     end
-
-    local function rescan()
-        for _, c in ipairs(listWrap:GetChildren()) do
+    rebuildTree = function()
+        for _, c in ipairs(tree:GetChildren()) do
             if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then c:Destroy() end
         end
-        local found = scanCandidates()
-        if #found == 0 then hintRow(listWrap, "No Humanoid models found in Workspace. Use Browse.", 0) return end
-        for _, m in ipairs(found) do candRow(m) end
+        local function walk(inst, depth)
+            nodeRow(inst, depth)
+            if expanded[inst] then
+                local n = 0
+                for _, ch in ipairs(inst:GetChildren()) do
+                    walk(ch, depth + 1)
+                    n = n + 1
+                    if n >= 300 then break end   -- guard pathological containers
+                end
+            end
+        end
+        for _, r in ipairs(ROOTS) do walk(r, 0) end
     end
 
-    textBtn(controls, "Scan", rescan, 1)
-    textBtn(controls, "Browse", function()
-        if not Shared.openInstancePicker then return end
-        Shared.openInstancePicker(function(inst)
-            if not inst then return end
-            local kind = (inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid")) and "model" or "dir"
-            addEntry(inst, kind)
-            if onChange then onChange() end
-        end, { anyInstance = true, title = "Pick an NPC model or a directory",
-            subtitle = "A Humanoid model becomes one NPC; any other container becomes a directory of NPCs." })
-    end, 2)
-    rescan()
+    -- right column: what is selected + add actions
+    hintRow(right, "Click a name to select. Click the arrow to expand. Right-click for a 360 preview.", 0)
+    local selLabel = new("TextLabel", {
+        Text = "Nothing selected", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left, AutomaticSize = Enum.AutomaticSize.Y,
+        Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 1, Parent = right,
+    })
+    local previewHolder = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 90), BackgroundTransparency = 1, LayoutOrder = 2, Parent = right,
+    })
+    local addRow = hrow(right, 28, 3)
+    local addBtn = textBtn(addRow, "Add as NPC", function()
+        if not selected then return end
+        addEntry(selected, "model"); if onChange then onChange() end
+        selLabel.Text = "Added: " .. selected.Name
+    end, 0)
+    local addDirBtn = textBtn(addRow, "Add as Directory", function()
+        if not selected then return end
+        addEntry(selected, "dir"); if onChange then onChange() end
+        selLabel.Text = "Added directory: " .. selected.Name
+    end, 1)
+    addBtn.Visible = false; addDirBtn.Visible = false
+    updateRight = function()
+        for _, c in ipairs(previewHolder:GetChildren()) do c:Destroy() end
+        if not selected then
+            selLabel.Text = "Nothing selected"
+            addBtn.Visible = false; addDirBtn.Visible = false
+            return
+        end
+        selLabel.Text = selected.ClassName .. ": " .. selected.Name
+        addBtn.Visible = true
+        addDirBtn.Visible = #selected:GetChildren() > 0
+        makeViewport(previewHolder, selected, { size = UDim2.new(1, 0, 1, 0), top = true })
+    end
+
+    rebuildTree()
 end
 
 -- :: MANAGER sub-tab ::
@@ -21376,7 +21523,7 @@ local function buildManager(host)
     showSettings = function()
         clearKids(right)
         if not selected then
-            hintRow(right, "Select a folder to edit its name, exclusions, offsets and rules.", 0)
+            hintRow(right, "Select a folder to edit its name, exclusions and rules.", 0)
             return
         end
         local f, st = selected, selected.settings
@@ -21390,40 +21537,42 @@ local function buildManager(host)
         -- would jump them to the top.
         hintRow(right, "Display name (blank uses the model name):", 0)
         textInput(right, "override name", st.DisplayName, 0, function(t) st.DisplayName = t end)
-        local cRow = hrow(right, 20, 0)
-        new("TextLabel", {
-            Text = "ESP Color", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-            Size = UDim2.new(1, -30, 1, 0), LayoutOrder = 0, Parent = cRow,
-        })
-        colorSwatch(cRow, st.Color, 16, { onChange = function(c) st.Color = c end })
+        hintRow(right, "ESP styling lives in the ESP tab; these exclude this folder per feature:", 0)
         configCheckbox(right, "Exclude from ESP", st.Exclude.ESP, function(v) st.Exclude.ESP = v end)
         configCheckbox(right, "Exclude from Aimbot", st.Exclude.Aimbot, function(v) st.Exclude.Aimbot = v end)
         configCheckbox(right, "Exclude from Silent", st.Exclude.Silent, function(v) st.Exclude.Silent = v end)
-        slider(right, "ESP Scale", 0.2, 3, st.Scale, 2, function(v) st.Scale = v end)
-        slider(right, "Vertical Offset", -10, 10, st.YOff, 1, function(v) st.YOff = v end)
         hintRow(right, "Rules read a value off each model (child .Value, attribute, or property):", 0)
         local ruleBox = vlist(right, 4, 0)
         local addRow = hrow(right, 26, 0)
+        -- v0.53.0: each rule is a two-line card (header + source/key row) so it
+        -- fits the narrow settings column instead of overlapping the dropdown.
         local function drawRules()
             clearKids(ruleBox)
             for _, rule in ipairs(st.Rules) do
-                local rr = hrow(ruleBox, 26, 0)
+                local card = vlist(ruleBox, 3, 0)
+                card.BackgroundColor3 = Theme.Palette.PanelElevated
+                card.BackgroundTransparency = 0.5
+                card:FindFirstChildOfClass("UIListLayout").Padding = UDim.new(0, 4)
+                new("UICorner", { CornerRadius = UDim.new(0, 6), Parent = card })
+                new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5),
+                    PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6), Parent = card })
+                local head = hrow(card, 20, 0)
                 new("TextLabel", {
-                    Text = rule.kind, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                    Text = rule.kind .. " rule", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
                     TextColor3 = Theme.Palette.Accent, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-                    Size = UDim2.fromOffset(52, 22), LayoutOrder = 0, Parent = rr,
+                    Size = UDim2.new(1, -26, 1, 0), LayoutOrder = 0, Parent = head,
                 })
-                local dd = dropdown(rr, "", { "child", "attribute", "property" }, rule.src or "child",
-                    function(v) rule.src = v end)
-                dd.frame.Size = UDim2.fromOffset(90, 26)
-                dd.frame.LayoutOrder = 1
-                local ti = textInput(rr, "key / name", rule.key, 2, function(t) rule.key = t end)
-                ti.Size = UDim2.new(1, -180, 0, 26)
-                iconBtn(rr, "trash-2", "remove rule", function()
+                iconBtn(head, "trash-2", "remove rule", function()
                     for i, x in ipairs(st.Rules) do if x == rule then table.remove(st.Rules, i) break end end
                     drawRules()
-                end, 3)
+                end, 1)
+                local body = hrow(card, 26, 1)
+                local dd = dropdown(body, "", { "child", "attribute", "property" }, rule.src or "child",
+                    function(v) rule.src = v end)
+                dd.frame.Size = UDim2.fromOffset(96, 26)
+                dd.frame.LayoutOrder = 0
+                local ti = textInput(body, "key / name", rule.key, 1, function(t) rule.key = t end)
+                ti.Size = UDim2.new(1, -102, 0, 26)
             end
         end
         textBtn(addRow, "+ Name Rule", function()
@@ -21440,12 +21589,53 @@ local function buildManager(host)
     return rebuild
 end
 
+-- :: ESP sub-tab :: full-featured NPC ESP, its own settings (Shared.NPCESP)
+-- so NPCs look independent from players. Renderer is shared (Shared.espDrawRig).
+local function buildEspTab(host)
+    local N = Shared.NPCESP
+    local function colorRow(label, get, set)
+        local r = hrow(host, 20, 0)
+        new("TextLabel", {
+            Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, -30, 1, 0), LayoutOrder = 0, Parent = r,
+        })
+        colorSwatch(r, get(), 16, { onChange = set })
+    end
+    configCheckbox(host, "Enabled (NPC ESP master)", Shared.NPCEspOn, function(v) Shared.NPCEspOn = v end)
+    hintRow(host, "NPC ESP mirrors player ESP with its own independent settings.", 0)
+    configCheckbox(host, "Box", N.Boxes.Enabled, function(v) N.Boxes.Enabled = v end)
+    dropdown(host, "Box Type", { "2D", "Cube" }, N.Boxes.BoxType, function(v) N.Boxes.BoxType = v end)
+    configCheckbox(host, "Fill Box", N.Boxes.FillBox, function(v) N.Boxes.FillBox = v end)
+    configCheckbox(host, "Through Walls", N.Boxes.ThroughWalls, function(v) N.Boxes.ThroughWalls = v end)
+    configCheckbox(host, "Outline", N.Config.Outline, function(v) N.Config.Outline = v end)
+    colorRow("Box Color", function() return N.Boxes.Color end, function(c) N.Boxes.Color = c end)
+    dropdown(host, "Color Mode", { "Static", "Health", "Distance", "Rainbow", "Gradient", "Team" }, N.Config.ColorMode,
+        function(v) N.Config.ColorMode = v end)
+    colorRow("Gradient A", function() return N.Config.GradientColorA2 end, function(c) N.Config.GradientColorA2 = c end)
+    colorRow("Gradient B", function() return N.Config.GradientColorB2 end, function(c) N.Config.GradientColorB2 = c end)
+    configCheckbox(host, "Names", N.Names.Enabled, function(v) N.Names.Enabled = v end)
+    configCheckbox(host, "Names Gradient", N.Config.TextGradient, function(v) N.Config.TextGradient = v end)
+    configCheckbox(host, "Distance", N.Indicators.Distance.Enabled, function(v) N.Indicators.Distance.Enabled = v end)
+    configCheckbox(host, "Health Bar", N.Health.Bar.Enabled, function(v) N.Health.Bar.Enabled = v end)
+    configCheckbox(host, "Health Color By %", N.Health.Based, function(v) N.Health.Based = v end)
+    configCheckbox(host, "Head Dot", N.Indicators.HeadDot.Enabled, function(v) N.Indicators.HeadDot.Enabled = v end)
+    configCheckbox(host, "Skeleton", N.Indicators.Skeleton.Enabled, function(v) N.Indicators.Skeleton.Enabled = v end)
+    configCheckbox(host, "Profile Picture", N.Indicators.ProfilePicture.Enabled,
+        function(v) N.Indicators.ProfilePicture.Enabled = v end)
+    configCheckbox(host, "Tracer", N.Tracer.Enabled, function(v) N.Tracer.Enabled = v end)
+    dropdown(host, "Tracer Origin", { "Bottom", "Middle", "Top", "Mouse" }, N.Tracer.Origin,
+        function(v) N.Tracer.Origin = v end)
+    slider(host, "Render Distance", 50, 5000, N.Config.RenderDistance, 0, function(v) N.Config.RenderDistance = v end)
+end
+
 function NPC.buildTab(root)
     local card = panel(root)
-    local S = Shared.subTabs(card, { "Picker", "Manager" })
+    local S = Shared.subTabs(card, { "Picker", "Manager", "ESP" })
     local managerRebuild
     buildPicker(S.Picker, function() if managerRebuild then managerRebuild() end end)
     managerRebuild = buildManager(S.Manager)
+    buildEspTab(S.ESP)
 end
 end)()
 
