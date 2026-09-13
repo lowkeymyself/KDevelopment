@@ -1,7 +1,7 @@
--- koffee v0.48.3
+-- koffee v0.49.0
 
 local Koffee = {}
-Koffee.Version = "0.48.3"
+Koffee.Version = "0.49.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -8393,6 +8393,59 @@ local function killMover(s)
     s.part = nil
 end
 
+-- v0.49.0: modern-constraint fly rig. One Attachment0 on the part; with no
+-- Attachment1 the Position property is the world-space goal.
+local function makeAlign(part)
+    local a0 = new("Attachment", { Name = KID.name("m_a0") })
+    KID.track(a0); a0.Parent = part
+    local ap = new("AlignPosition", {
+        Name = KID.name("m_ap"), Attachment0 = a0,
+        MaxForce = 9e9, Responsiveness = 200, RigidityEnabled = false,
+    })
+    local ao = new("AlignOrientation", {
+        Name = KID.name("m_ao"), Attachment0 = a0,
+        MaxTorque = 9e9, Responsiveness = 200, RigidityEnabled = false,
+    })
+    KID.track(ap); KID.track(ao); ap.Parent = part; ao.Parent = part
+    return a0, ap, ao
+end
+local function killAlign(s)
+    if not s then return end
+    if s.ap then pcall(function() s.ap:Destroy() end); s.ap = nil end
+    if s.ao then pcall(function() s.ao:Destroy() end); s.ao = nil end
+    if s.a0 then pcall(function() s.a0:Destroy() end); s.a0 = nil end
+    s.goal = nil
+end
+
+-- v0.49.0: states that fight a forced Swimming state (Swimming out of water
+-- auto-reverts to GettingUp, so swimmers disable the ladder back).
+local SWIM_KILL = {
+    Enum.HumanoidStateType.Climbing, Enum.HumanoidStateType.FallingDown,
+    Enum.HumanoidStateType.Ragdoll, Enum.HumanoidStateType.GettingUp,
+    Enum.HumanoidStateType.Seated, Enum.HumanoidStateType.Jumping,
+    Enum.HumanoidStateType.Landed, Enum.HumanoidStateType.Physics,
+}
+local function swimSetup(s, h)
+    s.swimSaved = {}
+    s.swimWalk = h.WalkSpeed
+    for _, st8 in ipairs(SWIM_KILL) do
+        local ok, en = pcall(function() return h:GetStateEnabled(st8) end)
+        s.swimSaved[st8] = (ok and en) and true or false
+        pcall(function() h:SetStateEnabled(st8, false) end)
+    end
+    pcall(function() h:SetStateEnabled(Enum.HumanoidStateType.Swimming, true) end)
+end
+local function swimRestore(s, h)
+    if not (s and s.swimSaved) then return end
+    if h then
+        for st8, en in pairs(s.swimSaved) do
+            pcall(function() h:SetStateEnabled(st8, en) end)
+        end
+        if s.swimWalk then pcall(function() h.WalkSpeed = s.swimWalk end) end
+    end
+    s.swimSaved, s.swimWalk, s.swimHum = nil, nil, nil
+end
+
 -- world-space fly/float direction from WASD + camera (+ vertical keys)
 local function moveVector(includeVertical)
     local cf = camCF(); if not cf then return Vector3.zero end
@@ -8431,26 +8484,77 @@ FEAT.teleportwalk = {
 FEAT.fly = {
     on  = function() st.fly = {} end,
     off = function()
-        killMover(st.fly)
-        local h = humOf(); if h then h.PlatformStand = false end
+        local s = st.fly
+        killMover(s); killAlign(s)
+        local h = humOf()
+        swimRestore(s, h)
+        if h then h.PlatformStand = false end
         local c = char(); local head = c and c:FindFirstChild("Head")
         if head then head.Anchored = false end
         st.fly = nil
     end,
     step = function(dt)
         local s = st.fly; if not s then return end
-        local h, r = humOf(), rootOf(); if not (h and r) then killMover(s); return end
+        local h, r = humOf(), rootOf()
+        if not (h and r) then killMover(s); killAlign(s); swimRestore(s, h); return end
         local kind, speed = Move.Fly.Kind, Move.Fly.Speed
         local c = char(); local head = c and c:FindFirstChild("Head")
+        -- v0.49.0: leaving one method for another tears down the old rig first,
+        -- or disabled swim states and stray movers leak across the switch.
+        if s.mode ~= kind then
+            killMover(s); killAlign(s); swimRestore(s, h)
+            if head and head.Anchored then head.Anchored = false end
+            s.mode = kind
+        end
         if kind == "CFrame Fly" then
-            killMover(s)
+            killMover(s); killAlign(s)
             speed = math.min(speed, 1000)
             if not head then return end
             h.PlatformStand = true; head.Anchored = true
             local v = moveVector(true)
             if v.Magnitude > 0 then head.CFrame = head.CFrame + v * (speed * dt) end
+        elseif kind == "Velocity Fly" then
+            -- v0.49.0: assembly velocity straight on the root, no mover instances
+            -- for sweeps to find. Same motion as Default, smaller footprint.
+            killMover(s); killAlign(s)
+            if head and head.Anchored then head.Anchored = false end
+            h.PlatformStand = true
+            r.AssemblyLinearVelocity = moveVector(true) * speed
+            r.AssemblyAngularVelocity = Vector3.zero
+        elseif kind == "Align Fly" then
+            -- v0.49.0: modern constraints instead of legacy movers. A goal point
+            -- chases input; the constraint does the pulling.
+            killMover(s)
+            if head and head.Anchored then head.Anchored = false end
+            if s.part ~= r or not (s.ap and s.ap.Parent) then
+                killAlign(s); s.part = r
+                s.a0, s.ap, s.ao = makeAlign(r)
+                s.goal = r.Position
+            end
+            h.PlatformStand = true
+            local v = moveVector(true)
+            if v.Magnitude > 0 then s.goal = s.goal + v * (speed * dt) end
+            s.ap.Position = s.goal
+            local cf = camCF(); if cf and s.ao then s.ao.CFrame = cf end
+        elseif kind == "Swim Fly" then
+            -- v0.49.0: forced Swimming state plus Move(), straight through the
+            -- character controller. No CFrame, velocity, or mover writes at all.
+            killMover(s); killAlign(s)
+            if head and head.Anchored then head.Anchored = false end
+            if s.swimHum ~= h then swimRestore(s, h); s.swimSaved = nil end
+            if not s.swimSaved then swimSetup(s, h); s.swimHum = h end
+            h.PlatformStand = false
+            pcall(function()
+                if h:GetState() ~= Enum.HumanoidStateType.Swimming then
+                    h:ChangeState(Enum.HumanoidStateType.Swimming)
+                end
+            end)
+            h.WalkSpeed = speed
+            local v = moveVector(true)
+            h:Move(v.Magnitude > 0 and v or Vector3.zero, false)
         else
             if head and head.Anchored then head.Anchored = false end
+            killAlign(s)
             local target = r
             if kind == "Vehicle Fly" then
                 local seat = h.SeatPart
@@ -9333,7 +9437,7 @@ Koffee._characterTab = function(root)
     slider(mv, "TP Speed", 0, 500, Move.TeleportWalk.Speed, 0, function(v) Move.TeleportWalk.Speed = v end)
     feat("Fly", "fly")
     slider(mv, "Fly Speed", 0, 5000, Move.Fly.Speed, 0, function(v) Move.Fly.Speed = v end)
-    dropdown(mv, "Fly Mode", { "Default Fly", "Vehicle Fly", "CFrame Fly" }, Move.Fly.Kind, function(v) Move.Fly.Kind = v end)
+    dropdown(mv, "Fly Mode", { "Default Fly", "Vehicle Fly", "CFrame Fly", "Velocity Fly", "Align Fly", "Swim Fly" }, Move.Fly.Kind, function(v) Move.Fly.Kind = v end)
     feat("Spinbot", "spinbot")
     slider(mv, "Spin Speed", 1, 1000, Move.Spin.Speed, 0, function(v) Move.Spin.Speed = v end)
     configCheckbox(mv, "Bypass Camera Lock", Move.Spin.BypassCameraLock, function(v) Move.Spin.BypassCameraLock = v end)
