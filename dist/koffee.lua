@@ -1,7 +1,7 @@
--- koffee v0.53.0
+-- koffee v0.53.1
 
 local Koffee = {}
-Koffee.Version = "0.53.0"
+Koffee.Version = "0.53.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1216,6 +1216,10 @@ function Koffee.lucideIcon(parent, name, px, color, z)
     props.BackgroundTransparency = 1
     props.BorderSizePixel = 0
     props.AnchorPoint = Vector2.new(0.5, 0.5)
+    -- v0.53.0: default to CENTERED in the parent. Before this the anchor sat at
+    -- the parent's top-left corner, so icons in buttons rendered in the corner.
+    -- Callers that set their own Position after creation still override this.
+    props.Position = UDim2.fromScale(0.5, 0.5)
     props.Size = UDim2.new(0, px, 0, px)
     props.ZIndex = z or 37
     props.Parent = parent
@@ -21337,7 +21341,8 @@ local function buildPicker(host, onChange)
         else
             new("Frame", { Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, LayoutOrder = 0, Parent = row })
         end
-        Koffee.lucideIcon(row, iconFor(inst), 13, Theme.Palette.TextMuted).LayoutOrder = 1
+        local ic = Koffee.lucideIcon(row, iconFor(inst), 13, Theme.Palette.TextMuted)
+        ic.AnchorPoint = Vector2.new(0, 0); ic.LayoutOrder = 1   -- layout child: top-left anchor
         local nameBtn = new("TextButton", {
             Text = inst.Name, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, AutoButtonColor = false,
@@ -21426,7 +21431,8 @@ local function buildManager(host)
         }, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, indent or 8), PaddingRight = UDim.new(0, 6) }),
             new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
                 VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
-        Koffee.lucideIcon(row, entry.kind == "dir" and "folder-open" or "user", 14, Theme.Palette.TextMuted).LayoutOrder = 0
+        local eIc = Koffee.lucideIcon(row, entry.kind == "dir" and "folder-open" or "user", 14, Theme.Palette.TextMuted)
+        eIc.AnchorPoint = Vector2.new(0, 0); eIc.LayoutOrder = 0   -- layout child: top-left anchor
         new("TextLabel", {
             Text = entry.name, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
