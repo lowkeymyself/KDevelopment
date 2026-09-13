@@ -1,7 +1,7 @@
--- koffee v0.56.0
+-- koffee v0.57.0
 
 local Koffee = {}
-Koffee.Version = "0.56.0"
+Koffee.Version = "0.57.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4661,7 +4661,8 @@ end
 -- v0.54.0: NPC Entries / Folders / a folder's Rules are lists, so REPLACE like
 -- Nodes: merging would resurrect entries/rules the user deleted since the save.
 local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true,
-    Entries = true, Folders = true, Rules = true, Accessories = true }
+    Entries = true, Folders = true, Rules = true, Accessories = true,
+    ExcludeNames = true, ExcludeSigs = true }   -- v0.57.0: NPC learn exclusion lists
 local function applyInto(target, src)
     for k, v in pairs(src) do
         if type(v) == "table" and type(target[k]) == "table" then
@@ -21384,11 +21385,14 @@ end)
 -- so aimbot, silent aim and a dedicated ESP treat them like players. Own IIFE
 -- for its register budget; publishes Shared.NPC for the Combat engine to read.
 ;(function()
-local NPC = { Entries = {}, Folders = {}, _nid = 0, _fid = 0 }
+-- v0.57.0: ExcludeNames/ExcludeSigs feed the Username auto-scan (persist between
+-- configs); _excludeSel is a session-only instance set (underscore -> not saved).
+local NPC = { Entries = {}, Folders = {}, _nid = 0, _fid = 0,
+    ExcludeNames = {}, ExcludeSigs = {}, _excludeSel = {} }
 Shared.NPC = NPC
 -- v0.54.0: persist entries + folders. The serializer skips underscore keys
 -- (_inst/_wrappers/_cache/_nid/_fid) and functions, so only kind/path/sig/name/
--- parentPath/folderId/moduleId + folder name/settings save. Lists REPLACE on load.
+-- method/parentPath/folderId/moduleId + folder name/settings save. Lists REPLACE on load.
 registerConfig("npc", NPC)
 function NPC.reconcile()
     -- after a config load: re-register each entry's module so its saved on/off
@@ -21424,13 +21428,18 @@ local function newFolderSettings()
         DisplayName = "",
         Exclude = { ESP = false, Aimbot = false, Silent = false },
         Rules = {},
+        AutoUsername = false,   -- v0.57.0: scan the workspace for player usernames
     }
 end
 local DEFAULTS = newFolderSettings()
 
 -- :: re-acquire ::
--- A model deleted and re-added (even renamed) is matched by class shape under
--- its old parent, so its folder + settings survive within a session.
+-- v0.57.0: learning captures a name-INDEPENDENT structural fingerprint so a rig
+-- can be re-found after it is renamed / re-added, even when a game randomizes the
+-- names of Workspace's children on a timer (directory obfuscation). The signature
+-- never contains a name: it is the instance's class, its children's class counts,
+-- a Humanoid flag, and (for bare parts) a rounded size. Enrichment lowers the
+-- false-match rate of a deep scan without leaning on any name.
 local function signature(inst)
     if not inst then return "" end
     local counts = {}
@@ -21441,15 +21450,56 @@ local function signature(inst)
     for k in pairs(counts) do keys[#keys + 1] = k end
     table.sort(keys)
     local parts = { inst.ClassName }
+    if inst:FindFirstChildOfClass("Humanoid") then parts[#parts + 1] = "H" end
+    if inst:IsA("BasePart") then
+        parts[#parts + 1] = "S" .. math.floor(inst.Size.X + 0.5) .. "x"
+            .. math.floor(inst.Size.Y + 0.5) .. "x" .. math.floor(inst.Size.Z + 0.5)
+    end
     for _, k in ipairs(keys) do parts[#parts + 1] = k .. ":" .. counts[k] end
     return table.concat(parts, ",")
 end
-local function findBySig(parent, sig)
-    if not parent then return nil end
-    for _, ch in ipairs(parent:GetChildren()) do
-        if ch:IsA("Model") and signature(ch) == sig then return ch end
+local function eligible(inst)
+    return (inst:IsA("Model") or inst:IsA("BasePart")) and npcAnchor(inst) ~= nil
+end
+
+-- cached Workspace descendant snapshot shared by every deep scan in a frame, so a
+-- burst of missing entries costs one GetDescendants, not one each. Capped so a
+-- pathological workspace can never stall a frame.
+local _wsSnap, _wsAt = nil, 0
+local function wsDescendants()
+    local now = os.clock()
+    if _wsSnap and (now - _wsAt) < 0.4 then return _wsSnap end
+    local ok, d = pcall(function() return Workspace:GetDescendants() end)
+    _wsSnap = (ok and type(d) == "table") and d or {}
+    _wsAt = now
+    return _wsSnap
+end
+local function deepFindBySig(sig)
+    if not sig or sig == "" then return nil end
+    for _, inst in ipairs(wsDescendants()) do
+        if eligible(inst) and signature(inst) == sig then return inst end
     end
     return nil
+end
+local function deepFindByName(name)
+    if not name or name == "" then return nil end
+    local ln = name:lower()
+    for _, inst in ipairs(wsDescendants()) do
+        if eligible(inst) and inst.Name:lower() == ln then return inst end
+    end
+    return nil
+end
+
+-- capture (or refresh) an entry's fingerprint from its current live instance.
+function NPC.learn(entry, inst)
+    inst = inst or entry._inst
+    if not (inst and inst.Parent) then return false end
+    entry.path = Shared.pathOf(inst)
+    entry.parentPath = inst.Parent and Shared.pathOf(inst.Parent) or nil
+    entry.sig = signature(inst)
+    entry.name = inst.Name
+    entry._inst = inst
+    return true
 end
 
 local function folderById(id)
@@ -21461,28 +21511,104 @@ local function settingsFor(entry)
     return (f and f.settings) or DEFAULTS
 end
 
-local function resolveEntry(entry)
+-- method-aware instance resolution. Live pointer first (free); then the entry's
+-- chosen method; then a name-independent signature deep scan as a universal safety
+-- net so even a Path entry recovers under obfuscation. Throttled when nothing is
+-- found so a genuinely-gone entry does not deep-scan every frame.
+local function resolveInstance(entry)
     local inst = entry._inst
-    if not (inst and inst.Parent) then
+    if inst and inst.Parent then return inst end
+    local now = os.clock()
+    if now < (entry._nextTry or 0) then return nil end
+    local method = entry.method or "Path"
+    inst = nil
+    if method == "Name" then
+        inst = deepFindByName(entry.name)
+    elseif method == "Signature" then
+        inst = deepFindBySig(entry.sig)
+    else   -- Path
         inst = Shared.resolvePath(entry.path)
-        if not (inst and inst.Parent) then
-            local parent = entry.parentPath and Shared.resolvePath(entry.parentPath)
-            inst = (parent and findBySig(parent, entry.sig)) or nil
-        end
-        entry._inst = inst
-        if inst then entry.path = Shared.pathOf(inst); entry.name = inst.Name end
+        if not (inst and inst.Parent) then inst = nil end
     end
+    -- universal fallbacks (in method order of cheapness) so any method survives
+    if not inst then inst = Shared.resolvePath(entry.path); if not (inst and inst.Parent) then inst = nil end end
+    if not inst then inst = deepFindBySig(entry.sig) end
+    entry._inst = inst
+    if inst then
+        entry._nextTry = 0
+        entry.path = Shared.pathOf(inst); entry.name = inst.Name
+    else
+        entry._nextTry = now + 0.5
+    end
+    return inst
+end
+
+local function resolveEntry(entry)
+    local inst = resolveInstance(entry)
     if not inst then return {} end
     if entry.kind == "dir" then
         -- v0.53.0: any child with a usable anchor part counts (Model or BasePart),
         -- no Humanoid required, so a folder of props / mobs / parts all work.
         local out = {}
         for _, ch in ipairs(inst:GetChildren()) do
-            if (ch:IsA("Model") or ch:IsA("BasePart")) and npcAnchor(ch) then out[#out + 1] = ch end
+            if eligible(ch) then out[#out + 1] = ch end
         end
         return out
     end
     return { inst }
+end
+
+-- :: exclusions + username auto-scan (v0.57.0) ::
+-- Global filter lists feed the per-folder Username scan: an instance is skipped if
+-- it is in the session selection set, its name contains an excluded name, or its
+-- fingerprint matches a learned exclusion. Names + learned sigs persist; the
+-- selection set is session-only.
+local function isExcludedInst(inst)
+    if NPC._excludeSel[inst] then return true end
+    local lname = inst.Name:lower()
+    for _, n in ipairs(NPC.ExcludeNames) do
+        if n ~= "" and lname:find(n:lower(), 1, true) then return true end
+    end
+    if #NPC.ExcludeSigs > 0 then
+        local sig = signature(inst)
+        for _, s in ipairs(NPC.ExcludeSigs) do if s == sig then return true end end
+    end
+    return false
+end
+-- live usernames in the server (Name + DisplayName), minus our own.
+local function serverUsernames()
+    local set = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            if p.Name and p.Name ~= "" then set[#set + 1] = p.Name:lower() end
+            if p.DisplayName and p.DisplayName ~= "" and p.DisplayName:lower() ~= p.Name:lower() then
+                set[#set + 1] = p.DisplayName:lower()
+            end
+        end
+    end
+    return set
+end
+-- scan the workspace for anything whose NAME CONTAINS a live username (v0.57.0
+-- decision: contains, case-insensitive), not excluded. Cached ~1.2s: cheap enough
+-- to re-run so new spawns appear and left players drop, without per-frame cost.
+local _uScan, _uScanAt = nil, 0
+local function usernameMatches()
+    local now = os.clock()
+    if _uScan and (now - _uScanAt) < 1.2 then return _uScan end
+    local names = serverUsernames()
+    local out = {}
+    if #names > 0 then
+        for _, inst in ipairs(wsDescendants()) do
+            if inst:IsA("Model") and npcAnchor(inst) and not isExcludedInst(inst) then
+                local lname = inst.Name:lower()
+                for _, u in ipairs(names) do
+                    if lname:find(u, 1, true) then out[#out + 1] = inst; break end
+                end
+            end
+        end
+    end
+    _uScan, _uScanAt = out, now
+    return out
 end
 
 -- read a value off a model for a Name or Health rule (child value, attribute,
@@ -21519,33 +21645,43 @@ function NPC.entities()
     local now = os.clock()
     if NPC._cache and (now - (NPC._cacheAt or 0)) < 0.03 then return NPC._cache end
     local out = {}
+    local seen = {}   -- v0.57.0: a model appears once, whoever finds it first
+    -- one entity from a resolved model, applying a settings bundle's name/health
+    -- rules and display-name override. `holder` owns the wrapper cache.
+    local function emit(holder, model, st)
+        if seen[model] or not npcAnchor(model) then return end
+        seen[model] = true
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        local nm = st.DisplayName ~= "" and st.DisplayName or model.Name
+        local hp = hum and hum.Health or 0
+        for _, rule in ipairs(st.Rules) do
+            if rule.kind == "Name" then
+                local v = readByRule(model, rule)
+                if v ~= nil then nm = tostring(v) end
+            elseif rule.kind == "Health" then
+                local v = tonumber(readByRule(model, rule))
+                if v then hp = v end
+            end
+        end
+        local w = wrapperFor(holder, model)
+        w.Name, w.DisplayName = nm, nm
+        out[#out + 1] = { wrapper = w, char = model, hum = hum, name = nm, health = hp, exclude = st.Exclude }
+    end
+    -- manually learned entries + directories
     for _, entry in ipairs(NPC.Entries) do
         local m = Modules[entry.moduleId]
         if m and m.Enabled then
             local st = settingsFor(entry)
-            for _, model in ipairs(resolveEntry(entry)) do
-                -- v0.53.0: any instance with an anchor part; Humanoid is optional.
-                if npcAnchor(model) then
-                    local hum = model:FindFirstChildOfClass("Humanoid")
-                    local nm = st.DisplayName ~= "" and st.DisplayName or model.Name
-                    local hp = hum and hum.Health or 0
-                    for _, rule in ipairs(st.Rules) do
-                        if rule.kind == "Name" then
-                            local v = readByRule(model, rule)
-                            if v ~= nil then nm = tostring(v) end
-                        elseif rule.kind == "Health" then
-                            local v = tonumber(readByRule(model, rule))
-                            if v then hp = v end
-                        end
-                    end
-                    local w = wrapperFor(entry, model)
-                    w.Name, w.DisplayName = nm, nm
-                    out[#out + 1] = {
-                        wrapper = w, char = model, hum = hum, name = nm, health = hp,
-                        exclude = st.Exclude,
-                    }
-                end
-            end
+            for _, model in ipairs(resolveEntry(entry)) do emit(entry, model, st) end
+        end
+    end
+    -- v0.57.0: per-folder Username auto-scan. Matches are attributed to the first
+    -- AutoUsername folder (dedupe means later folders take whatever is left), and
+    -- carry that folder's settings/exclusions like any of its entries.
+    for _, f in ipairs(NPC.Folders) do
+        if f.settings and f.settings.AutoUsername then
+            f._uHolder = f._uHolder or { _wrappers = setmetatable({}, { __mode = "k" }) }
+            for _, model in ipairs(usernameMatches()) do emit(f._uHolder, model, f.settings) end
         end
     end
     NPC._cache, NPC._cacheAt = out, now
@@ -21780,25 +21916,27 @@ local function teleportTo(inst)
     return true
 end
 
--- v0.56.0: right-click context menu. A tiny floating card at the cursor with a
--- Preview action and a single Teleport To button, as requested. Auto-dismisses on
--- any click elsewhere (a full-screen catcher behind it).
+-- v0.56.0 (grown v0.57.0): right-click context menu. A tiny floating card at the
+-- cursor: Preview, Teleport To, plus the two exclusion actions that feed the
+-- Username scan (session selection, or a persistent learned-signature exclusion).
+-- Auto-dismisses on any click elsewhere (a full-screen catcher behind it).
 local ctxMenu = nil
 local function openContextMenu(inst)
     if ctxMenu then ctxMenu:Destroy(); ctxMenu = nil end
     local scr = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
-    local W, rowH = 148, 28
+    local W, rowH, N = 170, 28, 4
     local catcher = new("TextButton", {
         Text = "", BackgroundTransparency = 1, Active = true, AutoButtonColor = false,
         Size = UDim2.new(1, 0, 1, 0), ZIndex = 258, Parent = popupScreen,
     })
     ctxMenu = catcher
+    local cardH = rowH * N + (N - 1) * 4 + 10
     local card = new("Frame", {
         BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0,
-        Size = UDim2.fromOffset(W, rowH * 2 + 10), ZIndex = 259, Parent = catcher,
+        Size = UDim2.fromOffset(W, cardH), ZIndex = 259, Parent = catcher,
         Position = UDim2.fromOffset(
             math.clamp(UIS:GetMouseLocation().X, 4, math.max(4, scr.X - W - 4)),
-            math.clamp(UIS:GetMouseLocation().Y, 4, math.max(4, scr.Y - (rowH * 2 + 14)))),
+            math.clamp(UIS:GetMouseLocation().Y, 4, math.max(4, scr.Y - cardH - 4))),
     }, { corner(8), stroke(Theme.Palette.BorderSubtle),
         new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5),
             PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
@@ -21822,16 +21960,30 @@ local function openContextMenu(inst)
     end
     item("eye", "Preview", function() openPreview(inst) end, 1)
     item("navigation", "Teleport To", function() teleportTo(inst) end, 2)
+    item("ban", "Exclude (session)", function()
+        NPC._excludeSel[inst] = true
+        if NPC._refreshExcl then NPC._refreshExcl() end
+    end, 3)
+    item("eye-off", "Exclude (learn)", function()
+        local sig = signature(inst)
+        if sig ~= "" then
+            local dup = false
+            for _, s in ipairs(NPC.ExcludeSigs) do if s == sig then dup = true break end end
+            if not dup then NPC.ExcludeSigs[#NPC.ExcludeSigs + 1] = sig end
+        end
+        if NPC._refreshExcl then NPC._refreshExcl() end
+    end, 4)
 end
 
 -- :: entry / folder mutation ::
-local function addEntry(inst, kind)
+local function addEntry(inst, kind, method)
     NPC._nid = NPC._nid + 1
     local id = NPC._nid
     local entry = {
         id = id, kind = kind, path = Shared.pathOf(inst),
         parentPath = inst.Parent and Shared.pathOf(inst.Parent) or nil,
         sig = signature(inst), name = inst.Name, folderId = nil, _inst = inst,
+        method = method or "Path",   -- v0.57.0: Path | Signature | Name
         moduleId = "npc_" .. id,
     }
     registerModule(entry.moduleId, "npc: " .. inst.Name, function() end, function() end)
@@ -21996,8 +22148,8 @@ local function buildPicker(host, onChange)
         for _, r in ipairs(ROOTS) do walk(r, 0) end
     end
 
-    -- right column: what is selected + add actions
-    hintRow(right, "Click a name to select. Click the arrow to expand. Right-click for Preview / Teleport To.", 0)
+    -- right column: what is selected + learn actions
+    hintRow(right, "Click a name to select, the arrow to expand. Right-click for Preview / Teleport / Exclude.", 0)
     local selLabel = new("TextLabel", {
         Text = "Nothing selected", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextWrapped = true,
@@ -22007,16 +22159,24 @@ local function buildPicker(host, onChange)
     local previewHolder = new("Frame", {
         Size = UDim2.new(1, 0, 0, 90), BackgroundTransparency = 1, LayoutOrder = 2, Parent = right,
     })
-    local addRow = hrow(right, 28, 3)
-    local addBtn = textBtn(addRow, "Add as NPC", function()
+    -- v0.57.0: choose how this target is re-found before learning it. Signature is
+    -- name-independent (survives directory obfuscation); Path is exact + fastest;
+    -- Name matches by the learned name anywhere in the workspace.
+    local learnMethod = "Signature"
+    local methodHolder = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, LayoutOrder = 3, Parent = right,
+    })
+    dropdown(methodHolder, "Learn method", { "Signature", "Path", "Name" }, learnMethod, function(v) learnMethod = v end)
+    local addRow = hrow(right, 28, 4)
+    local addBtn = textBtn(addRow, "Learn as NPC", function()
         if not selected then return end
-        addEntry(selected, "model"); if onChange then onChange() end
-        selLabel.Text = "Added: " .. selected.Name
+        addEntry(selected, "model", learnMethod); if onChange then onChange() end
+        selLabel.Text = "Learned: " .. selected.Name .. " (" .. learnMethod .. ")"
     end, 0)
-    local addDirBtn = textBtn(addRow, "Add as Directory", function()
+    local addDirBtn = textBtn(addRow, "Learn as Directory", function()
         if not selected then return end
-        addEntry(selected, "dir"); if onChange then onChange() end
-        selLabel.Text = "Added directory: " .. selected.Name
+        addEntry(selected, "dir", learnMethod); if onChange then onChange() end
+        selLabel.Text = "Learned directory: " .. selected.Name
     end, 1)
     addBtn.Visible = false; addDirBtn.Visible = false
     updateRight = function()
@@ -22060,12 +22220,31 @@ local function buildManager(host)
         new("TextLabel", {
             Text = entry.name, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
-            TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -70, 1, 0), LayoutOrder = 1, Parent = row,
+            TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -150, 1, 0), LayoutOrder = 1, Parent = row,
         })
+        -- v0.57.0: method pill (cycles Path -> Signature -> Name) + a Re-Learn button
+        -- that recaptures the fingerprint from the live instance.
+        local METHODS = { "Path", "Signature", "Name" }
+        local methodPill = new("TextButton", {
+            Text = entry.method or "Path", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Accent, BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+            Size = UDim2.fromOffset(58, 22), LayoutOrder = 2, Parent = row,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        methodPill.MouseButton1Click:Connect(function()
+            local cur = entry.method or "Path"
+            local i = 1
+            for k, m in ipairs(METHODS) do if m == cur then i = k break end end
+            entry.method = METHODS[(i % #METHODS) + 1]
+            entry._inst, entry._nextTry = nil, 0   -- force a fresh resolve with the new method
+            methodPill.Text = entry.method
+        end)
+        iconBtn(row, "refresh-cw", "re-learn", function()
+            if NPC.learn(entry) then rebuild() end
+        end, 3)
         -- assign to / remove from a folder. Its own wrapper so rightClickSettings
         -- (which grabs the first TextButton it finds) targets exactly this button.
         local assignWrap = new("Frame", {
-            Size = UDim2.fromOffset(22, 22), BackgroundTransparency = 1, LayoutOrder = 2, Parent = row,
+            Size = UDim2.fromOffset(22, 22), BackgroundTransparency = 1, LayoutOrder = 4, Parent = row,
         })
         local assignBtn = new("TextButton", {
             Text = "", BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true, Size = UDim2.fromScale(1, 1), Parent = assignWrap,
@@ -22084,7 +22263,7 @@ local function buildManager(host)
                 rebuild()
             end)
         end, true)
-        iconBtn(row, "trash-2", "remove", function() removeEntry(entry); rebuild() end, 3)
+        iconBtn(row, "trash-2", "remove", function() removeEntry(entry); rebuild() end, 5)
     end
 
     local function folderHeader(parent, folder)
@@ -22150,10 +22329,60 @@ local function buildManager(host)
         if #NPC.Entries == 0 then hintRow(listBox, "No NPCs yet. Add some in the Picker tab.", 0) end
     end
 
+    -- v0.57.0: global Username-scan exclusion editor, shown when no folder is
+    -- selected. Names + learned sigs persist; tree selections are session-only.
+    local function drawExclusions()
+        new("TextLabel", {
+            Text = "Username Scan Exclusions", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, 0, 0, 16), Parent = right,
+        })
+        hintRow(right, "Filters what the folder Username scan picks up. Right-click a tree row (Picker) to add a session or learned exclusion.", 0)
+        -- names (persist): text + add, then a removable list
+        local nameAdd = hrow(right, 26, 0)
+        local nameTB = textInput(nameAdd, "exclude name (contains)", "", 0, function() end)
+        nameTB.Size = UDim2.new(1, -60, 0, 26)
+        textBtn(nameAdd, "Add", function()
+            local t = nameTB.Text:gsub("^%s+", ""):gsub("%s+$", "")
+            if t ~= "" then NPC.ExcludeNames[#NPC.ExcludeNames + 1] = t; showSettings() end
+        end, 1)
+        local function chipRow(label, onRemove)
+            local r = hrow(right, 24, 0)
+            r.BackgroundColor3 = Theme.Palette.PanelElevated; r.BackgroundTransparency = 0.5
+            new("UICorner", { CornerRadius = UDim.new(0, 6), Parent = r })
+            new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 4), Parent = r })
+            new("TextLabel", {
+                Text = label, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
+                TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -26, 1, 0), LayoutOrder = 0, Parent = r,
+            })
+            iconBtn(r, "trash-2", "remove", onRemove, 1)
+        end
+        if #NPC.ExcludeNames > 0 then hintRow(right, "By name (saved):", 0) end
+        for i = #NPC.ExcludeNames, 1, -1 do
+            local idx = i
+            chipRow("name: " .. NPC.ExcludeNames[idx], function() table.remove(NPC.ExcludeNames, idx); showSettings() end)
+        end
+        if #NPC.ExcludeSigs > 0 then hintRow(right, "By learned fingerprint (saved):", 0) end
+        for i = #NPC.ExcludeSigs, 1, -1 do
+            local idx = i
+            local s = NPC.ExcludeSigs[idx]
+            chipRow("learned: " .. (s:sub(1, 22)) .. (#s > 22 and "..." or ""),
+                function() table.remove(NPC.ExcludeSigs, idx); showSettings() end)
+        end
+        local selCount = 0
+        for _ in pairs(NPC._excludeSel) do selCount = selCount + 1 end
+        if selCount > 0 then hintRow(right, "By selection (this session):", 0) end
+        for inst in pairs(NPC._excludeSel) do
+            local ok, nm = pcall(function() return inst.Name end)
+            chipRow("session: " .. (ok and nm or "(gone)"), function() NPC._excludeSel[inst] = nil; showSettings() end)
+        end
+    end
+
     showSettings = function()
         clearKids(right)
         if not selected then
-            hintRow(right, "Select a folder to edit its name, exclusions and rules.", 0)
+            drawExclusions()
             return
         end
         local f, st = selected, selected.settings
@@ -22171,6 +22400,10 @@ local function buildManager(host)
         configCheckbox(right, "Exclude from ESP", st.Exclude.ESP, function(v) st.Exclude.ESP = v end)
         configCheckbox(right, "Exclude from Aimbot", st.Exclude.Aimbot, function(v) st.Exclude.Aimbot = v end)
         configCheckbox(right, "Exclude from Silent", st.Exclude.Silent, function(v) st.Exclude.Silent = v end)
+        -- v0.57.0: auto-populate this folder by scanning the workspace for models
+        -- whose name contains a live player's username (respects the exclusions
+        -- shown when no folder is selected).
+        configCheckbox(right, "Auto: Usernames (scan workspace)", st.AutoUsername, function(v) st.AutoUsername = v end)
         hintRow(right, "Rules read a value off each model (child .Value, attribute, or property):", 0)
         local ruleBox = vlist(right, 4, 0)
         local addRow = hrow(right, 26, 0)
@@ -22216,6 +22449,9 @@ local function buildManager(host)
 
     rebuild()
     showSettings()
+    -- v0.57.0: let the Picker's exclude actions refresh this panel when it is showing
+    -- the exclusion editor (no folder selected).
+    NPC._refreshExcl = function() if not selected then showSettings() end end
     return rebuild
 end
 
