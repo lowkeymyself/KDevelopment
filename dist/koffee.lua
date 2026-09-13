@@ -1,7 +1,7 @@
--- koffee v0.51.0
+-- koffee v0.51.1
 
 local Koffee = {}
-Koffee.Version = "0.51.0"
+Koffee.Version = "0.51.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9633,7 +9633,7 @@ local Combat = {
         -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
         -- v0.51.0: PartMode picks from the enabled Parts pool; Spread sprays
         -- the redirect in a disc. Empty pool means everything enabled.
-        Legit         = { Jitter = 0, HitChance = 100, PartMode = "Single Part", Parts = {}, Spread = 0 },
+        Legit         = { Jitter = 0, HitChance = 100, PartMode = "Single Part", Parts = {}, Spread = 0, ForceMiss = false },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default: fire-read is always
         -- on. The ~90% of games that don't read mouse.Hit build their shot from
         -- Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON
@@ -9873,6 +9873,19 @@ local Combat = {
             end
         end
         return bestP
+    end
+
+    -- v0.51.1: forced-miss point. Random angle in the camera plane, 5 studs
+    -- off the part: confidently off the body, still plausibly near it.
+    local function missPoint(part)
+        local mp = part.Position
+        local mc = Workspace.CurrentCamera
+        if mc then
+            local cf = mc.CFrame
+            local a = math.random() * math.pi * 2
+            mp = mp + (cf.RightVector * math.cos(a) + cf.UpVector * math.sin(a)) * 5
+        end
+        return mp
     end
 
     -- returns player, part. maxRadius in screen px (math.huge = no FOV limit).
@@ -11679,16 +11692,27 @@ local Combat = {
         if plr and part then
             -- v0.50.0 Hit Chance. A failed roll fires clean this frame: clear
             -- the redirect with no grace window, so the shot truly misses.
-            local hc = Combat.Silent.Legit.HitChance or 100
+            -- v0.51.1 Force Miss: same failed roll, but the lock holds and the
+            -- redirect goes wide instead, so every method genuinely misses.
+            local L = Combat.Silent.Legit
+            local missed = false
+            local hc = L.HitChance or 100
             if hc < 100 and math.random(100) > hc then
-                silentTarget = nil; silentPos = nil
-                SR.camPos = nil; SR.screen = nil; SR.camLook = nil; SR.rootPos = nil
-                Combat.Silent._lastGoodAt = nil
-                return
+                if L.ForceMiss then
+                    missed = true
+                    silentTarget = part
+                    silentPos = missPoint(part)
+                else
+                    silentTarget = nil; silentPos = nil
+                    SR.camPos = nil; SR.screen = nil; SR.camLook = nil; SR.rootPos = nil
+                    Combat.Silent._lastGoodAt = nil
+                    return
+                end
             end
-            silentTarget = part
-            -- prediction shifts the redirect point for lead; the hooks read silentPos
-            silentPos = predicted(plr, part, Combat.Silent.Predict)
+            if not missed then
+                silentTarget = part
+                -- prediction shifts the redirect point for lead; the hooks read silentPos
+                silentPos = predicted(plr, part, Combat.Silent.Predict)
             -- v0.50.0 silent jitter: scatter the redirect point by up to N studs.
             local sj = Combat.Silent.Legit.Jitter or 0
             if sj > 0 then
@@ -11709,6 +11733,7 @@ local Combat = {
                     silentPos = silentPos
                         + (cf.RightVector * math.cos(a) + cf.UpVector * math.sin(a)) * rr
                 end
+            end
             end
             -- v0.0.39: cache the real camera + target's screen point so the fire-read
             -- resolvers never re-read Camera.* inside the __index hook (recursion).
@@ -12627,6 +12652,9 @@ local Combat = {
         -- studs; Hit Chance fires a clean shot on failed rolls. Both calm.
         slider(R.Legit, "Jitter (studs)", 0, 5, Combat.Silent.Legit.Jitter, 1, function(v) Combat.Silent.Legit.Jitter = v end)
         slider(R.Legit, "Hit Chance (%)", 1, 100, Combat.Silent.Legit.HitChance, 0, function(v) Combat.Silent.Legit.HitChance = v end)
+        -- v0.51.1 Force Miss: failed Hit Chance rolls hold the lock and throw
+        -- the redirect wide instead of firing clean.
+        configCheckbox(R.Legit, "Force Miss", Combat.Silent.Legit.ForceMiss, function(v) Combat.Silent.Legit.ForceMiss = v end)
         -- v0.51.0 hit part pool. Single Part keeps the Hit Part dropdown;
         -- Closest and Random draw from the ticked pool below (unticked parts
         -- never picked).
