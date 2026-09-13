@@ -1,7 +1,7 @@
--- koffee v0.46.2
+-- koffee v0.47.0
 
 local Koffee = {}
-Koffee.Version = "0.46.2"
+Koffee.Version = "0.47.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -289,7 +289,7 @@ do
             brand.Position = UDim2.new(0.5, 0, 0.5, -34)
             brand.Size = UDim2.new(0, 220, 0, 24)
             brand.BackgroundTransparency = 1
-            brand.Text = "koffee"
+            brand.Text = "Koffee"
             brand.Font = Enum.Font.GothamMedium
             brand.TextSize = 20
             brand.TextColor3 = TEXT
@@ -369,8 +369,8 @@ do
                 bc.Parent = b
                 return b
             end
-            local retryBtn = mkBtn(0, 114, "retry", TEXT)
-            local skipBtn  = mkBtn(126, 114, "skip", MUTED)
+            local retryBtn = mkBtn(0, 114, "Retry", TEXT)
+            local skipBtn  = mkBtn(126, 114, "Skip", MUTED)
 
             local pctLabel = Instance.new("TextLabel")
             pctLabel.AnchorPoint = Vector2.new(0.5, 0)
@@ -471,16 +471,16 @@ do
 
             while #failed > 0 do
                 status.TextColor3 = Color3.fromRGB(220, 110, 100)
-                status.Text = failed[1].name .. " failed" ..
+                status.Text = "Failed: " .. failed[1].name ..
                     (#failed > 1 and (" +" .. tostring(#failed - 1) .. " more") or "")
                 btnRow.Visible = true
                 local choice = nil
-                local c1 = retryBtn.MouseButton1Click:Connect(function() choice = "retry" end)
-                local c2 = skipBtn.MouseButton1Click:Connect(function() choice = "skip" end)
+                local c1 = retryBtn.MouseButton1Click:Connect(function() choice = "Retry" end)
+                local c2 = skipBtn.MouseButton1Click:Connect(function() choice = "Skip" end)
                 while choice == nil do task.wait() end
                 c1:Disconnect(); c2:Disconnect()
                 btnRow.Visible = false
-                if choice == "skip" then break end
+                if choice == "Skip" then break end
                 local retrySet = failed
                 failed = {}
                 status.TextColor3 = MUTED
@@ -488,7 +488,7 @@ do
             end
 
             status.TextColor3 = MINT
-            status.Text = "ready"
+            status.Text = "Ready"
             close()
         else
             Koffee._assetsReady = true
@@ -1147,6 +1147,36 @@ end
 
 local function corner(r) return new("UICorner", { CornerRadius = UDim.new(0, r or Theme.Radius.Medium) }) end
 local function pillCorner() return new("UICorner", { CornerRadius = UDim.new(1, 0) }) end
+
+-- v0.47.0: lucide glyphs, chunk-wide. Spritesheet slices from
+-- latte-soft/lucide-roblox (MIT/ISC); ImageRect crops one glyph each.
+local LUCIDE = {
+    ["chevron-right"] = { 16898617509, 0, 514 },
+    ["chevron-down"]  = { 16898617411, 514, 257 },
+    ["chevron-up"]    = { 16898617509, 514, 514 },
+    box    = { 16898616650, 0, 514 },
+    folder = { 16898671684, 257, 0 },
+    file   = { 16898670620, 0, 514 },
+    search = { 16898734242, 257, 0 },
+    x      = { 16898791349, 257, 0 },
+    plus   = { 16898732061, 514, 0 },
+    pin    = { 16898731819, 514, 257 },
+    check  = { 16898617411, 257, 0 },
+}
+local function lucideIcon(parent, name, px, color, z)
+    local d = LUCIDE[name]
+    if not d then return nil end
+    return new("ImageLabel", {
+        Image = "rbxassetid://" .. d[1],
+        ImageRectOffset = Vector2.new(d[2], d[3]),
+        ImageRectSize = Vector2.new(256, 256),
+        ImageColor3 = color or Color3.new(1, 1, 1),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.new(0, px, 0, px),
+        ZIndex = z or 37, Parent = parent,
+    })
+end
 local function stroke(color, thick)
     return new("UIStroke", {
         Color = color or Theme.Palette.Border,
@@ -2507,7 +2537,7 @@ function Helper.Url(port, path) return Helper.Host .. ":" .. port .. (path or ""
 function Helper.Headers()
     return { ["X-Koffee-Key"] = Helper.Key, ["Content-Type"] = "application/json" }
 end
-local VIRTUAL_LABELS = { XButton1 = "xb1", XButton2 = "xb2" }
+local VIRTUAL_LABELS = { XButton1 = "XB1", XButton2 = "XB2" }
 -- display text for ANY bind: virtual string, Roblox EnumItem, or nil.
 -- v0.0.94: short-name modifier map for combo pill display ("LeftShift" -> "Shift").
 local MOD_SHORT = {
@@ -2516,7 +2546,7 @@ local MOD_SHORT = {
     LeftAlt = "Alt",   RightAlt = "Alt",
 }
 -- v0.27.0: compact mouse-button labels for module pills (matches combat's inputName).
-local MOUSE_SHORT_LBL = { MouseButton1 = "lmb", MouseButton2 = "rmb", MouseButton3 = "mmb" }
+local MOUSE_SHORT_LBL = { MouseButton1 = "LMB", MouseButton2 = "RMB", MouseButton3 = "MMB" }
 local function keyLabel(bind)
     if bind == nil then return nil end
     if type(bind) == "string" then return VIRTUAL_LABELS[bind] or bind end
@@ -2537,7 +2567,7 @@ local function addTab(name, buildFn)
     tabOrder = tabOrder + 1
     local button = new("TextButton", {
         Name = name,
-        Text = name:lower(),
+        Text = name,
         FontFace = Theme.Fonts.Medium,
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.TextMuted,
@@ -2606,7 +2636,7 @@ local function addTab(name, buildFn)
         buildFn(panel)
     else
         new("TextLabel", {
-            Text = name:lower() .. " -- coming soon",
+            Text = name .. " -- Coming Soon",
             FontFace = Theme.Fonts.Regular,
             TextSize = Theme.Text.Body,
             TextColor3 = Theme.Palette.TextFaint,
@@ -2913,7 +2943,7 @@ local function keybindPill(row, moduleId, initialKey)
         BackgroundTransparency = 0.2,
         BorderSizePixel = 0,
         AutoButtonColor = false,
-        Text = keyLabel(currentKey) or "no keybind",
+            Text = keyLabel(currentKey) or "No Keybind",
         FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Tiny,
         TextColor3 = Theme.Palette.TextMuted,
@@ -2941,7 +2971,7 @@ local function keybindPill(row, moduleId, initialKey)
         -- target. Without this, clicking pill A then pill B leaves pill A
         -- stuck showing "..." forever.
         if pendingRebind and pendingRebind.pill ~= pill then
-            pendingRebind.pill.Text = keyLabel(Keybinds[pendingRebind.moduleId]) or "no keybind"
+            pendingRebind.pill.Text = keyLabel(Keybinds[pendingRebind.moduleId]) or "No Keybind"
             tween(pendingRebind.pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
         end
         pill.Text = "..."
@@ -3016,7 +3046,7 @@ local function buildColorPicker()
         }),
     })
     new("TextLabel", {
-        Text = "color",
+            Text = "Color",
         FontFace = Theme.Fonts.Medium,
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text,
@@ -3471,42 +3501,28 @@ end
 -- DROPDOWN (label above + button that opens popup list below)
 -- Popup is parented to `screen` (NOT the panel/window) so it renders
 -- above the CanvasGroup and isn't clipped by it. Positioned each open
--- from the button's AbsolutePosition. Slide+fade animation. Chevron
--- arrow built from two rotated 1px lines. Closes on outside click.
+-- from the button's AbsolutePosition. Slide+fade animation. Lucide
+-- chevron-down glyph (rotates 180 on open). Closes on outside click.
 local openDropdowns = {}  -- popup frames -> close-fn
 
 local function chevron(parent, sizePx)
     sizePx = sizePx or 8
+    -- v0.47.0: lucide chevron-down glyph instead of two rotated 1px lines.
+    -- Callers still rotate the root 180 to flip it; kept that contract.
     local root = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(1, -10, 0.5, 0),
-        Size = UDim2.new(0, sizePx, 0, sizePx * 0.6),
+        Size = UDim2.new(0, sizePx, 0, sizePx),
         BackgroundTransparency = 1,
         ZIndex = 37,
         Parent = parent,
     })
-    local armLen = sizePx * 0.62
-    local left = new("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.28, 0, 0.5, 0),
-        Size = UDim2.new(0, armLen, 0, 1.4),
-        Rotation = 40,
-        BackgroundColor3 = Theme.Palette.TextMuted,
-        BorderSizePixel = 0,
-        ZIndex = 38,
-        Parent = root,
-    })
-    local right = new("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.72, 0, 0.5, 0),
-        Size = UDim2.new(0, armLen, 0, 1.4),
-        Rotation = -40,
-        BackgroundColor3 = Theme.Palette.TextMuted,
-        BorderSizePixel = 0,
-        ZIndex = 38,
-        Parent = root,
-    })
-    return root, left, right
+    local img = lucideIcon(root, "chevron-down", sizePx, Theme.Palette.TextMuted, 38)
+    if img then
+        img.AnchorPoint = Vector2.new(0.5, 0.5)
+        img.Position = UDim2.new(0.5, 0, 0.5, 0)
+    end
+    return root, img, img
 end
 
 local function dropdown(parent, label, options, initial, onChange)
@@ -3885,7 +3901,7 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         end
         if animate then pulse(track, 1.02) end   -- v0.0.98: track ticks on settle
         local atMax = opts.infinite and current >= max
-        valueBox.Text = atMax and "Infinite" or tostring(current)
+            valueBox.Text = atMax and "Infinite" or tostring(current)
         if onChange then onChange(atMax and math.huge or current) end
     end
     local function setFromInputX(inputX)
@@ -4174,7 +4190,7 @@ local function teamCheckSettings(api)
     pcall(function() teams = game:GetService("Teams"):GetTeams() end)
     if #teams == 0 then
         new("TextLabel", {
-            Text = "no teams in this game -- use Advanced",
+                Text = "No teams in this game -- use Advanced",
             FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
             Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
@@ -7651,7 +7667,7 @@ registerConfig("world_skybox", World.SkyBox)
             if not isfile(path) then
                 setStatus("(downloading " .. i .. "/6)")
                 local body = httpGet(SKY_BASE .. name:gsub(" ", "%%20") .. "/sky512_" .. f .. ".tex")
-                if not body then return nil, "download failed" end
+                if not body then return nil, "Download failed" end
                 if not pcall(writefile, path, body) then return nil, "write failed" end
             end
             local ok, id = pcall(getcustomasset, path)
@@ -8398,7 +8414,7 @@ local function openChooser(pill, cfg)
     for _, mode in ipairs({ "Hold", "Toggle" }) do
         local sel = cfg.Mode == mode
         local opt = new("TextButton", { Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Theme.Palette.PanelElevated,
-            BackgroundTransparency = sel and 0.2 or 1, AutoButtonColor = false, Text = mode:lower(),
+            BackgroundTransparency = sel and 0.2 or 1, AutoButtonColor = false, Text = mode,
             FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
             TextColor3 = sel and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 231 }, { corner(4) })
         opt.Parent = frame
@@ -9011,7 +9027,7 @@ local function openMaterialPreview()
             BorderSizePixel = 0, ZIndex = 303, Parent = bar }, { pillCorner() })
         if i == 1 then d.MouseButton1Click:Connect(closeMaterialPreview) end
     end
-    new("TextLabel", { Text = "material", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            new("TextLabel", { Text = "Material", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
         TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 302, Parent = bar })
     -- viewport body
@@ -9683,7 +9699,7 @@ local Combat = {
         end
         return false
     end
-    local MOUSE_SHORT = { MouseButton1 = "lmb", MouseButton2 = "rmb", MouseButton3 = "mmb" }
+    local MOUSE_SHORT = { MouseButton1 = "LMB", MouseButton2 = "RMB", MouseButton3 = "MMB" }
     local function inputName(bind)
         -- v0.0.37: virtual helper binds (mouse 4/5) render as xb1/xb2
         if type(bind) == "string" then return VIRTUAL_LABELS[bind] or bind end
@@ -9721,7 +9737,7 @@ local Combat = {
             local sel = cfg.ActivationMode == mode
             local opt = new("TextButton", {
                 Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Theme.Palette.PanelElevated,
-                BackgroundTransparency = sel and 0.2 or 1, AutoButtonColor = false, Text = mode:lower(),
+            BackgroundTransparency = sel and 0.2 or 1, AutoButtonColor = false, Text = mode,
                 FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
                 TextColor3 = sel and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 231, Parent = frame,
             }, { corner(4) })
@@ -11646,7 +11662,7 @@ local Combat = {
         -- fill visually (drawFov gates on `not dotsMode`), so flipping back to Smooth
         -- restores it without a re-toggle.
         local fillRow = configCheckbox(parent, "Filled", F.Filled, function(v) F.Filled = v end)
-        rightClickSettings(fillRow.row, "fill", function(api)
+        rightClickSettings(fillRow.row, "Fill", function(api)
             -- v0.4.0: kill the visual entirely while keeping FOV as a targeting gate.
             api:toggle("Hide Visual", F.HideVisual, function(v) F.HideVisual = v end)
             api:toggle("Remove Outline", F.Fill.RemoveOutline, function(v) F.Fill.RemoveOutline = v end)
@@ -11687,14 +11703,14 @@ local Combat = {
             F.Follow.Enabled = v
             if not v then F.Follow._screenX = nil; F.Follow._screenY = nil end
         end)
-        rightClickSettings(followRow.row, "follow", function(api)
+        rightClickSettings(followRow.row, "Follow", function(api)
             api:slider("Smoothness", 0, 0.98, F.Follow.Smoothness, 2, function(v) F.Follow.Smoothness = v end)
         end)
         local styleDd = dropdown(parent, "Style", { "Smooth", "Dots" }, F.Style, function(v)
             F.Style = v
         end)
         -- right-click the Style dropdown to tune Dots
-        rightClickSettings(styleDd.frame, "dots", function(api)
+        rightClickSettings(styleDd.frame, "Dots", function(api)
             api:slider("Dot Size", 1, 12, F.DotSize, 0, function(v) F.DotSize = v end)
             api:slider("Gap", 6, 60, F.DotGap, 0, function(v) F.DotGap = v end)
         end)
@@ -11734,7 +11750,7 @@ local Combat = {
         end
         for i, name in ipairs(names) do
             local b = new("TextButton", {
-                Text = name:lower(), AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0),
+                Text = name, AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0),
                 BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 1, AutoButtonColor = false,
                 FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body, TextColor3 = Theme.Palette.TextMuted,
                 LayoutOrder = i, ZIndex = 35, Parent = bar,
@@ -11783,7 +11799,7 @@ local Combat = {
         -- Aimbot
         local aimRow = moduleCheckbox(L.Aimbot, "Enabled", "aimbot")
         activationPill(aimRow.row, Combat.Aim)
-        rightClickSettings(configCheckbox(L.Aimbot, "Team Check", Combat.Aim.TeamCheck, function(v) Combat.Aim.TeamCheck = v end).row, "team check", teamCheckSettings)
+        rightClickSettings(configCheckbox(L.Aimbot, "Team Check", Combat.Aim.TeamCheck, function(v) Combat.Aim.TeamCheck = v end).row, "Team Check", teamCheckSettings)
         configCheckbox(L.Aimbot, "Visible Check", Combat.Aim.VisibleCheck, function(v) Combat.Aim.VisibleCheck = v end)
         configCheckbox(L.Aimbot, "Behind Cam", Combat.Aim.BehindCam, function(v) Combat.Aim.BehindCam = v end)
         configCheckbox(L.Aimbot, "Health Check", Combat.Aim.HealthCheck, function(v) Combat.Aim.HealthCheck = v end)
@@ -11801,7 +11817,7 @@ local Combat = {
         local rageTypeDd = dropdown(L.Aimbot, "Type", { "Camera Teleport", "Character Teleport" }, Combat.Aim.RageType,
             function(v) Combat.Aim.RageType = v end)
         -- right-click the Type dropdown to tune the Character Teleport vertical offset
-        rightClickSettings(rageTypeDd.frame, "character teleport", function(api)
+        rightClickSettings(rageTypeDd.frame, "Character Teleport", function(api)
             api:slider("Y Offset", -10, 10, Combat.Aim.RageYOffset, 1, function(v) Combat.Aim.RageYOffset = v end)
         end)
         aimSnapCtrl = configCheckbox(L.Aimbot, "Snaplines", Combat.Aim.Snaplines, function(v)
@@ -11877,7 +11893,7 @@ local Combat = {
             function(v) Combat.HitEffects.Hit.Enabled = v end)
         attachSwatch(heHitRow.row, Combat.HitEffects.Hit.Color,
             function(c) Combat.HitEffects.Hit.Color = c end)
-        rightClickSettings(heHitRow.row, "hit effect", function(popup)
+        rightClickSettings(heHitRow.row, "Hit Effect", function(popup)
             popup:dropdown("Preset", HFX_PRESETS, Combat.HitEffects.Hit.Preset,
                 function(v) Combat.HitEffects.Hit.Preset = v end)
             popup:slider("Scale",     0.2, 4, Combat.HitEffects.Hit.Scale,    2, function(v) Combat.HitEffects.Hit.Scale = v end)
@@ -11889,7 +11905,7 @@ local Combat = {
             function(v) Combat.HitEffects.Kill.Enabled = v end)
         attachSwatch(heKillRow.row, Combat.HitEffects.Kill.Color,
             function(c) Combat.HitEffects.Kill.Color = c end)
-        rightClickSettings(heKillRow.row, "kill effect", function(popup)
+        rightClickSettings(heKillRow.row, "Kill Effect", function(popup)
             popup:dropdown("Preset", HFX_PRESETS, Combat.HitEffects.Kill.Preset,
                 function(v) Combat.HitEffects.Kill.Preset = v end)
             popup:slider("Scale",     0.2, 4, Combat.HitEffects.Kill.Scale,    2, function(v) Combat.HitEffects.Kill.Scale = v end)
@@ -11925,7 +11941,7 @@ local Combat = {
         local tlBox = new("TextBox", {
             AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
             Size = UDim2.new(0, 80, 0, CBOX.h - 8),
-            Text = Shared.TargetLock.Name or "", PlaceholderText = "username...",
+            Text = Shared.TargetLock.Name or "", PlaceholderText = "Username...",
             ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
@@ -11965,7 +11981,7 @@ local Combat = {
             Size = UDim2.new(0, 34, 0, 15), AutomaticSize = Enum.AutomaticSize.X,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0, AutoButtonColor = false,
-            Text = keyLabel(Shared.TargetLock.Key) or "set", FontFace = Theme.Fonts.Mono,
+            Text = keyLabel(Shared.TargetLock.Key) or "Set", FontFace = Theme.Fonts.Mono,
             TextSize = Theme.Text.Tiny, TextColor3 = Theme.Palette.TextMuted, ZIndex = 38, Parent = tlKeyRow,
         }, { pillCorner(), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
@@ -11985,14 +12001,14 @@ local Combat = {
             -- runtime key reader picks it up.
             local proxy = {}
             pendingActivation = { pill = tlKeyPill, cfg = proxy, refresh = function()
-                tlKeyPill.Text = keyLabel(Shared.TargetLock.Key) or "set"
+                tlKeyPill.Text = keyLabel(Shared.TargetLock.Key) or "Set"
             end }
             -- v0.39.1: rawset, never self[k]=v (that re-enters __newindex and
             -- throws, leaving pendingActivation stuck on "..." forever).
             setmetatable(proxy, { __index = function() end, __newindex = function(self, k, v)
                 if k == "ActivationKey" then
                     Shared.TargetLock.Key = v
-                    tlKeyPill.Text = keyLabel(v) or "set"
+                    tlKeyPill.Text = keyLabel(v) or "Set"
                     -- v0.3.1: fold the new key into the "ready -- press ..." line.
                     if tlStatusUpdater then tlStatusUpdater() end
                 end
@@ -12006,7 +12022,7 @@ local Combat = {
                 pendingActivation.refresh(); pendingActivation = nil
             end
             Shared.TargetLock.Key = nil
-            tlKeyPill.Text = "set"
+            tlKeyPill.Text = "Set"
             tween(tlKeyPill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
             if tlStatusUpdater then tlStatusUpdater() end
         end)
@@ -12024,30 +12040,30 @@ local Combat = {
         -- WHY the lock isn't engaged instead of the generic "idle" line.
         tlStatusUpdater = function()
             if not Shared.TargetLock.Enabled then
-                tlStatus.Text = "off -- tick Armed to enable"
+                tlStatus.Text = "Off -- tick Armed to enable"
                 return
             end
             local hasName = Shared.TargetLock.Name and Shared.TargetLock.Name ~= ""
             if not hasName then
-                tlStatus.Text = "type a target name above"
+                tlStatus.Text = "Type a target name above"
                 return
             end
             if not Shared.TargetLock._active then
                 local keyTxt = Shared.TargetLock.Key and keyLabel(Shared.TargetLock.Key) or "activate key"
-                tlStatus.Text = "ready -- press " .. keyTxt .. " to lock"
+                tlStatus.Text = "Ready -- press " .. keyTxt .. " to lock"
                 return
             end
             local t = Shared.targetLockPlayer()
             if not t then
-                tlStatus.Text = "locked -- '" .. Shared.TargetLock.Name .. "' not in game"
+                tlStatus.Text = "Locked -- '" .. Shared.TargetLock.Name .. "' not in game"
                 return
             end
             -- Show display name when it differs from Name -- helps confirm
             -- the ranked matcher picked the person the user actually meant.
             if t.Name ~= t.DisplayName then
-                tlStatus.Text = "locked -> " .. t.DisplayName .. " (@" .. t.Name .. ")"
+                tlStatus.Text = "Locked -> " .. t.DisplayName .. " (@" .. t.Name .. ")"
             else
-                tlStatus.Text = "locked -> " .. t.Name
+                tlStatus.Text = "Locked -> " .. t.Name
             end
         end
         tlStatusUpdater()
@@ -12067,7 +12083,7 @@ local Combat = {
         -- Silent Aim
         local sRow = moduleCheckbox(R["Silent Aim"], "Enabled", "silentaim")
         activationPill(sRow.row, Combat.Silent)
-        rightClickSettings(configCheckbox(R["Silent Aim"], "Team Check", Combat.Silent.TeamCheck, function(v) Combat.Silent.TeamCheck = v end).row, "team check", teamCheckSettings)
+        rightClickSettings(configCheckbox(R["Silent Aim"], "Team Check", Combat.Silent.TeamCheck, function(v) Combat.Silent.TeamCheck = v end).row, "Team Check", teamCheckSettings)
         configCheckbox(R["Silent Aim"], "Visible Check", Combat.Silent.VisibleCheck, function(v) Combat.Silent.VisibleCheck = v end)
         configCheckbox(R["Silent Aim"], "Behind Cam", Combat.Silent.BehindCam, function(v) Combat.Silent.BehindCam = v end)
         configCheckbox(R["Silent Aim"], "Health Check", Combat.Silent.HealthCheck, function(v) Combat.Silent.HealthCheck = v end)
@@ -12104,7 +12120,7 @@ local Combat = {
         local tRow = moduleCheckbox(trigCard, "Enabled", "triggerbot")
         activationPill(tRow.row, Combat.Trigger)
         configCheckbox(trigCard, "Visible Check", Combat.Trigger.VisibleCheck, function(v) Combat.Trigger.VisibleCheck = v end)
-        rightClickSettings(configCheckbox(trigCard, "Team Check", Combat.Trigger.TeamCheck, function(v) Combat.Trigger.TeamCheck = v end).row, "team check", teamCheckSettings)
+        rightClickSettings(configCheckbox(trigCard, "Team Check", Combat.Trigger.TeamCheck, function(v) Combat.Trigger.TeamCheck = v end).row, "Team Check", teamCheckSettings)
         configCheckbox(trigCard, "Use Key", Combat.Trigger.UseKey, function(v) Combat.Trigger.UseKey = v end)
         slider(trigCard, "Hitbox Mul", 1, 10, Combat.Trigger.HitboxMul, 2, function(v) Combat.Trigger.HitboxMul = v end)
         slider(trigCard, "Delay (ms)", 0, 500, Combat.Trigger.Delay, 0, function(v) Combat.Trigger.Delay = v end)
@@ -12982,31 +12998,6 @@ end)()
     -- Modal explorer. Roots list = common containers people target. Lazy
     -- expansion; filtered to physical instances + containers with physical
     -- descendants. Color-coded 8px square icon next to each row.
-    -- v0.46.2: lucide glyphs for the picker tree. Spritesheet slices from
-    -- latte-soft/lucide-roblox (MIT/ISC); fixed-size ImageLabels so rows
-    -- never shift when a caret flips (the old text glyph did).
-    local LUCIDE = {
-        ["chevron-right"] = { 16898617509, 0, 514 },
-        ["chevron-down"]  = { 16898617411, 514, 257 },
-        box    = { 16898616650, 0, 514 },
-        folder = { 16898671684, 257, 0 },
-        file   = { 16898670620, 0, 514 },
-    }
-    local function lucideIcon(parent, name, px, color, x, y)
-        local d = LUCIDE[name]
-        if not d then return nil end
-        return new("ImageLabel", {
-            Image = "rbxassetid://" .. d[1],
-            ImageRectOffset = Vector2.new(d[2], d[3]),
-            ImageRectSize = Vector2.new(256, 256),
-            ImageColor3 = color or Color3.new(1, 1, 1),
-            BackgroundTransparency = 1, BorderSizePixel = 0,
-            AnchorPoint = Vector2.new(0, 0.5),
-            Position = UDim2.new(0, x, 0.5, y or 0),
-            Size = UDim2.new(0, px, 0, px),
-            ZIndex = 205, Parent = parent,
-        })
-    end
     local function openInstancePicker(onSelect, opts)
         opts = opts or {}
         -- v0.31.0: anyInstance mode shows and lets you pick NON-physical instances
@@ -13017,14 +13008,14 @@ end)()
         local m = openModal(520, 460)
         -- header
         new("TextLabel", {
-            Text = opts.title or "select an instance", FontFace = Theme.Fonts.Bold,
+            Text = opts.title or "Select an Instance", FontFace = Theme.Fonts.Bold,
             TextSize = Theme.Text.Header, TextColor3 = Theme.Palette.Text,
             BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
             Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
             ZIndex = 202, Parent = m.box,
         })
         new("TextLabel", {
-            Text = opts.subtitle or "expand a container, click a physical instance, submit.",
+            Text = opts.subtitle or "Expand a container, click a physical instance, and click submit.",
             FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -13116,9 +13107,11 @@ end)()
                 })
             end
             local isOpen = false
-            local caretImg = expandable
-                and lucideIcon(row, "chevron-right", 12, Theme.Palette.TextMuted, x + 2, 0)
-                or nil
+            local caretImg = nil
+            if expandable then
+                caretImg = lucideIcon(row, "chevron-right", 12, Theme.Palette.TextMuted, 205)
+                caretImg.Position = UDim2.new(0, x + 2, 0.5, 0)
+            end
             local function setCaret(open)
                 if not caretImg then return end
                 local d = open and LUCIDE["chevron-down"] or LUCIDE["chevron-right"]
@@ -13129,7 +13122,8 @@ end)()
                 or (inst:IsA("BasePart") and "box")
                 or (inst:IsA("LuaSourceContainer") and "file") or nil
             if clsIcon then
-                lucideIcon(row, clsIcon, 12, Theme.Palette.TextMuted, x + 16, 0)
+                local ci = lucideIcon(row, clsIcon, 12, Theme.Palette.TextMuted, 205)
+                if ci then ci.Position = UDim2.new(0, x + 16, 0.5, 0) end
             else
                 new("Frame", {
                     Position = UDim2.new(0, x + 18, 0.5, -4), Size = UDim2.new(0, 8, 0, 8),
@@ -13249,7 +13243,7 @@ end)()
         -- clicked in this same tree. A raycast (not Mouse.Target) because the click
         -- sink below is a GUI element, and Mouse.Target goes nil under GUI.
         local clickPart = new("TextButton", {
-            Text = "click part", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Click Part", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -13278,7 +13272,7 @@ end)()
             -- sinks MouseButton1 ONLY, at high priority, so the selecting click never
             -- reaches the game while RMB camera control stays completely untouched.
             local hint = new("TextLabel", {
-                Text = "left click to select   right click drag to look   esc to cancel",
+                Text = "Left click to select. Right click drag to look. Esc to cancel.",
                 FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.Text, TextTruncate = Enum.TextTruncate.AtEnd,
                 BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.15,
@@ -13394,7 +13388,7 @@ end)()
         end)
 
         local cancel = new("TextButton", {
-            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -13402,7 +13396,7 @@ end)()
             Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
         local submit = new("TextButton", {
-            Text = "submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            Text = "Submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
             BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -13447,7 +13441,7 @@ end)()
         }, { corner(6), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
         local cancel = new("TextButton", {
-            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -13455,7 +13449,7 @@ end)()
             Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
         local submit = new("TextButton", {
-            Text = "submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            Text = "Submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
             BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -13700,7 +13694,7 @@ end)()
         if not existingRule then Shared.addRule(temp) end
 
         new("TextLabel", {
-            Text = "object offset -- " .. targetInst.Name,
+            Text = "Object Offset -- " .. targetInst.Name,
             FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -13737,7 +13731,7 @@ end)()
         dropdown(body, "Spin Axis", { "X", "Y", "Z" }, temp.settings.SpinAxis, function(v) temp.settings.SpinAxis = v end)
 
         local cancel = new("TextButton", {
-            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -13745,7 +13739,7 @@ end)()
             Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
         local submit = new("TextButton", {
-            Text = "submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            Text = "Submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
             BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -13770,7 +13764,7 @@ end)()
     local function openRuleTypePicker()
         local m = openModal(400, 250)
         new("TextLabel", {
-            Text = "new rule", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            Text = "New Rule", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
             TextXAlignment = Enum.TextXAlignment.Left,
             Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
@@ -13819,7 +13813,7 @@ end)()
             end)
         end
         local cancel = new("TextButton", {
-            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -13827,7 +13821,7 @@ end)()
             Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
         local submit = new("TextButton", {
-            Text = "submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            Text = "Submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
             BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
@@ -14485,12 +14479,12 @@ addTab("Visuals", function(root)
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
     -- v0.0.34: ESP ships with NO keybind by default (pill reads "no keybind").
     keybindPill(master.row, "esp", nil)
-    rightClickSettings(configCheckbox(espPanel, "Team Check", ESP.Config.TeamCheck, function(v) ESP.Config.TeamCheck = v end).row, "team check", teamCheckSettings)
+    rightClickSettings(configCheckbox(espPanel, "Team Check", ESP.Config.TeamCheck, function(v) ESP.Config.TeamCheck = v end).row, "Team Check", teamCheckSettings)
     -- v0.18.4: sweeps for rigs whose character left Workspace or whose player is
     -- gone. Rate is a trade: faster clears ghosts sooner, slower costs less.
     local rescanRow = configCheckbox(espPanel, "Rescan Players", ESP.Config.Rescan,
         function(v) ESP.Config.Rescan = v end)
-    rightClickSettings(rescanRow.row, "rescan", function(popup)
+    rightClickSettings(rescanRow.row, "Rescan", function(popup)
         popup:slider("Every (s)", 0.25, 10, ESP.Config.RescanRate, 2,
             function(v) ESP.Config.RescanRate = v end)
     end)
@@ -14515,15 +14509,15 @@ addTab("Visuals", function(root)
         popup:slider("Spacing", 0.05, 0.95, ESP.Config.GradientSpacing, 2, function(v) ESP.Config.GradientSpacing = v end)
         popup:toggle("Reverse", ESP.Config.GradientReverse, function(v) ESP.Config.GradientReverse = v end)
     end
-    rightClickSettings(grad2Row.row, "gradient", gradientSettings)
-    rightClickSettings(gradRow.row, "gradient", gradientSettings)
+    rightClickSettings(grad2Row.row, "Gradient", gradientSettings)
+    rightClickSettings(gradRow.row, "Gradient", gradientSettings)
     -- v0.11.0 COLOR MODE. One master over every Second-Interface element. Static
     -- keeps each feature's own swatch (the default and the old behaviour); anything
     -- else overrides all of them at once.
     local cmDd = dropdown(espPanel, "Color Mode",
         { "Static", "Gradient", "Rainbow", "Health", "Team", "Distance" },
         ESP.Config.ColorMode, function(v) ESP.Config.ColorMode = v end)
-    rightClickSettings(cmDd.frame, "color mode", function(popup)
+    rightClickSettings(cmDd.frame, "Color Mode", function(popup)
         -- Spread is the interesting one: 0 paints every target the same colour,
         -- higher fans a lineup across the ramp.
         popup:slider("Spread", 0, 1, ESP.Config.ColorSpread, 2, function(v) ESP.Config.ColorSpread = v end)
@@ -14536,7 +14530,7 @@ addTab("Visuals", function(root)
 
     -- v0.0.28: Text Background is tunable -- right-click for colour / transparency / padding.
     local textBgRow = configCheckbox(espPanel, "Text Background", ESP.Config.TextBackground, function(v) ESP.Config.TextBackground = v end)
-    rightClickSettings(textBgRow.row, "text background", function(popup)
+    rightClickSettings(textBgRow.row, "Text Background", function(popup)
         popup:swatch("Color", ESP.Config.TextBgColor, function(c) ESP.Config.TextBgColor = c end)
         popup:slider("Transparency", 0, 1, ESP.Config.TextBgTransparency, 2, function(v) ESP.Config.TextBgTransparency = v end)
         popup:slider("Padding", 0, 16, ESP.Config.TextBgPadding, 0, function(v) ESP.Config.TextBgPadding = v end)
@@ -14574,7 +14568,7 @@ addTab("Visuals", function(root)
     attachDualSwatch(boxesMaster.row, ESP.Boxes.Color, ESP.Boxes.FillColor,
         function(c) ESP.Boxes.Color     = c end,
         function(c) ESP.Boxes.FillColor = c end)
-    rightClickSettings(boxesMaster.row, "box", function(popup)
+    rightClickSettings(boxesMaster.row, "Box", function(popup)
         popup:slider("Thickness", 0.1, 8, ESP.Boxes.Thickness > 0 and ESP.Boxes.Thickness or ESP.Render.Thickness, 1, function(v) ESP.Boxes.Thickness = v end)
         popup:slider("Outline Thickness", 0, 6, ESP.Boxes.OutlineThickness, 1, function(v) ESP.Boxes.OutlineThickness = v end)
         -- v0.30.0: applies to the whole box (2D or Cube). Off hides it behind walls.
@@ -14582,7 +14576,7 @@ addTab("Visuals", function(root)
     end)
     -- v0.0.28: right-click Fill Box to tune its transparency.
     local fillRow = configCheckbox(boxesPanel, "Fill Box", ESP.Boxes.FillBox, function(v) ESP.Boxes.FillBox = v end)
-    rightClickSettings(fillRow.row, "fill box", function(popup)
+    rightClickSettings(fillRow.row, "Fill Box", function(popup)
         popup:slider("Transparency", 0, 1, ESP.Boxes.FillTransparency, 2, function(v) ESP.Boxes.FillTransparency = v end)
         -- v0.30.0: Cube only -- a real 3D box in the world instead of screen strips.
         popup:toggle("3D (real box)", ESP.Boxes.Fill3D, function(v) ESP.Boxes.Fill3D = v end)
@@ -14615,7 +14609,7 @@ addTab("Visuals", function(root)
     local nameMaster = configCheckbox(namePanel, "Enabled", ESP.Names.Enabled, function(v) ESP.Names.Enabled = v end)
     attachSingleSwatch(nameMaster.row, ESP.Names.Color, function(c) ESP.Names.Color = c end)
     -- v0.0.28: right-click Name for text size + outline thickness (all text does this).
-    rightClickSettings(nameMaster.row, "name", function(popup)
+    rightClickSettings(nameMaster.row, "Name", function(popup)
         popup:slider("Text Size", 8, 28, ESP.Names.TextSize, 0, function(v) ESP.Names.TextSize = v end)
         popup:slider("Outline Thickness", 0, 6, ESP.Names.OutlineThickness, 1, function(v) ESP.Names.OutlineThickness = v end)
     end)
@@ -14628,7 +14622,7 @@ addTab("Visuals", function(root)
     local indPanel = panel(rightCol, "Indicators")
     local distRow = configCheckbox(indPanel, "Distance", ESP.Indicators.Distance.Enabled, function(v) ESP.Indicators.Distance.Enabled = v end)
     attachSingleSwatch(distRow.row, ESP.Indicators.Distance.Color, function(c) ESP.Indicators.Distance.Color = c end)
-    rightClickSettings(distRow.row, "distance", function(popup)
+    rightClickSettings(distRow.row, "Distance", function(popup)
         popup:slider("Text Size", 8, 28, ESP.Indicators.Distance.TextSize, 0, function(v) ESP.Indicators.Distance.TextSize = v end)
         popup:slider("Outline Thickness", 0, 6, ESP.Indicators.Distance.OutlineThickness, 1, function(v) ESP.Indicators.Distance.OutlineThickness = v end)
     end)
@@ -14636,7 +14630,7 @@ addTab("Visuals", function(root)
         function(v) ESP.Indicators.LookDirection.Enabled = v end)
     attachSingleSwatch(lookRow.row, ESP.Indicators.LookDirection.Color,
         function(c) ESP.Indicators.LookDirection.Color = c end)
-    rightClickSettings(lookRow.row, "look direction", function(popup)
+    rightClickSettings(lookRow.row, "Look Direction", function(popup)
         popup:toggle("Visible Through Walls", ESP.Indicators.LookDirection.ThroughWalls,
             function(v) ESP.Indicators.LookDirection.ThroughWalls = v end)
         popup:slider("Length", 1, 40, ESP.Indicators.LookDirection.Length, 1,
@@ -14650,17 +14644,17 @@ addTab("Visuals", function(root)
     end)
     local skelRow = configCheckbox(indPanel, "Skeleton", ESP.Indicators.Skeleton.Enabled, function(v) ESP.Indicators.Skeleton.Enabled = v end)
     attachSingleSwatch(skelRow.row, ESP.Indicators.Skeleton.Color, function(c) ESP.Indicators.Skeleton.Color = c end)
-    rightClickSettings(skelRow.row, "skeleton", function(popup)
+    rightClickSettings(skelRow.row, "Skeleton", function(popup)
         popup:slider("Thickness", 0.1, 8, ESP.Indicators.Skeleton.Thickness or 0, 1, function(v) ESP.Indicators.Skeleton.Thickness = v end)
     end)
     local hdRow = configCheckbox(indPanel, "Head Dot", ESP.Indicators.HeadDot.Enabled, function(v) ESP.Indicators.HeadDot.Enabled = v end)
     attachSingleSwatch(hdRow.row, ESP.Indicators.HeadDot.Color, function(c) ESP.Indicators.HeadDot.Color = c end)
-    rightClickSettings(hdRow.row, "head dot", function(popup)
+    rightClickSettings(hdRow.row, "Head Dot", function(popup)
         popup:slider("Size", 2, 24, ESP.Indicators.HeadDot.Size or 6, 0, function(v) ESP.Indicators.HeadDot.Size = v end)
     end)
     -- v0.0.28: right-click Profile Picture for size / outline thickness / Y offset.
     local pfpRow = configCheckbox(indPanel, "Profile Picture", ESP.Indicators.ProfilePicture.Enabled, function(v) ESP.Indicators.ProfilePicture.Enabled = v end)
-    rightClickSettings(pfpRow.row, "profile picture", function(popup)
+    rightClickSettings(pfpRow.row, "Profile Picture", function(popup)
         popup:slider("Size", 16, 96, ESP.Indicators.ProfilePicture.Size, 0, function(v) ESP.Indicators.ProfilePicture.Size = v end)
         popup:slider("Outline Thickness", 0, 6, ESP.Indicators.ProfilePicture.OutlineThickness, 1, function(v) ESP.Indicators.ProfilePicture.OutlineThickness = v end)
         popup:slider("Y Offset", -80, 80, ESP.Indicators.ProfilePicture.YOffset, 0, function(v) ESP.Indicators.ProfilePicture.YOffset = v end)
@@ -14670,7 +14664,7 @@ addTab("Visuals", function(root)
     local hitCfgUI = ESP.Indicators.HitNumbers
     local hitRow = configCheckbox(indPanel, "Hit Numbers", hitCfgUI.Enabled, function(v) hitCfgUI.Enabled = v end)
     attachSingleSwatch(hitRow.row, hitCfgUI.Color, function(c) hitCfgUI.Color = c end)
-    rightClickSettings(hitRow.row, "hit numbers", function(popup)
+    rightClickSettings(hitRow.row, "Hit Numbers", function(popup)
         popup:dropdown("Preset", { "Koffee", "Minecraft" }, hitCfgUI.Preset,
             function(v) hitCfgUI.Preset = v end)
         popup:slider("MC Scatter", 0, 6, hitCfgUI.McSpread, 2, function(v) hitCfgUI.McSpread = v end)
@@ -14724,7 +14718,7 @@ addTab("Visuals", function(root)
     local btRow = configCheckbox(btPanel, "Enabled", Koffee.Bullets.Enabled,
         function(v) Koffee.Bullets.Enabled = v end)
     attachSingleSwatch(btRow.row, Koffee.Bullets.Color, function(c) Koffee.Bullets.Color = c end)
-    rightClickSettings(btRow.row, "bullet tracers", function(popup)
+    rightClickSettings(btRow.row, "Bullet Tracers", function(popup)
         popup:toggle("Team Check", Koffee.Bullets.TeamCheck, function(v) Koffee.Bullets.TeamCheck = v end)
         popup:toggle("Show Own Shots", Koffee.Bullets.ShowOwn, function(v) Koffee.Bullets.ShowOwn = v end)
         popup:toggle("Shooter Team Color", Koffee.Bullets.TeamColor, function(v) Koffee.Bullets.TeamColor = v end)
@@ -14747,7 +14741,7 @@ addTab("Visuals", function(root)
         local pins = (Shared._bulletPins and Shared._bulletPins()) or {}
         if #pins == 0 then
             new("TextLabel", {
-                Text = "nothing locked yet", FontFace = Theme.Fonts.Medium,
+                Text = "Nothing Locked Yet", FontFace = Theme.Fonts.Medium,
                 TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
                 BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16),
                 TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 212,
@@ -14787,7 +14781,7 @@ addTab("Visuals", function(root)
     -- line is cut where geometry hides it instead of painting over the wall.
     local btWallRow = configCheckbox(btPanel, "Through Walls", Koffee.Bullets.ThroughWalls,
         function(v) Koffee.Bullets.ThroughWalls = v end)
-    rightClickSettings(btWallRow.row, "shape", function(popup)
+    rightClickSettings(btWallRow.row, "Shape", function(popup)
         popup:toggle("Taper", Koffee.Bullets.Taper, function(v) Koffee.Bullets.Taper = v end)
         popup:toggle("Gradient", Koffee.Bullets.Gradient, function(v) Koffee.Bullets.Gradient = v end)
         popup:toggle("Origin Dot", Koffee.Bullets.OriginDot, function(v) Koffee.Bullets.OriginDot = v end)
@@ -14796,7 +14790,7 @@ addTab("Visuals", function(root)
     end)
     local btStyleDd = dropdown(btPanel, "Style", { "Instant", "Travel", "Grow", "Retract" },
         Koffee.Bullets.Style, function(v) Koffee.Bullets.Style = v end)
-    rightClickSettings(btStyleDd.frame, "style", function(popup)
+    rightClickSettings(btStyleDd.frame, "Style", function(popup)
         popup:toggle("Fade Out", Koffee.Bullets.Fade, function(v) Koffee.Bullets.Fade = v end)
         -- Travel only: how much of the shot the moving dash covers
         popup:slider("Dash Length", 0.02, 1, Koffee.Bullets.TravelLen, 2, function(v) Koffee.Bullets.TravelLen = v end)
@@ -14806,7 +14800,7 @@ addTab("Visuals", function(root)
     local btOutRow = configCheckbox(btPanel, "Outline", Koffee.Bullets.Outline,
         function(v) Koffee.Bullets.Outline = v end)
     attachSingleSwatch(btOutRow.row, Koffee.Bullets.OutlineColor, function(c) Koffee.Bullets.OutlineColor = c end)
-    rightClickSettings(btOutRow.row, "outline", function(popup)
+    rightClickSettings(btOutRow.row, "Outline", function(popup)
         popup:slider("Thickness", 0.5, 6, Koffee.Bullets.OutlineThickness, 2,
             function(v) Koffee.Bullets.OutlineThickness = v end)
     end)
@@ -14838,7 +14832,7 @@ addTab("Visuals", function(root)
 
         local styleDd = dropdown(card, "Style", Shared._xhStyles, cfg.Style,
             function(v) cfg.Style = v end)
-        rightClickSettings(styleDd.frame, "style", function(popup)
+        rightClickSettings(styleDd.frame, "Style", function(popup)
             -- tilts each arm SEGMENT about its own centre, leaving the arm's heading
             -- alone -- v0.8 folded it into the heading, which was just Rotation again.
             popup:slider("Curve Angle", -180, 180, cfg.CurveAngle, 0, function(v) cfg.CurveAngle = v end)
@@ -14850,14 +14844,14 @@ addTab("Visuals", function(root)
 
         local originDd = dropdown(card, "Origin", { "Center", "Mouse" }, cfg.Origin,
             function(v) cfg.Origin = v end)
-        rightClickSettings(originDd.frame, "origin", function(popup)
+        rightClickSettings(originDd.frame, "Origin", function(popup)
             popup:slider("Mouse Smoothness", 0, 0.98, cfg.MouseSmoothness, 2,
                 function(v) cfg.MouseSmoothness = v end)
         end)
 
         local outRow = configCheckbox(card, "Outline", cfg.Outline, function(v) cfg.Outline = v end)
         attachSingleSwatch(outRow.row, cfg.OutlineColor, function(c) cfg.OutlineColor = c end)
-        rightClickSettings(outRow.row, "outline", function(popup)
+        rightClickSettings(outRow.row, "Outline", function(popup)
             -- the outline is geometry, and its width lands in an integer UDim offset,
             -- so the honest granularity here is 0.5 rather than 0.01.
             popup:slider("Thickness", 0, 6, cfg.OutlineThickness, 2, function(v) cfg.OutlineThickness = v end)
@@ -14872,7 +14866,7 @@ addTab("Visuals", function(root)
         slider(card, "Rotation",  0, 360, cfg.Rotation, 0, function(v) cfg.Rotation = v end)
 
         local spinRow = configCheckbox(card, "Spin", cfg.Spin, function(v) cfg.Spin = v end)
-        rightClickSettings(spinRow.row, "spin", function(popup)
+        rightClickSettings(spinRow.row, "Spin", function(popup)
             popup:slider("Speed (deg/s)", 0, 8640, cfg.SpinSpeed, 0, function(v) cfg.SpinSpeed = v end)
             popup:dropdown("Direction", { "CW", "CCW" }, cfg.SpinDir, function(v) cfg.SpinDir = v end)
         end)
@@ -14881,7 +14875,7 @@ addTab("Visuals", function(root)
             cfg.Follow.Enabled = v
             if not v then cfg.Follow._screenX = nil; cfg.Follow._screenY = nil end
         end)
-        rightClickSettings(followRow.row, "follow", function(popup)
+        rightClickSettings(followRow.row, "Follow", function(popup)
             popup:slider("Smoothness", 0, 0.98, cfg.Follow.Smoothness, 2, function(v) cfg.Follow.Smoothness = v end)
             popup:dropdown("Body Part", { "Head", "HumanoidRootPart", "UpperTorso", "Torso",
                 "LeftHand", "RightHand", "LeftFoot", "RightFoot" }, cfg.Follow.Part,
@@ -14890,7 +14884,7 @@ addTab("Visuals", function(root)
 
         local dotRow = configCheckbox(card, "Center Dot", cfg.Dot.Enabled, function(v) cfg.Dot.Enabled = v end)
         attachSingleSwatch(dotRow.row, cfg.Dot.Color, function(c) cfg.Dot.Color = c end)
-        rightClickSettings(dotRow.row, "center dot", function(popup)
+        rightClickSettings(dotRow.row, "Center Dot", function(popup)
             popup:slider("Size", 1, 12, cfg.Dot.Size, 0, function(v) cfg.Dot.Size = v end)
         end)
 
@@ -14904,12 +14898,12 @@ addTab("Visuals", function(root)
                 cfg.LockToPart.Enabled = v
                 if not v then cfg.LockToPart._target = nil end
             end)
-        rightClickSettings(lockCB.row, "lock to part", function(popup)
+        rightClickSettings(lockCB.row, "Lock To Part", function(popup)
             popup:toggle("Track Off-screen", cfg.LockToPart.ClampOffscreen,
                 function(v) cfg.LockToPart.ClampOffscreen = v end)
         end)
         local openBtn = new("TextButton", {
-            Text = "open", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Open", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
@@ -14925,7 +14919,7 @@ addTab("Visuals", function(root)
         end)
 
         local syncBtn = new("TextButton", {
-            Text = "sync", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Sync", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 24),
@@ -14971,7 +14965,7 @@ addTab("World", function(root)
     attachSingleSwatch(amb.row, World.Light.Color, function(c) World.Light.Color = c end)
     -- v0.10.0: split indoor / outdoor ambient. The row swatch stays the single
     -- colour used while Split is off.
-    rightClickSettings(amb.row, "ambient color", function(popup)
+    rightClickSettings(amb.row, "Ambient Color", function(popup)
         popup:toggle("Split Indoor / Outdoor", World.Light.Split, function(v) World.Light.Split = v end)
         popup:swatch("Indoor Ambient",  World.Light.Indoor,  function(c) World.Light.Indoor = c end)
         popup:swatch("Outdoor Ambient", World.Light.Outdoor, function(c) World.Light.Outdoor = c end)
@@ -14998,7 +14992,7 @@ addTab("World", function(root)
         end
     end
     Shared._skySetStatus(Shared._skyStatusText or "")
-    rightClickSettings(skyDd.frame, "skybox", function(popup)
+    rightClickSettings(skyDd.frame, "Skybox", function(popup)
         popup:toggle("Sun, Moon & Stars", World.SkyBox.Celestial, function(v)
             World.SkyBox.Celestial = v
             World.SkyBox._nonce = (World.SkyBox._nonce or 0) + 1
@@ -15016,7 +15010,7 @@ addTab("World", function(root)
     local snowRow = configCheckbox(fx2, "Snow", World.FX.Snow.Enabled,
         function(v) World.FX.Snow.Enabled = v end)
     attachSingleSwatch(snowRow.row, World.FX.Snow.Color, function(c) World.FX.Snow.Color = c end)
-    rightClickSettings(snowRow.row, "snow", function(popup)
+    rightClickSettings(snowRow.row, "Snow", function(popup)
         -- v0.10.0: Soft matches the menu-background flakes; Flake is a drawn crystal.
         popup:dropdown("Style", { "Soft", "Flake" }, World.FX.Snow.Style, function(v) World.FX.Snow.Style = v end)
         popup:slider("Density", 20, 900, World.FX.Snow.Density, 0, function(v) World.FX.Snow.Density = math.floor(v) end)
@@ -15030,7 +15024,7 @@ addTab("World", function(root)
     local rainRow = configCheckbox(fx2, "Rain", World.FX.Rain.Enabled,
         function(v) World.FX.Rain.Enabled = v end)
     attachSingleSwatch(rainRow.row, World.FX.Rain.Color, function(c) World.FX.Rain.Color = c end)
-    rightClickSettings(rainRow.row, "rain", function(popup)
+    rightClickSettings(rainRow.row, "Rain", function(popup)
         popup:slider("Density", 50, 3000, World.FX.Rain.Density, 0, function(v) World.FX.Rain.Density = math.floor(v) end)
         popup:slider("Speed",   0.2, 3,   World.FX.Rain.Speed,   2, function(v) World.FX.Rain.Speed = v end)
         popup:slider("Streak",  1, 40,    World.FX.Rain.Streak,  1, function(v) World.FX.Rain.Streak = v end)
@@ -15041,7 +15035,7 @@ addTab("World", function(root)
     local sakRow = configCheckbox(fx2, "Sakura", World.FX.Sakura.Enabled,
         function(v) World.FX.Sakura.Enabled = v end)
     attachSingleSwatch(sakRow.row, World.FX.Sakura.Color, function(c) World.FX.Sakura.Color = c end)
-    rightClickSettings(sakRow.row, "sakura", function(popup)
+    rightClickSettings(sakRow.row, "Sakura", function(popup)
         popup:slider("Density", 10, 600, World.FX.Sakura.Density, 0, function(v) World.FX.Sakura.Density = math.floor(v) end)
         popup:slider("Speed",   0.2, 3,  World.FX.Sakura.Speed,   2, function(v) World.FX.Sakura.Speed = v end)
         popup:slider("Size",    0.1, 3,  World.FX.Sakura.Size,    2, function(v) World.FX.Sakura.Size = v end)
@@ -15059,7 +15053,7 @@ addTab("World", function(root)
         ZIndex = 33, Parent = rulesCard,
     })
     new("TextLabel", {
-        Text = "your rules apply live, and save with your config.",
+            Text = "Your rules apply live, and save with your config.",
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -15084,7 +15078,7 @@ addTab("World", function(root)
     }, { new("UIListLayout", { Padding = UDim.new(0, 4),
         SortOrder = Enum.SortOrder.LayoutOrder }) })
     local emptyLabel = new("TextLabel", {
-        Text = "no rules yet -- click + to add one.",
+            Text = "No rules yet -- click + to add one.",
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -15111,7 +15105,7 @@ addTab("World", function(root)
             }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
             -- type badge
             new("TextLabel", {
-                Text = (rule.type == "AntiAnimation" and "anti-anim" or "offset"),
+                Text = (rule.type == "AntiAnimation" and "Anti-Anim" or "Offset"),
                 FontFace = Theme.Fonts.Mono, TextSize = 10,
                 TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
                 Position = UDim2.new(0, 8, 0, 0), Size = UDim2.new(0, 64, 1, 0),
@@ -15133,7 +15127,7 @@ addTab("World", function(root)
             end)
             -- delete icon
             local delBtn = new("TextButton", {
-                Text = "x", FontFace = Theme.Fonts.Bold, TextSize = 14,
+                Text = "X", FontFace = Theme.Fonts.Bold, TextSize = 14,
                 AutoButtonColor = false, TextColor3 = Theme.Palette.Danger or Color3.fromRGB(220, 90, 90),
                 BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.35,
                 BorderSizePixel = 0,
@@ -15265,7 +15259,7 @@ addTab("Options", function(root)
         KoffeeOptions.MenuSnow = v
         setBackgroundActive(bgActive)
     end)
-    rightClickSettings(arrRow.row, "arraylist", function(menu)
+    rightClickSettings(arrRow.row, "Arraylist", function(menu)
         -- v0.33.0: the accent line was white-only since v0.0.1 -- now recolourable.
         menu:swatch("Line Colour", KoffeeOptions.ArraylistLineColor or Theme.Palette.Snow, function(c)
             KoffeeOptions.ArraylistLineColor = c
@@ -15297,7 +15291,7 @@ addTab("Options", function(root)
         Theme.setFeiOn(v)
         if v then Theme.setFeiFont(KoffeeOptions.CustomFontName) end
     end)
-    rightClickSettings(fontRow.row, "custom font", function(menu)
+    rightClickSettings(fontRow.row, "Custom Font", function(menu)
         menu:slider("Font Size", 8, 28, KoffeeOptions.CustomFontSize, 0, function(v)
             KoffeeOptions.CustomFontSize = v
             Theme.setFeiSize(v)
@@ -15315,7 +15309,7 @@ addTab("Options", function(root)
         Theme.applyMIFont(window, v and Theme.loadFeiFont(KoffeeOptions.MIFontName) or nil,
             v and KoffeeOptions.MIFontSize or nil)
     end)
-    rightClickSettings(miRow.row, "custom font MI", function(menu)
+    rightClickSettings(miRow.row, "Custom Font (MI)", function(menu)
         menu:slider("Font Size", 8, 28, KoffeeOptions.MIFontSize, 0, function(v)
             KoffeeOptions.MIFontSize = v
             if KoffeeOptions.MIFontOn then
@@ -15432,13 +15426,13 @@ addTab("Options", function(root)
             ZIndex = 101, Parent = dim,
         }, { corner(Theme.Radius.Medium), stroke(Theme.Palette.BorderSubtle) })
         new("TextLabel", {
-            Text = "unload koffee?", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            Text = "Unload Koffee?", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
             Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
             TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 102, Parent = box,
         })
         new("TextLabel", {
-            Text = "every feature disables, the ui is removed. re-run the loader to bring koffee back.",
+            Text = "Every feature disables, the UI is removed. Re-run the loader to bring Koffee back.",
             FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
             Position = UDim2.new(0, 16, 0, 36), Size = UDim2.new(1, -32, 0, 44),
@@ -15446,7 +15440,7 @@ addTab("Options", function(root)
             TextWrapped = true, ZIndex = 102, Parent = box,
         })
         local cancel = new("TextButton", {
-            Text = "cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Cancel", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.TextMuted,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0,
@@ -15454,7 +15448,7 @@ addTab("Options", function(root)
             Size = UDim2.new(0, 88, 0, 28), ZIndex = 102, Parent = box,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
         local confirm = new("TextButton", {
-            Text = "unload", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            Text = "Unload", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Danger or Color3.fromRGB(220, 90, 90),
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0,
@@ -15465,7 +15459,7 @@ addTab("Options", function(root)
         confirm.MouseButton1Click:Connect(function() dim:Destroy(); pcall(unloadKoffee) end)
     end
     local unloadBtn = new("TextButton", {
-        Text = "unload koffee", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            Text = "Unload Koffee", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
         AutoButtonColor = false, TextColor3 = Theme.Palette.Danger or Color3.fromRGB(220, 90, 90),
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
         BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 30), ZIndex = 36, Parent = card,
@@ -15599,7 +15593,7 @@ registerConfig("custom", Koffee.Custom)
 
     ---------------------------------------------------------------- sources
     KINDS.Target = {
-        blurb = "finds a player, and says whether it found one",
+        blurb = "Finds a player, and says whether it found one",
         -- v0.17.2: bool means we found someone (avoids Screen Position's confusion).
         ins = {}, outs = { player = true, bool = true },
         opts = { Source = "Aimbot Target", Filter = "Any", MaxDistance = 0 },
@@ -15639,13 +15633,13 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Self = {
-        blurb = "you",
+        blurb = "You",
         ins = {}, outs = { player = true }, opts = {},
         eval = function() return { player = LocalPlayer } end,
     }
 
     KINDS.Part = {
-        blurb = "a part or model you pick in game",
+        blurb = "A part or model you pick in game",
         ins = {}, outs = { part = true },
         opts = { Path = "" },
         eval = function(o)
@@ -15657,7 +15651,7 @@ registerConfig("custom", Koffee.Custom)
             return { part = inst }
         end,
         ui = function(api, o)
-            api:label(o.Path ~= "" and o.Path or "nothing picked")
+            api:label(o.Path ~= "" and o.Path or "Nothing picked")
             api:button("pick a part", function(done)
                 if not Shared.openInstancePicker then return end
                 Shared.openInstancePicker(function(inst, path)
@@ -15672,7 +15666,7 @@ registerConfig("custom", Koffee.Custom)
     -- pulls a number/text/bool off one; Fire Remote + Set Value (below) push back.
     -- Together they let a graph drive a game's own remotes with no code.
     KINDS["Find Instance"] = {
-        blurb = "pick or type a path to ANY instance -- a remote, a value, a part",
+        blurb = "Pick or type a path to ANY instance -- a remote, a value, a part",
         ins = {}, outs = { part = true, text = true },
         opts = { Path = "" },
         eval = function(o)
@@ -15684,7 +15678,7 @@ registerConfig("custom", Koffee.Custom)
             return { part = inst, text = inst and inst.Name or "" }
         end,
         ui = function(api, o)
-            api:label(o.Path ~= "" and o.Path or "nothing picked")
+            api:label(o.Path ~= "" and o.Path or "Nothing picked")
             api:button("pick any instance", function(done)
                 if not Shared.openInstancePicker then return end
                 Shared.openInstancePicker(function(inst, path)
@@ -15692,13 +15686,13 @@ registerConfig("custom", Koffee.Custom)
                     done()
                 end, { title = "pick any instance", anyInstance = true })
             end)
-            api:text("or type a path", o.Path, function(v) o.Path, o._inst = v, nil end)
-            api:label("eg game.ReplicatedStorage.Remotes.PlaceBlock")
+            api:text("Or type a path", o.Path, function(v) o.Path, o._inst = v, nil end)
+            api:label("Example: game.ReplicatedStorage.Remotes.PlaceBlock")
         end,
     }
 
     KINDS["Read Value"] = {
-        blurb = "reads a Value, attribute or property off an instance",
+        blurb = "Reads a Value, attribute or property off an instance",
         ins = { { key = "inst", type = "part", label = "Instance" } },
         outs = { number = true, text = true, bool = true },
         opts = { Kind = "Value", Field = "Value" },
@@ -15733,7 +15727,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Find Child"] = {
-        blurb = "finds something by name or class under an instance (remotes, parts)",
+        blurb = "Finds something by name or class under an instance (remotes, parts)",
         ins = { { key = "parent", type = "part", label = "In" } },
         outs = { part = true, text = true, bool = true },
         opts = { Name = "", Class = "", Deep = true },
@@ -15757,12 +15751,12 @@ registerConfig("custom", Koffee.Custom)
             api:text("Name", o.Name, function(v) o.Name = v end)
             api:text("Class", o.Class, function(v) o.Class = v end)
             api:toggle("Search deep", o.Deep ~= false, function(v) o.Deep = v end)
-            api:label("blank Name -> find by Class (eg RemoteEvent). In unwired = whole game")
+            api:label("Blank Name -> find by Class (example: RemoteEvent). In unwired = whole game")
         end,
     }
 
     KINDS["Player Part"] = {
-        blurb = "a named part of a player -- Head, HumanoidRootPart, a tool...",
+        blurb = "A named part of a player -- Head, HumanoidRootPart, a tool...",
         ins = { { key = "player", type = "player", label = "Player" } },
         outs = { part = true, world = true, bool = true },
         opts = { Part = "HumanoidRootPart" },
@@ -15774,13 +15768,13 @@ registerConfig("custom", Koffee.Custom)
             return { part = p, world = p and p.Position or nil, bool = p ~= nil }
         end,
         ui = function(api, o)
-            api:text("Part name", o.Part, function(v) o.Part = v end)
+            api:text("Part Name", o.Part, function(v) o.Part = v end)
             api:label("HumanoidRootPart, Head, Torso, a limb name, a held Tool...")
         end,
     }
 
     KINDS.Raycast = {
-        blurb = "casts a ray and tells you what it hit",
+        blurb = "Casts a ray and tells you what it hit",
         ins = { { key = "from", type = "world", label = "From" },
                 { key = "to", type = "world", label = "To / Dir" },
                 { key = "ignore", type = "part", label = "Ignore" } },
@@ -15814,7 +15808,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Interval = {
-        blurb = "turns yes for a moment every N seconds -- a loop clock for autofarm",
+        blurb = "Turns yes for a moment every N seconds -- a loop clock for autofarm",
         ins = {}, outs = { bool = true, number = true },
         opts = { Every = 1, Active = true },
         eval = function(o, _, ctx, node)
@@ -15830,12 +15824,12 @@ registerConfig("custom", Koffee.Custom)
         ui = function(api, o)
             api:slider("Every (s)", 0.03, 30, o.Every, 2, function(v) o.Every = v end)
             api:toggle("Active", o.Active ~= false, function(v) o.Active = v end)
-            api:label("bool pulses yes one frame per interval; number = tick count")
+            api:label("Bool pulses yes one frame per interval; number = tick count")
         end,
     }
 
     KINDS.Number = {
-        blurb = "a fixed number",
+        blurb = "A fixed number",
         ins = {}, outs = { number = true },
         opts = { Value = 0, Min = 0, Max = 100 },
         eval = function(o) return { number = o.Value or 0 } end,
@@ -15843,12 +15837,12 @@ registerConfig("custom", Koffee.Custom)
             api:slider("Value", o.Min or 0, o.Max or 100, o.Value, 2, function(v) o.Value = v end)
             api:slider("Slider Min", -10000, 10000, o.Min, 0, function(v) o.Min = v end)
             api:slider("Slider Max", -10000, 10000, o.Max, 0, function(v) o.Max = v end)
-            api:label("reopen this block to redraw the value slider's range")
+            api:label("Reopen this block to redraw the value slider's range")
         end,
     }
 
     KINDS["Text Value"] = {
-        blurb = "a fixed piece of text",
+        blurb = "A fixed piece of text",
         ins = {}, outs = { text = true },
         opts = { Text = "" },
         eval = function(o) return { text = o.Text or "" } end,
@@ -15856,7 +15850,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Colour = {
-        blurb = "a fixed colour",
+        blurb = "A fixed colour",
         ins = {}, outs = { color = true },
         opts = { Color = Color3.fromRGB(238, 238, 238) },
         eval = function(o) return { color = o.Color } end,
@@ -15864,7 +15858,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Time = {
-        blurb = "a number that moves on its own",
+        blurb = "A number that moves on its own",
         ins = {}, outs = { number = true },
         opts = { Mode = "Ping-Pong", Speed = 1 },
         eval = function(o)
@@ -15883,7 +15877,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Stopwatch = {
-        blurb = "seconds since something became yes (resets when no)",
+        blurb = "Seconds since something became yes (resets when no)",
         ins = { { key = "when", type = "bool", label = "When" } },
         outs = { number = true, text = true, bool = true },
         opts = {},
@@ -15900,12 +15894,12 @@ registerConfig("custom", Koffee.Custom)
             return { number = t, text = string.format("%.2f", t), bool = want }
         end,
         ui = function(api, o)
-            api:label("counts up while When is yes, back to 0 when no")
+            api:label("Counts up while When is yes, back to 0 when no")
         end,
     }
 
     KINDS.Snapshot = {
-        blurb = "freezes its inputs the moment When flips yes -- a snapshot",
+        blurb = "Freezes its inputs the moment When flips yes -- a snapshot",
         ins = { { key = "when", type = "bool", label = "When" },
                 { key = "world", type = "world", label = "World" },
                 { key = "num", type = "number", label = "Number" },
@@ -15928,12 +15922,12 @@ registerConfig("custom", Koffee.Custom)
                      part = s.p, bool = s.got == true }
         end,
         ui = function(api, o)
-            api:label("snapshots on the rising edge; bool = has one yet")
+            api:label("Snapshots on the rising edge; bool = has one yet")
         end,
     }
 
     KINDS["Key Held"] = {
-        blurb = "true while a key is down",
+        blurb = "True while a key is down",
         ins = {}, outs = { bool = true },
         opts = { Key = "LeftAlt", Mode = "Hold" },
         eval = function(o, _, ctx, node)
@@ -15947,13 +15941,13 @@ registerConfig("custom", Koffee.Custom)
         end,
         ui = function(api, o)
             api:text("Key name", o.Key, function(v) o.Key = v end)
-            api:label("roblox KeyCode name, eg LeftAlt / E / MouseButton2 is not a key")
+            api:label("Roblox KeyCode name, example: LeftAlt / E / MouseButton2 is not a key")
             api:dropdown("Mode", { "Hold", "Toggle" }, o.Mode, function(v) o.Mode = v end)
         end,
     }
 
     KINDS["Module State"] = {
-        blurb = "is a koffee feature turned on?",
+        blurb = "Is a Koffee feature turned on?",
         ins = {}, outs = { bool = true, text = true },
         opts = { Module = "" },
         eval = function(o)
@@ -15970,7 +15964,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Game Info"] = {
-        blurb = "fps, ping, player count and friends",
+        blurb = "FPS, ping, player count and friends",
         ins = {}, outs = { number = true, text = true },
         opts = { Field = "FPS" },
         eval = function(o)
@@ -16000,7 +15994,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Camera = {
-        blurb = "camera numbers",
+        blurb = "Camera numbers",
         ins = {}, outs = { number = true },
         opts = { Field = "FOV" },
         eval = function(o)
@@ -16022,7 +16016,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Mouse = {
-        blurb = "where your cursor is",
+        blurb = "Where your cursor is",
         ins = {}, outs = { point = true, number = true },
         opts = {},
         eval = function()
@@ -16032,7 +16026,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Counter = {
-        blurb = "how many times something happened",
+        blurb = "How many times something happened",
         ins = {}, outs = { number = true, text = true },
         opts = { Field = "Hits" },
         eval = function(o)
@@ -16051,7 +16045,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["For Each Player"] = {
-        blurb = "runs everything after it once per player",
+        blurb = "Runs everything after it once per player",
         ins = {}, outs = { player = true },
         opts = { Filter = "Enemies Only", MaxDistance = 0, AliveOnly = true, MaxCount = 24 },
         eval = function(_, _, ctx) return { player = ctx.player } end,
@@ -16061,13 +16055,13 @@ registerConfig("custom", Koffee.Custom)
             api:toggle("Alive Only", o.AliveOnly, function(v) o.AliveOnly = v end)
             api:slider("Max Distance", 0, 5000, o.MaxDistance, 0, function(v) o.MaxDistance = v end)
             api:slider("Max Players", 1, 64, o.MaxCount, 0, function(v) o.MaxCount = v end)
-            api:label("closest players are kept when the limit is hit")
+            api:label("Closest players are kept when the limit is hit")
         end,
     }
 
     ------------------------------------------------------------- transforms
     KINDS.Visible = {
-        blurb = "can you see them?",
+        blurb = "Can you see them?",
         ins = { { key = "player", type = "player", label = "Player" } },
         outs = { bool = true, number = true },
         opts = { MaxDistance = 0, Invert = false },
@@ -16098,7 +16092,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Info = {
-        blurb = "reads a detail off a player",
+        blurb = "Reads a detail off a player",
         ins = { { key = "player", type = "player", label = "Player" } },
         outs = { text = true, number = true, bool = true },
         opts = { Field = "Name", Decimals = 0 },
@@ -16164,71 +16158,71 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Compare = {
-        blurb = "turns a number into yes / no",
+        blurb = "Turns a number into yes / no",
         ins = { { key = "number", type = "number", label = "Number" } },
         outs = { bool = true },
-        opts = { Op = "less than", Value = 50 },
+        opts = { Op = "Less Than", Value = 50 },
         eval = function(o, ins)
             local n = (ins.number and ins.number.number) or 0
             local v = o.Value or 0
-            if o.Op == "less than" then return { bool = n < v } end
-            if o.Op == "more than" then return { bool = n > v } end
+            if o.Op == "Less Than" then return { bool = n < v } end
+            if o.Op == "More Than" then return { bool = n > v } end
             return { bool = math.abs(n - v) < 0.001 }
         end,
         ui = function(api, o)
-            api:dropdown("Test", { "less than", "more than", "equal to" }, o.Op,
+            api:dropdown("Test", { "Less Than", "More Than", "Equal To" }, o.Op,
                 function(v) o.Op = v end)
             api:slider("Value", -5000, 5000, o.Value, 1, function(v) o.Value = v end)
         end,
     }
 
     KINDS.Math = {
-        blurb = "does sums on two numbers",
+        blurb = "Does sums on two numbers",
         ins = { { key = "a", type = "number", label = "A" },
                 { key = "b", type = "number", label = "B" } },
         outs = { number = true },
-        opts = { Op = "add", B = 0 },
+        opts = { Op = "Add", B = 0 },
         eval = function(o, ins)
             local a = (ins.a and ins.a.number) or 0
             local b = ins.b and ins.b.number or (o.B or 0)
             local op = o.Op
-            if op == "subtract" then return { number = a - b } end
-            if op == "multiply" then return { number = a * b } end
-            if op == "divide" then return { number = (b ~= 0) and (a / b) or 0 } end
-            if op == "smallest" then return { number = math.min(a, b) } end
-            if op == "largest" then return { number = math.max(a, b) } end
-            if op == "difference" then return { number = math.abs(a - b) } end
+            if op == "Subtract" then return { number = a - b } end
+            if op == "Multiply" then return { number = a * b } end
+            if op == "Divide" then return { number = (b ~= 0) and (a / b) or 0 } end
+            if op == "Smallest" then return { number = math.min(a, b) } end
+            if op == "Largest" then return { number = math.max(a, b) } end
+            if op == "Difference" then return { number = math.abs(a - b) } end
             return { number = a + b }
         end,
         ui = function(api, o)
-            api:dropdown("Operation", { "add", "subtract", "multiply", "divide",
-                "smallest", "largest", "difference" }, o.Op, function(v) o.Op = v end)
+            api:dropdown("Operation", { "Add", "Subtract", "Multiply", "Divide",
+                "Smallest", "Largest", "Difference" }, o.Op, function(v) o.Op = v end)
             api:slider("B when unwired", -5000, 5000, o.B, 2, function(v) o.B = v end)
         end,
     }
 
     KINDS.Logic = {
-        blurb = "combines two yes / no answers",
+        blurb = "Combines two yes / no answers",
         ins = { { key = "a", type = "bool", label = "A" },
                 { key = "b", type = "bool", label = "B" } },
         outs = { bool = true },
-        opts = { Op = "and" },
+        opts = { Op = "And" },
         eval = function(o, ins)
             local a = (ins.a and ins.a.bool) == true
             local b = (ins.b and ins.b.bool) == true
-            if o.Op == "or" then return { bool = a or b } end
-            if o.Op == "not A" then return { bool = not a } end
-            if o.Op == "only one" then return { bool = a ~= b } end
+            if o.Op == "Or" then return { bool = a or b } end
+            if o.Op == "Not A" then return { bool = not a } end
+            if o.Op == "Only One" then return { bool = a ~= b } end
             return { bool = a and b }
         end,
         ui = function(api, o)
-            api:dropdown("Operation", { "and", "or", "not A", "only one" }, o.Op,
+            api:dropdown("Operation", { "And", "Or", "Not A", "Only One" }, o.Op,
                 function(v) o.Op = v end)
         end,
     }
 
     KINDS["Map Range"] = {
-        blurb = "rescales a number into a new range",
+        blurb = "Rescales a number into a new range",
         ins = { { key = "number", type = "number", label = "Number" } },
         outs = { number = true },
         opts = { InMin = 0, InMax = 100, OutMin = 0, OutMax = 1, Clamp = true },
@@ -16249,7 +16243,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Smooth = {
-        blurb = "eases a number instead of snapping",
+        blurb = "Eases a number instead of snapping",
         ins = { { key = "number", type = "number", label = "Number" } },
         outs = { number = true },
         opts = { Smoothness = 0.8, Snap = 0 },
@@ -16272,7 +16266,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Delay = {
-        blurb = "keeps a yes alive for a moment",
+        blurb = "Keeps a yes alive for a moment",
         ins = { { key = "bool", type = "bool", label = "Yes / No" } },
         outs = { bool = true },
         opts = { HoldTime = 0.4, WaitTime = 0 },
@@ -16295,7 +16289,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Format = {
-        blurb = "turns a number into tidy text",
+        blurb = "Turns a number into tidy text",
         ins = { { key = "number", type = "number", label = "Number" } },
         outs = { text = true },
         opts = { Decimals = 0, Prefix = "", Suffix = "", Commas = false },
@@ -16322,7 +16316,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Colour Mix"] = {
-        blurb = "blends two colours by a 0-1 number",
+        blurb = "Blends two colours by a 0-1 number",
         ins = { { key = "t", type = "number", label = "Blend 0-1" },
                 { key = "a", type = "color", label = "Colour A" },
                 { key = "b", type = "color", label = "Colour B" } },
@@ -16342,7 +16336,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Colour Cycle"] = {
-        blurb = "a moving rainbow colour",
+        blurb = "A moving rainbow colour",
         ins = { { key = "number", type = "number", label = "Offset" } },
         outs = { color = true },
         opts = { Speed = 0.5, Sat = 0.7, Val = 1 },
@@ -16359,10 +16353,10 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Switch = {
-        blurb = "picks one of two answers",
+        blurb = "Picks one of two answers",
         ins = { { key = "bool", type = "bool", label = "Yes / No" } },
         outs = { text = true, color = true, bool = true },
-        opts = { TrueText = "VISIBLE", FalseText = "NOT VISIBLE",
+        opts = { TrueText = "Visible", FalseText = "Not Visible",
                  TrueColor = Color3.fromRGB(122, 220, 134),
                  FalseColor = Color3.fromRGB(232, 92, 92) },
         eval = function(o, ins)
@@ -16380,7 +16374,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Pick Number"] = {
-        blurb = "one of two numbers",
+        blurb = "One of two numbers",
         ins = { { key = "bool", type = "bool", label = "Yes / No" } },
         outs = { number = true },
         opts = { Yes = 1, No = 0 },
@@ -16395,7 +16389,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Pick Colour"] = {
-        blurb = "one of two colours",
+        blurb = "One of two colours",
         ins = { { key = "bool", type = "bool", label = "Yes / No" } },
         outs = { color = true },
         opts = { Yes = Color3.fromRGB(122, 220, 134), No = Color3.fromRGB(232, 92, 92) },
@@ -16411,7 +16405,7 @@ registerConfig("custom", Koffee.Custom)
 
     --------------------------------------------------------------- position
     KINDS["Screen Position"] = {
-        blurb = "where something in the world is on your screen",
+        blurb = "Where something in the world is on your screen",
         ins = { { key = "part", type = "part", label = "Part" },
                 { key = "player", type = "player", label = "Player" },
                 -- v0.20.0: wireable, so a height can be animated. World studs, not
@@ -16465,7 +16459,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["World Position"] = {
-        blurb = "a point in the world, in studs, for the 3D blocks",
+        blurb = "A point in the world, in studs, for the 3D blocks",
         ins = { { key = "part", type = "part", label = "Part" },
                 { key = "player", type = "player", label = "Player" },
                 { key = "height", type = "number", label = "Height" } },
@@ -16502,7 +16496,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Vector = {
-        blurb = "builds or offsets a world point from X / Y / Z (for teleport, aim, etc)",
+        blurb = "Builds or offsets a world point from X / Y / Z (for teleport, aim, etc)",
         ins = { { key = "base", type = "world", label = "Base" },
                 { key = "x", type = "number", label = "X" },
                 { key = "y", type = "number", label = "Y" },
@@ -16527,7 +16521,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Offset = {
-        blurb = "nudges a screen position",
+        blurb = "Nudges a screen position",
         ins = { { key = "point", type = "point", label = "Position" },
                 { key = "x", type = "number", label = "X" },
                 { key = "y", type = "number", label = "Y" } },
@@ -16582,8 +16576,8 @@ registerConfig("custom", Koffee.Custom)
         api:label("X/Y are ignored while Position is wired")
         api:slider("Nudge X px", -400, 400, o.OffX or 0, 0, function(v) o.OffX = v end)
         api:slider("Nudge Y px", -400, 400, o.OffY or 0, 0, function(v) o.OffY = v end)
-        api:label("nudge is pixels, and works even when Position is wired")
-        api:label("wire Inside Group to a Group block to move several blocks as one")
+            api:label("Nudge is pixels, and works even when Position is wired")
+            api:label("Wire Inside Group to a Group block to move several blocks as one")
         api:slider("Rotation", -180, 180, o.Rotation, 0, function(v) o.Rotation = v end)
         api:toggle("Spin", o.Spin, function(v) o.Spin = v end)
         api:slider("Spin Speed", -720, 720, o.SpinSpeed, 0, function(v) o.SpinSpeed = v end)
@@ -16624,13 +16618,13 @@ registerConfig("custom", Koffee.Custom)
     end
 
     KINDS.Text = {
-        blurb = "draws words on your screen. put {a} {b} {c} in the text to drop in wired values",
+        blurb = "Draws words on your screen. Put {a} {b} {c} in the text to drop in wired values",
         sink = true, visual = true,
         ins = visIns({ { key = "a", type = "text", label = "Value A" },
                        { key = "b", type = "text", label = "Value B" },
                        { key = "c", type = "text", label = "Value C" } }),
         outs = {},
-        opts = visOpts({ Text = "KOFFEE", Color = Color3.fromRGB(238, 238, 238),
+        opts = visOpts({ Text = "Koffee", Color = Color3.fromRGB(238, 238, 238),
                  Size = 22, Font = "None", Outline = true, OutlineThickness = 2,
                  OutlineColor = Color3.fromRGB(0, 0, 0), Align = "Centre",
                  BgOn = false, BgColor = Color3.fromRGB(12, 12, 12), BgAlpha = 0.35,
@@ -16709,7 +16703,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Box = {
-        blurb = "a rectangle",
+        blurb = "A rectangle",
         sink = true, visual = true,
         ins = visIns({ { key = "w", type = "number", label = "Width" },
                        { key = "h", type = "number", label = "Height" } }),
@@ -16769,7 +16763,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Bar = {
-        blurb = "a progress bar driven by a 0-1 number",
+        blurb = "A progress bar driven by a 0-1 number",
         sink = true, visual = true,
         ins = visIns({ { key = "value", type = "number", label = "Fill 0-1" } }),
         outs = {},
@@ -16836,7 +16830,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Line = {
-        blurb = "a line between two screen positions",
+        blurb = "A line between two screen positions",
         sink = true, visual = true,
         ins = { { key = "a", type = "point", label = "From" },
                 { key = "b", type = "point", label = "To" },
@@ -16881,7 +16875,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Circle = {
-        blurb = "a ring or a dot",
+        blurb = "A ring or a dot",
         sink = true, visual = true,
         ins = visIns({ { key = "radius", type = "number", label = "Radius" } }),
         outs = {},
@@ -16931,7 +16925,7 @@ registerConfig("custom", Koffee.Custom)
     -- ellipse instead, which is what sells a ring as being AROUND something.
     local RING_SEGS = 28
     KINDS.Ring = {
-        blurb = "a flat ring that lies around something",
+        blurb = "A flat ring that lies around something",
         sink = true, visual = true,
         ins = visIns({ { key = "radius", type = "number", label = "Radius" } }),
         outs = {},
@@ -17104,7 +17098,7 @@ registerConfig("custom", Koffee.Custom)
 
     local R3_SEGS = 32
     KINDS["3D Ring"] = {
-        blurb = "a real ring in the world, lying flat around something",
+        blurb = "A real ring in the world, lying flat around something",
         sink = true, visual = true,
         ins = w3Ins({ { key = "radius", type = "number", label = "Radius" } }),
         outs = {},
@@ -17162,7 +17156,7 @@ registerConfig("custom", Koffee.Custom)
         { "z", -1, -1 }, { "z", -1, 1 }, { "z", 1, -1 }, { "z", 1, 1 },
     }
     KINDS["3D Box"] = {
-        blurb = "a wireframe box in the world",
+        blurb = "A wireframe box in the world",
         sink = true, visual = true,
         ins = w3Ins({ { key = "size", type = "number", label = "Size" } }),
         outs = {},
@@ -17215,7 +17209,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Image = {
-        blurb = "an image, or a player's avatar",
+        blurb = "An image, or a player's avatar",
         sink = true, visual = true,
         ins = visIns({ { key = "player", type = "player", label = "Avatar Of" } }),
         outs = {},
@@ -17259,7 +17253,7 @@ registerConfig("custom", Koffee.Custom)
         ui = function(api, o)
             api:section("source")
             api:text("Asset id", o.Asset, function(v) o.Asset = v end)
-            api:label("ignored while Avatar Of is wired")
+            api:label("Ignored while Avatar Of is wired")
             api:section("shape")
             api:slider("Width", 1, 512, o.W, 0, function(v) o.W = v end)
             api:slider("Height", 1, 512, o.H, 0, function(v) o.H = v end)
@@ -17271,7 +17265,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Group = {
-        blurb = "a panel other blocks can sit inside, so the whole widget moves as one",
+        blurb = "A panel other blocks can sit inside, so the whole widget moves as one",
         sink = true, visual = true,
         ins = visIns(), outs = { frame = true },
         opts = visOpts({ W = 220, H = 90, Color = Color3.fromRGB(16, 16, 16), Alpha = 0.4,
@@ -17304,8 +17298,8 @@ registerConfig("custom", Koffee.Custom)
             end
         end,
         ui = function(api, o)
-            api:label("wire this block's Frame output into another block's Inside Group")
-            api:label("everything inside moves, rotates and fades with the group")
+            api:label("Wire this block's Frame output into another block's Inside Group")
+            api:label("Everything inside moves, rotates and fades with the group")
             api:section("shape")
             api:slider("Width", 1, 1600, o.W, 0, function(v) o.W = v end)
             api:slider("Height", 1, 1200, o.H, 0, function(v) o.H = v end)
@@ -17322,7 +17316,7 @@ registerConfig("custom", Koffee.Custom)
 
     ---------------------------------------------------------------- actions
     KINDS["Text Input"] = {
-        blurb = "a box you type in while playing -- outputs text + number",
+        blurb = "A box you type in while playing -- outputs text + number",
         sink = true, visual = true,
         ins = visIns({}),
         outs = { text = true, number = true },
@@ -17382,13 +17376,13 @@ registerConfig("custom", Koffee.Custom)
             api:slider("Height", 20, 120, o.H, 0, function(v) o.H = v end)
             api:swatch("Text Colour", o.Color, function(c) o.Color = c end)
             api:swatch("Box Colour", o.BgColor, function(c) o.BgColor = c end)
-            api:label("type in-game, wire the number out -- typed text wins")
+            api:label("Type in-game, wire the number out -- typed text wins")
             visUiTail(api, o)
         end,
     }
 
     KINDS.Button = {
-        blurb = "a button you press while playing -- outputs yes / no",
+        blurb = "A button you press while playing -- outputs yes / no",
         sink = true, visual = true,
         ins = visIns({}),
         outs = { bool = true },
@@ -17450,17 +17444,17 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Sound = {
-        blurb = "plays a sound the moment something becomes true",
+        blurb = "Plays a sound the moment something becomes true",
         sink = true,
         ins = { { key = "bool", type = "bool", label = "When" } },
         outs = {},
-        opts = { Asset = "", Volume = 0.6, Pitch = 1, Cooldown = 0.15, Edge = "becomes yes" },
+        opts = { Asset = "", Volume = 0.6, Pitch = 1, Cooldown = 0.15, Edge = "Becomes Yes" },
         paint = function(_, o, ins, node, ctx)
             local want = (ins.bool and ins.bool.bool) == true
             local s, now = slot(node, ctx), os.clock()
             local fire
-            if o.Edge == "becomes no" then fire = (s.prev == true) and not want
-            elseif o.Edge == "while yes" then fire = want
+            if o.Edge == "Becomes No" then fire = (s.prev == true) and not want
+            elseif o.Edge == "While Yes" then fire = want
             else fire = want and (s.prev ~= true) end
             s.prev = want
             if not fire then return end
@@ -17478,7 +17472,7 @@ registerConfig("custom", Koffee.Custom)
         end,
         ui = function(api, o)
             api:text("Sound id", o.Asset, function(v) o.Asset = v end)
-            api:dropdown("Fire when it", { "becomes yes", "becomes no", "while yes" },
+            api:dropdown("Fire when it", { "Becomes Yes", "Becomes No", "While Yes" },
                 o.Edge, function(v) o.Edge = v end)
             api:slider("Volume", 0, 3, o.Volume, 2, function(v) o.Volume = v end)
             api:slider("Pitch", 0.1, 3, o.Pitch, 2, function(v) o.Pitch = v end)
@@ -17487,13 +17481,13 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS.Notify = {
-        blurb = "flashes a message when something becomes true",
+        blurb = "Flashes a message when something becomes true",
         sink = true, visual = true,
         ins = { { key = "bool", type = "bool", label = "When" },
                 { key = "a", type = "text", label = "Value A" },
                 { key = "color", type = "color", label = "Colour" } },
         outs = {},
-        opts = { Text = "TRIGGERED  {a}", Color = Color3.fromRGB(238, 238, 238),
+        opts = { Text = "Triggered  {a}", Color = Color3.fromRGB(238, 238, 238),
                  Size = 20, Font = "None", Hold = 1.5, Cooldown = 0.5,
                  X = 50, Y = 22 },
         make = function()
@@ -17540,7 +17534,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Adorn Part"] = {
-        blurb = "outlines a part in the world while something is true",
+        blurb = "Outlines a part in the world while something is true",
         sink = true, visual = true,
         ins = { { key = "part", type = "part", label = "Part" },
                 { key = "player", type = "player", label = "Player" },
@@ -17582,13 +17576,13 @@ registerConfig("custom", Koffee.Custom)
             api:swatch("Outline Colour", o.Outline, function(c) o.Outline = c end)
             api:slider("Outline Fade", 0, 1, o.OutlineAlpha, 2, function(v) o.OutlineAlpha = v end)
             api:toggle("See Through Walls", o.AlwaysOnTop, function(v) o.AlwaysOnTop = v end)
-            api:label("roblox stops drawing highlights past about 30 at once")
+            api:label("Roblox stops drawing highlights past about 30 at once")
         end,
     }
 
     -- v0.31.0: resolve one Fire Remote / Set Value argument from the wired inputs
-    -- or a computed convenience. Second return = false ONLY for "(none)".
-    local ARG_SOURCES = { "(none)", "Number", "Text", "Instance", "Buffer", "Boolean true",
+    -- or a computed convenience. Second return = false ONLY for "(None)".
+    local ARG_SOURCES = { "(None)", "Number", "Text", "Instance", "Buffer", "Boolean true",
         "Boolean false", "My Character", "My HRP", "My Position",
         "Mouse Hit Position", "Mouse Target", "Camera Position", "Camera CFrame" }
     local function argVal(src, ins)
@@ -17618,11 +17612,11 @@ registerConfig("custom", Koffee.Custom)
         if src == "Camera CFrame" then
             local cam = Workspace.CurrentCamera; return cam and cam.CFrame or CFrame.new(), true
         end
-        return nil, false   -- "(none)": stop building the arg list here
+        return nil, false   -- "(None)": stop building the arg list here
     end
 
     KINDS["Fire Remote"] = {
-        blurb = "fires a RemoteEvent/Function with your args when something becomes true",
+        blurb = "Fires a RemoteEvent/Function with your args when something becomes true",
         sink = true,
         ins = { { key = "remote", type = "part", label = "Remote" },
                 { key = "when", type = "bool", label = "When" },
@@ -17631,16 +17625,16 @@ registerConfig("custom", Koffee.Custom)
                 { key = "inst", type = "part", label = "Instance In" },
                 { key = "buf", type = "buffer", label = "Buffer In" } },
         outs = {},
-        opts = { Type = "FireServer", Edge = "becomes yes", Cooldown = 0.1,
-                 Arg1 = "(none)", Arg2 = "(none)", Arg3 = "(none)", Arg4 = "(none)" },
+        opts = { Type = "FireServer", Edge = "Becomes Yes", Cooldown = 0.1,
+                 Arg1 = "(None)", Arg2 = "(None)", Arg3 = "(None)", Arg4 = "(None)" },
         paint = function(_, o, ins, node, ctx)
             local remote = ins.remote and ins.remote.part
             if not remote then return end
             local want = (ins.when and ins.when.bool) == true
             local s, now = slot(node, ctx), os.clock()
             local fire
-            if o.Edge == "becomes no" then fire = (s.prev == true) and not want
-            elseif o.Edge == "while yes" then fire = want
+            if o.Edge == "Becomes No" then fire = (s.prev == true) and not want
+            elseif o.Edge == "While Yes" then fire = want
             else fire = want and (s.prev ~= true) end
             s.prev = want
             if not fire then return end
@@ -17661,11 +17655,11 @@ registerConfig("custom", Koffee.Custom)
             end)
         end,
         ui = function(api, o)
-            api:label("wire the Remote input to a Find Instance block")
+            api:label("Wire the Remote input to a Find Instance block")
             api:dropdown("Call", { "FireServer", "InvokeServer", "Fire", "Invoke" }, o.Type, function(v) o.Type = v end)
-            api:dropdown("Fire when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
+            api:dropdown("Fire when it", { "Becomes Yes", "Becomes No", "While Yes" }, o.Edge, function(v) o.Edge = v end)
             api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
-            api:section("arguments (in order, stops at the first none)")
+            api:section("Arguments (in order, stops at the first None)")
             api:dropdown("Arg 1", ARG_SOURCES, o.Arg1, function(v) o.Arg1 = v end)
             api:dropdown("Arg 2", ARG_SOURCES, o.Arg2, function(v) o.Arg2 = v end)
             api:dropdown("Arg 3", ARG_SOURCES, o.Arg3, function(v) o.Arg3 = v end)
@@ -17674,7 +17668,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Set Value"] = {
-        blurb = "writes a Value, attribute or property on an instance when something becomes true",
+        blurb = "Writes a Value, attribute or property on an instance when something becomes true",
         sink = true,
         ins = { { key = "inst", type = "part", label = "Instance" },
                 { key = "when", type = "bool", label = "When" },
@@ -17683,15 +17677,15 @@ registerConfig("custom", Koffee.Custom)
                 { key = "flag", type = "bool", label = "Bool In" } },
         outs = {},
         opts = { Kind = "Value", Field = "Value", From = "Number",
-                 Edge = "becomes yes", Cooldown = 0 },
+                 Edge = "Becomes Yes", Cooldown = 0 },
         paint = function(_, o, ins, node, ctx)
             local inst = ins.inst and ins.inst.part
             if not inst then return end
             local want = (ins.when and ins.when.bool) == true
             local s, now = slot(node, ctx), os.clock()
             local fire
-            if o.Edge == "becomes no" then fire = (s.prev == true) and not want
-            elseif o.Edge == "while yes" then fire = want
+            if o.Edge == "Becomes No" then fire = (s.prev == true) and not want
+            elseif o.Edge == "While Yes" then fire = want
             else fire = want and (s.prev ~= true) end
             s.prev = want
             if not fire then return end
@@ -17713,7 +17707,7 @@ registerConfig("custom", Koffee.Custom)
             api:dropdown("Write", { "Value", "Attribute", "Property" }, o.Kind, function(v) o.Kind = v end)
             api:text("Name", o.Field, function(v) o.Field = v end)
             api:dropdown("From", { "Number", "Text", "Boolean", "Boolean true", "Boolean false" }, o.From, function(v) o.From = v end)
-            api:dropdown("Write when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
+            api:dropdown("Write when it", { "Becomes Yes", "Becomes No", "While Yes" }, o.Edge, function(v) o.Edge = v end)
             api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
             api:label("Value = a NumberValue/etc. else the attribute/property name")
         end,
@@ -17725,8 +17719,8 @@ registerConfig("custom", Koffee.Custom)
         local want = (ins.when and ins.when.bool) == true
         local s, now = slot(node, ctx), os.clock()
         local fire
-        if o.Edge == "becomes no" then fire = (s.prev == true) and not want
-        elseif o.Edge == "while yes" then fire = want
+        if o.Edge == "Becomes No" then fire = (s.prev == true) and not want
+        elseif o.Edge == "While Yes" then fire = want
         else fire = want and (s.prev ~= true) end
         s.prev = want
         if not fire then return false end
@@ -17740,14 +17734,14 @@ registerConfig("custom", Koffee.Custom)
     end
 
     KINDS.Teleport = {
-        blurb = "teleports you to a point, part or player when something becomes true",
+        blurb = "Teleports you to a point, part or player when something becomes true",
         sink = true,
         ins = { { key = "to", type = "world", label = "To Point" },
                 { key = "part", type = "part", label = "To Part" },
                 { key = "player", type = "player", label = "To Player" },
                 { key = "when", type = "bool", label = "When" } },
         outs = {},
-        opts = { Edge = "becomes yes", Cooldown = 0, OffsetY = 3, KeepLook = true },
+        opts = { Edge = "Becomes Yes", Cooldown = 0, OffsetY = 3, KeepLook = true },
         paint = function(_, o, ins, node, ctx)
             if not edgeFire(o, ins, node, ctx) then return end
             local dest
@@ -17768,8 +17762,8 @@ registerConfig("custom", Koffee.Custom)
             hrp.CFrame = o.KeepLook ~= false and (CFrame.new(dest) * hrp.CFrame.Rotation) or CFrame.new(dest)
         end,
         ui = function(api, o)
-            api:label("wire ONE of To Point / To Part / To Player")
-            api:dropdown("Fire when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
+            api:label("Wire ONE of To Point / To Part / To Player")
+            api:dropdown("Fire when it", { "Becomes Yes", "Becomes No", "While Yes" }, o.Edge, function(v) o.Edge = v end)
             api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
             api:slider("Y Offset", -20, 20, o.OffsetY, 1, function(v) o.OffsetY = v end)
             api:toggle("Keep facing", o.KeepLook ~= false, function(v) o.KeepLook = v end)
@@ -17777,7 +17771,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Set Humanoid"] = {
-        blurb = "forces a Humanoid stat (WalkSpeed, JumpPower...) while something is true",
+        blurb = "Forces a Humanoid stat (WalkSpeed, JumpPower...) while something is true",
         sink = true,
         ins = { { key = "when", type = "bool", label = "While" },
                 { key = "value", type = "number", label = "Value" } },
@@ -17812,7 +17806,7 @@ registerConfig("custom", Koffee.Custom)
     }
 
     KINDS["Velocity"] = {
-        blurb = "pushes you at a speed and direction while something is true (fly, speed)",
+        blurb = "Pushes you at a speed and direction while something is true (fly, speed)",
         sink = true,
         ins = { { key = "when", type = "bool", label = "While" },
                 { key = "dir", type = "world", label = "Direction" },
@@ -17852,12 +17846,12 @@ registerConfig("custom", Koffee.Custom)
             api:slider("Speed", 0, 500, o.Speed, 0, function(v) o.Speed = v end)
             api:slider("Up / Down", -200, 200, o.UpDown, 0, function(v) o.UpDown = v end)
             api:label("Set = held every frame. Add = one kick, re-arms on land")
-            api:label("wire Direction (a world point) to steer; else it follows the camera")
+            api:label("Wire Direction (a world point) to steer; else it follows the camera")
         end,
     }
 
     KINDS["TP Walk"] = {
-        blurb = "steps you forward in small teleports while yes (keeps your jump arc)",
+        blurb = "Steps you forward in small teleports while yes (keeps your jump arc)",
         sink = true,
         ins = { { key = "when", type = "bool", label = "While" },
                 { key = "dir", type = "world", label = "Direction" },
@@ -17889,31 +17883,31 @@ registerConfig("custom", Koffee.Custom)
         ui = function(api, o)
             api:dropdown("Direction", { "Look", "Look Flat", "Move Dir" }, o.Mode, function(v) o.Mode = v end)
             api:slider("Speed", 0, 500, o.Speed, 0, function(v) o.Speed = v end)
-            api:label("teleport steps, physics untouched -- jump, it carries you")
+            api:label("Teleport steps, physics untouched -- jump, it carries you")
         end,
     }
 
     KINDS.Click = {
-        blurb = "clicks the mouse when something becomes true (autoclicker, autofarm)",
+        blurb = "Clicks the mouse when something becomes true (autoclicker, autofarm)",
         sink = true,
         ins = { { key = "when", type = "bool", label = "When" } },
         outs = {},
-        opts = { Edge = "becomes yes", Cooldown = 0.05, Button = "Left" },
+        opts = { Edge = "Becomes Yes", Cooldown = 0.05, Button = "Left" },
         paint = function(_, o, ins, node, ctx)
             if not edgeFire(o, ins, node, ctx) then return end
             doClick(o.Button)
         end,
         ui = function(api, o)
             api:dropdown("Button", { "Left", "Right" }, o.Button, function(v) o.Button = v end)
-            api:dropdown("Fire when it", { "becomes yes", "becomes no", "while yes" }, o.Edge, function(v) o.Edge = v end)
+            api:dropdown("Fire when it", { "Becomes Yes", "Becomes No", "While Yes" }, o.Edge, function(v) o.Edge = v end)
             api:slider("Cooldown (s)", 0, 5, o.Cooldown, 2, function(v) o.Cooldown = v end)
-            api:label("pair with Interval for a steady autoclicker")
+            api:label("Pair with Interval for a steady autoclicker")
         end,
     }
 
     -- v0.38.0: Koffee-connected blocks -- drive Koffee's own features from the graph.
     KINDS["Koffee Toggle"] = {
-        blurb = "turns a Koffee feature on/off from the graph (triggerbot, aimbot, esp...)",
+        blurb = "Turns a Koffee feature on/off from the graph (Triggerbot, Aimbot, ESP...)",
         sink = true,
         ins = { { key = "on", type = "bool", label = "On When" } },
         outs = {},
@@ -17923,10 +17917,10 @@ registerConfig("custom", Koffee.Custom)
             if not m then return end
             local want = (ins.on and ins.on.bool) == true
             local s = slot(node, ctx)
-            if o.Mode == "Turn On (edge)" then
+            if o.Mode == "Turn On (Edge)" then
                 if want and not s.prev and not m.Enabled then toggleModule(o.Module) end
                 s.prev = want
-            elseif o.Mode == "Turn Off (edge)" then
+            elseif o.Mode == "Turn Off (Edge)" then
                 if want and not s.prev and m.Enabled then toggleModule(o.Module) end
                 s.prev = want
             else   -- Match: feature follows the bool continuously
@@ -17938,7 +17932,7 @@ registerConfig("custom", Koffee.Custom)
             for id in pairs(Modules or {}) do names[#names + 1] = id end
             table.sort(names)
             api:dropdown("Feature", names, o.Module, function(v) o.Module = v end)
-            api:dropdown("Mode", { "Match", "Turn On (edge)", "Turn Off (edge)" }, o.Mode, function(v) o.Mode = v end)
+            api:dropdown("Mode", { "Match", "Turn On (Edge)", "Turn Off (Edge)" }, o.Mode, function(v) o.Mode = v end)
             api:label("Match = feature follows On When. edge = fire once on the rising edge")
         end,
     }
@@ -17958,7 +17952,7 @@ registerConfig("custom", Koffee.Custom)
     local KSET_NAMES, KSET_BY = {}, {}
     for _, e in ipairs(KSET) do KSET_NAMES[#KSET_NAMES + 1] = e.name; KSET_BY[e.name] = e end
     KINDS["Koffee Set"] = {
-        blurb = "sets a Koffee number (sensitivity, FOV, hit-effect size...) from the graph",
+        blurb = "Sets a Koffee number (sensitivity, FOV, hit-effect size...) from the graph",
         sink = true,
         ins = { { key = "when", type = "bool", label = "While" }, { key = "value", type = "number", label = "Value" } },
         outs = {},
@@ -17972,7 +17966,7 @@ registerConfig("custom", Koffee.Custom)
         end,
         ui = function(api, o)
             api:dropdown("Target", KSET_NAMES, o.Target, function(v) o.Target = v end)
-            api:label("wire a Number into Value; applied every frame While is yes")
+            api:label("Wire a Number into Value; applied every frame While is yes")
         end,
     }
 
@@ -17980,7 +17974,7 @@ registerConfig("custom", Koffee.Custom)
     -- and hand it to Fire Remote via a buffer wire. Scaffold = Position -> x/y/z fields.
     local BUFSIZE = { u8 = 1, i8 = 1, u16 = 2, i16 = 2, u32 = 4, i32 = 4, f32 = 4, f64 = 8, string = 0 }
     KINDS["Build Buffer"] = {
-        blurb = "builds a buffer from a saved schema, patched with your live values -> Fire Remote",
+        blurb = "Builds a buffer from a saved schema, patched with your live values -> Fire Remote",
         ins = { { key = "world", type = "world", label = "Position" }, { key = "num", type = "number", label = "Number" } },
         outs = { buffer = true, text = true },
         opts = { Schema = "", NumField = "" },
@@ -18005,9 +17999,9 @@ registerConfig("custom", Koffee.Custom)
                     end
                 end
             end
-            if not s.tmpl then return { buffer = nil, text = "no template" } end
+            if not s.tmpl then return { buffer = nil, text = "No template" } end
             local ok, b = pcall(buffer.fromstring, s.tmpl)
-            if not ok then return { buffer = nil, text = "bad template" } end
+            if not ok then return { buffer = nil, text = "Bad template" } end
             local n = buffer.len(b)
             local function w(off, ty, val)
                 if not val or off + (BUFSIZE[ty] or 4) > n then return end
@@ -18048,14 +18042,14 @@ registerConfig("custom", Koffee.Custom)
             api:dropdown("Schema", names, o.Schema ~= "" and o.Schema or names[1], function(v) o.Schema = v end)
             api:text("Number -> field", o.NumField, function(v) o.NumField = v end)
             api:label("Position fills x/y/z fields; Number fills the named field")
-            api:label("wire the buffer output into a Fire Remote arg set to Buffer")
+            api:label("Wire the buffer output into a Fire Remote arg set to Buffer")
         end,
     }
 
     KINDS.Note = {
-        blurb = "a label on the canvas. draws nothing in game",
+        blurb = "A label on the canvas. Draws nothing in game",
         ins = {}, outs = {},
-        opts = { Text = "notes" },
+        opts = { Text = "Notes" },
         ui = function(api, o) api:text("Note", o.Text, function(v) o.Text = v end) end,
     }
 
@@ -18202,7 +18196,7 @@ registerConfig("custom", Koffee.Custom)
         -- v0.26.1: banner. Without it, design mode with nothing selected looked
         -- identical to design mode being off, which read as "it does nothing".
         dmBan = new("TextLabel", {
-            Text = "design mode -- click a widget to select it, esc to exit",
+            Text = "Design Mode -- Click a widget to select it, Esc to exit",
             FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Panel,
             BackgroundTransparency = 0.1, BorderSizePixel = 0,
@@ -18277,7 +18271,7 @@ registerConfig("custom", Koffee.Custom)
         dmRot.Visible = has
         dmTip.Visible = has
         for _, d in pairs(dmDots) do d.Visible = has end
-        dmBan.Text = has and "design mode -- drag to move, dots resize, esc deselects"
+        dmBan.Text = has and "Design Mode -- Drag to move, dots resize, Esc to deselect"
             or "design mode -- click a widget to select it, esc to exit"
         if not has then return end
         dmBox.Position = UDim2.new(0, rx, 0, ry)
@@ -18293,7 +18287,7 @@ registerConfig("custom", Koffee.Custom)
         end
         dmRot.Position = UDim2.new(0, mx, 0, ry - 20)
         dmTip.Position = UDim2.new(0, mx, 0, ry - 30)
-        dmTip.Text = ("%s  %d,%d"):format(node.kind:lower(),
+        dmTip.Text = ("%s  %d,%d"):format(node.kind,
             math.floor(node.opts.OffX or 0), math.floor(node.opts.OffY or 0))
     end
 
@@ -18513,10 +18507,30 @@ registerConfig("custom", Koffee.Custom)
 
     ------------------------------------------------------------- graph edits
     -- the Text block's single "text" slot became "a" in v0.13.3
+    local OPMAP = {
+        ["less than"] = "Less Than", ["more than"] = "More Than",
+        ["equal to"] = "Equal To", add = "Add", subtract = "Subtract",
+        multiply = "Multiply", divide = "Divide", smallest = "Smallest",
+        largest = "Largest", difference = "Difference", ["and"] = "And",
+        ["or"] = "Or", ["not A"] = "Not A", ["only one"] = "Only One",
+        ["becomes yes"] = "Becomes Yes", ["becomes no"] = "Becomes No",
+        ["while yes"] = "While Yes", ["Turn On (edge)"] = "Turn On (Edge)",
+        ["Turn Off (edge)"] = "Turn Off (Edge)", ["(none)"] = "(None)",
+    }
     local function migrate()
         for _, n in ipairs(CF.Nodes) do
             -- v0.41.0: Set Velocity renamed to Velocity, old saves follow.
             if n.kind == "Set Velocity" then n.kind = "Velocity" end
+            -- v0.47.0: option strings went professional-case. Map the old
+            -- ones so saved graphs keep their behavior instead of falling
+            -- into default branches.
+            if n.opts then
+                for _, k in ipairs({ "Op", "Edge", "Mode",
+                    "Arg1", "Arg2", "Arg3", "Arg4" }) do
+                    local v = n.opts[k]
+                    if OPMAP[v] then n.opts[k] = OPMAP[v] end
+                end
+            end
             local w = n.wires
             if w and w.text and not w.a then w.a = w.text; w.text = nil end
         end
@@ -18636,32 +18650,32 @@ registerConfig("custom", Koffee.Custom)
     -- headers keyed off ORDER's own grouping, so the reference below is generated
     -- from the block registry and can never drift out of date
     local DOC_HEADS = {
-        ["Target"]          = "sources  --  these find things",
-        ["For Each Player"] = "repeating  --  runs everything after it once per player",
-        ["Visible"]         = "logic  --  these decide and reshape",
-        ["Screen Position"] = "position  --  these make things follow",
-        ["Text"]            = "drawing  --  these put things on your screen",
-        ["3D Ring"]         = "in the world  --  real geometry, not screen overlay",
-        ["Sound"]           = "actions  --  these fire when something happens",
+        ["Target"]          = "Sources  --  these find things",
+        ["For Each Player"] = "Repeating  --  runs everything after it once per player",
+        ["Visible"]         = "Logic  --  these decide and reshape",
+        ["Screen Position"] = "Position  --  these make things follow",
+        ["Text"]            = "Drawing  --  these put things on your screen",
+        ["3D Ring"]         = "In the World  --  real geometry, not screen overlay",
+        ["Sound"]           = "Actions  --  these fire when something happens",
     }
     local DOC_BODY = {
-        { h = "the idea" },
-        { p = "blocks do one small job each and pass the answer along. on their own they do nothing. you connect them, and the connection is where the feature comes from." },
-        { p = "a block that finds a player, a block that asks a question about them, a block that draws the answer. that is a feature you built without writing code." },
-        { h = "wiring" },
-        { p = "click the dot on the RIGHT of one block, then the dot on the LEFT of another. the source dot lights up while you are mid connection." },
-        { p = "click an input dot with nothing pending to unplug it. drag a block by its header. drag empty space to pan. minus folds a block, x deletes it." },
-        { p = "you can only connect things that fit. a block that produces a player will not plug into a slot that wants a colour, so a wire that looks refused is telling you something." },
-        { h = "three rules worth knowing" },
-        { p = "1. an input you do NOT wire falls back to that block's own setting. so a Text block on its own is just a label you place anywhere. wire something in and it takes over." },
-        { p = "2. Switch is the 'otherwise'. it holds both answers at once -- text and colour for yes, text and colour for no -- so you never need two blocks that can drift apart." },
-        { p = "3. in a Text block, {a} {b} {c} get replaced by its three value inputs. so \"health is {a}\" with Info wired into Value A is one block, not two sitting next to each other." },
-        { h = "show when" },
-        { p = "every drawing block has a Show When input. wire a yes/no into it and the block only appears when that is true. leave it empty and it is always on." },
-        { h = "position" },
-        { p = "every drawing block has a Position input. leave it empty and it sits where its X/Y sliders say. wire Screen Position into it and it follows a part or a player through the world." },
-        { h = "sharing" },
-        { p = "copy graph puts the whole thing on your clipboard as text. paste adds it back, renumbering so it never collides with blocks you already have. that is how you send a setup to someone." },
+        { h = "The Idea" },
+        { p = "Blocks do one small job each and pass the answer along. On their own they do nothing. You connect them, and the connection is where the feature comes from." },
+        { p = "A block that finds a player, a block that asks a question about them, a block that draws the answer. That is a feature you built without writing code." },
+        { h = "Wiring" },
+        { p = "Click the dot on the RIGHT of one block, then the dot on the LEFT of another. The source dot lights up while you are mid connection." },
+        { p = "Click an input dot with nothing pending to unplug it. Drag a block by its header. Drag empty space to pan. Minus folds a block, X deletes it." },
+        { p = "You can only connect things that fit. A block that produces a player will not plug into a slot that wants a colour, so a wire that looks refused is telling you something." },
+        { h = "Three Rules Worth Knowing" },
+        { p = "1. An input you do NOT wire falls back to that block's own setting. So a Text block on its own is just a label you place anywhere. Wire something in and it takes over." },
+        { p = "2. Switch is the 'otherwise'. It holds both answers at once -- text and colour for yes, text and colour for no -- so you never need two blocks that can drift apart." },
+        { p = "3. In a Text block, {a} {b} {c} get replaced by its three value inputs. So \"health is {a}\" with Info wired into Value A is one block, not two sitting next to each other." },
+        { h = "Show When" },
+        { p = "Every drawing block has a Show When input. Wire a yes/no into it and the block only appears when that is true. Leave it empty and it is always on." },
+        { h = "Position" },
+        { p = "Every drawing block has a Position input. Leave it empty and it sits where its X/Y sliders say. Wire Screen Position into it and it follows a part or a player through the world." },
+        { h = "Sharing" },
+        { p = "Copy Graph puts the whole thing on your clipboard as text. Paste adds it back, renumbering so it never collides with blocks you already have. That is how you send a setup to someone." },
     }
 
     -- worked examples, built as real graphs so they can be opened and taken apart
@@ -18670,8 +18684,8 @@ registerConfig("custom", Koffee.Custom)
 
     local EXAMPLES = {
         {
-            name = "target visible readout",
-            note = "says VISIBLE in green or NOT VISIBLE in red, wherever your target is",
+            name = "Target Visible Readout",
+            note = "Says VISIBLE in green or NOT VISIBLE in red, wherever your target is",
             build = function()
                 local t = addNode("Target", 24, 24)
                 local v = addNode("Visible", 24, 150)
@@ -18685,8 +18699,8 @@ registerConfig("custom", Koffee.Custom)
             end,
         },
         {
-            name = "name + health over every enemy",
-            note = "per player, so this is a full custom esp made of five blocks",
+            name = "Name + Health Over Every Enemy",
+            note = "Per player, so this is a full custom ESP made of five blocks",
             build = function()
                 local fe = addNode("For Each Player", 24, 24)
                 local sp = addNode("Screen Position", 244, 24)
@@ -18707,8 +18721,8 @@ registerConfig("custom", Koffee.Custom)
             end,
         },
         {
-            name = "label over your target",
-            note = "follows the target and disappears the moment you are not on one",
+            name = "Label Over Your Target",
+            note = "Follows the target and disappears the moment you are not on one",
             build = function()
                 local t  = addNode("Target", 24, 24)
                 local sp = addNode("Screen Position", 244, 24)
@@ -18726,8 +18740,8 @@ registerConfig("custom", Koffee.Custom)
             end,
         },
         {
-            name = "3D scanning ring on your target",
-            note = "real geometry in the world, eased, rides up and down the body",
+            name = "3D Scanning Ring On Your Target",
+            note = "Real geometry in the world, eased, rides up and down the body",
             build = function()
                 local t  = addNode("Target", 24, 24)
                 local wp = addNode("World Position", 260, 24)
@@ -18755,7 +18769,7 @@ registerConfig("custom", Koffee.Custom)
         local vp = viewport()
         local m = Shared.openModal(math.min(600, vp.X - 60), math.min(560, vp.Y - 60))
         new("TextLabel", {
-            Text = "custom features", FontFace = Theme.Fonts.Bold,
+            Text = "Custom Features", FontFace = Theme.Fonts.Bold,
             TextSize = Theme.Text.Header, TextColor3 = Theme.Palette.Text,
             BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
             Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
@@ -18797,11 +18811,11 @@ registerConfig("custom", Koffee.Custom)
         for _, e in ipairs(DOC_BODY) do
             if e.h then head(e.h) else para(e.p) end
         end
-        head("try one")
+        head("Try One")
         for _, e in ipairs(EXAMPLES) do
             order = order + 1
             local b = new("TextButton", {
-                Text = "build: " .. e.name, AutoButtonColor = false,
+                Text = "Build: " .. e.name, AutoButtonColor = false,
                 FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.TextMuted,
                 BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
@@ -18815,15 +18829,15 @@ registerConfig("custom", Koffee.Custom)
             end)
             para(e.note, true)
         end
-        para("these add to whatever is already on the canvas, they do not replace it", true)
-        head("every block")
+        para("These add to whatever is already on the canvas, they do not replace it", true)
+        head("Every Block")
         for _, name in ipairs(ORDER) do
             if DOC_HEADS[name] then para(DOC_HEADS[name], true) end
             local K = KINDS[name]
             if K then para(name .. "  --  " .. (K.blurb or "")) end
         end
         local close = new("TextButton", {
-            Text = "close", AutoButtonColor = false, FontFace = Theme.Fonts.Medium,
+            Text = "Close", AutoButtonColor = false, FontFace = Theme.Fonts.Medium,
             TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 1),
@@ -19016,7 +19030,7 @@ registerConfig("custom", Koffee.Custom)
             local node = sel and nodeById(sel)
             if not (node and KINDS[node.kind]) then
                 new("TextLabel", {
-                    Text = "click a block to edit it", FontFace = Theme.Fonts.Regular,
+                    Text = "Click a block to edit it", FontFace = Theme.Fonts.Regular,
                     TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
                     BackgroundTransparency = 1, TextWrapped = true,
                     Size = UDim2.new(1, 0, 0, 30), TextXAlignment = Enum.TextXAlignment.Left,
@@ -19026,7 +19040,7 @@ registerConfig("custom", Koffee.Custom)
             end
             local K = KINDS[node.kind]
             new("TextLabel", {
-                Text = node.kind:lower() .. " #" .. node.id, FontFace = Theme.Fonts.Bold,
+                Text = node.kind .. " #" .. node.id, FontFace = Theme.Fonts.Bold,
                 TextSize = Theme.Text.Header, TextColor3 = Theme.Palette.Text,
                 BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18),
                 TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 41, Parent = insp,
@@ -19103,8 +19117,8 @@ registerConfig("custom", Koffee.Custom)
 
                     local head = new("TextButton", {
                         Text = "  " .. (node.kind == "Note"
-                            and (node.opts.Text ~= "" and node.opts.Text or "note")
-                            or node.kind:lower()),
+                            and (node.opts.Text ~= "" and node.opts.Text or "Note")
+                            or node.kind),
                         AutoButtonColor = false,
                         FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
                         TextColor3 = picked and Theme.Palette.Accent or Theme.Palette.Text,
@@ -19114,7 +19128,7 @@ registerConfig("custom", Koffee.Custom)
                         Size = UDim2.new(1, 0, 0, HEAD_H), ZIndex = 36, Parent = f,
                     }, { corner(6) })
                     local del = new("TextButton", {
-                        Text = "x", AutoButtonColor = false, FontFace = Theme.Fonts.Bold,
+                        Text = "X", AutoButtonColor = false, FontFace = Theme.Fonts.Bold,
                         TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
                         BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5),
                         Position = UDim2.new(1, -5, 0.5, 0), Size = UDim2.new(0, 16, 0, 16),
@@ -19216,14 +19230,14 @@ registerConfig("custom", Koffee.Custom)
             buildInspector()
             if pending then
                 local s = nodeById(pending)
-                hint.Text = "connecting from " .. (s and s.kind:lower() or "?")
+                hint.Text = "Connecting from " .. (s and s.kind or "?")
                     .. " -- click a matching input dot"
             elseif note and os.clock() - noteAt < 3 then
                 hint.Text = note
             elseif #CF.Nodes == 0 then
-                hint.Text = "add a block above to start"
+                hint.Text = "Add a block above to start"
             else
-                hint.Text = "drag headers to move  --  output dot, then input dot, to connect"
+                hint.Text = "Drag headers to move -- output dot, then input dot, to connect"
             end
         end
 
@@ -19266,12 +19280,18 @@ registerConfig("custom", Koffee.Custom)
         -- from matching ORDER names (plain substring); empty = full list.
         local searchBox = new("TextBox", {
             Size = UDim2.new(0, 110, 0, 26),
-            Text = "", PlaceholderText = "search",
+            Text = "", PlaceholderText = "Search",
             ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0, LayoutOrder = 0, ZIndex = 36, Parent = bar,
-        }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+        }, { corner(4), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 24) }) })
+        local searchIcon = lucideIcon(searchBox, "search", 12, Theme.Palette.TextFaint, 37)
+        if searchIcon then
+            searchIcon.AnchorPoint = Vector2.new(0, 0.5)
+            searchIcon.Position = UDim2.new(0, 7, 0.5, 0)
+        end
         local pickDD = nil
         local function rebuildPick()
             local q = (searchBox.Text or ""):lower()
@@ -19284,19 +19304,19 @@ registerConfig("custom", Koffee.Custom)
             for _, n in ipairs(opts) do if n == pick then keep = true break end end
             pick = keep and pick or opts[1]
             if pickDD then pickDD.destroy() end
-            pickDD = dropdown(ddw, "block", opts, pick, function(v) pick = v end)
+            pickDD = dropdown(ddw, "Block", opts, pick, function(v) pick = v end)
         end
         searchBox:GetPropertyChangedSignal("Text"):Connect(rebuildPick)
         rebuildPick()
-        toolBtn(bar, "add block", 84, 2, function()
-            if not KINDS[pick] then say("nothing matches"); return end
+        toolBtn(bar, "Add Block", 84, 2, function()
+            if not KINDS[pick] then say("Nothing matches"); return end
             local x, y = freeSpot()
             sel = addNode(pick, x, y)
             rebuildAll()
         end)
-        toolBtn(bar2, "duplicate", 78, 1, function()
+        toolBtn(bar2, "Duplicate", 78, 1, function()
             local n = sel and nodeById(sel)
-            if not n then say("select a block first"); rebuildAll(); return end
+            if not n then say("Select a block first"); rebuildAll(); return end
             local id = 1
             for _, m in ipairs(CF.Nodes) do if m.id >= id then id = m.id + 1 end end
             local o, w = {}, {}
@@ -19307,13 +19327,13 @@ registerConfig("custom", Koffee.Custom)
             sel = id
             rebuildAll()
         end)
-        toolBtn(bar2, "copy graph", 84, 2, function()
+        toolBtn(bar2, "Copy Graph", 84, 2, function()
             local _, msg = copyGraph(); say(msg); rebuildAll()
         end)
-        toolBtn(bar2, "paste", 60, 3, function()
+        toolBtn(bar2, "Paste", 60, 3, function()
             -- straight to the popup: reading the clipboard needs an API most
             -- executors do not have, and a silent "no clipboard access" reads as broken
-            if not Shared.openTextPopup then say("no text input"); return end
+            if not Shared.openTextPopup then say("No text input"); return end
             Shared.openTextPopup("paste graph", "", "paste the KOFFEEGRAPH text here",
                 function(txt)
                     local _, msg = pasteGraph(txt)
@@ -19321,11 +19341,11 @@ registerConfig("custom", Koffee.Custom)
                     rebuildAll()
                 end, true)
         end)
-        toolBtn(bar2, "docs", 56, 5, function() docsModal(rebuildAll) end)
-        toolBtn(bar2, "clear", 58, 4, function()
+        toolBtn(bar2, "Docs", 56, 5, function() docsModal(rebuildAll) end)
+        toolBtn(bar2, "Clear", 58, 4, function()
             for i = #CF.Nodes, 1, -1 do CF.Nodes[i] = nil end
             sel, pending = nil, nil
-            say("cleared"); rebuildAll()
+            say("Cleared"); rebuildAll()
         end)
         if extra then toolBtn(bar2, extra.text, 74, 99, extra.fn) end
 
@@ -19470,7 +19490,7 @@ registerConfig("custom", Koffee.Custom)
         labelRow(card, "grab a remote's buffer from Turtle Spy / Cobalt and paste it below")
         labelRow(card, "hex, a buffer.fromstring(\"...\") snippet, or raw bytes")
         local box = new("TextBox", {
-            Text = "", PlaceholderText = "paste buffer bytes / fromstring code / hex...",
+            Text = "", PlaceholderText = "Paste buffer bytes / fromstring code / hex...",
             ClearTextOnFocus = false, MultiLine = true, TextWrapped = true,
             FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
@@ -19491,7 +19511,7 @@ registerConfig("custom", Koffee.Custom)
         -- === inspector card ===
         local icard = panel(parent, "Inspector")
         local header = new("TextLabel", {
-            Text = "paste a buffer and hit decode", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            Text = "Paste a buffer and hit Decode", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
             Size = UDim2.new(1, 0, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 1, ZIndex = 36, Parent = icard,
         })
@@ -19518,7 +19538,7 @@ registerConfig("custom", Koffee.Custom)
 
         local function inspect()
             local blen = #curBytes
-            header.Text = (blen > 0) and (blen .. " bytes") or "paste a buffer and hit decode"
+            header.Text = (blen > 0) and (blen .. " bytes") or "Paste a buffer and hit Decode"
             local lines, shown = {}, math.min(blen, 256)
             for off = 0, shown - 1, 16 do
                 local parts = {}
@@ -19580,10 +19600,10 @@ registerConfig("custom", Koffee.Custom)
         local offBox = inputBox(fcard, "offset (e.g. 4)", UDim2.new(1, 0, 0, 24), 10)
         offBox.LayoutOrder = 10
         local tHold = new("Frame", { Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, LayoutOrder = 11, ZIndex = 36, Parent = fcard })
-        dropdown(tHold, "type", RTYPES, addType, function(v) addType = v end)
+            dropdown(tHold, "Type", RTYPES, addType, function(v) addType = v end)
         local nameBox = inputBox(fcard, "name (e.g. targetX)", UDim2.new(1, 0, 0, 24), 12)
         nameBox.LayoutOrder = 12
-        mkBtn(fcard, "add field", 84, 13, function()
+        mkBtn(fcard, "Add Field", 84, 13, function()
             local off = tonumber((offBox.Text or ""):match("%d+"))
             if not off then return end
             local nm = (nameBox.Text ~= "" and nameBox.Text) or (addType .. "@" .. off)
@@ -19615,7 +19635,7 @@ registerConfig("custom", Koffee.Custom)
                     Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -34, 1, 0), ZIndex = 37, Parent = rr,
                 })
                 local xb = new("TextButton", {
-                    Text = "x", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Danger,
+                    Text = "X", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Danger,
                     BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0),
                     Size = UDim2.fromOffset(16, 16), ZIndex = 37, Parent = rr,
                 })
@@ -19636,11 +19656,11 @@ registerConfig("custom", Koffee.Custom)
             if loadDd then pcall(loadDd.destroy) end
             local names = listSchemas()
             if #names == 0 then names = { "no schemas" } end
-            loadDd = dropdown(loadHold, "saved schemas", names, pickSchema ~= "" and pickSchema or names[1],
+            loadDd = dropdown(loadHold, "Saved Schemas", names, pickSchema ~= "" and pickSchema or names[1],
                 function(v) pickSchema = v end)
         end
 
-        mkBtn(fcard, "save schema", 96, 31, function()
+        mkBtn(fcard, "Save Schema", 96, 31, function()
             local nm = (schemaBox.Text or ""):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
             if nm == "" or not filesOk() then return end
             ensureDir()
@@ -19654,7 +19674,7 @@ registerConfig("custom", Koffee.Custom)
             end)
             if ok then pickSchema = nm; rebuildLoadDd() end
         end).LayoutOrder = 31
-        mkBtn(sRow, "load", 60, 1, function()
+        mkBtn(sRow, "Load", 60, 1, function()
             if not filesOk() or pickSchema == "" then return end
             local p = SDIR .. "/" .. pickSchema .. ".json"
             if not isfile(p) then return end
@@ -19673,7 +19693,7 @@ registerConfig("custom", Koffee.Custom)
                 refreshFields()
             end
         end)
-        mkBtn(sRow, "delete", 66, 2, function()
+        mkBtn(sRow, "Delete", 66, 2, function()
             if not (filesOk() and delfile) or pickSchema == "" then return end
             local p = SDIR .. "/" .. pickSchema .. ".json"
             if isfile(p) then pcall(delfile, p) end
@@ -19682,21 +19702,21 @@ registerConfig("custom", Koffee.Custom)
         end)
 
         -- decode / clear in the paste card
-        mkBtn(pRow, "decode", 84, 1, function()
+        mkBtn(pRow, "Decode", 84, 1, function()
             local bytes, err = parsePaste(box.Text)
-            if not bytes then header.Text = err or "nothing to decode"; return end
+            if not bytes then header.Text = err or "Nothing to decode"; return end
             saneMax = tonumber((saneBox.Text or ""):match("[%d%.]+")) or 50000
             curBytes = bytes
             inspect()
             refreshFields()
         end)
-        mkBtn(pRow, "auto fields", 92, 2, function()
+        mkBtn(pRow, "Auto Fields", 92, 2, function()
             if #lastGuesses == 0 then return end
             fields = {}
             for _, g in ipairs(lastGuesses) do fields[#fields + 1] = { off = g.off, type = g.type, name = g.name } end
             refreshFields()
         end)
-        mkBtn(pRow, "clear", 60, 3, function()
+        mkBtn(pRow, "Clear", 60, 3, function()
             box.Text = ""; curBytes = ""; inspect(); refreshFields()
         end)
 
@@ -19731,12 +19751,12 @@ registerConfig("custom", Koffee.Custom)
         }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
 
         local refresh
-        refresh = makeEditor(frame, tabConns, { text = "expand", fn = function()
+            refresh = makeEditor(frame, tabConns, { text = "Expand", fn = function()
             local vp = viewport()
             if not Shared.openModal then return end
             local m = Shared.openModal(math.max(620, vp.X - 80), math.max(460, vp.Y - 80))
             local mConns = {}
-            makeEditor(m.box, mConns, { text = "close", fn = function()
+            makeEditor(m.box, mConns, { text = "Close", fn = function()
                 for _, c in ipairs(mConns) do pcall(function() c:Disconnect() end) end
                 m.close()
                 refresh()          -- pick up whatever was edited in the big view
@@ -19776,7 +19796,7 @@ addTab("Configs", function(root)
     local card = panel(root, "Config Manager")
 
     local status = new("TextLabel", {
-        Text = "select a config, or type a name to create one",
+            Text = "Select a config, or type a name to create one",
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
@@ -19814,7 +19834,7 @@ addTab("Configs", function(root)
         Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
         SortOrder = Enum.SortOrder.LayoutOrder }) })
     local nameBox = new("TextBox", {
-        Text = "", PlaceholderText = "new config name...", ClearTextOnFocus = false,
+            Text = "", PlaceholderText = "New config name...", ClearTextOnFocus = false,
         FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
@@ -19828,46 +19848,46 @@ addTab("Configs", function(root)
     local function refreshAutoLabel()
         if not autoBtn then return end
         local isAuto = selectedName ~= nil and CIO.getAuto() == selectedName
-        autoBtn.Text = isAuto and "auto*" or "auto"
+            autoBtn.Text = isAuto and "Auto*" or "Auto"
         autoBtn:SetAttribute("accentBase", isAuto)
         autoBtn.TextColor3 = isAuto and Theme.Palette.Accent or Theme.Palette.TextMuted
     end
 
     local function needSel()
         if hasConfigs and selectedName then return true end
-        setStatus("no config selected", false)
+        setStatus("No config selected", false)
         return false
     end
 
     -- selected-config actions (read selectedName live)
-    mkBtn(actionRow, "load", 60, function()
+    mkBtn(actionRow, "Load", 60, function()
         if not needSel() then return end
         local ok, msg = CIO.load(selectedName)
-        if ok then setStatus("loaded: " .. tostring(selectedName), true)
-        else setStatus("load failed: " .. tostring(msg), false) end
+            if ok then setStatus("Loaded: " .. tostring(selectedName), true)
+            else setStatus("Load failed: " .. tostring(msg), false) end
     end, true).LayoutOrder = 1
-    mkBtn(actionRow, "overwrite", 90, function()
+    mkBtn(actionRow, "Overwrite", 90, function()
         if not needSel() then return end
         local ok, msg = CIO.save(selectedName)   -- same filename -> overwrites in place
-        if ok then setStatus("overwrote: " .. tostring(selectedName), true)
-        else setStatus("overwrite failed: " .. tostring(msg), false) end
+            if ok then setStatus("Overwrote: " .. tostring(selectedName), true)
+            else setStatus("Overwrite failed: " .. tostring(msg), false) end
     end).LayoutOrder = 2
-    mkBtn(actionRow, "rename", 72, function()
+    mkBtn(actionRow, "Rename", 72, function()
         if not needSel() then return end
         if not Shared.openTextPopup then return end
         local from = selectedName
         Shared.openTextPopup("rename config", from, "new name", function(txt)
             local ok, msg = CIO.rename(from, txt)
-            if not ok then setStatus("rename failed: " .. tostring(msg), false); return end
+            if not ok then setStatus("Rename failed: " .. tostring(msg), false); return end
             -- carry the auto-load marker across, or it points at a file that is gone
             if CIO.getAuto() == from then CIO.setAuto(msg) end
             CIO.cloudMetaRename(from, msg)   -- v0.29.0: keep the cloud link on the new name
             selectedName = msg
             rebuildManager()
-            setStatus("renamed: " .. from .. " -> " .. msg, true)
+            setStatus("Renamed: " .. from .. " -> " .. msg, true)
         end)
     end).LayoutOrder = 3
-    mkBtn(actionRow, "delete", 66, function()
+    mkBtn(actionRow, "Delete", 66, function()
         if not needSel() then return end
         local nm = selectedName
         -- v0.0.50 fix (two bugs):
@@ -19881,28 +19901,28 @@ addTab("Configs", function(root)
         if ok then CIO.cloudMetaDrop(nm) end   -- v0.29.0: drop the local cloud link (cloud entry stays)
         selectedName = nil
         rebuildManager()
-        if ok then setStatus("deleted: " .. nm, true)
-        else setStatus("delete failed: " .. nm, false) end
+            if ok then setStatus("Deleted: " .. nm, true)
+            else setStatus("Delete failed: " .. nm, false) end
     end).LayoutOrder = 4
-    autoBtn = mkBtn(actionRow, "auto", 58, function()
+    autoBtn = mkBtn(actionRow, "Auto", 58, function()
         if not needSel() then return end
-        if CIO.getAuto() == selectedName then CIO.setAuto(nil); setStatus("auto-load cleared", true)
-        else CIO.setAuto(selectedName); setStatus("auto-load: " .. selectedName, true) end
+            if CIO.getAuto() == selectedName then CIO.setAuto(nil); setStatus("Auto-load cleared", true)
+            else CIO.setAuto(selectedName); setStatus("Auto-load: " .. selectedName, true) end
         refreshAutoLabel()
     end)
     autoBtn.LayoutOrder = 5
 
     -- new-config actions
-    mkBtn(newRow, "create", 66, function()
+    mkBtn(newRow, "Create", 66, function()
         local ok, msg = CIO.save(nameBox.Text)
         if ok then
             selectedName = msg
             nameBox.Text = ""
             rebuildManager()
-            setStatus("created: " .. tostring(msg), true)
-        else setStatus("create failed: " .. tostring(msg), false) end
+            setStatus("Created: " .. tostring(msg), true)
+            else setStatus("Create failed: " .. tostring(msg), false) end
     end, true).LayoutOrder = 2
-    mkBtn(newRow, "refresh", 66, function() rebuildManager(); setStatus("refreshed", true) end).LayoutOrder = 3
+    mkBtn(newRow, "Refresh", 66, function() rebuildManager(); setStatus("Refreshed", true) end).LayoutOrder = 3
 
     -- (re)build the selector from disk, keeping the current selection valid.
     rebuildManager = function()
@@ -19917,7 +19937,7 @@ addTab("Configs", function(root)
 
         if currentDD then currentDD.destroy(); currentDD = nil end
         local options = hasConfigs and names or { "no saved configs" }
-        currentDD = dropdown(ddHolder, "saved configs", options,
+            currentDD = dropdown(ddHolder, "Saved Configs", options,
             selectedName or "no saved configs", function(v)
                 if hasConfigs then selectedName = v; refreshAutoLabel(); if refreshCloud then refreshCloud() end end
             end)
@@ -19931,7 +19951,7 @@ addTab("Configs", function(root)
     -- any 8-char id into a local config; delete/rename hit the cloud (owner only).
     local cloudCard = panel(root, "Cloud Configs")
     local cloudStatus = new("TextLabel", {
-        Text = "select a config above, then upload -- or paste an id to download",
+            Text = "Select a config above, then upload -- or paste an ID to download",
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
@@ -19950,7 +19970,7 @@ addTab("Configs", function(root)
         Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
         SortOrder = Enum.SortOrder.LayoutOrder }) })
     local idBox = new("TextBox", {
-        Text = "", PlaceholderText = "cloud id (8 chars)...", ClearTextOnFocus = false,
+            Text = "", PlaceholderText = "Cloud ID (8 chars)...", ClearTextOnFocus = false,
         FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
@@ -19974,27 +19994,27 @@ addTab("Configs", function(root)
     local busyCloud = false
     local function guard() if busyCloud then return false end busyCloud = true return true end
 
-    local dlBtn = mkBtn(dlRow, "download", 118, function()
+    local dlBtn = mkBtn(dlRow, "Download", 118, function()
         if not guard() then return end
         local id = idBox.Text
-        setCloud("downloading " .. tostring(id):upper():gsub("%s+", "") .. "...", true)
+            setCloud("Downloading " .. tostring(id):upper():gsub("%s+", "") .. "...", true)
         task.spawn(function()
             local name, err = CIO.cloudDownload(id)
             if name then
                 idBox.Text = ""
                 selectedName = name
                 rebuildManager()
-                setCloud('downloaded "' .. name .. '"', true)
+                setCloud('Downloaded "' .. name .. '"', true)
             else
-                setCloud("download failed: " .. tostring(err), false)
+                setCloud("Download failed: " .. tostring(err), false)
             end
             busyCloud = false
         end)
     end, true)
     dlBtn.LayoutOrder = 2
 
-    local upBtn = mkBtn(cloudRow, "upload", 100, function()
-        if not (hasConfigs and selectedName) then setCloud("no config selected", false); return end
+    local upBtn = mkBtn(cloudRow, "Upload", 100, function()
+            if not (hasConfigs and selectedName) then setCloud("No config selected", false); return end
         if not guard() then return end
         local nm = selectedName
         setCloud('uploading "' .. nm .. '"...', true)
@@ -20002,9 +20022,9 @@ addTab("Configs", function(root)
             local id, err = CIO.cloudUpload(nm)
             if id then
                 if setclipboard then pcall(setclipboard, id) end
-                setCloud("cloud id: " .. id .. (setclipboard and " (copied)" or ""), true)
+                setCloud("Cloud ID: " .. id .. (setclipboard and " (copied)" or ""), true)
             else
-                setCloud("upload failed: " .. tostring(err), false)
+                setCloud("Upload failed: " .. tostring(err), false)
             end
             rebuildManager()
             busyCloud = false
@@ -20012,38 +20032,38 @@ addTab("Configs", function(root)
     end, true)
     upBtn.LayoutOrder = 1
 
-    local copyBtn = mkBtn(cloudRow, "copy id", 78, function()
+    local copyBtn = mkBtn(cloudRow, "Copy ID", 78, function()
         local meta = selectedName and CIO.cloudMetaFor(selectedName)
-        if not (meta and meta.id) then setCloud("not cloud-linked", false); return end
-        if setclipboard and pcall(setclipboard, meta.id) then setCloud("copied " .. meta.id, true)
-        else setCloud("id: " .. meta.id .. " (no clipboard)", true) end
+            if not (meta and meta.id) then setCloud("Not cloud-linked", false); return end
+            if setclipboard and pcall(setclipboard, meta.id) then setCloud("Copied " .. meta.id, true)
+            else setCloud("ID: " .. meta.id .. " (no clipboard)", true) end
     end)
     copyBtn.LayoutOrder = 2
 
-    local delBtn = mkBtn(cloudRow2, "delete cloud", 108, function()
+    local delBtn = mkBtn(cloudRow2, "Delete Cloud", 108, function()
         if not (hasConfigs and selectedName) then return end
         if not guard() then return end
         local nm = selectedName
-        setCloud("deleting from cloud...", true)
+            setCloud("Deleting from cloud...", true)
         task.spawn(function()
             local ok, err = CIO.cloudDelete(nm)
-            if ok then setCloud("deleted from cloud (local kept)", true)
-            else setCloud("delete failed: " .. tostring(err), false) end
+            if ok then setCloud("Deleted from cloud (local kept)", true)
+            else setCloud("Delete failed: " .. tostring(err), false) end
             rebuildManager()
             busyCloud = false
         end)
     end)
     delBtn.LayoutOrder = 3
 
-    local rnBtn = mkBtn(cloudRow2, "rename cloud", 108, function()
+    local rnBtn = mkBtn(cloudRow2, "Rename Cloud", 108, function()
         if not (hasConfigs and selectedName) then return end
         if not guard() then return end
         local nm = selectedName
-        setCloud("renaming cloud entry...", true)
+            setCloud("Renaming cloud entry...", true)
         task.spawn(function()
             local ok, err = CIO.cloudRename(nm)   -- pushes the local name up to the cloud
             if ok then setCloud('cloud renamed to "' .. nm .. '"', true)
-            else setCloud("rename failed: " .. tostring(err), false) end
+            else setCloud("Rename failed: " .. tostring(err), false) end
             busyCloud = false
         end)
     end)
@@ -20054,7 +20074,7 @@ addTab("Configs", function(root)
         local has   = hasConfigs and selectedName ~= nil
         local meta  = has and CIO.cloudMetaFor(selectedName) or nil
         local owner = has and CIO.cloudIsOwner(selectedName)
-        upBtn.Text        = (meta and owner) and "overwrite" or "upload"
+        upBtn.Text        = (meta and owner) and "Overwrite" or "Upload"
         copyBtn.Visible   = meta ~= nil
         delBtn.Visible    = has and owner and meta ~= nil
         rnBtn.Visible     = has and owner and meta ~= nil
@@ -20196,7 +20216,7 @@ addTab("Extra", function(epanel)
         local pinBtn = new("TextButton", {
             Size = UDim2.new(0, 30, 0, 20), BackgroundColor3 = Theme.Palette.PanelElevated,
             BackgroundTransparency = 0.2, BorderSizePixel = 0, AutoButtonColor = false,
-            Text = pin.on and "on" or "off", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            Text = pin.on and "On" or "Off", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
             TextColor3 = pin.on and Theme.Palette.Accent or Theme.Palette.TextMuted,
             LayoutOrder = 1, ZIndex = 35, Parent = row,
         }, { pillCorner() })
@@ -20217,7 +20237,7 @@ addTab("Extra", function(epanel)
         })
         rows[id] = { cur = cur, entry = e }
         local function paintPin()
-            pinBtn.Text = pin.on and "on" or "off"
+            pinBtn.Text = pin.on and "On" or "Off"
             pinBtn.TextColor3 = pin.on and Theme.Palette.Accent or Theme.Palette.TextMuted
         end
         local function snapOrig()
@@ -20241,7 +20261,7 @@ addTab("Extra", function(epanel)
             local flip = new("TextButton", {
                 Size = UDim2.new(0, 80, 0, 20), BackgroundColor3 = Theme.Palette.PanelElevated,
                 BackgroundTransparency = 0.2, BorderSizePixel = 0, AutoButtonColor = false,
-                Text = pin.want ~= nil and tostring(pin.want) or "set?",
+                Text = pin.want ~= nil and tostring(pin.want) or "Set?",
                 FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
                 TextColor3 = Theme.Palette.Text, LayoutOrder = 4, ZIndex = 35, Parent = row,
             }, { pillCorner() })
@@ -20257,7 +20277,7 @@ addTab("Extra", function(epanel)
             local box = new("TextBox", {
                 Size = UDim2.new(0, 80, 0, 20),
                 Text = pin.want ~= nil and tostring(pin.want) or "",
-                PlaceholderText = kind == "number" and "num" or "text",
+                PlaceholderText = kind == "number" and "Num" or "Text",
                 ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
                 TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
                 BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
@@ -20302,8 +20322,8 @@ addTab("Extra", function(epanel)
         rows = {}
         local root = resolveRoot()
         if not root then
-            srcLabel.Text = current.mode == "none" and "hold a gun, or pick an instance"
-                or "source gone -- rescan"
+            srcLabel.Text = current.mode == "none" and "Hold a gun, or pick an instance"
+                or "Source gone -- rescan"
             return
         end
         srcLabel.Text = (current.mode == "tool" and "tool: " or "instance: ") .. root.Name
@@ -20355,7 +20375,7 @@ addTab("Extra", function(epanel)
             end
         end
         if #common + #rest == 0 then
-            srcLabel.Text = root.Name .. " -- no tunable values"
+            srcLabel.Text = root.Name .. " -- No tunable values"
             return
         end
         if #common > 0 then sectionLbl(listBox, "common") emit(common) end
@@ -20377,14 +20397,14 @@ addTab("Extra", function(epanel)
         b.MouseButton1Click:Connect(fn)
         return b
     end
-    hdrBtn("held tool", 1, function()
+    hdrBtn("Held Tool", 1, function()
         local ch = LocalPlayer and LocalPlayer.Character
         local tool = ch and ch:FindFirstChildOfClass("Tool")
         current = { mode = "tool", toolName = tool and tool.Name or nil,
                     inst = nil, path = "" }
         scan()
     end)
-    hdrBtn("pick...", 2, function()
+    hdrBtn("Pick...", 2, function()
         if not Shared.openInstancePicker then return end
         Shared.openInstancePicker(function(inst, path)
             if inst then
@@ -20393,8 +20413,8 @@ addTab("Extra", function(epanel)
             end
         end, { title = "pick a gun or template" })
     end)
-    hdrBtn("rescan", 3, function() scan() end)
-    hdrBtn("restore all", 4, function()
+    hdrBtn("Rescan", 3, function() scan() end)
+    hdrBtn("Restore All", 4, function()
         for id, pin in pairs(pins) do
             unhookPin(pin)
             if pin.orig ~= nil and rows[id] then
@@ -20405,7 +20425,7 @@ addTab("Extra", function(epanel)
         scan()
     end)
     srcLabel = new("TextLabel", {
-        Text = "hold a gun, or pick an instance", FontFace = Theme.Fonts.Regular,
+        Text = "Hold a gun, or pick an instance", FontFace = Theme.Fonts.Regular,
         TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14),
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -20437,7 +20457,7 @@ addTab("Extra", function(epanel)
             if r then
                 local v = readEntry(r.entry)
                 if v == nil then
-                    r.cur.Text = "gone"
+                    r.cur.Text = "Gone"
                 else
                     r.cur.Text = fmt(v)
                     if pin.on then
@@ -20600,7 +20620,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
         local pill = pendingRebind.pill
         if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
             Keybinds[pendingRebind.moduleId] = nil
-            pill.Text = "no keybind"
+            pill.Text = "No Keybind"
             tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
             pendingRebind = nil
             return
