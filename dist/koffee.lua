@@ -1,7 +1,7 @@
--- koffee v0.49.0
+-- koffee v0.50.0
 
 local Koffee = {}
-Koffee.Version = "0.49.0"
+Koffee.Version = "0.50.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9577,6 +9577,8 @@ local Combat = {
         Snaplines     = false,                            -- one snapline toggle at a time (aim XOR silent)
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
         Smooth        = { Enabled = false, X = 1.0, Y = 1.0 },
+        -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
+        Legit         = { Jitter = 0, Overshoot = 0, Reaction = 0 },
         _target       = nil,
         _rageLock     = nil,   -- locked ragebot victim (held for the key duration)
     },
@@ -9592,6 +9594,12 @@ local Combat = {
         HitboxMul     = 1.0,
         Delay         = 1,        -- ms
         Release       = 10,       -- ms
+        -- v0.50.0: trigger range cap (ray + screen paths), strict head hits,
+        -- and humanized pre-fire timing. Defaults preserve old behavior.
+        Distance      = 2000,     -- studs
+        HeadOnly      = false,
+        Reaction      = 0,        -- ms base, added to Delay
+        Spread        = 0,        -- ms extra random, added to Delay
         TeamCheck     = false,
         VisibleCheck  = false,
     },
@@ -9618,6 +9626,8 @@ local Combat = {
         Wallbang      = false,
         Snaplines     = false,
         Predict       = { Enabled = false, X = 1.0, Y = 1.0 },
+        -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
+        Legit         = { Jitter = 0, HitChance = 100 },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default: fire-read is always
         -- on. The ~90% of games that don't read mouse.Hit build their shot from
         -- Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON
@@ -9861,7 +9871,19 @@ local Combat = {
                                 if pass then
                                     local vis = not (cfg.VisibleCheck and occluded(char, camPos, part.Position))
                                     if vis then
-                                        local score = (cfg.Priority == "Nearest" or cfg.BehindCam) and worldDist or crossDist
+                                        -- v0.50.0 target priority. Crosshair scores screen
+                                        -- distance to the ring center; Distance scores world
+                                        -- distance; Health scores lowest health fraction first.
+                                        -- "Nearest" is the pre-rename Distance value.
+                                        local pri = cfg.Priority
+                                        local score
+                                        if pri == "Nearest" or pri == "Distance" or cfg.BehindCam then
+                                            score = worldDist
+                                        elseif pri == "Health" then
+                                            score = hum.Health / math.max(hum.MaxHealth or 100, 1)
+                                        else
+                                            score = crossDist
+                                        end
                                         if score < bestScore then
                                             bestScore, best, bestPart = score, plr, part
                                         end
@@ -10821,6 +10843,38 @@ local Combat = {
         if not (plr and part) then return end
         local tpos = predicted(plr, part, Combat.Aim.Predict)
 
+        -- v0.50.0 legit kit. Reaction holds fire on fresh locks; jitter offsets
+        -- the aim point by true angle (range independent); overshoot starts off
+        -- in a fixed random direction and glides on. All paths share tpos.
+        local LG = Combat.Aim.Legit
+        local now = os.clock()
+        if LG._acqPlr ~= plr then
+            LG._acqPlr, LG._acqAt = plr, now
+            local a = math.random() * math.pi * 2
+            LG._osPlr, LG._osX, LG._osY, LG._osAt = plr, math.cos(a), math.sin(a), now
+        end
+        if (LG.Reaction or 0) > 0 and (now - (LG._acqAt or now)) * 1000 < LG.Reaction then return end
+        if ((LG.Jitter or 0) > 0 or (LG.Overshoot or 0) > 0) and cam then
+            local toT = tpos - cam.CFrame.Position
+            local dist = toT.Magnitude
+            if dist > 1e-3 then
+                local cf = cam.CFrame
+                local ox, oy = 0, 0
+                if (LG.Jitter or 0) > 0 then
+                    local m = dist * math.tan(math.rad(LG.Jitter))
+                    ox = ox + (math.random() * 2 - 1) * m
+                    oy = oy + (math.random() * 2 - 1) * m
+                end
+                if (LG.Overshoot or 0) > 0 and LG._osPlr == plr then
+                    local dk = math.exp(-(now - (LG._osAt or now)) * 4)
+                        * dist * math.tan(math.rad(LG.Overshoot))
+                    ox = ox + (LG._osX or 0) * dk
+                    oy = oy + (LG._osY or 0) * dk
+                end
+                tpos = tpos + cf.RightVector * ox + cf.UpVector * oy
+            end
+        end
+
         -- sensitivity (base pull) + optional per-axis smoothness (higher = slower)
         -- v0.0.86 sensitivity curve reshape. Was linear 0.01..1: 0.08 was already
         -- fast because 8% per frame converges to target in a few frames. Now sens^1.5
@@ -11107,15 +11161,20 @@ local Combat = {
         local vp = cam.ViewportSize
         local cx, cy = vp.X * 0.5, vp.Y * 0.5
         trigParams.FilterDescendantsInstances = { LocalPlayer.Character }
+        -- v0.50.0: ray length follows the Distance cap; Head Only accepts
+        -- exact head hits. healthOk skips spawn-shielded targets like the rest.
+        local rayLen = Combat.Trigger.Distance or 2000
+        local headOnly = Combat.Trigger.HeadOnly
         local function castAt(px, py)
             local ray = cam:ViewportPointToRay(px, py)
-            local res = Workspace:Raycast(ray.Origin, ray.Direction * 2000, trigParams)
+            local res = Workspace:Raycast(ray.Origin, ray.Direction * rayLen, trigParams)
             if not (res and res.Instance) then return nil end
+            if headOnly and res.Instance.Name ~= "Head" then return nil end
             local model = res.Instance:FindFirstAncestorWhichIsA("Model")
             local plr = model and Players:GetPlayerFromCharacter(model)
             if not plr or plr == LocalPlayer then return nil end
             local hum = model:FindFirstChildOfClass("Humanoid")
-            if not (hum and hum.Health > 0) then return nil end
+            if not healthOk(model, hum) then return nil end
             if Combat.Trigger.TeamCheck and isTeammate(plr) then return nil end
             if Shared.IgnoreFriends and isFriend(plr) then return nil end
             return plr
@@ -11148,19 +11207,24 @@ local Combat = {
         local mul = math.max(Combat.Trigger.HitboxMul, 1)
         local r = 5 * mul
         local r2 = r * r
+        -- v0.50.0: Head Only checks the head alone; everything here also
+        -- honours the Distance cap and skips spawn-shielded targets.
+        local parts = Combat.Trigger.HeadOnly and { "Head" } or TRIG_PARTS
+        local maxD = Combat.Trigger.Distance or math.huge
+        local camPos = cam.CFrame.Position
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
                 local char = plr.Character
                 if char then
                     local hum = char:FindFirstChildOfClass("Humanoid")
-                    if hum and hum.Health > 0
+                    if healthOk(char, hum)
                        and not (Combat.Trigger.TeamCheck and isTeammate(plr))
                        and not (Shared.IgnoreFriends and isFriend(plr)) then
-                        for _, name in ipairs(TRIG_PARTS) do
+                        for _, name in ipairs(parts) do
                             local part = char:FindFirstChild(name)
                             if part then
                                 local sp = cam:WorldToViewportPoint(part.Position)
-                                if sp.Z > 0 then
+                                if sp.Z > 0 and (part.Position - camPos).Magnitude <= maxD then
                                     local dx, dy = sp.X - cx, sp.Y - cy
                                     if (dx * dx + dy * dy) <= r2 then return plr end
                                 end
@@ -11197,15 +11261,18 @@ local Combat = {
         return res == nil   -- nil = ray reached target unobstructed
     end
     local function triggerShouldFire()
+        -- v0.50.0: Head Only scopes the silent link to head hits as well.
+        local headOk = (not Combat.Trigger.HeadOnly)
+            or (silentTarget and silentTarget.Name == "Head")
         if Combat.Trigger.VisibleCheck then
             -- silent link only fires when target is actually visible
-            if silentTarget and silentTarget.Parent and Combat.Silent.Enabled and silentHasLOS() then
+            if headOk and silentTarget and silentTarget.Parent and Combat.Silent.Enabled and silentHasLOS() then
                 return true
             end
             return crosshairEnemy() ~= nil
         end
         -- through-walls mode: any locked silent target fires
-        if silentTarget and silentTarget.Parent and Combat.Silent.Enabled then return true end
+        if headOk and silentTarget and silentTarget.Parent and Combat.Silent.Enabled then return true end
         return crosshairEnemyNoOcclusion() ~= nil
     end
     RunService.Heartbeat:Connect(function()
@@ -11216,9 +11283,14 @@ local Combat = {
         if not triggerShouldFire() then return end
         trigBusy = true
         task.spawn(function()
-            if Combat.Trigger.Delay > 0 then task.wait(Combat.Trigger.Delay / 1000) end
+            -- v0.50.0: humanized timing (Delay + Reaction + random Spread) and
+            -- a guarded click: a throwing clickMouse used to wedge trigBusy on.
+            local waitMs = Combat.Trigger.Delay
+                + (Combat.Trigger.Reaction or 0)
+                + math.random() * (Combat.Trigger.Spread or 0)
+            if waitMs > 0 then task.wait(waitMs / 1000) end
             -- re-confirm right before firing (silent target might have died / crosshair moved)
-            if Combat.Trigger.Enabled and triggerShouldFire() then clickMouse() end
+            if Combat.Trigger.Enabled and triggerShouldFire() then pcall(clickMouse) end
             if Combat.Trigger.Release > 0 then task.wait(Combat.Trigger.Release / 1000) end
             trigBusy = false
         end)
@@ -11546,9 +11618,26 @@ local Combat = {
             if plr then Combat.Silent._target = plr end
         end
         if plr and part then
+            -- v0.50.0 Hit Chance. A failed roll fires clean this frame: clear
+            -- the redirect with no grace window, so the shot truly misses.
+            local hc = Combat.Silent.Legit.HitChance or 100
+            if hc < 100 and math.random(100) > hc then
+                silentTarget = nil; silentPos = nil
+                SR.camPos = nil; SR.screen = nil; SR.camLook = nil; SR.rootPos = nil
+                Combat.Silent._lastGoodAt = nil
+                return
+            end
             silentTarget = part
             -- prediction shifts the redirect point for lead; the hooks read silentPos
             silentPos = predicted(plr, part, Combat.Silent.Predict)
+            -- v0.50.0 silent jitter: scatter the redirect point by up to N studs.
+            local sj = Combat.Silent.Legit.Jitter or 0
+            if sj > 0 then
+                silentPos = silentPos + Vector3.new(
+                    (math.random() * 2 - 1) * sj,
+                    (math.random() * 2 - 1) * sj,
+                    (math.random() * 2 - 1) * sj)
+            end
             -- v0.0.39: cache the real camera + target's screen point so the fire-read
             -- resolvers never re-read Camera.* inside the __index hook (recursion).
             local cam = Workspace.CurrentCamera
@@ -11989,7 +12078,7 @@ local Combat = {
 
     -- shared FOV control set: built in both the left (aimbot -> Aim.FOV) and
     -- right (silent -> Silent.FOV) sub-tabs, each bound to its own config.
-    local function buildFovTab(parent, F)
+    local function buildFovTab(parent, F, cfg)
         local enRow = configCheckbox(parent, "Enabled", F.Enabled, function(v)
             F.Enabled = v
             syncFovModule()   -- keep the single "FOV" arraylist marker + x2 detail in sync
@@ -12034,6 +12123,10 @@ local Combat = {
         -- on them" case: and 20px was already a generous cone at close range.
         slider(parent, "Size", 1, 500, F.Size, 0, function(v) F.Size = v end)
         dropdown(parent, "Origin", { "Center", "Mouse" }, F.Origin, function(v) F.Origin = v end)
+        -- v0.50.0 target priority. Lives in the FOV tab but scores regardless
+        -- of the ring: Crosshair picks nearest the center, Distance the nearest
+        -- player in the world, Health the weakest player by health fraction.
+        dropdown(parent, "Target Priority", { "Crosshair", "Distance", "Health" }, cfg.Priority, function(v) cfg.Priority = v end)
         -- v0.5.0: Follow Target: ring slides toward the current target's screen
         -- position. Right-click for Smoothness (0=snap, 0.98=very slow). Targeting
         -- gate follows the same center so the picker respects what the user sees.
@@ -12132,7 +12225,7 @@ local Combat = {
 
         -- :: LEFT COLUMN ::
         local leftCard = panel(leftCol)
-        local L = subTabs(leftCard, { "Aimbot", "Prediction", "Smoothness", "FOV" })
+        local L = subTabs(leftCard, { "Aimbot", "Prediction", "Smoothness", "Legit", "FOV" })
 
         -- Aimbot
         local aimRow = moduleCheckbox(L.Aimbot, "Enabled", "aimbot")
@@ -12175,8 +12268,15 @@ local Combat = {
         slider(L.Smoothness, "Smoothness X", 0.1, 20, Combat.Aim.Smooth.X, 1, function(v) Combat.Aim.Smooth.X = v end)
         slider(L.Smoothness, "Smoothness Y", 0.1, 20, Combat.Aim.Smooth.Y, 1, function(v) Combat.Aim.Smooth.Y = v end)
 
+        -- v0.50.0 legit kit: human frailty as sliders. Jitter scatters the aim
+        -- point by true angle; Overshoot starts past the target and glides on;
+        -- Reaction holds fire on fresh locks. All zero by default.
+        slider(L.Legit, "Jitter (deg)", 0, 5, Combat.Aim.Legit.Jitter, 1, function(v) Combat.Aim.Legit.Jitter = v end)
+        slider(L.Legit, "Overshoot (deg)", 0, 10, Combat.Aim.Legit.Overshoot, 1, function(v) Combat.Aim.Legit.Overshoot = v end)
+        slider(L.Legit, "Reaction (ms)", 0, 500, Combat.Aim.Legit.Reaction, 0, function(v) Combat.Aim.Legit.Reaction = v end)
+
         -- FOV (shared control set)
-        buildFovTab(L.FOV, Combat.Aim.FOV)
+        buildFovTab(L.FOV, Combat.Aim.FOV, Combat.Aim)
 
         -- Misc
         local miscCard = panel(leftCol, "Misc")
@@ -12416,7 +12516,7 @@ local Combat = {
 
         -- :: RIGHT COLUMN ::
         local rightCard = panel(rightCol)
-        local R = subTabs(rightCard, { "Silent Aim", "Prediction", "FOV" })
+        local R = subTabs(rightCard, { "Silent Aim", "Prediction", "Legit", "FOV" })
 
         -- Silent Aim
         local sRow = moduleCheckbox(R["Silent Aim"], "Enabled", "silentaim")
@@ -12450,8 +12550,13 @@ local Combat = {
         slider(R.Prediction, "X (Division)", 0.1, 10, Combat.Silent.Predict.X, 2, function(v) Combat.Silent.Predict.X = v end)
         slider(R.Prediction, "Y (Division)", 0.1, 10, Combat.Silent.Predict.Y, 2, function(v) Combat.Silent.Predict.Y = v end)
 
+        -- v0.50.0 legit kit for silent. Jitter scatters the redirect point in
+        -- studs; Hit Chance fires a clean shot on failed rolls. Both calm.
+        slider(R.Legit, "Jitter (studs)", 0, 5, Combat.Silent.Legit.Jitter, 1, function(v) Combat.Silent.Legit.Jitter = v end)
+        slider(R.Legit, "Hit Chance (%)", 1, 100, Combat.Silent.Legit.HitChance, 0, function(v) Combat.Silent.Legit.HitChance = v end)
+
         -- FOV (same shared control set as the aimbot side)
-        buildFovTab(R.FOV, Combat.Silent.FOV)
+        buildFovTab(R.FOV, Combat.Silent.FOV, Combat.Silent)
 
         -- Trigger Bot
         local trigCard = panel(rightCol, "Trigger Bot")
@@ -12463,6 +12568,12 @@ local Combat = {
         slider(trigCard, "Hitbox Mul", 1, 10, Combat.Trigger.HitboxMul, 2, function(v) Combat.Trigger.HitboxMul = v end)
         slider(trigCard, "Delay (ms)", 0, 500, Combat.Trigger.Delay, 0, function(v) Combat.Trigger.Delay = v end)
         slider(trigCard, "Release (ms)", 0, 500, Combat.Trigger.Release, 0, function(v) Combat.Trigger.Release = v end)
+        -- v0.50.0 trigger range + discipline. Distance caps both fire paths;
+        -- Head Only restricts to exact head hits; Reaction humanizes timing.
+        slider(trigCard, "Distance", 50, 2000, Combat.Trigger.Distance, 0, function(v) Combat.Trigger.Distance = v end)
+        configCheckbox(trigCard, "Head Only", Combat.Trigger.HeadOnly, function(v) Combat.Trigger.HeadOnly = v end)
+        slider(trigCard, "Reaction (ms)", 0, 500, Combat.Trigger.Reaction, 0, function(v) Combat.Trigger.Reaction = v end)
+        slider(trigCard, "Reaction Spread (ms)", 0, 500, Combat.Trigger.Spread, 0, function(v) Combat.Trigger.Spread = v end)
     end)
     -- v0.1.0: the Options tab (built in this file's shared scope, outside this
     -- IIFE) reads Combat state + the sound instances during unload; hand them up
