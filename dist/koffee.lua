@@ -1,7 +1,7 @@
--- koffee v0.48.0
+-- koffee v0.48.1
 
 local Koffee = {}
-Koffee.Version = "0.48.0"
+Koffee.Version = "0.48.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1213,17 +1213,17 @@ end
 local function lineGradient()
     return new("UIGradient", { Name = "KGrad", Enabled = false })
 end
--- v0.48.0: forward-declared so tween/popFx/pulse/popIn (defined below, long
--- before KoffeeOptions exists) can read the animation settings at runtime.
-local Anim
+-- v0.48.0: Anim lives on the Koffee table, NOT as a chunk local -- the main
+-- chunk rides Luau's 200-local ceiling, so this costs zero registers. Nil
+-- until assigned below (after KoffeeOptions); tween/popFx read it at runtime.
 local function tween(inst, info, props)
     -- v0.48.0: every UI tween flows through the Anim master switch + speed.
     -- Off means snap to the final values instantly (never a half-faded widget).
-    if Anim and not Anim.enabled() then
+    if Koffee.Anim and not Koffee.Anim.enabled() then
         for k, v in pairs(props) do pcall(function() inst[k] = v end) end
-        return Anim.NO_TWEEN
+        return Koffee.Anim.NO_TWEEN
     end
-    local t = TweenService:Create(inst, (Anim and Anim.info(info)) or info, props)
+    local t = TweenService:Create(inst, (Koffee.Anim and Koffee.Anim.info(info)) or info, props)
     t:Play()
     return t
 end
@@ -1254,7 +1254,7 @@ local function popFx(btn)
     local sc = uScaleOf(btn)
     local function gate()
         -- press animations off mid-squash must still release the scale
-        if not (Anim and Anim.spot("AnimPress")) then sc.Scale = 1; return false end
+        if not (Koffee.Anim and Koffee.Anim.spot("AnimPress")) then sc.Scale = 1; return false end
         return true
     end
     btn.MouseButton1Down:Connect(function()
@@ -1271,7 +1271,7 @@ end
 -- entrance: fade + grow-in (cards, tab panels, popups).
 -- one-shot tick: to `to` then settle back to 1.
 local function pulse(inst, to)
-    if Anim and not Anim.enabled() then return end
+    if Koffee.Anim and not Koffee.Anim.enabled() then return end
     local sc = uScaleOf(inst)
     sc.Scale = to
     tween(sc, Theme.Animation.Fast, { Scale = 1 })
@@ -1279,10 +1279,11 @@ end
 
 -- v0.48.0: pop-in entrance for things that appear on user action (new graph
 -- nodes, scanned rows, cards). Scale-only so UIListLayout never fights it.
+-- A Koffee field, not a chunk local (register ceiling -- see Anim above).
 -- Call sites gate on their own Anim spot; this only honours the master.
-local function popIn(inst, from)
+function Koffee.popIn(inst, from)
     local sc = uScaleOf(inst)
-    if not (Anim and Anim.enabled()) then sc.Scale = 1; return end
+    if not (Koffee.Anim and Koffee.Anim.enabled()) then sc.Scale = 1; return end
     sc.Scale = from or 0.92
     tween(sc, Theme.Animation.Menu, { Scale = 1 })
 end
@@ -1926,30 +1927,30 @@ applyArrayLineColor()
 -- v0.48.0: CENTRAL ANIMATION SYSTEM. Master switch + speed + one flag per
 -- surface. tween() honours enabled/speed everywhere; features gate their own
 -- choreography on spot() so "off" snaps. All reads live off KoffeeOptions.
-Anim = {
+Koffee.Anim = {
     NO_TWEEN = { Cancel = function() end, Completed = { Connect = function() end } },
 }
-function Anim.enabled()
+function Koffee.Anim.enabled()
     return KoffeeOptions == nil or KoffeeOptions.AnimOn ~= false
 end
-function Anim.spot(key)
-    return Anim.enabled() and (KoffeeOptions == nil or KoffeeOptions[key] ~= false)
+function Koffee.Anim.spot(key)
+    return Koffee.Anim.enabled() and (KoffeeOptions == nil or KoffeeOptions[key] ~= false)
 end
-function Anim.speed()
+function Koffee.Anim.speed()
     local s = tonumber(KoffeeOptions and KoffeeOptions.AnimSpeed) or 1
     if s <= 0 then s = 1 end
     return math.clamp(s, 0.25, 4)
 end
-function Anim.info(base)
+function Koffee.Anim.info(base)
     -- scale a TweenInfo by the speed multiplier, preserving its curve
-    if Anim.speed() == 1 then return base end
-    return TweenInfo.new(math.max(0.01, base.Time / Anim.speed()),
+    if Koffee.Anim.speed() == 1 then return base end
+    return TweenInfo.new(math.max(0.01, base.Time / Koffee.Anim.speed()),
         base.EasingStyle, base.EasingDirection,
         base.RepeatCount, base.Reverses, base.DelayTime)
 end
-function Anim.wait(base)
+function Koffee.Anim.wait(base)
     -- hide/destroy delays that trail a tween must shrink with the tween
-    return base / Anim.speed()
+    return base / Koffee.Anim.speed()
 end
 
 local nextLayoutOrder = 0
@@ -2080,7 +2081,7 @@ local function addToActiveArray(mod)
     local arrGrad = new("UIGradient", { Enabled = false, Parent = label })
     arrGrad.Name = "KArrayGrad"
     -- v0.48.0: row entrances honour Animations > Lists; off shows at rest.
-    if Anim.spot("AnimLists") then
+    if Koffee.Anim.spot("AnimLists") then
         tween(label, ROW.enter, {
             Position = UDim2.new(0, 0, 0, 0),
             TextTransparency = 0,
@@ -2142,7 +2143,7 @@ local function removeFromActiveArray(mod)
         mod._detailConn = nil
     end
     -- v0.48.0: row exits honour Animations > Lists; off destroys immediately.
-    if not Anim.spot("AnimLists") then
+    if not Koffee.Anim.spot("AnimLists") then
         if mod._destroyThread then pcall(task.cancel, mod._destroyThread) end
         mod._destroyThread = nil
         if w and w.Parent then w:Destroy() end
@@ -2160,7 +2161,7 @@ local function removeFromActiveArray(mod)
     -- can cancel it and prevent the "new row destroyed by old scheduled kill"
     -- bug.
     if mod._destroyThread then pcall(task.cancel, mod._destroyThread) end
-    mod._destroyThread = task.delay(Anim.wait(0.14), function()
+    mod._destroyThread = task.delay(Koffee.Anim.wait(0.14), function()
         mod._destroyThread = nil
         if w and w.Parent then w:Destroy() end
     end)
@@ -2452,7 +2453,7 @@ end
 
 local function movePillTo(button, snap)
     -- v0.48.0: pill motion honours Animations > Tab Switching; off snaps.
-    if pillFirstShow or snap or not Anim.spot("AnimTabs") then pillSnap(button); return end
+    if pillFirstShow or snap or not Koffee.Anim.spot("AnimTabs") then pillSnap(button); return end
     if pillT1 then pillT1:Cancel(); pillT1 = nil end
     if pillT2 then pillT2:Cancel(); pillT2 = nil end
     local targetPos, targetSize = pillRectFor(button)
@@ -2469,7 +2470,7 @@ local function movePillTo(button, snap)
     local ox   = targetPos.X.Offset - (ow - w) * 0.5
     local y    = targetPos.Y.Offset
     local h    = targetSize.Y.Offset
-    pillT1 = TweenService:Create(pill, Anim.info(PILL_STRETCH), {
+    pillT1 = TweenService:Create(pill, Koffee.Anim.info(PILL_STRETCH), {
         Position = UDim2.new(0, ox, 0, y),
         Size     = UDim2.new(0, ow, 0, h),
     })
@@ -2478,7 +2479,7 @@ local function movePillTo(button, snap)
         if gen ~= pillGen then return end   -- superseded -- the newer switch owns everything
         if state ~= Enum.PlaybackState.Completed then return end
         if pillT2 then pillT2:Cancel() end
-        pillT2 = TweenService:Create(pill, Anim.info(PILL_CONTRACT), {
+        pillT2 = TweenService:Create(pill, Koffee.Anim.info(PILL_CONTRACT), {
             Position = targetPos,
             Size     = targetSize,
         })
@@ -2508,7 +2509,7 @@ local function selectTab(name)
     activeTab = name
     -- v0.48.0: tab switches honour Animations > Tab Switching; off snaps the
     -- colours, panels and pill straight to their resting states.
-    local tabsAnim = Anim.spot("AnimTabs")
+    local tabsAnim = Koffee.Anim.spot("AnimTabs")
     for tabName, tab in pairs(tabs) do
         local isActive = tabName == name
         if tabsAnim then
@@ -2539,7 +2540,7 @@ local function selectTab(name)
         else
             if tabsAnim then
                 tween(w, Theme.Animation.Slow, { GroupTransparency = 1 })
-                task.delay(Anim.wait(0.35), function()
+                task.delay(Koffee.Anim.wait(0.35), function()
                     if activeTab ~= tabName then w.Visible = false end
                 end)
             else
@@ -2868,14 +2869,14 @@ local function attachHover(row, hoverBtn)
     hoverBtn.MouseEnter:Connect(function()
         -- v0.48.0: hover flag is read live so the Options toggle takes effect
         -- without a rebuild; off means snap straight to the resting state.
-        if Anim and Anim.spot("AnimHover") then
+        if Koffee.Anim and Koffee.Anim.spot("AnimHover") then
             tween(bg, Theme.Animation.Fast, { BackgroundTransparency = 0.85 })
         else
             bg.BackgroundTransparency = 0.85
         end
     end)
     hoverBtn.MouseLeave:Connect(function()
-        if Anim and Anim.spot("AnimHover") then
+        if Koffee.Anim and Koffee.Anim.spot("AnimHover") then
             tween(bg, Theme.Animation.Fast, { BackgroundTransparency = 1 })
         else
             bg.BackgroundTransparency = 1
@@ -2885,18 +2886,19 @@ end
 
 -- v0.48.0: button background hover -- the pill behind a button eases in on
 -- enter and back out on leave. Text-only hover was the gap; this closes it.
-local function attachBtnHover(b, hovered, resting)
+-- A Koffee field, not a chunk local (register ceiling -- see Anim above).
+function Koffee.attachBtnHover(b, hovered, resting)
     hovered = hovered == nil and 0 or hovered
     resting = resting == nil and 0.2 or resting
     b.MouseEnter:Connect(function()
-        if Anim and Anim.spot("AnimHover") then
+        if Koffee.Anim and Koffee.Anim.spot("AnimHover") then
             tween(b, Theme.Animation.Fast, { BackgroundTransparency = hovered })
         else
             b.BackgroundTransparency = hovered
         end
     end)
     b.MouseLeave:Connect(function()
-        if Anim and Anim.spot("AnimHover") then
+        if Koffee.Anim and Koffee.Anim.spot("AnimHover") then
             tween(b, Theme.Animation.Fast, { BackgroundTransparency = resting })
         else
             b.BackgroundTransparency = resting
@@ -2982,7 +2984,7 @@ local function checkboxVisual(parent, label, initialOn)
         if activeSize then activeSize:Cancel(); activeSize = nil end
         if activeFade then activeFade:Cancel(); activeFade = nil end
         -- v0.48.0: Toggles off snaps the fill + label straight to rest.
-        local togAnim = Anim.spot("AnimToggles")
+        local togAnim = Koffee.Anim.spot("AnimToggles")
         if state then
             -- OFF -> ON: grow OUTWARD from center. Snap to 0 first (in case a
             -- prior tween was mid-shrink) and pop opacity to opaque immediately
@@ -3006,7 +3008,7 @@ local function checkboxVisual(parent, label, initialOn)
                 activeSize = tween(innerFill, CB_SHRINK, {
                     Size = UDim2.new(0, 0, 0, 0),
                 })
-                task.delay(Anim.wait(0.10), function()
+                task.delay(Koffee.Anim.wait(0.10), function()
                     if mySeq ~= seq then return end   -- superseded by newer click
                     activeFade = tween(innerFill, CB_FADE, { BackgroundTransparency = 1 })
                 end)
@@ -3492,7 +3494,7 @@ local function openColorPicker(swatchInstance, initialColor, onChange, opts)
     ColorPicker.root.Position = UDim2.new(0, x, 0, y - 4)
     ColorPicker.root.Visible = true
     -- v0.48.0: picker open honours Popups; off shows at rest instantly.
-    if Anim.spot("AnimPopups") then
+    if Koffee.Anim.spot("AnimPopups") then
         ColorPicker.root.BackgroundTransparency = 1
         local rsc = uScaleOf(ColorPicker.root)   -- v0.0.98: picker grows open
         rsc.Scale = 0.94
@@ -3518,11 +3520,11 @@ local function closeColorPicker()
         pcall(task.cancel, ColorPicker.closeTask)
     end
     -- v0.48.0: Popups off hides instantly instead of fading out.
-    if Anim.spot("AnimPopups") then
+    if Koffee.Anim.spot("AnimPopups") then
         tween(ColorPicker.root, Theme.Animation.Menu, {
             BackgroundTransparency = 1,
         })
-        ColorPicker.closeTask = task.delay(Anim.wait(0.22), function()
+        ColorPicker.closeTask = task.delay(Koffee.Anim.wait(0.22), function()
             ColorPicker.closeTask = nil
             if ColorPicker.root then ColorPicker.root.Visible = false end
         end)
@@ -3790,7 +3792,7 @@ local function dropdown(parent, label, options, initial, onChange)
         if positionConn then positionConn:Disconnect(); positionConn = nil end
         -- v0.48.0: dropdowns honour Animations > Popups; off (or forced
         -- instant, e.g. window close) hides immediately instead of fading.
-        if instant or not Anim.spot("AnimPopups") then
+        if instant or not Koffee.Anim.spot("AnimPopups") then
             caretRoot.Rotation = 0
             list.Visible = false
         else
@@ -3798,7 +3800,7 @@ local function dropdown(parent, label, options, initial, onChange)
             tween(list, Theme.Animation.Menu, {
                 BackgroundTransparency = 1,
             })
-            task.delay(Anim.wait(0.22), function()
+            task.delay(Koffee.Anim.wait(0.22), function()
                 if not isOpen then list.Visible = false end
             end)
         end
@@ -3808,7 +3810,7 @@ local function dropdown(parent, label, options, initial, onChange)
             if child:IsA("TextButton") then
                 for _, sub in ipairs(child:GetChildren()) do
                     if sub:IsA("TextLabel") then
-                        if instant or not Anim.spot("AnimPopups") then
+                        if instant or not Koffee.Anim.spot("AnimPopups") then
                             sub.TextTransparency = 1
                         else
                             tween(sub, Theme.Animation.Menu, { TextTransparency = 1 })
@@ -3835,7 +3837,7 @@ local function dropdown(parent, label, options, initial, onChange)
         end)
         -- v0.48.0: options cascade in with a tiny per-row stagger (capped, so a
         -- 40-option list doesn't take all day). Off means everything just shows.
-        local popAnim = Anim.spot("AnimPopups")
+        local popAnim = Koffee.Anim.spot("AnimPopups")
         if popAnim then
             list.BackgroundTransparency = 1
             tween(list, Theme.Animation.Menu, {
@@ -4075,7 +4077,7 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         local pct = (current - min) / (max - min)
         -- v0.48.0: Toggles off snaps the fill + knob (drag already passes
         -- false; this covers typed values settling in).
-        if animate and Anim.spot("AnimToggles") then
+        if animate and Koffee.Anim.spot("AnimToggles") then
             tween(fill, Theme.Animation.Fast, { Size = UDim2.new(pct, 0, 1, 0) })
             tween(knob, Theme.Animation.Fast, { Position = UDim2.new(pct, 0, 0.5, 0) })
         else
@@ -4109,7 +4111,7 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
-            if Anim.spot("AnimPress") then
+            if Koffee.Anim.spot("AnimPress") then
                 tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 0.98 })
             end
             setFromInputX(input.Position.X)
@@ -4119,7 +4121,7 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
-            if Anim.spot("AnimPress") then
+            if Koffee.Anim.spot("AnimPress") then
                 tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
             else
                 uScaleOf(hitArea).Scale = 1
@@ -4131,7 +4133,7 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         and (input.UserInputType == Enum.UserInputType.MouseButton1
           or input.UserInputType == Enum.UserInputType.Touch) then
             dragging = false
-            if Anim.spot("AnimPress") then
+            if Koffee.Anim.spot("AnimPress") then
                 tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
             else
                 uScaleOf(hitArea).Scale = 1
@@ -4141,14 +4143,14 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     -- v0.48.0: the knob swells slightly under the cursor so the track reads
     -- grabbable before you touch it. Off snaps back to resting size.
     hitArea.MouseEnter:Connect(function()
-        if Anim.spot("AnimHover") then
+        if Koffee.Anim.spot("AnimHover") then
             tween(knob, Theme.Animation.Fast, { Size = UDim2.new(0, 15, 0, 15) })
         else
             knob.Size = UDim2.new(0, 15, 0, 15)
         end
     end)
     hitArea.MouseLeave:Connect(function()
-        if Anim.spot("AnimHover") then
+        if Koffee.Anim.spot("AnimHover") then
             tween(knob, Theme.Animation.Fast, { Size = UDim2.new(0, 12, 0, 12) })
         else
             knob.Size = UDim2.new(0, 12, 0, 12)
@@ -4333,11 +4335,11 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         if not popupFrame then return end
         -- v0.48.0: popups shrink out on close instead of blinking away. Off
         -- (or master off, via tween's snap) hides immediately.
-        if Anim.spot("AnimPopups") then
+        if Koffee.Anim.spot("AnimPopups") then
             popupSeq = popupSeq + 1
             local mySeq = popupSeq
             tween(uScaleOf(popupFrame), Theme.Animation.Menu, { Scale = 0.94 })
-            task.delay(Anim.wait(0.16), function()
+            task.delay(Koffee.Anim.wait(0.16), function()
                 if mySeq == popupSeq and not isOpen then popupFrame.Visible = false end
             end)
         else
@@ -4365,7 +4367,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         -- v0.0.98: settings popup grows open. v0.48.0: gated on Popups; off
         -- leaves the scale at rest (a close-shrink may have left 0.94 behind).
         local psc = uScaleOf(popupFrame)   -- v0.0.98: settings popup grows open
-        if Anim.spot("AnimPopups") then
+        if Koffee.Anim.spot("AnimPopups") then
             popupSeq = popupSeq + 1   -- a reopen supersedes any close-shrink wait
             psc.Scale = 0.94
             tween(psc, Theme.Animation.Menu, { Scale = 1 })
@@ -13216,7 +13218,7 @@ end)()
         local uscale = new("UIScale", { Scale = 0.94, Parent = box })
         -- v0.48.0: modal open honours Popups; off shows at rest instantly.
         -- (The dim fade above already snaps itself when the master is off.)
-        if Anim.spot("AnimPopups") then
+        if Koffee.Anim.spot("AnimPopups") then
             tween(uscale, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
                 { Scale = 1 })
         else
@@ -13224,13 +13226,13 @@ end)()
         end
         local function close()
             -- v0.48.0: master off destroys now instead of fading out first.
-            if not Anim.spot("AnimPopups") then
+            if not Koffee.Anim.spot("AnimPopups") then
                 if dim then dim:Destroy() end
                 return
             end
             tween(dim, TweenInfo.new(0.16), { BackgroundTransparency = 1 })
             tween(uscale, TweenInfo.new(0.16), { Scale = 0.94 })
-            task.delay(Anim.wait(0.18), function() if dim then dim:Destroy() end end)
+            task.delay(Koffee.Anim.wait(0.18), function() if dim then dim:Destroy() end end)
         end
         return { dim = dim, box = box, close = close }
     end
@@ -19382,8 +19384,8 @@ registerConfig("custom", Koffee.Custom)
                     nodeFrames[node.id] = f
                     -- v0.48.0: new blocks pop onto the canvas; Lists off (or
                     -- master off, inside popIn) shows them at rest instead.
-                    if Anim.spot("AnimLists") and not nodeSeenIds[node.id] then
-                        popIn(f)
+                    if Koffee.Anim.spot("AnimLists") and not nodeSeenIds[node.id] then
+                        Koffee.popIn(f)
                     end
 
                     local head = new("TextButton", {
@@ -19687,7 +19689,7 @@ registerConfig("custom", Koffee.Custom)
             b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
             b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted }) end)
             b.MouseButton1Click:Connect(fn)
-            attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in with the text
+            Koffee.attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in with the text
             return b
         end
         local function inputBox(p, place, w, order)
@@ -19921,7 +19923,7 @@ registerConfig("custom", Koffee.Custom)
                 fieldRows[#fieldRows + 1] = rr
                 -- v0.48.0: labeled rows cascade in like Mods rows do; Lists
                 -- off (or master off, inside popIn) shows them at rest.
-                if Anim.spot("AnimLists") then
+                if Koffee.Anim.spot("AnimLists") then
                     local sc, target, d = uScaleOf(rr), rr, math.min(i * 0.02, 0.3)
                     sc.Scale = 0.96
                     task.delay(d, function()
@@ -20078,7 +20080,7 @@ addTab("Configs", function(root)
         b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
         b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = base() }) end)
         b.MouseButton1Click:Connect(onClick)
-        attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in with the text
+        Koffee.attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in with the text
         return b
     end
 
@@ -20511,7 +20513,7 @@ addTab("Extra", function(epanel)
             LayoutOrder = 1, ZIndex = 35, Parent = row,
         }, { pillCorner() })
         popFx(pinBtn)   -- v0.48.0: pin flips squash on press
-        attachBtnHover(pinBtn, 0, 0.2)   -- v0.48.0: background eases in on hover
+        Koffee.attachBtnHover(pinBtn, 0, 0.2)   -- v0.48.0: background eases in on hover
         new("TextLabel", {
             Text = (e.sub ~= "" and (e.sub .. ".") or "") .. e.name .. (e.isAttr and " *" or ""),
             FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
@@ -20558,7 +20560,7 @@ addTab("Extra", function(epanel)
                 TextColor3 = Theme.Palette.Text, LayoutOrder = 4, ZIndex = 35, Parent = row,
             }, { pillCorner() })
             popFx(flip)   -- v0.48.0: bool flips squash on press
-            attachBtnHover(flip, 0, 0.2)   -- v0.48.0: background eases in on hover
+            Koffee.attachBtnHover(flip, 0, 0.2)   -- v0.48.0: background eases in on hover
             flip.MouseButton1Click:Connect(function()
                 local v = readEntry(e)
                 pin.want = not (v == true)
@@ -20670,7 +20672,7 @@ addTab("Extra", function(epanel)
             local n = 0
             for _, item in ipairs(bucket) do
                 local row = buildRow(listBox, item.e, entryId(sid, item.e.sub, item.e.name), item.kind)
-                if row and Anim.spot("AnimLists") then
+                if row and Koffee.Anim.spot("AnimLists") then
                     n = n + 1
                     local sc, target = uScaleOf(row), row
                     sc.Scale = 0.96
@@ -20704,7 +20706,7 @@ addTab("Extra", function(epanel)
         }, { pillCorner() })
         b.MouseButton1Click:Connect(fn)
         popFx(b)   -- v0.48.0: header buttons squash on press like the rest
-        attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in on hover
+        Koffee.attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in on hover
         return b
     end
     hdrBtn("Held Tool", 1, function()
@@ -20844,7 +20846,7 @@ local function setWindowOpen(open)
         window.Visible = true
         -- v0.48.0: window open honours the Animations > Window Open flag; off
         -- snaps straight to the resting state instead of fading + growing in.
-        if Anim.spot("AnimWindow") then
+        if Koffee.Anim.spot("AnimWindow") then
             window.GroupTransparency = 1
             local wsc = uScaleOf(window)   -- v0.0.98: window pops open (fade + grow)
             wsc.Scale = 0.90
@@ -20876,13 +20878,13 @@ local function setWindowOpen(open)
         closeColorPicker()
         for _, closer in pairs(openDropdowns) do closer(true) end
         for _, closer in pairs(openSettingsPopups) do closer() end
-        if Anim.spot("AnimWindow") then
+        if Koffee.Anim.spot("AnimWindow") then
             tween(window, Theme.Animation.WindowFade, { GroupTransparency = 1 })
             -- v0.0.98: sink slightly as it goes, with the fade.
             if _us_cache[window] then
                 tween(_us_cache[window], Theme.Animation.WindowFade, { Scale = 0.96 })
             end
-            task.delay(Anim.wait(0.2), function()
+            task.delay(Koffee.Anim.wait(0.2), function()
                 if not windowOpen then window.Visible = false end
             end)
         else
