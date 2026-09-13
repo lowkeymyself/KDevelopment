@@ -1,7 +1,7 @@
--- koffee v0.47.0
+-- koffee v0.48.0
 
 local Koffee = {}
-Koffee.Version = "0.47.0"
+Koffee.Version = "0.48.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1213,8 +1213,17 @@ end
 local function lineGradient()
     return new("UIGradient", { Name = "KGrad", Enabled = false })
 end
+-- v0.48.0: forward-declared so tween/popFx/pulse/popIn (defined below, long
+-- before KoffeeOptions exists) can read the animation settings at runtime.
+local Anim
 local function tween(inst, info, props)
-    local t = TweenService:Create(inst, info, props)
+    -- v0.48.0: every UI tween flows through the Anim master switch + speed.
+    -- Off means snap to the final values instantly (never a half-faded widget).
+    if Anim and not Anim.enabled() then
+        for k, v in pairs(props) do pcall(function() inst[k] = v end) end
+        return Anim.NO_TWEEN
+    end
+    local t = TweenService:Create(inst, (Anim and Anim.info(info)) or info, props)
     t:Play()
     return t
 end
@@ -1228,6 +1237,8 @@ end
 --   popIn(inst, f)  -- entrance: scale f -> 1 (fades transparency too if asked)
 --   pulse(inst, s)  -- one-shot: to f then back to 1 (ticks, pops, catches)
 local _us_cache = {}
+setmetatable(_us_cache, { __mode = "k" })   -- v0.48.0: weak keys -- destroyed
+-- instances (rescan rows, rebuilt nodes) must not be pinned alive by this cache.
 local function uScaleOf(inst)
     local sc = _us_cache[inst]
     if not sc then
@@ -1241,23 +1252,39 @@ end
 -- instead of static text swaps. Cancel-proof: MouseLeave while held restores.
 local function popFx(btn)
     local sc = uScaleOf(btn)
+    local function gate()
+        -- press animations off mid-squash must still release the scale
+        if not (Anim and Anim.spot("AnimPress")) then sc.Scale = 1; return false end
+        return true
+    end
     btn.MouseButton1Down:Connect(function()
-        tween(sc, Theme.Animation.Fast, { Scale = 0.94 })
+        if gate() then tween(sc, Theme.Animation.Fast, { Scale = 0.94 }) end
     end)
     btn.MouseButton1Up:Connect(function()
-        tween(sc, Theme.Animation.Fast, { Scale = 1 })
+        if gate() then tween(sc, Theme.Animation.Fast, { Scale = 1 }) end
     end)
     btn.MouseLeave:Connect(function()
-        tween(sc, Theme.Animation.Fast, { Scale = 1 })
+        if gate() then tween(sc, Theme.Animation.Fast, { Scale = 1 }) end
     end)
 end
 
 -- entrance: fade + grow-in (cards, tab panels, popups).
 -- one-shot tick: to `to` then settle back to 1.
 local function pulse(inst, to)
+    if Anim and not Anim.enabled() then return end
     local sc = uScaleOf(inst)
     sc.Scale = to
     tween(sc, Theme.Animation.Fast, { Scale = 1 })
+end
+
+-- v0.48.0: pop-in entrance for things that appear on user action (new graph
+-- nodes, scanned rows, cards). Scale-only so UIListLayout never fights it.
+-- Call sites gate on their own Anim spot; this only honours the master.
+local function popIn(inst, from)
+    local sc = uScaleOf(inst)
+    if not (Anim and Anim.enabled()) then sc.Scale = 1; return end
+    sc.Scale = from or 0.92
+    tween(sc, Theme.Animation.Menu, { Scale = 1 })
 end
 
 local function colorToHex(c)
@@ -1871,6 +1898,11 @@ KoffeeOptions = {
     MIFontSize = 12,               -- "12" = Theme mirror default; slider in right-click
     -- v0.33.0: the arraylist accent line colour (white-only since v0.0.1). nil = Snow.
     ArraylistLineColor = Color3.fromRGB(255, 253, 248),
+    -- v0.48.0: animation settings (Options > Animations). All nil-means-on so
+    -- configs saved before this version animate exactly as before.
+    AnimOn = true, AnimSpeed = 1,
+    AnimWindow = true, AnimTabs = true, AnimPopups = true,
+    AnimPress = true, AnimHover = true, AnimLists = true, AnimToggles = true,
     -- v0.11.0 CUSTOM UI COLORS. Seven palette roles the user can repaint. Defaults
     -- are the stock Theme.Palette values, so an untouched config is a no-op.
     UIColors = {
@@ -1890,6 +1922,35 @@ local function applyArrayLineColor()
     if activeLine then activeLine.BackgroundColor3 = KoffeeOptions.ArraylistLineColor or Theme.Palette.Snow end
 end
 applyArrayLineColor()
+
+-- v0.48.0: CENTRAL ANIMATION SYSTEM. Master switch + speed + one flag per
+-- surface. tween() honours enabled/speed everywhere; features gate their own
+-- choreography on spot() so "off" snaps. All reads live off KoffeeOptions.
+Anim = {
+    NO_TWEEN = { Cancel = function() end, Completed = { Connect = function() end } },
+}
+function Anim.enabled()
+    return KoffeeOptions == nil or KoffeeOptions.AnimOn ~= false
+end
+function Anim.spot(key)
+    return Anim.enabled() and (KoffeeOptions == nil or KoffeeOptions[key] ~= false)
+end
+function Anim.speed()
+    local s = tonumber(KoffeeOptions and KoffeeOptions.AnimSpeed) or 1
+    if s <= 0 then s = 1 end
+    return math.clamp(s, 0.25, 4)
+end
+function Anim.info(base)
+    -- scale a TweenInfo by the speed multiplier, preserving its curve
+    if Anim.speed() == 1 then return base end
+    return TweenInfo.new(math.max(0.01, base.Time / Anim.speed()),
+        base.EasingStyle, base.EasingDirection,
+        base.RepeatCount, base.Reverses, base.DelayTime)
+end
+function Anim.wait(base)
+    -- hide/destroy delays that trail a tween must shrink with the tween
+    return base / Anim.speed()
+end
 
 local nextLayoutOrder = 0
 local ROW = {
@@ -2018,10 +2079,16 @@ local function addToActiveArray(mod)
     -- ESP.Config.TextGradient is true (wired after ESP config exists).
     local arrGrad = new("UIGradient", { Enabled = false, Parent = label })
     arrGrad.Name = "KArrayGrad"
-    tween(label, ROW.enter, {
-        Position = UDim2.new(0, 0, 0, 0),
-        TextTransparency = 0,
-    })
+    -- v0.48.0: row entrances honour Animations > Lists; off shows at rest.
+    if Anim.spot("AnimLists") then
+        tween(label, ROW.enter, {
+            Position = UDim2.new(0, 0, 0, 0),
+            TextTransparency = 0,
+        })
+    else
+        label.Position = UDim2.new(0, 0, 0, 0)
+        label.TextTransparency = 0
+    end
     mod._wrapper = wrapper
     mod._arrayLabel = label
 
@@ -2074,6 +2141,13 @@ local function removeFromActiveArray(mod)
         mod._detailConn:Disconnect()
         mod._detailConn = nil
     end
+    -- v0.48.0: row exits honour Animations > Lists; off destroys immediately.
+    if not Anim.spot("AnimLists") then
+        if mod._destroyThread then pcall(task.cancel, mod._destroyThread) end
+        mod._destroyThread = nil
+        if w and w.Parent then w:Destroy() end
+        return
+    end
     for _, child in ipairs(w:GetChildren()) do
         if child:IsA("TextLabel") then
             tween(child, Theme.Animation.Fast, {
@@ -2086,7 +2160,7 @@ local function removeFromActiveArray(mod)
     -- can cancel it and prevent the "new row destroyed by old scheduled kill"
     -- bug.
     if mod._destroyThread then pcall(task.cancel, mod._destroyThread) end
-    mod._destroyThread = task.delay(0.14, function()
+    mod._destroyThread = task.delay(Anim.wait(0.14), function()
         mod._destroyThread = nil
         if w and w.Parent then w:Destroy() end
     end)
@@ -2377,7 +2451,8 @@ local function pillSnap(button)
 end
 
 local function movePillTo(button, snap)
-    if pillFirstShow or snap then pillSnap(button); return end
+    -- v0.48.0: pill motion honours Animations > Tab Switching; off snaps.
+    if pillFirstShow or snap or not Anim.spot("AnimTabs") then pillSnap(button); return end
     if pillT1 then pillT1:Cancel(); pillT1 = nil end
     if pillT2 then pillT2:Cancel(); pillT2 = nil end
     local targetPos, targetSize = pillRectFor(button)
@@ -2394,7 +2469,7 @@ local function movePillTo(button, snap)
     local ox   = targetPos.X.Offset - (ow - w) * 0.5
     local y    = targetPos.Y.Offset
     local h    = targetSize.Y.Offset
-    pillT1 = TweenService:Create(pill, PILL_STRETCH, {
+    pillT1 = TweenService:Create(pill, Anim.info(PILL_STRETCH), {
         Position = UDim2.new(0, ox, 0, y),
         Size     = UDim2.new(0, ow, 0, h),
     })
@@ -2403,7 +2478,7 @@ local function movePillTo(button, snap)
         if gen ~= pillGen then return end   -- superseded -- the newer switch owns everything
         if state ~= Enum.PlaybackState.Completed then return end
         if pillT2 then pillT2:Cancel() end
-        pillT2 = TweenService:Create(pill, PILL_CONTRACT, {
+        pillT2 = TweenService:Create(pill, Anim.info(PILL_CONTRACT), {
             Position = targetPos,
             Size     = targetSize,
         })
@@ -2431,11 +2506,18 @@ tabBar:GetPropertyChangedSignal("AbsolutePosition"):Connect(pillResync)
 local function selectTab(name)
     if activeTab == name then return end
     activeTab = name
+    -- v0.48.0: tab switches honour Animations > Tab Switching; off snaps the
+    -- colours, panels and pill straight to their resting states.
+    local tabsAnim = Anim.spot("AnimTabs")
     for tabName, tab in pairs(tabs) do
         local isActive = tabName == name
-        tween(tab.Button, Theme.Animation.Fast, {
-            TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted,
-        })
+        if tabsAnim then
+            tween(tab.Button, Theme.Animation.Fast, {
+                TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted,
+            })
+        else
+            tab.Button.TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted
+        end
         -- v0.0.99: pure crossfade -- the outgoing panel fades out, the incoming
         -- fades in. No scale pop, no scroll jump: panels are ScrollingFrames so
         -- the fade lives on each tab's CanvasGroup wrapper (GroupTransparency).
@@ -2445,15 +2527,25 @@ local function selectTab(name)
         local w = tab.Wrap
         if isActive then
             tab.Panel.CanvasPosition = Vector2.new(0, 0)
-            w.GroupTransparency = 1
-            w.Visible = true
-            tween(w, Theme.Animation.Slow, { GroupTransparency = 0 })
+            if tabsAnim then
+                w.GroupTransparency = 1
+                w.Visible = true
+                tween(w, Theme.Animation.Slow, { GroupTransparency = 0 })
+            else
+                w.GroupTransparency = 0
+                w.Visible = true
+            end
             movePillTo(tab.Button)
         else
-            tween(w, Theme.Animation.Slow, { GroupTransparency = 1 })
-            task.delay(0.35, function()
-                if activeTab ~= tabName then w.Visible = false end
-            end)
+            if tabsAnim then
+                tween(w, Theme.Animation.Slow, { GroupTransparency = 1 })
+                task.delay(Anim.wait(0.35), function()
+                    if activeTab ~= tabName then w.Visible = false end
+                end)
+            else
+                w.GroupTransparency = 1
+                w.Visible = false
+            end
         end
     end
 end
@@ -2774,10 +2866,41 @@ local function attachHover(row, hoverBtn)
         Parent = row,
     }, { corner(4) })
     hoverBtn.MouseEnter:Connect(function()
-        tween(bg, Theme.Animation.Fast, { BackgroundTransparency = 0.85 })
+        -- v0.48.0: hover flag is read live so the Options toggle takes effect
+        -- without a rebuild; off means snap straight to the resting state.
+        if Anim and Anim.spot("AnimHover") then
+            tween(bg, Theme.Animation.Fast, { BackgroundTransparency = 0.85 })
+        else
+            bg.BackgroundTransparency = 0.85
+        end
     end)
     hoverBtn.MouseLeave:Connect(function()
-        tween(bg, Theme.Animation.Fast, { BackgroundTransparency = 1 })
+        if Anim and Anim.spot("AnimHover") then
+            tween(bg, Theme.Animation.Fast, { BackgroundTransparency = 1 })
+        else
+            bg.BackgroundTransparency = 1
+        end
+    end)
+end
+
+-- v0.48.0: button background hover -- the pill behind a button eases in on
+-- enter and back out on leave. Text-only hover was the gap; this closes it.
+local function attachBtnHover(b, hovered, resting)
+    hovered = hovered == nil and 0 or hovered
+    resting = resting == nil and 0.2 or resting
+    b.MouseEnter:Connect(function()
+        if Anim and Anim.spot("AnimHover") then
+            tween(b, Theme.Animation.Fast, { BackgroundTransparency = hovered })
+        else
+            b.BackgroundTransparency = hovered
+        end
+    end)
+    b.MouseLeave:Connect(function()
+        if Anim and Anim.spot("AnimHover") then
+            tween(b, Theme.Animation.Fast, { BackgroundTransparency = resting })
+        else
+            b.BackgroundTransparency = resting
+        end
     end)
 end
 
@@ -2858,31 +2981,47 @@ local function checkboxVisual(parent, label, initialOn)
         -- kill anything in flight so rapid clicks don't fight each other
         if activeSize then activeSize:Cancel(); activeSize = nil end
         if activeFade then activeFade:Cancel(); activeFade = nil end
+        -- v0.48.0: Toggles off snaps the fill + label straight to rest.
+        local togAnim = Anim.spot("AnimToggles")
         if state then
             -- OFF -> ON: grow OUTWARD from center. Snap to 0 first (in case a
             -- prior tween was mid-shrink) and pop opacity to opaque immediately
             -- so the growth reads as substance appearing, not a fade-in.
-            innerFill.Size = UDim2.new(0, 0, 0, 0)
-            innerFill.BackgroundTransparency = 0
-            activeSize = tween(innerFill, CB_GROW, {
-                Size = UDim2.new(0, CBOX.inner, 0, CBOX.inner),
-            })
-            pulse(box, 1.12)   -- v0.0.98: box ticks out as the fill grows in
+            if togAnim then
+                innerFill.Size = UDim2.new(0, 0, 0, 0)
+                innerFill.BackgroundTransparency = 0
+                activeSize = tween(innerFill, CB_GROW, {
+                    Size = UDim2.new(0, CBOX.inner, 0, CBOX.inner),
+                })
+                pulse(box, 1.12)   -- v0.0.98: box ticks out as the fill grows in
+            else
+                innerFill.Size = UDim2.new(0, CBOX.inner, 0, CBOX.inner)
+                innerFill.BackgroundTransparency = 0
+            end
         else
             -- ON -> OFF: shrink INWARD to center, then super-fast fade to hide.
             -- Ensure opacity is opaque going in (guards against superseded fade).
-            innerFill.BackgroundTransparency = 0
-            activeSize = tween(innerFill, CB_SHRINK, {
-                Size = UDim2.new(0, 0, 0, 0),
-            })
-            task.delay(0.10, function()
-                if mySeq ~= seq then return end   -- superseded by newer click
-                activeFade = tween(innerFill, CB_FADE, { BackgroundTransparency = 1 })
-            end)
+            if togAnim then
+                innerFill.BackgroundTransparency = 0
+                activeSize = tween(innerFill, CB_SHRINK, {
+                    Size = UDim2.new(0, 0, 0, 0),
+                })
+                task.delay(Anim.wait(0.10), function()
+                    if mySeq ~= seq then return end   -- superseded by newer click
+                    activeFade = tween(innerFill, CB_FADE, { BackgroundTransparency = 1 })
+                end)
+            else
+                innerFill.Size = UDim2.new(0, 0, 0, 0)
+                innerFill.BackgroundTransparency = 1
+            end
         end
-        tween(lbl, Theme.Animation.Fast, {
-            TextColor3 = state and Theme.Palette.Accent or Theme.Palette.Text,
-        })
+        if togAnim then
+            tween(lbl, Theme.Animation.Fast, {
+                TextColor3 = state and Theme.Palette.Accent or Theme.Palette.Text,
+            })
+        else
+            lbl.TextColor3 = state and Theme.Palette.Accent or Theme.Palette.Text
+        end
     end
     return {
         row = row,
@@ -3352,31 +3491,46 @@ local function openColorPicker(swatchInstance, initialColor, onChange, opts)
     local x, y = popupOffsetFor(ColorPicker.root, dx, dy)
     ColorPicker.root.Position = UDim2.new(0, x, 0, y - 4)
     ColorPicker.root.Visible = true
-    ColorPicker.root.BackgroundTransparency = 1
-    local rsc = uScaleOf(ColorPicker.root)   -- v0.0.98: picker grows open
-    rsc.Scale = 0.94
-    tween(ColorPicker.root, Theme.Animation.Menu, {
-        BackgroundTransparency = 0.02,
-        Position = UDim2.new(0, x, 0, y),
-    })
-    tween(rsc, Theme.Animation.Menu, { Scale = 1 })
+    -- v0.48.0: picker open honours Popups; off shows at rest instantly.
+    if Anim.spot("AnimPopups") then
+        ColorPicker.root.BackgroundTransparency = 1
+        local rsc = uScaleOf(ColorPicker.root)   -- v0.0.98: picker grows open
+        rsc.Scale = 0.94
+        tween(ColorPicker.root, Theme.Animation.Menu, {
+            BackgroundTransparency = 0.02,
+            Position = UDim2.new(0, x, 0, y),
+        })
+        tween(rsc, Theme.Animation.Menu, { Scale = 1 })
+    else
+        ColorPicker.root.BackgroundTransparency = 0.02
+        ColorPicker.root.Position = UDim2.new(0, x, 0, y)
+        local rsc = uScaleOf(ColorPicker.root)
+        rsc.Scale = 1
+    end
     ColorPicker.apply()
 end
 
 local function closeColorPicker()
     if not ColorPicker.root or not ColorPicker.root.Visible then return end
-    tween(ColorPicker.root, Theme.Animation.Menu, {
-        BackgroundTransparency = 1,
-    })
     -- v0.0.16: track the close thread so openColorPicker can cancel it if
     -- the picker is reopened before the fade completes.
     if ColorPicker.closeTask then
         pcall(task.cancel, ColorPicker.closeTask)
     end
-    ColorPicker.closeTask = task.delay(0.22, function()
+    -- v0.48.0: Popups off hides instantly instead of fading out.
+    if Anim.spot("AnimPopups") then
+        tween(ColorPicker.root, Theme.Animation.Menu, {
+            BackgroundTransparency = 1,
+        })
+        ColorPicker.closeTask = task.delay(Anim.wait(0.22), function()
+            ColorPicker.closeTask = nil
+            if ColorPicker.root then ColorPicker.root.Visible = false end
+        end)
+    else
+        ColorPicker.root.BackgroundTransparency = 1
+        ColorPicker.root.Visible = false
         ColorPicker.closeTask = nil
-        if ColorPicker.root then ColorPicker.root.Visible = false end
-    end)
+    end
     ColorPicker.activeSwatch = nil
     ColorPicker.callback = nil
 end
@@ -3634,14 +3788,17 @@ local function dropdown(parent, label, options, initial, onChange)
         isOpen = false
         openDropdowns[list] = nil
         if positionConn then positionConn:Disconnect(); positionConn = nil end
-        tween(caretRoot, Theme.Animation.Menu, { Rotation = 0 })
-        if instant then
+        -- v0.48.0: dropdowns honour Animations > Popups; off (or forced
+        -- instant, e.g. window close) hides immediately instead of fading.
+        if instant or not Anim.spot("AnimPopups") then
+            caretRoot.Rotation = 0
             list.Visible = false
         else
+            tween(caretRoot, Theme.Animation.Menu, { Rotation = 0 })
             tween(list, Theme.Animation.Menu, {
                 BackgroundTransparency = 1,
             })
-            task.delay(0.22, function()
+            task.delay(Anim.wait(0.22), function()
                 if not isOpen then list.Visible = false end
             end)
         end
@@ -3651,7 +3808,11 @@ local function dropdown(parent, label, options, initial, onChange)
             if child:IsA("TextButton") then
                 for _, sub in ipairs(child:GetChildren()) do
                     if sub:IsA("TextLabel") then
-                        tween(sub, Theme.Animation.Menu, { TextTransparency = 1 })
+                        if instant or not Anim.spot("AnimPopups") then
+                            sub.TextTransparency = 1
+                        else
+                            tween(sub, Theme.Animation.Menu, { TextTransparency = 1 })
+                        end
                     end
                 end
             end
@@ -3665,7 +3826,6 @@ local function dropdown(parent, label, options, initial, onChange)
         isOpen = true
         openDropdowns[list] = { btn = btn, close = closeList }
         placeBelow()
-        list.BackgroundTransparency = 1
         list.Visible = true
         -- lock position while open: RenderStepped keeps `list` glued to btn
         if positionConn then positionConn:Disconnect() end
@@ -3673,22 +3833,43 @@ local function dropdown(parent, label, options, initial, onChange)
             if not isOpen or not btn.Parent then return end
             placeBelow()
         end)
-        tween(list, Theme.Animation.Menu, {
-            BackgroundTransparency = 0.05,
-        })
-        -- v0.0.98: popup drops open with a quick grow (scale from 0.92) instead
-        -- of materialising -- same Menu timing as the fade so they land together.
-        local usc = uScaleOf(list)
-        usc.Scale = 0.92
-        tween(usc, Theme.Animation.Menu, { Scale = 1 })
-        tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
+        -- v0.48.0: options cascade in with a tiny per-row stagger (capped, so a
+        -- 40-option list doesn't take all day). Off means everything just shows.
+        local popAnim = Anim.spot("AnimPopups")
+        if popAnim then
+            list.BackgroundTransparency = 1
+            tween(list, Theme.Animation.Menu, {
+                BackgroundTransparency = 0.05,
+            })
+            -- v0.0.98: popup drops open with a quick grow (scale from 0.92) instead
+            -- of materialising -- same Menu timing as the fade so they land together.
+            local usc = uScaleOf(list)
+            usc.Scale = 0.92
+            tween(usc, Theme.Animation.Menu, { Scale = 1 })
+            tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
+        else
+            list.BackgroundTransparency = 0.05
+            caretRoot.Rotation = 180
+        end
         -- v0.0.17: only text labels fade in. Option button bg is always 1
         -- (invisible) -- hover drives it to 0.7.
+        local stagger = 0
         for _, child in ipairs(list:GetChildren()) do
             if child:IsA("TextButton") then
                 for _, sub in ipairs(child:GetChildren()) do
                     if sub:IsA("TextLabel") then
-                        tween(sub, Theme.Animation.Menu, { TextTransparency = 0 })
+                        if popAnim then
+                            sub.TextTransparency = 1
+                            local d, target = math.min(stagger * 0.02, 0.3), sub
+                            stagger = stagger + 1
+                            task.delay(d, function()
+                                if isOpen and target.Parent then
+                                    tween(target, Theme.Animation.Menu, { TextTransparency = 0 })
+                                end
+                            end)
+                        else
+                            sub.TextTransparency = 0
+                        end
                     end
                 end
             end
@@ -3892,7 +4073,9 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
 
     local function applyValue(animate)
         local pct = (current - min) / (max - min)
-        if animate then
+        -- v0.48.0: Toggles off snaps the fill + knob (drag already passes
+        -- false; this covers typed values settling in).
+        if animate and Anim.spot("AnimToggles") then
             tween(fill, Theme.Animation.Fast, { Size = UDim2.new(pct, 0, 1, 0) })
             tween(knob, Theme.Animation.Fast, { Position = UDim2.new(pct, 0, 0.5, 0) })
         else
@@ -3921,11 +4104,14 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     end)
     -- v0.0.98: track squashes to 0.98 while the drag grabs it, springs back on
     -- release (both on the button's own end AND the service end as a failsafe).
+    -- v0.48.0: gated on Button Press; off leaves the scale at rest.
     hitArea.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
-            tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 0.98 })
+            if Anim.spot("AnimPress") then
+                tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 0.98 })
+            end
             setFromInputX(input.Position.X)
         end
     end)
@@ -3933,7 +4119,11 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
-            tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
+            if Anim.spot("AnimPress") then
+                tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
+            else
+                uScaleOf(hitArea).Scale = 1
+            end
         end
     end)
     UserInputService.InputEnded:Connect(function(input)
@@ -3941,7 +4131,27 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         and (input.UserInputType == Enum.UserInputType.MouseButton1
           or input.UserInputType == Enum.UserInputType.Touch) then
             dragging = false
-            tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
+            if Anim.spot("AnimPress") then
+                tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
+            else
+                uScaleOf(hitArea).Scale = 1
+            end
+        end
+    end)
+    -- v0.48.0: the knob swells slightly under the cursor so the track reads
+    -- grabbable before you touch it. Off snaps back to resting size.
+    hitArea.MouseEnter:Connect(function()
+        if Anim.spot("AnimHover") then
+            tween(knob, Theme.Animation.Fast, { Size = UDim2.new(0, 15, 0, 15) })
+        else
+            knob.Size = UDim2.new(0, 15, 0, 15)
+        end
+    end)
+    hitArea.MouseLeave:Connect(function()
+        if Anim.spot("AnimHover") then
+            tween(knob, Theme.Animation.Fast, { Size = UDim2.new(0, 12, 0, 12) })
+        else
+            knob.Size = UDim2.new(0, 12, 0, 12)
         end
     end)
     valueBox.FocusLost:Connect(function(enterPressed)
@@ -4115,11 +4325,24 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         buildFn(api)
     end
 
+    local popupSeq = 0   -- v0.48.0: guards the close-shrink delay below
     local function closePopup()
         if not isOpen then return end
         isOpen = false
         openSettingsPopups[popupFrame] = nil
-        if popupFrame then popupFrame.Visible = false end
+        if not popupFrame then return end
+        -- v0.48.0: popups shrink out on close instead of blinking away. Off
+        -- (or master off, via tween's snap) hides immediately.
+        if Anim.spot("AnimPopups") then
+            popupSeq = popupSeq + 1
+            local mySeq = popupSeq
+            tween(uScaleOf(popupFrame), Theme.Animation.Menu, { Scale = 0.94 })
+            task.delay(Anim.wait(0.16), function()
+                if mySeq == popupSeq and not isOpen then popupFrame.Visible = false end
+            end)
+        else
+            popupFrame.Visible = false
+        end
     end
     local function openPopup()
         local fresh = popupFrame == nil
@@ -4139,9 +4362,16 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         local ox, oy = popupOffsetFor(popupFrame, dx, dy)
         popupFrame.Position = UDim2.new(0, ox, 0, oy)
         popupFrame.Visible = true
+        -- v0.0.98: settings popup grows open. v0.48.0: gated on Popups; off
+        -- leaves the scale at rest (a close-shrink may have left 0.94 behind).
         local psc = uScaleOf(popupFrame)   -- v0.0.98: settings popup grows open
-        psc.Scale = 0.94
-        tween(psc, Theme.Animation.Menu, { Scale = 1 })
+        if Anim.spot("AnimPopups") then
+            popupSeq = popupSeq + 1   -- a reopen supersedes any close-shrink wait
+            psc.Scale = 0.94
+            tween(psc, Theme.Animation.Menu, { Scale = 1 })
+        else
+            psc.Scale = 1
+        end
     end
 
     local function toggle()
@@ -12984,12 +13214,23 @@ end)()
             ZIndex = 201, Parent = dim,
         }, { corner(Theme.Radius.Medium), stroke(Theme.Palette.BorderSubtle) })
         local uscale = new("UIScale", { Scale = 0.94, Parent = box })
-        tween(uscale, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-            { Scale = 1 })
+        -- v0.48.0: modal open honours Popups; off shows at rest instantly.
+        -- (The dim fade above already snaps itself when the master is off.)
+        if Anim.spot("AnimPopups") then
+            tween(uscale, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+                { Scale = 1 })
+        else
+            uscale.Scale = 1
+        end
         local function close()
+            -- v0.48.0: master off destroys now instead of fading out first.
+            if not Anim.spot("AnimPopups") then
+                if dim then dim:Destroy() end
+                return
+            end
             tween(dim, TweenInfo.new(0.16), { BackgroundTransparency = 1 })
             tween(uscale, TweenInfo.new(0.16), { Scale = 0.94 })
-            task.delay(0.18, function() if dim then dim:Destroy() end end)
+            task.delay(Anim.wait(0.18), function() if dim then dim:Destroy() end end)
         end
         return { dim = dim, box = box, close = close }
     end
@@ -15259,6 +15500,28 @@ addTab("Options", function(root)
         KoffeeOptions.MenuSnow = v
         setBackgroundActive(bgActive)
     end)
+    -- v0.48.0: animation settings. Master + speed + one flag per surface, all
+    -- read live so they take effect instantly, all nil-means-on so old configs
+    -- animate exactly as before. Persisted through registerConfig("options").
+    local animPanel = panel(root, "Animations")
+    local function animFlag(label, key)
+        configCheckbox(animPanel, label, KoffeeOptions[key] ~= false, function(v)
+            KoffeeOptions[key] = v
+        end)
+    end
+    configCheckbox(animPanel, "Animations", KoffeeOptions.AnimOn ~= false, function(v)
+        KoffeeOptions.AnimOn = v
+    end)
+    slider(animPanel, "Speed", 0.5, 2, KoffeeOptions.AnimSpeed or 1, 1, function(v)
+        KoffeeOptions.AnimSpeed = v
+    end)
+    animFlag("Window Open", "AnimWindow")
+    animFlag("Tab Switching", "AnimTabs")
+    animFlag("Popups", "AnimPopups")
+    animFlag("Button Press", "AnimPress")
+    animFlag("Hover", "AnimHover")
+    animFlag("Lists", "AnimLists")
+    animFlag("Toggles", "AnimToggles")
     rightClickSettings(arrRow.row, "Arraylist", function(menu)
         -- v0.33.0: the accent line was white-only since v0.0.1 -- now recolourable.
         menu:swatch("Line Colour", KoffeeOptions.ArraylistLineColor or Theme.Palette.Snow, function(c)
@@ -19009,6 +19272,9 @@ registerConfig("custom", Koffee.Custom)
         local panning, lastMX, lastMY = false, 0, 0
         local nodeFrames, wirePool = {}, {}
         local rebuildAll
+        -- v0.48.0: remembers which node ids already had a frame so only
+        -- genuinely new blocks pop in (add / paste) instead of every rebuild.
+        local nodeSeenIds = {}
 
         local function inspApi(p)
             local a = {}
@@ -19114,6 +19380,11 @@ registerConfig("custom", Koffee.Custom)
                     }, { corner(6),
                         stroke(picked and Theme.Palette.Accent or Theme.Palette.Border) })
                     nodeFrames[node.id] = f
+                    -- v0.48.0: new blocks pop onto the canvas; Lists off (or
+                    -- master off, inside popIn) shows them at rest instead.
+                    if Anim.spot("AnimLists") and not nodeSeenIds[node.id] then
+                        popIn(f)
+                    end
 
                     local head = new("TextButton", {
                         Text = "  " .. (node.kind == "Note"
@@ -19215,6 +19486,12 @@ registerConfig("custom", Koffee.Custom)
                     end
                 end
             end
+            -- v0.48.0: everything alive counts as seen, so the next rebuild
+            -- only pops brand-new ids (deleted ids drop out, and pop again
+            -- if ever re-added -- correct).
+            local fresh = {}
+            for _, node in ipairs(CF.Nodes) do fresh[node.id] = true end
+            nodeSeenIds = fresh
         end
 
         -- v0.26.1: Design Mode selects the node whose widget you clicked, so the
@@ -19410,6 +19687,7 @@ registerConfig("custom", Koffee.Custom)
             b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
             b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted }) end)
             b.MouseButton1Click:Connect(fn)
+            attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in with the text
             return b
         end
         local function inputBox(p, place, w, order)
@@ -19641,6 +19919,17 @@ registerConfig("custom", Koffee.Custom)
                 })
                 xb.MouseButton1Click:Connect(function() table.remove(fields, i); refreshFields() end)
                 fieldRows[#fieldRows + 1] = rr
+                -- v0.48.0: labeled rows cascade in like Mods rows do; Lists
+                -- off (or master off, inside popIn) shows them at rest.
+                if Anim.spot("AnimLists") then
+                    local sc, target, d = uScaleOf(rr), rr, math.min(i * 0.02, 0.3)
+                    sc.Scale = 0.96
+                    task.delay(d, function()
+                        if target.Parent then
+                            tween(sc, Theme.Animation.Fast, { Scale = 1 })
+                        end
+                    end)
+                end
             end
         end
 
@@ -19789,6 +20078,7 @@ addTab("Configs", function(root)
         b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end)
         b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = base() }) end)
         b.MouseButton1Click:Connect(onClick)
+        attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in with the text
         return b
     end
 
@@ -20220,6 +20510,8 @@ addTab("Extra", function(epanel)
             TextColor3 = pin.on and Theme.Palette.Accent or Theme.Palette.TextMuted,
             LayoutOrder = 1, ZIndex = 35, Parent = row,
         }, { pillCorner() })
+        popFx(pinBtn)   -- v0.48.0: pin flips squash on press
+        attachBtnHover(pinBtn, 0, 0.2)   -- v0.48.0: background eases in on hover
         new("TextLabel", {
             Text = (e.sub ~= "" and (e.sub .. ".") or "") .. e.name .. (e.isAttr and " *" or ""),
             FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
@@ -20265,6 +20557,8 @@ addTab("Extra", function(epanel)
                 FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
                 TextColor3 = Theme.Palette.Text, LayoutOrder = 4, ZIndex = 35, Parent = row,
             }, { pillCorner() })
+            popFx(flip)   -- v0.48.0: bool flips squash on press
+            attachBtnHover(flip, 0, 0.2)   -- v0.48.0: background eases in on hover
             flip.MouseButton1Click:Connect(function()
                 local v = readEntry(e)
                 pin.want = not (v == true)
@@ -20292,6 +20586,7 @@ addTab("Extra", function(epanel)
                 writeEntry(e, w)
             end)
         end
+        return row   -- v0.48.0: scan() staggers rows in on rebuild
     end
     -- v0.46.1: common gun-value patterns. Substring match on the lowercase
     -- name -- games rename everything, but ammo/damage/rate always read alike.
@@ -20370,8 +20665,21 @@ addTab("Extra", function(epanel)
             end
         end
         local function emit(bucket)
+            -- v0.48.0: scanned rows cascade in with a tiny stagger (capped, so
+            -- a 60-value gun doesn't take all day). Lists off shows them all.
+            local n = 0
             for _, item in ipairs(bucket) do
-                buildRow(listBox, item.e, entryId(sid, item.e.sub, item.e.name), item.kind)
+                local row = buildRow(listBox, item.e, entryId(sid, item.e.sub, item.e.name), item.kind)
+                if row and Anim.spot("AnimLists") then
+                    n = n + 1
+                    local sc, target = uScaleOf(row), row
+                    sc.Scale = 0.96
+                    task.delay(math.min(n * 0.02, 0.4), function()
+                        if target.Parent then
+                            tween(sc, Theme.Animation.Fast, { Scale = 1 })
+                        end
+                    end)
+                end
             end
         end
         if #common + #rest == 0 then
@@ -20395,6 +20703,8 @@ addTab("Extra", function(epanel)
             TextColor3 = Theme.Palette.Text, LayoutOrder = order, ZIndex = 35, Parent = bar,
         }, { pillCorner() })
         b.MouseButton1Click:Connect(fn)
+        popFx(b)   -- v0.48.0: header buttons squash on press like the rest
+        attachBtnHover(b, 0, 0.2)   -- v0.48.0: background eases in on hover
         return b
     end
     hdrBtn("Held Tool", 1, function()
@@ -20532,11 +20842,18 @@ local function setWindowOpen(open)
     windowOpen = open
     if open then
         window.Visible = true
-        window.GroupTransparency = 1
-        local wsc = uScaleOf(window)   -- v0.0.98: window pops open (fade + grow)
-        wsc.Scale = 0.90
-        tween(window, Theme.Animation.WindowFade, { GroupTransparency = 0 })
-        tween(wsc,   Theme.Animation.WindowFade, { Scale = 1 })
+        -- v0.48.0: window open honours the Animations > Window Open flag; off
+        -- snaps straight to the resting state instead of fading + growing in.
+        if Anim.spot("AnimWindow") then
+            window.GroupTransparency = 1
+            local wsc = uScaleOf(window)   -- v0.0.98: window pops open (fade + grow)
+            wsc.Scale = 0.90
+            tween(window, Theme.Animation.WindowFade, { GroupTransparency = 0 })
+            tween(wsc,   Theme.Animation.WindowFade, { Scale = 1 })
+        else
+            window.GroupTransparency = 0
+            if _us_cache[window] then _us_cache[window].Scale = 1 end
+        end
         -- v0.0.95: force the cursor UNLOCKED + visible while the menu is up so
         -- the user can click Koffee widgets without having to open the Roblox
         -- menu (Esc) first. Restore whatever the game/3rd-Person had set on close.
@@ -20559,14 +20876,20 @@ local function setWindowOpen(open)
         closeColorPicker()
         for _, closer in pairs(openDropdowns) do closer(true) end
         for _, closer in pairs(openSettingsPopups) do closer() end
-        tween(window, Theme.Animation.WindowFade, { GroupTransparency = 1 })
-        -- v0.0.98: sink slightly as it goes, with the fade.
-        if _us_cache[window] then
-            tween(_us_cache[window], Theme.Animation.WindowFade, { Scale = 0.96 })
+        if Anim.spot("AnimWindow") then
+            tween(window, Theme.Animation.WindowFade, { GroupTransparency = 1 })
+            -- v0.0.98: sink slightly as it goes, with the fade.
+            if _us_cache[window] then
+                tween(_us_cache[window], Theme.Animation.WindowFade, { Scale = 0.96 })
+            end
+            task.delay(Anim.wait(0.2), function()
+                if not windowOpen then window.Visible = false end
+            end)
+        else
+            window.GroupTransparency = 1
+            window.Visible = false
+            if _us_cache[window] then _us_cache[window].Scale = 0.96 end
         end
-        task.delay(0.2, function()
-            if not windowOpen then window.Visible = false end
-        end)
         -- restore prior mouse state (3rd Person etc. re-locks on its own next
         -- frame if it's still enabled; otherwise game gets whatever it had)
         holdMouseFree(false)
