@@ -223,6 +223,7 @@ do
         "folder", "folder-open", "folder-plus", "chevron-right", "chevron-down",
         "eye", "eye-off", "trash-2", "pencil", "crosshair", "target",
         "user", "users", "rotate-cw", "refresh-cw", "circle-plus", "sliders-horizontal",
+        "maximize-2", "minimize-2", "navigation",   -- v0.56.0: preview + teleport UI
     }
     local MANIFEST = {
         { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
@@ -1513,6 +1514,21 @@ local dim = new("Frame", {
     Parent = screen,
 })
 
+-- v0.56.0: full-screen input guard. An Active, invisible TextButton under the
+-- window swallows every click that lands off the menu, so changing settings can
+-- never leak a click through to the game (no accidental shots) and clicking
+-- empty space does nothing. Any GUI element under the cursor makes the click
+-- gameProcessed, so this catches the whole screen behind the window. Toggled with
+-- the menu-open state; gated by KoffeeOptions.MenuBlockInput (nil means on).
+local clickGuard = new("TextButton", {
+    Name = KID.name("guard"),
+    Text = "", AutoButtonColor = false, Active = true, Modal = false,
+    BackgroundTransparency = 1, BorderSizePixel = 0,
+    Size = UDim2.new(1, 0, 1, 0), Visible = false,
+    ZIndex = 2, Parent = screen,
+})
+clickGuard.MouseButton1Click:Connect(function() end)   -- absorb, do nothing
+
 -- v0.3.8: park the BlurEffect on CurrentCamera instead of Lighting.
 -- Post-processing effects work under either, and Lighting:GetChildren()
 -- is a common passive-AC scan target: unexpected BlurEffects in
@@ -1667,6 +1683,7 @@ local function setBackgroundActive(active)
     snowActive = active and (not o or o.MenuSnow ~= false)
     local wantDim  = active and (not o or o.MenuDim  ~= false)
     local wantBlur = active and (not o or o.MenuBlur ~= false)
+    clickGuard.Visible = active and (not o or o.MenuBlockInput ~= false)
     tween(dim, Theme.Animation.WindowFade, {
         BackgroundTransparency = wantDim and (1 - Theme.Background.DimTransparency) or 1,
     })
@@ -1935,6 +1952,7 @@ KoffeeOptions = {
     TopBar = true,   -- v0.15.3: the always-on HUD strip
     -- v0.26.0: the three window-open background effects, each independently off-able
     MenuDim = true, MenuSnow = true, MenuBlur = true,
+    MenuBlockInput = true,   -- v0.56.0: block clicks off the menu while it is open
     -- v0.0.97 custom feature-interface font (arraylist / ESP / health text / HUD stats,
     -- everything outside the main Koffee window). On/Name/Size ride the config system.
     CustomFontOn   = false,
@@ -4796,22 +4814,127 @@ function ConfigIO.rename(old, newName)
     pcall(fileAPI.delfile, src)
     return true, newName
 end
--- per-place auto-load marker: Koffee/configs/_auto_<PlaceId>.txt holds a name
-local function autoPath() return CFG_DIR .. "/_auto_" .. tostring(game.PlaceId) .. ".txt" end
-function ConfigIO.getAuto()
-    if not filesReady() then return nil end
-    local p = autoPath()
-    if fileAPI.isfile(p) then
-        local ok, v = pcall(fileAPI.read, p)
-        if ok and type(v) == "string" and v ~= "" then return v end
+-- v0.56.0: auto-load rules. One JSON sidecar holds ONE global rule (loads in any
+-- game) plus any number of per-game rules keyed by PlaceId (each loads only in its
+-- game). A game rule wins over the global when you are in that game. Each rule has
+-- its own on/off switch. Shape: { global={name,on}, games={ ["<placeId>"]={name,on,place} } }.
+--   Koffee/configs/_autoload.json
+local AUTO_PATH = CFG_DIR .. "/_autoload.json"
+local OLD_AUTO  = CFG_DIR .. "/_auto_" .. tostring(game.PlaceId) .. ".txt"   -- legacy per-place marker
+local autoStore = nil
+local function hjson() return game:GetService("HttpService") end
+local function loadAuto()
+    if autoStore then return autoStore end
+    autoStore = { global = nil, games = {} }
+    if filesReady() and fileAPI.isfile(AUTO_PATH) then
+        local ok, t = pcall(fileAPI.read, AUTO_PATH)
+        if ok and type(t) == "string" and t ~= "" then
+            local dok, d = pcall(function() return hjson():JSONDecode(t) end)
+            if dok and type(d) == "table" then
+                autoStore.global = type(d.global) == "table" and d.global or nil
+                autoStore.games  = type(d.games) == "table" and d.games or {}
+            end
+        end
+    elseif filesReady() and fileAPI.isfile(OLD_AUTO) then
+        -- migrate the legacy single-place marker into a game rule (once)
+        local ok, v = pcall(fileAPI.read, OLD_AUTO)
+        if ok and type(v) == "string" and v ~= "" then
+            autoStore.games[tostring(game.PlaceId)] = { name = v, on = true, place = "This Game" }
+        end
     end
+    return autoStore
+end
+local function saveAuto()
+    if not filesReady() then return end
+    ensureDir()
+    local ok, text = pcall(function() return hjson():JSONEncode(autoStore or { games = {} }) end)
+    if ok then pcall(fileAPI.write, AUTO_PATH, text) end
+end
+
+-- the config name that should load on join right now (game rule beats global; both
+-- must be enabled). nil = nothing pinned.
+function ConfigIO.autoResolve()
+    local s = loadAuto()
+    local g = s.games[tostring(game.PlaceId)]
+    if g and g.on and g.name and g.name ~= "" then return g.name end
+    if s.global and s.global.on and s.global.name and s.global.name ~= "" then return s.global.name end
+    return nil
+end
+-- flat list for the UI: global first (if set), then each game rule.
+function ConfigIO.autoRules()
+    local s = loadAuto()
+    local out = {}
+    if s.global and s.global.name and s.global.name ~= "" then
+        out[#out + 1] = { scope = "global", name = s.global.name, on = s.global.on ~= false }
+    end
+    local ids = {}
+    for id in pairs(s.games) do ids[#ids + 1] = id end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+        local g = s.games[id]
+        if g and g.name and g.name ~= "" then
+            out[#out + 1] = { scope = "game", placeId = id, place = g.place or ("Place " .. id),
+                              name = g.name, on = g.on ~= false, current = (id == tostring(game.PlaceId)) }
+        end
+    end
+    return out
+end
+function ConfigIO.autoSetGlobal(name)
+    local s = loadAuto()
+    if name and name ~= "" then s.global = { name = name, on = true } else s.global = nil end
+    saveAuto()
+end
+function ConfigIO.autoSetGame(name, placeId)
+    local s = loadAuto()
+    local id = tostring(placeId or game.PlaceId)
+    if name and name ~= "" then
+        local place = "This Game"
+        pcall(function()
+            if game.PlaceId == tonumber(id) then
+                local info = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
+                if info and info.Name then place = info.Name end
+            end
+        end)
+        s.games[id] = { name = name, on = true, place = place }
+    else
+        s.games[id] = nil
+    end
+    saveAuto()
+end
+function ConfigIO.autoToggle(scope, placeId)
+    local s = loadAuto()
+    if scope == "global" and s.global then s.global.on = not (s.global.on ~= false)
+    elseif scope == "game" then local g = s.games[tostring(placeId)]; if g then g.on = not (g.on ~= false) end end
+    saveAuto()
+end
+function ConfigIO.autoRemove(scope, placeId)
+    local s = loadAuto()
+    if scope == "global" then s.global = nil
+    elseif scope == "game" then s.games[tostring(placeId)] = nil end
+    saveAuto()
+end
+-- keep rules valid across a config rename / delete (they reference names by string)
+function ConfigIO.autoRename(old, newName)
+    local s = loadAuto()
+    if s.global and s.global.name == old then s.global.name = newName end
+    for _, g in pairs(s.games) do if g.name == old then g.name = newName end end
+    saveAuto()
+end
+function ConfigIO.autoDrop(name)
+    local s = loadAuto()
+    if s.global and s.global.name == name then s.global = nil end
+    for id, g in pairs(s.games) do if g.name == name then s.games[id] = nil end end
+    saveAuto()
+end
+-- back-compat shims for the Config Manager "Auto" button: it pins/reads the rule
+-- for the CURRENT game (a game rule), so the old per-place semantics are preserved.
+function ConfigIO.getAuto()
+    local g = loadAuto().games[tostring(game.PlaceId)]
+    if g and g.on and g.name and g.name ~= "" then return g.name end
     return nil
 end
 function ConfigIO.setAuto(name)
-    if not filesReady() then return end
-    ensureDir()
-    if name and name ~= "" then pcall(fileAPI.write, autoPath(), name)
-    elseif fileAPI.delfile then pcall(fileAPI.delfile, autoPath()) end
+    ConfigIO.autoSetGame(name and name ~= "" and name or nil)
 end
 
 -- v0.29.0 Cloud Configs: mirrors the Aero worker (CF + KV). Each config's raw
@@ -16277,6 +16400,12 @@ addTab("Options", function(root)
         KoffeeOptions.MenuSnow = v
         setBackgroundActive(bgActive)
     end)
+    -- v0.56.0: swallow clicks that land off the window so a settings click never
+    -- reaches the game (no accidental firing) and empty space is inert.
+    configCheckbox(bgPanel, "Block Clicks", KoffeeOptions.MenuBlockInput ~= false, function(v)
+        KoffeeOptions.MenuBlockInput = v
+        setBackgroundActive(bgActive)
+    end)
     -- v0.48.0: animation settings. Master + speed + one flag per surface, all
     -- read live so they take effect instantly, all nil-means-on so old configs
     -- animate exactly as before. Persisted through registerConfig("options").
@@ -20881,6 +21010,7 @@ addTab("Configs", function(root)
     local selectedName, hasConfigs, currentDD = nil, false, nil
     local rebuildManager   -- fwd decl
     local refreshCloud     -- v0.29.0 fwd decl: cloud card reacts to selection changes
+    local refreshAuto      -- v0.56.0 fwd decl: auto-load card reacts to selection changes
 
     local ddHolder = new("Frame", {
         Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1,
@@ -20948,8 +21078,8 @@ addTab("Configs", function(root)
         Shared.openTextPopup("rename config", from, "new name", function(txt)
             local ok, msg = CIO.rename(from, txt)
             if not ok then setStatus("Rename failed: " .. tostring(msg), false); return end
-            -- carry the auto-load marker across, or it points at a file that is gone
-            if CIO.getAuto() == from then CIO.setAuto(msg) end
+            -- carry any auto-load rules across, or they point at a file that is gone
+            CIO.autoRename(from, msg)
             CIO.cloudMetaRename(from, msg)   -- v0.29.0: keep the cloud link on the new name
             selectedName = msg
             rebuildManager()
@@ -20966,7 +21096,7 @@ addTab("Configs", function(root)
         --      pointing at a file that no longer exists, so auto-load silently
         --      did nothing every session with no way to notice from the UI.
         local ok = CIO.delete(nm)
-        if ok and CIO.getAuto() == nm then CIO.setAuto(nil) end
+        if ok then CIO.autoDrop(nm) end   -- clear any auto-load rules pointing at it
         if ok then CIO.cloudMetaDrop(nm) end   -- v0.29.0: drop the local cloud link (cloud entry stays)
         selectedName = nil
         rebuildManager()
@@ -20978,6 +21108,7 @@ addTab("Configs", function(root)
             if CIO.getAuto() == selectedName then CIO.setAuto(nil); setStatus("Auto-load cleared", true)
             else CIO.setAuto(selectedName); setStatus("Auto-load: " .. selectedName, true) end
         refreshAutoLabel()
+        if refreshAuto then refreshAuto() end
     end)
     autoBtn.LayoutOrder = 5
 
@@ -21008,10 +21139,11 @@ addTab("Configs", function(root)
         local options = hasConfigs and names or { "no saved configs" }
             currentDD = dropdown(ddHolder, "Saved Configs", options,
             selectedName or "no saved configs", function(v)
-                if hasConfigs then selectedName = v; refreshAutoLabel(); if refreshCloud then refreshCloud() end end
+                if hasConfigs then selectedName = v; refreshAutoLabel(); if refreshCloud then refreshCloud() end; if refreshAuto then refreshAuto() end end
             end)
         refreshAutoLabel()
         if refreshCloud then refreshCloud() end
+        if refreshAuto then refreshAuto() end
     end
 
     -- :: cloud configs card (v0.29.0) ::
@@ -21147,6 +21279,102 @@ addTab("Configs", function(root)
         copyBtn.Visible   = meta ~= nil
         delBtn.Visible    = has and owner and meta ~= nil
         rnBtn.Visible     = has and owner and meta ~= nil
+    end
+
+    -- :: auto-load rules card (v0.56.0) ::
+    -- Pin a config to load on join. ONE global rule loads in every game; per-game
+    -- rules load only in their own game and beat the global there. Each rule has
+    -- its own on/off switch. Operates on the SELECTED config above.
+    local autoCard = panel(root, "Auto-Load")
+    new("TextLabel", {
+        Text = "Pin a config to load on join. A per-game rule beats the global one in its game.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), LayoutOrder = 1, ZIndex = 35, Parent = autoCard,
+    })
+    local autoStatusLbl = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+        Size = UDim2.new(1, 0, 0, 14), LayoutOrder = 2, ZIndex = 35, Parent = autoCard,
+    })
+    local function setAutoStatus(msg, ok)
+        autoStatusLbl.Text = msg
+        autoStatusLbl.TextColor3 = ok and Theme.Palette.Success or Theme.Palette.Danger
+    end
+
+    local addRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 50), BackgroundTransparency = 1, LayoutOrder = 3, ZIndex = 35, Parent = autoCard,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
+        VerticalAlignment = Enum.VerticalAlignment.Bottom, SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local scopeHolder = new("Frame", {
+        Size = UDim2.new(0, 150, 0, 48), BackgroundTransparency = 1, LayoutOrder = 1, ZIndex = 36, Parent = addRow,
+    })
+    local scopeVal = "This Game"
+    dropdown(scopeHolder, "Scope", { "This Game", "Global" }, scopeVal, function(v) scopeVal = v end)
+    local addBtn = mkBtn(addRow, "Add Rule", 92, function()
+        if not (hasConfigs and selectedName) then setAutoStatus("Select a config above first", false); return end
+        if scopeVal == "Global" then CIO.autoSetGlobal(selectedName); setAutoStatus("Global auto-load: " .. selectedName, true)
+        else CIO.autoSetGame(selectedName); setAutoStatus("This game auto-load: " .. selectedName, true) end
+        refreshAuto()
+        refreshAutoLabel()
+    end, true)
+    addBtn.LayoutOrder = 2
+
+    local rulesList = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+        LayoutOrder = 4, ZIndex = 35, Parent = autoCard,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 5),
+        SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+    refreshAuto = function()
+        addBtn.Text = (hasConfigs and selectedName) and ("Add: " .. selectedName) or "Add Rule"
+        for _, c in ipairs(rulesList:GetChildren()) do
+            if not c:IsA("UIListLayout") then c:Destroy() end
+        end
+        local rules = CIO.autoRules()
+        if #rules == 0 then
+            new("TextLabel", {
+                Text = "No auto-load rules yet.", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                Size = UDim2.new(1, 0, 0, 16), ZIndex = 36, Parent = rulesList,
+            })
+            return
+        end
+        for i, r in ipairs(rules) do
+            local row = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.4,
+                BorderSizePixel = 0, LayoutOrder = i, ZIndex = 36, Parent = rulesList,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+                new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 6) }),
+                new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+                    VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+            -- on/off pill
+            local toggle = new("TextButton", {
+                Text = r.on and "ON" or "OFF", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+                TextColor3 = r.on and Theme.Palette.Success or Theme.Palette.TextMuted,
+                BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+                Size = UDim2.fromOffset(40, 22), LayoutOrder = 1, ZIndex = 37, Parent = row,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            local badge = (r.scope == "global") and "Global"
+                or (r.place .. (r.current and " (current)" or ""))
+            new("TextLabel", {
+                Text = badge .. "  ->  " .. r.name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = (r.scope == "global") and Theme.Palette.Text or Theme.Palette.Accent,
+                BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                Size = UDim2.new(1, -74, 1, 0), LayoutOrder = 2, ZIndex = 37, Parent = row,
+            })
+            local delBtn2 = new("TextButton", {
+                Text = "", BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+                Size = UDim2.fromOffset(22, 22), LayoutOrder = 3, ZIndex = 37, Parent = row,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            Koffee.lucideIcon(delBtn2, "trash-2", 12, Theme.Palette.Danger, 38)
+            toggle.MouseButton1Click:Connect(function()
+                CIO.autoToggle(r.scope, r.placeId); refreshAuto()
+            end)
+            delBtn2.MouseButton1Click:Connect(function()
+                CIO.autoRemove(r.scope, r.placeId); refreshAuto(); refreshAutoLabel()
+            end)
+        end
     end
 
     rebuildManager()
@@ -21354,6 +21582,71 @@ local function boundsOf(inst)
     if inst:IsA("BasePart") then return inst.CFrame, inst.Size end
     return CFrame.new(), Vector3.new(4, 4, 4)
 end
+-- v0.56.0: clone into a viewport, anchor everything so nothing droops, and frame
+-- the camera off the CLONE's own bounds (the source can sit anywhere in the world).
+-- Returns vp plus an `orbit` controller { look, setDist } when interactive; opts:
+--   size/round/z/order  : layout    top : bias framing to the upper body (pfp)
+--   spin                : auto-rotate    interactive : expose orbit + no auto-spin
+local function fillViewport(vp, model, opts)
+    local cam = new("Camera", { Parent = vp })
+    vp.CurrentCamera = cam
+    local okc, clone = pcall(function() return model:Clone() end)
+    if not okc or not clone then
+        new("TextLabel", {
+            Text = "no preview", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+            ZIndex = (opts.z or 11) + 1, Parent = vp,
+        })
+        return cam, nil
+    end
+    pcall(function()
+        for _, d in ipairs(clone:IsA("BasePart") and { clone } or clone:GetDescendants()) do
+            if d:IsA("BasePart") then d.Anchored = true end
+        end
+    end)
+    clone.Parent = vp
+    -- soft key light so meshes/parts read clearly against the dark panel
+    vp.LightColor = Color3.fromRGB(255, 255, 255)
+    vp.Ambient    = Color3.fromRGB(150, 150, 150)
+    local cf, size
+    if clone:IsA("Model") then
+        local ok, bcf, bsize = pcall(function() return clone:GetBoundingBox() end)
+        if ok and bcf then cf, size = bcf, bsize end
+    elseif clone:IsA("BasePart") then
+        cf, size = clone.CFrame, clone.Size
+    end
+    if not cf then cf, size = boundsOf(model) end
+    local center = cf.Position
+    local radius = math.max(size.X, size.Y, size.Z, 1)
+    if opts.top then
+        center = cf.Position + Vector3.new(0, size.Y * 0.30, 0)
+        radius = math.max(size.X, size.Y * 0.55, 1)
+    end
+    local baseDist = radius * (opts.zoom or 1.6) + 2
+    local yaw, pitch, dist = opts.angle or 0, 0.15, baseDist
+    local function look()
+        pitch = math.clamp(pitch, -1.45, 1.45)
+        local off = Vector3.new(
+            math.cos(pitch) * math.sin(yaw),
+            math.sin(pitch),
+            math.cos(pitch) * math.cos(yaw)) * dist
+        cam.CFrame = CFrame.lookAt(center + off, center)
+    end
+    look()
+    local orbit = {
+        rotate = function(dx, dy) yaw = yaw - dx; pitch = pitch + dy; look() end,
+        zoom   = function(f) dist = math.clamp(dist * f, radius * 0.6, radius * 6 + 4); look() end,
+    }
+    if opts.spin then
+        local conn
+        conn = RunService.RenderStepped:Connect(function(dt)
+            if Koffee.dead() or not vp.Parent then conn:Disconnect(); return end
+            yaw = yaw + dt * 1.2
+            look()
+        end)
+    end
+    return cam, orbit
+end
 local function makeViewport(parent, model, opts)
     opts = opts or {}
     local vp = new("ViewportFrame", {
@@ -21369,56 +21662,166 @@ local function makeViewport(parent, model, opts)
         })
         return vp
     end
-    local cam = new("Camera", { Parent = vp })
-    vp.CurrentCamera = cam
-    local okc, clone = pcall(function() return model:Clone() end)
-    if not okc or not clone then return vp end
-    clone.Parent = vp
-    local cf, size = boundsOf(model)
-    local center, radius = cf.Position, math.max(size.X, size.Y, size.Z)
-    if opts.top then
-        center = cf.Position + Vector3.new(0, size.Y * 0.30, 0)
-        radius = math.max(size.X, size.Y * 0.55)
-    end
-    local dist = radius * (opts.zoom or 1.6) + 2
-    local function look(angle)
-        local off = Vector3.new(math.sin(angle), 0.15, math.cos(angle)) * dist
-        cam.CFrame = CFrame.lookAt(center + off, center)
-    end
-    look(opts.angle or 0)
-    if opts.spin then
-        local a, conn = 0, nil
-        conn = RunService.RenderStepped:Connect(function(dt)
-            if Koffee.dead() or not vp.Parent then conn:Disconnect(); return end
-            a = a + dt * 1.2
-            look(a)
-        end)
-    end
+    fillViewport(vp, model, opts)
     return vp
 end
+-- v0.56.0: interactive preview window. Drag the title bar to move it, drag inside
+-- the viewport to orbit the camera, scroll to zoom, and the maximise button blows
+-- it up to a big centred view (toggles back). Lives on popupScreen, above the menu.
 local function openPreview(model)
+    local SMALL = Vector2.new(260, 300)
     local holder = new("Frame", {
-        Size = UDim2.fromOffset(240, 264), BackgroundColor3 = Theme.Palette.Panel,
-        BorderSizePixel = 0, ZIndex = 250, Parent = popupScreen,
+        Size = UDim2.fromOffset(SMALL.X, SMALL.Y), BackgroundColor3 = Theme.Palette.Panel,
+        BorderSizePixel = 0, ZIndex = 250, Parent = popupScreen, Active = true,
     }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
-    local mp = UIS:GetMouseLocation()
-    local vpx = math.clamp(mp.X, 8, math.max(8, workspace.CurrentCamera.ViewportSize.X - 248))
-    local vpy = math.clamp(mp.Y, 8, math.max(8, workspace.CurrentCamera.ViewportSize.Y - 272))
-    holder.Position = UDim2.fromOffset(vpx, vpy)
-    new("TextLabel", {
+    local function vpSize() return workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720) end
+    local scr = vpSize()
+    holder.Position = UDim2.fromOffset(
+        math.clamp(UIS:GetMouseLocation().X, 8, math.max(8, scr.X - SMALL.X - 8)),
+        math.clamp(UIS:GetMouseLocation().Y, 8, math.max(8, scr.Y - SMALL.Y - 8)))
+
+    local title = new("TextLabel", {
         Text = model.Name, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-        Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -44, 0, 16), ZIndex = 251, Parent = holder,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -74, 0, 16), ZIndex = 252, Parent = holder,
     })
-    local closeBtn = new("TextButton", {
-        Text = "", BackgroundColor3 = Theme.Palette.Pill, Size = UDim2.fromOffset(22, 22),
-        Position = UDim2.new(1, -28, 0, 6), ZIndex = 251, Parent = holder,
-    }, { corner(6) })
-    Koffee.lucideIcon(closeBtn, "x", 13, Theme.Palette.TextMuted)
+    local function chip(x, icon)
+        local b = new("TextButton", {
+            Text = "", BackgroundColor3 = Theme.Palette.Pill, Size = UDim2.fromOffset(22, 22),
+            Position = UDim2.new(1, x, 0, 6), ZIndex = 252, Parent = holder, AutoButtonColor = true,
+        }, { corner(6) })
+        Koffee.lucideIcon(b, icon, 13, Theme.Palette.TextMuted)
+        return b
+    end
+    local fsBtn    = chip(-54, "maximize-2")
+    local closeBtn = chip(-28, "x")
+    local vp = new("ViewportFrame", {
+        BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.2,
+        Position = UDim2.fromOffset(10, 34), Size = UDim2.new(1, -20, 1, -44),
+        ZIndex = 251, Parent = holder, Active = true,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+    local _cam, orbit = nil, nil
+    if previewable(model) then
+        _cam, orbit = fillViewport(vp, model, { z = 251, interactive = true })
+    else
+        new("TextLabel", {
+            Text = "no preview", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+            ZIndex = 252, Parent = vp,
+        })
+    end
+
+    -- orbit: drag inside the viewport spins the camera; wheel zooms
+    local dragging, lastPos = false, nil
+    vp.InputBegan:Connect(function(io)
+        if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; lastPos = io.Position
+        elseif io.UserInputType == Enum.UserInputType.MouseWheel and orbit then
+            orbit.zoom(io.Position.Z > 0 and 0.88 or 1.14)
+        end
+    end)
+    vp.InputChanged:Connect(function(io)
+        if dragging and orbit and (io.UserInputType == Enum.UserInputType.MouseMovement or io.UserInputType == Enum.UserInputType.Touch) then
+            local d = io.Position - lastPos; lastPos = io.Position
+            orbit.rotate(d.X * 0.01, d.Y * 0.01)
+        end
+    end)
+    vp.InputEnded:Connect(function(io)
+        if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+
+    -- drag the whole window by its title bar
+    local moving, moveLast = false, nil
+    title.Active = true
+    title.InputBegan:Connect(function(io)
+        if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then
+            moving = true; moveLast = io.Position
+        end
+    end)
+    title.InputChanged:Connect(function(io)
+        if moving and (io.UserInputType == Enum.UserInputType.MouseMovement or io.UserInputType == Enum.UserInputType.Touch) then
+            local d = io.Position - moveLast; moveLast = io.Position
+            holder.Position = holder.Position + UDim2.fromOffset(d.X, d.Y)
+        end
+    end)
+    title.InputEnded:Connect(function(io)
+        if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then moving = false end
+    end)
+
+    -- maximise: blow the window up to a big centred view, toggle back
+    local full = false
+    fsBtn.MouseButton1Click:Connect(function()
+        full = not full
+        local s = vpSize()
+        if full then
+            local w, h = math.floor(s.X * 0.72), math.floor(s.Y * 0.78)
+            holder.Position = UDim2.fromOffset(math.floor((s.X - w) / 2), math.floor((s.Y - h) / 2))
+            tween(holder, Theme.Animation.Fast, { Size = UDim2.fromOffset(w, h) })
+        else
+            holder.Position = UDim2.fromOffset(
+                math.clamp(holder.AbsolutePosition.X, 8, math.max(8, s.X - SMALL.X - 8)),
+                math.clamp(holder.AbsolutePosition.Y, 8, math.max(8, s.Y - SMALL.Y - 8)))
+            tween(holder, Theme.Animation.Fast, { Size = UDim2.fromOffset(SMALL.X, SMALL.Y) })
+        end
+        Koffee.lucideIcon(fsBtn, full and "minimize-2" or "maximize-2", 13, Theme.Palette.TextMuted)
+    end)
     closeBtn.MouseButton1Click:Connect(function() holder:Destroy() end)
-    makeViewport(holder, model, {
-        size = UDim2.new(1, -20, 1, -44), z = 251, spin = true,
-    }).Position = UDim2.fromOffset(10, 34)
+end
+
+-- v0.56.0: teleport the local character to an instance's position (part center or
+-- model bounding-box center), lifted a little so we do not spawn inside the floor.
+local function teleportTo(inst)
+    local char = LocalPlayer and LocalPlayer.Character
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char.PrimaryPart)
+    if not hrp then return false end
+    local cf = boundsOf(inst)
+    pcall(function() hrp.CFrame = CFrame.new(cf.Position + Vector3.new(0, 3, 0)) end)
+    return true
+end
+
+-- v0.56.0: right-click context menu. A tiny floating card at the cursor with a
+-- Preview action and a single Teleport To button, as requested. Auto-dismisses on
+-- any click elsewhere (a full-screen catcher behind it).
+local ctxMenu = nil
+local function openContextMenu(inst)
+    if ctxMenu then ctxMenu:Destroy(); ctxMenu = nil end
+    local scr = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+    local W, rowH = 148, 28
+    local catcher = new("TextButton", {
+        Text = "", BackgroundTransparency = 1, Active = true, AutoButtonColor = false,
+        Size = UDim2.new(1, 0, 1, 0), ZIndex = 258, Parent = popupScreen,
+    })
+    ctxMenu = catcher
+    local card = new("Frame", {
+        BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0,
+        Size = UDim2.fromOffset(W, rowH * 2 + 10), ZIndex = 259, Parent = catcher,
+        Position = UDim2.fromOffset(
+            math.clamp(UIS:GetMouseLocation().X, 4, math.max(4, scr.X - W - 4)),
+            math.clamp(UIS:GetMouseLocation().Y, 4, math.max(4, scr.Y - (rowH * 2 + 14)))),
+    }, { corner(8), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5),
+            PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
+        new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local function close() if ctxMenu then ctxMenu:Destroy(); ctxMenu = nil end end
+    catcher.MouseButton1Click:Connect(close)
+    local function item(icon, label, cb, order)
+        local b = new("TextButton", {
+            Text = "", BackgroundColor3 = Theme.Palette.Pill, BackgroundTransparency = 0.25,
+            AutoButtonColor = true, Size = UDim2.new(1, 0, 0, rowH), LayoutOrder = order, ZIndex = 260, Parent = card,
+        }, { corner(6) })
+        local ic = Koffee.lucideIcon(b, icon, 14, Theme.Palette.TextMuted, 261)
+        ic.AnchorPoint = Vector2.new(0, 0.5); ic.Position = UDim2.new(0, 10, 0.5, 0)
+        new("TextLabel", {
+            Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 32, 0, 0), Size = UDim2.new(1, -38, 1, 0), ZIndex = 261, Parent = b,
+        })
+        b.MouseButton1Click:Connect(function() close(); cb() end)
+        return b
+    end
+    item("eye", "Preview", function() openPreview(inst) end, 1)
+    item("navigation", "Teleport To", function() teleportTo(inst) end, 2)
 end
 
 -- :: entry / folder mutation ::
@@ -21572,7 +21975,7 @@ local function buildPicker(host, onChange)
         })
         nameBtn.MouseButton1Click:Connect(function() selected = inst; updateRight(); rebuildTree() end)
         row.InputBegan:Connect(function(io)
-            if io.UserInputType == Enum.UserInputType.MouseButton2 then openPreview(inst) end
+            if io.UserInputType == Enum.UserInputType.MouseButton2 then openContextMenu(inst) end
         end)
     end
     rebuildTree = function()
@@ -21594,7 +21997,7 @@ local function buildPicker(host, onChange)
     end
 
     -- right column: what is selected + add actions
-    hintRow(right, "Click a name to select. Click the arrow to expand. Right-click for a 360 preview.", 0)
+    hintRow(right, "Click a name to select. Click the arrow to expand. Right-click for Preview / Teleport To.", 0)
     local selLabel = new("TextLabel", {
         Text = "Nothing selected", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextWrapped = true,
@@ -22573,7 +22976,8 @@ end)()
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
 -- pcall'd so a bad/locked config never blocks the UI from coming up.
 task.spawn(function()
-    local auto = Koffee.Config.getAuto()
+    -- v0.56.0: resolve auto-load rules (a per-game rule beats the global one).
+    local auto = Koffee.Config.autoResolve()
     if not auto then return end
     task.wait(0.25)
     pcall(function() Koffee.Config.load(auto) end)
