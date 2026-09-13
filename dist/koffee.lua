@@ -1,7 +1,7 @@
--- koffee v0.54.0
+-- koffee v0.55.0
 
 local Koffee = {}
-Koffee.Version = "0.54.0"
+Koffee.Version = "0.55.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4643,7 +4643,7 @@ end
 -- v0.54.0: NPC Entries / Folders / a folder's Rules are lists, so REPLACE like
 -- Nodes: merging would resurrect entries/rules the user deleted since the save.
 local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true,
-    Entries = true, Folders = true, Rules = true }
+    Entries = true, Folders = true, Rules = true, Accessories = true }
 local function applyInto(target, src)
     for k, v in pairs(src) do
         if type(v) == "table" and type(target[k]) == "table" then
@@ -4701,6 +4701,9 @@ local function loadSnapshot(data)
             end
         end
     end
+    -- v0.55.0: re-apply avatar deco against the freshly loaded accessory list even
+    -- when the module's on/off state did not change (so a load updates the deco).
+    if Shared.Deco and Shared.Deco.apply then pcall(Shared.Deco.apply) end
     if rebuildConfigTabs then pcall(rebuildConfigTabs) end
     -- v0.0.96: the Arraylist option is registered state too, so a load can flip
     -- it: re-apply the actual column visibility (the rebuilt tab's checkbox
@@ -15974,7 +15977,158 @@ addTab("World", function(root)
     refreshRules()
 end)
 
-addTab("Character", function(root) Koffee._characterTab(root) end)
+-- v0.55.0: Avatar Deco. Wear catalog accessories (hats / capes / gear) by asset
+-- id on your own character. Client-side/local (others do not see it), re-applied
+-- on respawn, persisted. Own IIFE for its register budget; UI on the Character tab.
+;(function()
+local Deco = { Accessories = {} }   -- list of numeric catalog asset ids
+Shared.Deco = Deco
+registerConfig("deco", Deco)
+local applied, charConn = {}, nil
+
+-- load a catalog asset client-side: executor game:GetObjects first, InsertService
+-- fallback. Returns the root objects, or nil.
+local function getObjects(id)
+    local ok, objs = pcall(function() return game:GetObjects("rbxassetid://" .. id) end)
+    if ok and type(objs) == "table" and #objs > 0 then return objs end
+    local ok2, out = pcall(function()
+        local m = game:GetService("InsertService"):LoadAsset(id)
+        local o = {}
+        if m then for _, c in ipairs(m:GetChildren()) do o[#o + 1] = c end end
+        return o
+    end)
+    if ok2 and out and #out > 0 then return out end
+    return nil
+end
+local function removeAll()
+    for _, a in ipairs(applied) do pcall(function() a:Destroy() end) end
+    table.clear(applied)
+end
+local function applyAll()
+    removeAll()
+    local m = Modules["avatardeco"]
+    if not (m and m.Enabled) then return end
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (char and hum) then return end
+    for _, id in ipairs(Deco.Accessories) do
+        local objs = getObjects(id)
+        if objs then
+            for _, o in ipairs(objs) do
+                if o:IsA("Accessory") then
+                    o.Parent = nil
+                    if pcall(function() hum:AddAccessory(o) end) then
+                        applied[#applied + 1] = o
+                        KID.track(o)
+                    end
+                end
+            end
+        end
+    end
+end
+Deco.apply = applyAll
+local function hookChar()
+    if charConn then charConn:Disconnect() end
+    charConn = LocalPlayer.CharacterAdded:Connect(function()
+        task.wait(0.6)   -- let the fresh rig load before attaching
+        applyAll()
+    end)
+end
+registerModule("avatardeco", "Avatar Deco",
+    function() hookChar(); applyAll() end,
+    function()
+        if charConn then charConn:Disconnect(); charConn = nil end
+        removeAll()
+    end)
+
+function Deco.buildPanel(root)
+    local card = panel(root, "Avatar")
+    moduleCheckbox(card, "Avatar Deco", "avatardeco")
+    new("TextLabel", {
+        Text = "Wear catalog accessories (hats / capes / gear) by asset id. Local only.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = card,
+    })
+    local row = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, Parent = card,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local box = new("TextBox", {
+        Text = "", PlaceholderText = "accessory asset id", ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+        PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
+        BackgroundTransparency = 0.15, Size = UDim2.new(1, -70, 0, 26), TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = 0, Parent = row,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+    local listBox = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = card,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 4),
+        SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local function refresh()
+        for _, c in ipairs(listBox:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
+        if #Deco.Accessories == 0 then
+            new("TextLabel", {
+                Text = "No accessories added.", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                Size = UDim2.new(1, 0, 0, 16), Parent = listBox,
+            })
+            return
+        end
+        for _, id in ipairs(Deco.Accessories) do
+            local r = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 26), BackgroundColor3 = Theme.Palette.PanelElevated,
+                BackgroundTransparency = 0.5, BorderSizePixel = 0, Parent = listBox,
+            }, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 6) }) })
+            new("TextLabel", {
+                Text = tostring(id), FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                Size = UDim2.new(1, -30, 1, 0), Parent = r,
+            })
+            local del = new("TextButton", {
+                Text = "", BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+                AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(22, 22),
+                Parent = r,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            Koffee.lucideIcon(del, "trash-2", 13, Theme.Palette.TextMuted)
+            del.MouseButton1Click:Connect(function()
+                for i, x in ipairs(Deco.Accessories) do if x == id then table.remove(Deco.Accessories, i) break end end
+                refresh(); applyAll()
+            end)
+        end
+    end
+    local addBtn = new("TextButton", {
+        Text = "Add", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.Background, BackgroundColor3 = Theme.Palette.Accent, AutoButtonColor = true,
+        Size = UDim2.fromOffset(62, 26), LayoutOrder = 1, Parent = row,
+    }, { corner(6) })
+    addBtn.MouseButton1Click:Connect(function()
+        local id = tonumber((box.Text or ""):match("%d+"))
+        if not id then return end
+        local dup = false
+        for _, x in ipairs(Deco.Accessories) do if x == id then dup = true break end end
+        if not dup then Deco.Accessories[#Deco.Accessories + 1] = id end
+        box.Text = ""
+        refresh(); applyAll()
+    end)
+    local clearBtn = new("TextButton", {
+        Text = "Clear All", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+        AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 26), Parent = card,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }) })
+    clearBtn.MouseButton1Click:Connect(function()
+        table.clear(Deco.Accessories); refresh(); applyAll()
+    end)
+    refresh()
+end
+end)()
+
+addTab("Character", function(root)
+    Koffee._characterTab(root)
+    if Shared.Deco then Shared.Deco.buildPanel(root) end
+end)
 
 -- v0.0.96: options state (arraylist preferences) rides the config system too.
 registerConfig("options", KoffeeOptions)
