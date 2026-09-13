@@ -1,7 +1,7 @@
--- koffee v0.58.0
+-- koffee v0.58.1
 
 local Koffee = {}
-Koffee.Version = "0.58.0"
+Koffee.Version = "0.58.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1520,14 +1520,16 @@ local dim = new("Frame", {
 -- empty space does nothing. Any GUI element under the cursor makes the click
 -- gameProcessed, so this catches the whole screen behind the window. Toggled with
 -- the menu-open state; gated by KoffeeOptions.MenuBlockInput (nil means on).
-local clickGuard = new("TextButton", {
+-- v0.58.0: lives on Koffee (not a chunk local) -- the main chunk is at the 200
+-- register ceiling and a plain local tipped it over at the executor's O0 compile.
+Koffee._clickGuard = new("TextButton", {
     Name = KID.name("guard"),
     Text = "", AutoButtonColor = false, Active = true, Modal = false,
     BackgroundTransparency = 1, BorderSizePixel = 0,
     Size = UDim2.new(1, 0, 1, 0), Visible = false,
     ZIndex = 2, Parent = screen,
 })
-clickGuard.MouseButton1Click:Connect(function() end)   -- absorb, do nothing
+Koffee._clickGuard.MouseButton1Click:Connect(function() end)   -- absorb, do nothing
 
 -- v0.3.8: park the BlurEffect on CurrentCamera instead of Lighting.
 -- Post-processing effects work under either, and Lighting:GetChildren()
@@ -1683,7 +1685,7 @@ local function setBackgroundActive(active)
     snowActive = active and (not o or o.MenuSnow ~= false)
     local wantDim  = active and (not o or o.MenuDim  ~= false)
     local wantBlur = active and (not o or o.MenuBlur ~= false)
-    clickGuard.Visible = active and (not o or o.MenuBlockInput ~= false)
+    Koffee._clickGuard.Visible = active and (not o or o.MenuBlockInput ~= false)
     tween(dim, Theme.Animation.WindowFade, {
         BackgroundTransparency = wantDim and (1 - Theme.Background.DimTransparency) or 1,
     })
@@ -3208,6 +3210,14 @@ end
 -- COLOR PICKER (popup: SV area + hue slider + hex input)
 -- Parented to `screen` so it renders above the window CanvasGroup.
 -- Reused across all color swatches: one picker instance, retargeted.
+-- v0.58.0: the whole section is an IIFE so its internal helpers (parseHex,
+-- ColorPicker, makeRainbowSequence, buildColorPicker, openColorPicker) do NOT
+-- consume main-chunk registers -- the main function is at the 200 local ceiling
+-- and the executor compiles UNOPTIMIZED (O0), where every named local counts.
+-- colorSwatch + closeColorPicker + the ColorPicker state (all touched by other
+-- sections, e.g. the outside-click handler) are published as chunk upvalues.
+local colorSwatch, closeColorPicker, ColorPicker
+;(function()
 local function parseHex(str)
     if not str then return nil end
     str = str:gsub("#", ""):gsub("%s", "")
@@ -3219,7 +3229,7 @@ local function parseHex(str)
     return Color3.fromRGB(r, g, b)
 end
 
-local ColorPicker = { root = nil, activeSwatch = nil, callback = nil, h = 0, s = 0, v = 0,
+ColorPicker = { root = nil, activeSwatch = nil, callback = nil, h = 0, s = 0, v = 0,
     a = 1, alphaEnabled = false, onAlpha = nil }
 
 local function makeRainbowSequence()
@@ -3238,13 +3248,11 @@ end
 -- v0.58.0: full redesign. Vertical stack -- SV square, a HORIZONTAL hue slider, a
 -- HORIZONTAL alpha slider over a checkerboard, and a bottom row (format selector +
 -- value box + alpha %). Same singleton + open/close API; only the layout changed.
-local function rnd(x) return math.floor(x + 0.5) end
-local CP_W = 248            -- picker width
-local CP_INNER = CP_W - 24  -- minus 12px padding each side
 local function buildColorPicker()
+    local function rnd(x) return math.floor(x + 0.5) end
     local root = new("Frame", {
         Name = "ColorPicker",
-        Size = UDim2.new(0, CP_W, 0, 258),
+        Size = UDim2.new(0, 248, 0, 258),   -- 248 = picker width
         BackgroundColor3 = Theme.Palette.Panel,
         BackgroundTransparency = 0.02,
         BorderSizePixel = 0,
@@ -3484,7 +3492,7 @@ local function buildColorPicker()
         pctBox.Visible = alphaOn
         valueBox.Size = UDim2.new(1, alphaOn and -86 - 52 or -86, 1, 0)
         bottomRow.Position = UDim2.new(0, 0, 0, alphaOn and 208 or 190)
-        root.Size = UDim2.new(0, CP_W, 0, alphaOn and 258 or 240)
+        root.Size = UDim2.new(0, 248, 0, alphaOn and 258 or 240)
     end
     return root
 end
@@ -3512,7 +3520,7 @@ local function openColorPicker(swatchInstance, initialColor, onChange, opts)
     local abs = swatchInstance.AbsolutePosition
     local siz = swatchInstance.AbsoluteSize
     local vp = Workspace.CurrentCamera.ViewportSize
-    local pickerW, pickerH = CP_W, (ColorPicker.alphaEnabled and 258 or 240)
+    local pickerW, pickerH = 248, (ColorPicker.alphaEnabled and 258 or 240)
     local dx = math.min(abs.X, vp.X - pickerW - 8)
     local dy = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
     -- convert screen-space target -> popup Position offset (inset-safe).
@@ -3538,7 +3546,7 @@ local function openColorPicker(swatchInstance, initialColor, onChange, opts)
     ColorPicker.apply()
 end
 
-local function closeColorPicker()
+function closeColorPicker()
     if not ColorPicker.root or not ColorPicker.root.Visible then return end
     -- v0.0.16: track the close thread so openColorPicker can cancel it if
     -- the picker is reopened before the fade completes.
@@ -3565,7 +3573,7 @@ end
 
 -- COLOR SWATCH: clickable, opens picker; also hover-shows a tooltip preview
 -- Optional { onChange = fn(newColor), getColor = fn() -> Color3 } table.
-local function colorSwatch(parent, initialColor, size, opts)
+function colorSwatch(parent, initialColor, size, opts)
     opts = opts or {}
     size = size or 14
     local currentColor = initialColor
@@ -3679,6 +3687,7 @@ local function colorSwatch(parent, initialColor, size, opts)
         getColor = function() return currentColor end,
     }
 end
+end)()   -- end COLOR PICKER IIFE (v0.58.0)
 
 -- DROPDOWN (label above + button that opens popup list below)
 -- Popup is parented to `screen` (NOT the panel/window) so it renders
