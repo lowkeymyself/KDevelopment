@@ -1,7 +1,7 @@
--- koffee v0.61.0
+-- koffee v0.61.1
 
 local Koffee = {}
-Koffee.Version = "0.61.0"
+Koffee.Version = "0.61.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -3258,9 +3258,11 @@ end
 -- value box + alpha %). Same singleton + open/close API; only the layout changed.
 local function buildColorPicker()
     local function rnd(x) return math.floor(x + 0.5) end
+    -- v0.61.1: bigger for easier editing. W = width, SV_H = square, sliders taller.
+    local W, SV_H, ROW_H, TRACK_H, HANDLE = 300, 176, 18, 14, 18
     local root = new("Frame", {
         Name = "ColorPicker",
-        Size = UDim2.new(0, 248, 0, 258),   -- 248 = picker width
+        Size = UDim2.new(0, W, 0, 300),
         BackgroundColor3 = Theme.Palette.Panel,
         BackgroundTransparency = 0.02,
         BorderSizePixel = 0,
@@ -3268,7 +3270,7 @@ local function buildColorPicker()
         ZIndex = 250,
         Parent = popupScreen,
     }, {
-        corner(10),
+        corner(12),
         stroke(Theme.Palette.Border, 1),
         new("UIPadding", {
             PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12),
@@ -3279,7 +3281,7 @@ local function buildColorPicker()
     -- SV square (full width). Hue background, white left->right, black top->bottom.
     local svArea = new("Frame", {
         Position = UDim2.new(0, 0, 0, 0),
-        Size = UDim2.new(1, 0, 0, 148),
+        Size = UDim2.new(1, 0, 0, SV_H),
         BackgroundColor3 = Color3.fromHSV(0, 1, 1),
         BorderSizePixel = 0, ZIndex = 251, Parent = root,
     }, { corner(10) })
@@ -3297,40 +3299,42 @@ local function buildColorPicker()
     -- middle) + a clean white ring. Not clipped, so it reads at the very edges.
     local svCursor = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 1, 0),
-        Size = UDim2.new(0, 16, 0, 16), BackgroundColor3 = Color3.new(1, 1, 1),
+        Size = UDim2.new(0, 18, 0, 18), BackgroundColor3 = Color3.new(1, 1, 1),
         BorderSizePixel = 0, ZIndex = 254, Parent = svArea,
-    }, { pillCorner(), stroke(Color3.new(1, 1, 1), 2.5) })
+    }, { pillCorner(), stroke(Color3.new(1, 1, 1), 2) })
 
     -- v0.61.0: horizontal slider builder. A clipped rounded TRACK (visual) plus a
     -- circular HANDLE that lives on the row (NOT the track), so it can overhang and
     -- "magnify" the colour in its middle without the track's clip cutting it.
     local function makeSlider(y, buildTrack)
         local row = new("Frame", {
-            Position = UDim2.new(0, 0, 0, y), Size = UDim2.new(1, 0, 0, 16),
+            Position = UDim2.new(0, 0, 0, y), Size = UDim2.new(1, 0, 0, ROW_H),
             BackgroundTransparency = 1, ZIndex = 251, Parent = root,
         })
         local track = new("Frame", {
             AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
-            Size = UDim2.new(1, 0, 0, 12), BackgroundColor3 = Color3.new(1, 1, 1),
+            Size = UDim2.new(1, 0, 0, TRACK_H), BackgroundColor3 = Color3.new(1, 1, 1),
             BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 251, Parent = row,
-        }, { corner(6) })
+        }, { corner(TRACK_H / 2) })
         buildTrack(track)
         local handle = new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
-            Size = UDim2.new(0, 16, 0, 16), BackgroundColor3 = Color3.new(1, 1, 1),
+            Size = UDim2.new(0, HANDLE, 0, HANDLE), BackgroundColor3 = Color3.new(1, 1, 1),
             BorderSizePixel = 0, ZIndex = 254, Parent = row,
-        }, { pillCorner(), stroke(Color3.new(1, 1, 1), 2.5) })
+        }, { pillCorner(), stroke(Color3.new(1, 1, 1), 2) })
         return row, handle
     end
 
-    local hueRow, hueHandle = makeSlider(158, function(track)
+    local hueRow, hueHandle = makeSlider(SV_H + 12, function(track)
         new("UIGradient", { Color = makeRainbowSequence(), Parent = track })
     end)
 
     local alphaFill
-    local alphaRow, alphaHandle = makeSlider(182, function(track)
-        -- checkerboard: two rows of alternating cells, scaled to the track width
-        local CH_COLS = 26
+    local alphaRow, alphaHandle = makeSlider(SV_H + 12 + ROW_H + 8, function(track)
+        -- v0.61.1: checkerboard on a ROUND track. ClipsDescendants clips the cells to
+        -- the track's UICorner, so the bar is perfectly rounded (no square-corner
+        -- "cutout"); alphaFill also carries the same corner as a belt-and-braces round.
+        local CH_COLS = 30
         for i = 0, CH_COLS * 2 - 1 do
             local col, rowi = i % CH_COLS, math.floor(i / CH_COLS)
             if (col + rowi) % 2 == 1 then
@@ -3345,13 +3349,13 @@ local function buildColorPicker()
         alphaFill = new("Frame", {
             Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(1, 1, 1),
             BorderSizePixel = 0, ZIndex = 252, Parent = track,
-        }, { new("UIGradient", { Transparency = NumberSequence.new({
+        }, { corner(TRACK_H / 2), new("UIGradient", { Transparency = NumberSequence.new({
             NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) }) }) })
     end)
 
     -- bottom row: format DROPDOWN (arrow left) + colour chip + value box + alpha %
     local bottomRow = new("Frame", {
-        Position = UDim2.new(0, 0, 0, 206), Size = UDim2.new(1, 0, 0, 26),
+        Position = UDim2.new(0, 0, 0, 240), Size = UDim2.new(1, 0, 0, 30),
         BackgroundTransparency = 1, ZIndex = 251, Parent = root,
     })
     local FORMATS = { "HEX", "RGB", "HSV" }
@@ -3359,44 +3363,61 @@ local function buildColorPicker()
     local fmtBtn = new("TextButton", {
         Text = "", AutoButtonColor = true, BackgroundColor3 = Theme.Palette.PanelElevated,
         BackgroundTransparency = 0.2, BorderSizePixel = 0,
-        Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(0, 60, 1, 0), ZIndex = 252, Parent = bottomRow,
-    }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(0, 64, 1, 0), ZIndex = 252, Parent = bottomRow,
+    }, { corner(7), stroke(Theme.Palette.BorderSubtle) })
     local caret = Koffee.lucideIcon(fmtBtn, "chevron-down", 12, Theme.Palette.TextMuted, 253)
-    caret.AnchorPoint = Vector2.new(0, 0.5); caret.Position = UDim2.new(0, 8, 0.5, 0)
+    caret.AnchorPoint = Vector2.new(0, 0.5); caret.Position = UDim2.new(0, 9, 0.5, 0)
     local fmtLbl = new("TextLabel", {
         Text = "HEX", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-        Position = UDim2.new(0, 24, 0, 0), Size = UDim2.new(1, -28, 1, 0), ZIndex = 253, Parent = fmtBtn,
+        Position = UDim2.new(0, 26, 0, 0), Size = UDim2.new(1, -30, 1, 0), ZIndex = 253, Parent = fmtBtn,
     })
-    -- dropdown menu (drops below, floats over the card; only 3 short options)
-    local fmtMenu = new("Frame", {
-        Visible = false, BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0,
-        Position = UDim2.new(0, 0, 1, 5), Size = UDim2.new(0, 60, 0, #FORMATS * 24 + 8), ZIndex = 262, Parent = fmtBtn,
-    }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+    -- v0.61.1: dropdown menu is a CanvasGroup so it can fade + pop open (animated).
+    local fmtMenu = new("CanvasGroup", {
+        Visible = false, GroupTransparency = 1, BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.02,
+        BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0),
+        Position = UDim2.new(0, 0, 1, 6), Size = UDim2.new(0, 64, 0, #FORMATS * 26 + 8), ZIndex = 262, Parent = fmtBtn,
+    }, { corner(7), stroke(Theme.Palette.BorderSubtle),
         new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
             PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4) }),
         new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
-    local function closeFmtMenu() fmtMenu.Visible = false end
+    local fmtScale = new("UIScale", { Scale = 1, Parent = fmtMenu })
+    local menuOpen = false
+    local function closeFmtMenu()
+        if not menuOpen then return end
+        menuOpen = false
+        tween(fmtMenu, Theme.Animation.Fast, { GroupTransparency = 1 })
+        tween(fmtScale, Theme.Animation.Fast, { Scale = 0.9 })
+        task.delay(Koffee.Anim.wait(0.14), function() if not menuOpen then fmtMenu.Visible = false end end)
+    end
+    local function openFmtMenu()
+        menuOpen = true
+        fmtMenu.Visible = true
+        fmtMenu.GroupTransparency = 1
+        fmtScale.Scale = 0.9
+        tween(fmtMenu, Theme.Animation.Fast, { GroupTransparency = 0 })
+        tween(fmtScale, Theme.Animation.Fast, { Scale = 1 })
+    end
     local chip = new("Frame", {
-        AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 68, 0.5, 0),
-        Size = UDim2.new(0, 18, 0, 18), BackgroundColor3 = Color3.new(1, 1, 1),
+        AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 72, 0.5, 0),
+        Size = UDim2.new(0, 20, 0, 20), BackgroundColor3 = Color3.new(1, 1, 1),
         BorderSizePixel = 0, ZIndex = 252, Parent = bottomRow,
-    }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
     chip:SetAttribute("KUserColor", true)
     local valueBox = new("TextBox", {
         Text = "#FFFFFF", ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
-        Position = UDim2.new(0, 92, 0, 0), Size = UDim2.new(1, -92, 1, 0), ZIndex = 252, Parent = bottomRow,
-    }, { corner(6), stroke(Theme.Palette.BorderSubtle),
-        new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        Position = UDim2.new(0, 100, 0, 0), Size = UDim2.new(1, -100, 1, 0), ZIndex = 252, Parent = bottomRow,
+    }, { corner(7), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9) }) })
     local pctBox = new("TextBox", {
         Text = "100%", ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text, TextXAlignment = Enum.TextXAlignment.Center,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
-        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.new(0, 46, 1, 0),
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.new(0, 50, 1, 0),
         Visible = false, ZIndex = 252, Parent = bottomRow,
-    }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+    }, { corner(7), stroke(Theme.Palette.BorderSubtle) })
 
     -- format the current colour/alpha for the value box
     local function fmtValue(c)
@@ -3436,9 +3457,11 @@ local function buildColorPicker()
         -- SV cursor: sits on the point, filled with the live colour (preview inside)
         svCursor.Position = UDim2.new(ColorPicker.s, 0, 1 - ColorPicker.v, 0)
         svCursor.BackgroundColor3 = c
-        -- hue handle: filled with the live colour, magnified in the middle
+        svCursor.BackgroundTransparency = 0
+        -- hue handle: filled OPAQUE with the live colour, magnified in the middle
         hueHandle.Position = UDim2.new(ColorPicker.h, 0, 0.5, 0)
         hueHandle.BackgroundColor3 = c
+        hueHandle.BackgroundTransparency = 0
         -- alpha handle: filled with the colour AT the current alpha, so the dot itself
         -- shows the transparency (see-through at low alpha); ring stays solid white.
         alphaHandle.Position = UDim2.new(ColorPicker.a, 0, 0.5, 0)
@@ -3495,15 +3518,17 @@ local function buildColorPicker()
         if alphaDrag() then alphaPull(input) end
     end)
 
-    -- format dropdown: click opens the menu; picking an option sets the format.
-    fmtBtn.MouseButton1Click:Connect(function() fmtMenu.Visible = not fmtMenu.Visible end)
+    -- format dropdown: click animates the menu open; picking an option sets the format.
+    fmtBtn.MouseButton1Click:Connect(function()
+        if menuOpen then closeFmtMenu() else openFmtMenu() end
+    end)
     for i, f in ipairs(FORMATS) do
         local opt = new("TextButton", {
             Text = f, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = (i == fmtIdx) and Theme.Palette.Accent or Theme.Palette.Text,
             BackgroundColor3 = Theme.Palette.Pill, BackgroundTransparency = 0.4, AutoButtonColor = true,
-            Size = UDim2.new(1, 0, 0, 22), LayoutOrder = i, ZIndex = 263, Parent = fmtMenu,
-        }, { corner(5) })
+            Size = UDim2.new(1, 0, 0, 24), LayoutOrder = i, ZIndex = 263, Parent = fmtMenu,
+        }, { corner(6) })
         opt.MouseButton1Click:Connect(function()
             fmtIdx = i
             fmtLbl.Text = f
@@ -3539,9 +3564,9 @@ local function buildColorPicker()
         closeFmtMenu()
         alphaRow.Visible = alphaOn
         pctBox.Visible = alphaOn
-        valueBox.Size = UDim2.new(1, alphaOn and -92 - 52 or -92, 1, 0)
-        bottomRow.Position = UDim2.new(0, 0, 0, alphaOn and 206 or 182)
-        root.Size = UDim2.new(0, 248, 0, alphaOn and 258 or 234)
+        valueBox.Size = UDim2.new(1, alphaOn and -100 - 56 or -100, 1, 0)
+        bottomRow.Position = UDim2.new(0, 0, 0, alphaOn and 240 or 214)
+        root.Size = UDim2.new(0, W, 0, alphaOn and 294 or 268)
     end
     return root
 end
@@ -3569,7 +3594,7 @@ local function openColorPicker(swatchInstance, initialColor, onChange, opts)
     local abs = swatchInstance.AbsolutePosition
     local siz = swatchInstance.AbsoluteSize
     local vp = Workspace.CurrentCamera.ViewportSize
-    local pickerW, pickerH = 248, (ColorPicker.alphaEnabled and 258 or 234)
+    local pickerW, pickerH = 300, (ColorPicker.alphaEnabled and 294 or 268)
     local dx = math.min(abs.X, vp.X - pickerW - 8)
     local dy = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
     -- convert screen-space target -> popup Position offset (inset-safe).
