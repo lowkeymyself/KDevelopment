@@ -1,7 +1,7 @@
--- koffee v0.58.4
+-- koffee v0.58.5
 
 local Koffee = {}
-Koffee.Version = "0.58.4"
+Koffee.Version = "0.58.5"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -11340,16 +11340,26 @@ local Combat = {
             -- v0.27.0: TRUE snap. Publish the redirect, then aim exactly this frame:
             -- no sensitivity/smoothing/euler.
             -- v0.58.4: when AimType is Mouse (or Third Person), drive the REAL mouse
-            -- the FULL delta onto the target's exact screen point instead of writing
-            -- cam.CFrame. Games like Phantom Forces aim off the mouse and run their
-            -- own camera, so a written CFrame is stomped/detected while a perfect
-            -- mouse move feeds the game's own aim pipeline. Camera snap otherwise.
+            -- onto the target's exact screen point instead of writing cam.CFrame.
+            -- Games like Phantom Forces aim off the mouse and run their own camera,
+            -- so a written CFrame is stomped/detected while a mouse move feeds the
+            -- game's own aim pipeline. Camera snap otherwise.
+            -- v0.58.5: the mouse move is a feedback loop through the game's own
+            -- sensitivity, so a raw full-delta snap OVERSHOOTS at high in-game sens
+            -- and oscillates (shake/flicker). Smoothing now damps it: OFF = full
+            -- snap (factor 1), ON = delta * 1/Smooth per axis, so it converges in a
+            -- couple of frames without overshoot. Sensitivity stays ignored (perfect).
             plPos, plPart = tpos, part
             if Combat.Aim.ThirdPerson or Combat.Aim.AimType == "Mouse" then
                 local sp = cam:WorldToViewportPoint(tpos)
                 if sp.Z > 0 and mousemoverel then
                     local ml = UserInputService:GetMouseLocation()
-                    pcall(mousemoverel, sp.X - ml.X, sp.Y - ml.Y)
+                    local pfX, pfY = 1, 1
+                    if Combat.Aim.Smooth.Enabled then
+                        pfX = math.clamp(1 / math.max(Combat.Aim.Smooth.X, 0.01), 0, 1)
+                        pfY = math.clamp(1 / math.max(Combat.Aim.Smooth.Y, 0.01), 0, 1)
+                    end
+                    pcall(mousemoverel, (sp.X - ml.X) * pfX, (sp.Y - ml.Y) * pfY)
                 end
             else
                 cam.CFrame = CFrame.new(cam.CFrame.Position, tpos)
