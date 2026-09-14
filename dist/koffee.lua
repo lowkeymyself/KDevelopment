@@ -1,7 +1,7 @@
--- koffee v0.64.0
+-- koffee v0.64.1
 
 local Koffee = {}
-Koffee.Version = "0.64.0"
+Koffee.Version = "0.64.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -6991,6 +6991,10 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         if not isNPC and ((same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr))) then
             hideRigVisuals(rig); return
         end
+        -- v0.64.1: player-list Exclude hides the rig from ESP too (not just aim).
+        if not isNPC and Shared.targetMark and Shared.targetMark(plr) == "exclude" then
+            hideRigVisuals(rig); return
+        end
         -- v0.63.2 TARGET LOCK: while engaged, only prioritized rigs render.
         if not isNPC and Shared.TargetLock.Enabled and Shared.TargetLock._active
         and not Shared.targetLockMatches(plr) then
@@ -12383,8 +12387,8 @@ local Combat = {
         end
         if gpe then return end
         -- v0.0.97 TARGET LOCK toggle key: armed + key pressed -> flip the lock.
-        if Shared.TargetLock.Enabled and Shared.TargetLock.Key
-        and inputMatches(input, Shared.TargetLock.Key) then
+        if Shared.TargetLock.Enabled and Keybinds["targetlock"]
+        and inputMatches(input, Keybinds["targetlock"]) then
             Shared.TargetLock._active = not Shared.TargetLock._active
             if tlStatusUpdater then tlStatusUpdater() end
             return
@@ -12461,8 +12465,8 @@ local Combat = {
             else trigHeld = down(Combat.Trigger.ActivationKey) end
         end
         -- v0.0.97 TARGET LOCK: toggle the lock on a virtual XButton edge
-        if type(Shared.TargetLock.Key) == "string" then
-            if Shared.TargetLock.Enabled and edge(Shared.TargetLock.Key) then
+        if type(Keybinds["targetlock"]) == "string" then
+            if Shared.TargetLock.Enabled and edge(Keybinds["targetlock"]) then
                 Shared.TargetLock._active = not Shared.TargetLock._active
                 if tlStatusUpdater then tlStatusUpdater() end
             end
@@ -12991,168 +12995,6 @@ local Combat = {
             popup:slider("Duration",  0.05, 2, Combat.HitEffects.Kill.Duration, 2, function(v) Combat.HitEffects.Kill.Duration = v end)
             popup:dropdown("Attach",  HFX_ATTACH, Combat.HitEffects.Kill.Attach,
                 function(v) Combat.HitEffects.Kill.Attach = v end)
-        end)
-
-        --== v0.0.97 TARGET LOCK: type a name, arm the toggle, hit the keybind to
-        -- engage. While engaged, only that named player is a valid target for aimbot /
-        -- silent aim / trigger, and ESP renders only them. Hit the keybind again
-        -- (or un-arm) to release back to "everyone".
-        local tlCard = panel(leftCol, "Target Lock")
-        local tlArm = configCheckbox(tlCard, "Armed", Shared.TargetLock.Enabled, function(v)
-            Shared.TargetLock.Enabled = v
-            if not v then Shared.TargetLock._active = false end
-            -- v0.3.1: reflect the Armed change in the status label live.
-            if tlStatusUpdater then tlStatusUpdater() end
-        end)
-        -- name input row
-        local tlNameRow = new("Frame", {
-            Size = UDim2.new(1, 0, 0, CBOX.h),
-            BackgroundTransparency = 1, ZIndex = 34,
-            LayoutOrder = 2, Parent = tlCard,
-        })
-        new("TextLabel", {
-            Text = "Target Name", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
-            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
-            Position = UDim2.new(0, CBOX.off, 0, 0),
-            Size = UDim2.new(1, -CBOX.off - 90, 1, 0),
-            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = tlNameRow,
-        })
-        local tlBox = new("TextBox", {
-            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
-            Size = UDim2.new(0, 80, 0, CBOX.h - 8),
-            Text = Shared.TargetLock.Name or "", PlaceholderText = "Username...",
-            ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
-            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
-            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
-            BorderSizePixel = 0, ZIndex = 36, Parent = tlNameRow,
-        }, { corner(5), stroke(Theme.Palette.BorderSubtle),
-            new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
-        -- v0.3.1: react as you type instead of only on focus loss, so the
-        -- status label + resolver see the new name immediately. FocusLost
-        -- still fires (Text hasn't changed by then, cheap no-op).
-        tlBox:GetPropertyChangedSignal("Text"):Connect(function()
-            Shared.TargetLock.Name = tlBox.Text
-            if tlStatusUpdater then tlStatusUpdater() end
-        end)
-        tlBox.FocusLost:Connect(function(enter)
-            Shared.TargetLock.Name = tlBox.Text
-            if tlStatusUpdater then tlStatusUpdater() end
-        end)
-        -- activation keybind row
-        local tlKeyRow = new("Frame", {
-            Size = UDim2.new(1, 0, 0, CBOX.h),
-            BackgroundTransparency = 1, ZIndex = 34, LayoutOrder = 3, Parent = tlCard,
-        })
-        new("TextLabel", {
-            Text = "Activate Key", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
-            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
-            Position = UDim2.new(0, CBOX.off, 0, 0),
-            -- v0.8.2: was `100, 0` in the Y slot: a SCALE of 100, i.e. a label
-            -- 100x the row height (2200px). It rendered fine only because the text
-            -- is Y-centered in that runaway box and nothing clips it, but it made
-            -- the label swallow clicks far below its row inside the card. The
-            -- "Target Name" label directly above is the correct reference: 1, 0.
-            Size = UDim2.new(1, -CBOX.off - 90, 1, 0),
-            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = tlKeyRow,
-        })
-        local tlKeyPill = new("TextButton", {
-            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
-            Size = UDim2.new(0, 34, 0, 15), AutomaticSize = Enum.AutomaticSize.X,
-            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
-            BorderSizePixel = 0, AutoButtonColor = false,
-            Text = keyLabel(Shared.TargetLock.Key) or "Set", FontFace = Theme.Fonts.Mono,
-            TextSize = Theme.Text.Tiny, TextColor3 = Theme.Palette.TextMuted, ZIndex = 38, Parent = tlKeyRow,
-        }, { pillCorner(), stroke(Theme.Palette.BorderSubtle),
-            new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
-        popFx(tlKeyPill)   -- v0.0.98: target-lock key pill squashes too
-        tlKeyPill.MouseButton1Click:Connect(function()
-            -- v0.3.1: click-again on the same pending pill cancels the
-            -- rebind attempt, preserving the existing key.
-            if pendingActivation and pendingActivation.pill == tlKeyPill then
-                pendingActivation.refresh(); pendingActivation = nil
-                return
-            end
-            if pendingActivation then pendingActivation.refresh() end
-            tlKeyPill.Text = "..."
-            tween(tlKeyPill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
-            -- proxy cfg: the rebind commit writes cfg.ActivationKey (InputBegan +
-            -- XButton poll both do this): mirror into Shared.TargetLock.Key so the
-            -- runtime key reader picks it up.
-            local proxy = {}
-            pendingActivation = { pill = tlKeyPill, cfg = proxy, refresh = function()
-                tlKeyPill.Text = keyLabel(Shared.TargetLock.Key) or "Set"
-            end }
-            -- v0.39.1: rawset, never self[k]=v (that re-enters __newindex and
-            -- throws, leaving pendingActivation stuck on "..." forever).
-            setmetatable(proxy, { __index = function() end, __newindex = function(self, k, v)
-                if k == "ActivationKey" then
-                    Shared.TargetLock.Key = v
-                    tlKeyPill.Text = keyLabel(v) or "Set"
-                    -- v0.3.1: fold the new key into the "ready: press ..." line.
-                    if tlStatusUpdater then tlStatusUpdater() end
-                end
-                rawset(self, k, v)
-            end })
-        end)
-        -- v0.3.1: right-click the target-lock pill to UNBIND (mirror of the
-        -- Delete/Backspace shortcut inside the rebind capture flow).
-        tlKeyPill.MouseButton2Click:Connect(function()
-            if pendingActivation and pendingActivation.pill == tlKeyPill then
-                pendingActivation.refresh(); pendingActivation = nil
-            end
-            Shared.TargetLock.Key = nil
-            tlKeyPill.Text = "Set"
-            tween(tlKeyPill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
-            if tlStatusUpdater then tlStatusUpdater() end
-        end)
-        -- live status label: shows who is locked / none
-        local tlStatus = new("TextLabel", {
-            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
-            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
-            LayoutOrder = 4, ZIndex = 35, Parent = tlCard,
-        })
-        -- status updater: also auto-releases when the locked player leaves / dies
-        -- (the lock cannot dangle on a ghost). Set into the combat IIFE-local slot the
-        -- key-toggle handler already calls.
-        -- v0.3.1: status now walks the full state so the user always knows
-        -- WHY the lock isn't engaged instead of the generic "idle" line.
-        tlStatusUpdater = function()
-            if not Shared.TargetLock.Enabled then
-                tlStatus.Text = "Off: tick Armed to enable"
-                return
-            end
-            local hasName = Shared.TargetLock.Name and Shared.TargetLock.Name ~= ""
-            if not hasName then
-                tlStatus.Text = "Type a target name above"
-                return
-            end
-            if not Shared.TargetLock._active then
-                local keyTxt = Shared.TargetLock.Key and keyLabel(Shared.TargetLock.Key) or "activate key"
-                tlStatus.Text = "Ready: press " .. keyTxt .. " to lock"
-                return
-            end
-            local t = Shared.targetLockPlayer()
-            if not t then
-                tlStatus.Text = "Locked: '" .. Shared.TargetLock.Name .. "' not in game"
-                return
-            end
-            -- Show display name when it differs from Name: helps confirm
-            -- the ranked matcher picked the person the user actually meant.
-            if t.Name ~= t.DisplayName then
-                tlStatus.Text = "Locked -> " .. t.DisplayName .. " (@" .. t.Name .. ")"
-            else
-                tlStatus.Text = "Locked -> " .. t.Name
-            end
-        end
-        tlStatusUpdater()
-        RunService.Heartbeat:Connect(function()
-            if Koffee.dead() then return end
-            if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return end
-            if not Shared.targetLockPlayer() then
-                Shared.TargetLock._active = false
-                tlStatusUpdater()
-            end
         end)
 
         -- :: RIGHT COLUMN ::
@@ -23956,8 +23798,8 @@ end)()
         TextColor3 = Palette.TextFaint, Text = "this is you", LayoutOrder = 6, Parent = content })
     local actsFrame = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 84),
         LayoutOrder = 7, Parent = content })
-    -- teleport offset sliders (simple settings under the actions)
-    local tpWrap = new("Frame", { BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.Y,
+    -- Target Lock control lives here (moved out of Combat's Target Lock card).
+    local tlWrap = new("Frame", { BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.Y,
         Size = UDim2.new(1, 0, 0, 0), LayoutOrder = 8, Parent = content }, {
         new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 2),
             SortOrder = Enum.SortOrder.LayoutOrder }),
@@ -23969,10 +23811,15 @@ end)()
     local spectatingId = nil
     local curPlr = nil
     local flinging = false
-    local tpOffX, tpOffY = 0, 3   -- teleport offset (X/Y sliders below the actions)
     local updateDetail, selectPlayer, rebuildGrid
-    slider(tpWrap, "TP X Offset", 0, 250, 0, 0, function(v) tpOffX = v end)
-    slider(tpWrap, "TP Y Offset", 0, 250, 3, 0, function(v) tpOffY = v end)
+    -- Target Lock (moved out of Combat): Armed checkbox + keybind pill. Arms
+    -- Shared.TargetLock; the key toggles it; while engaged it locks onto the
+    -- Prioritize set (set each player's Status above).
+    local tlArmed = configCheckbox(tlWrap, "Target Lock", Shared.TargetLock.Enabled, function(v)
+        Shared.TargetLock.Enabled = v
+        if not v then Shared.TargetLock._active = false end
+    end)
+    keybindPill(tlArmed.row, "targetlock", nil)
 
     local function ownHumanoid()
         local c = LocalPlayer.Character
@@ -23983,7 +23830,7 @@ end)()
         local hrp = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso") or c.PrimaryPart)
         local thrp = targetChar and (targetChar:FindFirstChild("HumanoidRootPart") or targetChar.PrimaryPart)
         if not (hrp and thrp) then return end
-        pcall(function() hrp.CFrame = thrp.CFrame + Vector3.new(tpOffX, tpOffY, 0) end)
+        pcall(function() hrp.CFrame = thrp.CFrame + Vector3.new(0, 3, 0) end)
     end
     local function restoreCamera()
         spectatingId = nil
@@ -24147,7 +23994,7 @@ end)()
         if infoBtn then infoBtn.Text = "Copy Info" end
         statusWrap.Visible = not isSelf
         actsFrame.Visible = not isSelf
-        tpWrap.Visible = not isSelf
+        tlWrap.Visible = not isSelf
         selfNote.Visible = isSelf
         for _, c in ipairs(statusWrap:GetChildren()) do c:Destroy() end
         if not isSelf then
