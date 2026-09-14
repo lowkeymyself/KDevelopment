@@ -1,7 +1,7 @@
--- koffee v0.64.1
+-- koffee v0.65.0
 
 local Koffee = {}
-Koffee.Version = "0.64.1"
+Koffee.Version = "0.65.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -2698,6 +2698,18 @@ function Shared.aimAllowed(plr, teamCheck)
     if teamCheck and isTeammate and isTeammate(plr) then return false end
     if Shared.IgnoreFriends and isFriend and isFriend(plr) then return false end
     return true
+end
+-- v0.65.0: the custom-graph tier of targetMark. A Custom Features "Target Status"
+-- node calls _customMark(plr, mode) every frame it's active; the mark self-expires
+-- shortly after (TTL) so it clears the moment the node stops painting / is removed.
+Shared._customMarks = {}
+function Shared._customMark(plr, mode)
+    if plr then Shared._customMarks[tostring(plr.UserId)] = { mode = mode, at = os.clock() } end
+end
+function Shared._customTargetMark(plr)
+    local m = plr and Shared._customMarks[tostring(plr.UserId)]
+    if m and (os.clock() - m.at) < 0.3 then return m.mode end
+    return nil
 end
 
 -- v0.0.37: OS-level input from the Koffee Helper (Roblox can't see mouse 4/5).
@@ -16704,7 +16716,7 @@ registerConfig("custom", Koffee.Custom)
         "Text", "Box", "Bar", "Line", "Circle", "Ring", "Image", "Group",
         "3D Ring", "3D Box",
         "Sound", "Notify", "Adorn Part", "Fire Remote", "Set Value",
-        "Teleport", "Set Humanoid", "Velocity", "TP Walk", "Click",
+        "Teleport", "Set Humanoid", "Target Status", "Velocity", "TP Walk", "Click",
         "Koffee Toggle", "Koffee Set", "Build Buffer", "Note",
     }
     -- v0.32.0: shared scripting helpers. rayParams reused across Raycast evals;
@@ -18943,6 +18955,31 @@ registerConfig("custom", Koffee.Custom)
             api:slider("Value", 0, 500, o.Value, 1, function(v) o.Value = v end)
             api:toggle("Restore when off", o.Restore ~= false, function(v) o.Restore = v end)
             api:label("Value input overrides the slider. Re-asserts every frame while yes")
+        end,
+    }
+
+    -- v0.65.0: mark a player Exclude/Prioritize for the whole targeting system
+    -- (aim / silent / trigger / ESP). This is the TOP tier of the resolver, so it
+    -- overrides the player-list Status. Wire it off For Each Player + a condition
+    -- to, e.g., prioritize everyone under 30% health or exclude a whole team.
+    KINDS["Target Status"] = {
+        blurb = "Marks a player Exclude or Prioritize for aim + ESP (beats the player list)",
+        sink = true,
+        ins = { { key = "player", type = "player", label = "Player" },
+                { key = "when", type = "bool", label = "While" } },
+        outs = {},
+        opts = { Mode = "Prioritize" },
+        paint = function(_, o, ins, node, ctx)
+            -- if a When is wired, only mark while it's true; unwired = always.
+            if node.wires and node.wires.when and not (ins.when and ins.when.bool == true) then return end
+            local plr = ins.player and ins.player.player
+            if plr and Shared._customMark then
+                Shared._customMark(plr, o.Mode == "Exclude" and "exclude" or "prioritize")
+            end
+        end,
+        ui = function(api, o)
+            api:dropdown("Mode", { "Prioritize", "Exclude" }, o.Mode, function(v) o.Mode = v end)
+            api:label("Wire a Player (+ optional While). Feeds the top of the target resolver.")
         end,
     }
 
