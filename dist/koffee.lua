@@ -1,7 +1,7 @@
--- koffee v0.61.2
+-- koffee v0.62.0
 
 local Koffee = {}
-Koffee.Version = "0.61.2"
+Koffee.Version = "0.62.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -224,6 +224,7 @@ do
         "eye", "eye-off", "trash-2", "pencil", "crosshair", "target",
         "user", "users", "rotate-cw", "refresh-cw", "circle-plus", "sliders-horizontal",
         "maximize-2", "minimize-2", "navigation",   -- v0.56.0: preview + teleport UI
+        "folder-tree", "info", "server", "music", "keyboard",  -- v0.62.0: window-switcher bar
     }
     local MANIFEST = {
         { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
@@ -2861,6 +2862,9 @@ rebuildConfigTabs = function()
     -- but its module checkboxes just lost their watchers in the wipe above. Let the
     -- anticheat panel re-subscribe + resync its checkboxes to the live state.
     if Shared and Shared._acResync then pcall(Shared._acResync) end
+    -- v0.62.0: replay the window-switcher bar drop-in on a config switch, and
+    -- re-sync each slot's on/off visual to the freshly loaded open-states.
+    if Koffee.Windows and Koffee.Windows.playIntro then pcall(Koffee.Windows.playIntro) end
 end
 
 -- PANEL / CARD (grouped rounded container with optional title)
@@ -23264,6 +23268,9 @@ end
 local function setWindowOpen(open)
     if windowOpen == open then return end
     windowOpen = open
+    -- v0.62.0: publish the primary-interface state to the window manager so its
+    -- drag gate ("only draggable while the main UI is open") needs no chunk upvalue.
+    if Koffee.Windows then Koffee.Windows._setPrimary(open) end
     if open then
         window.Visible = true
         -- v0.48.0: window open honours the Animations > Window Open flag; off
@@ -23337,6 +23344,324 @@ Shared.setWindowOpen = setWindowOpen
 window.GroupTransparency = 0
 window.Visible = true
 setBackgroundActive(true)
+
+-- ==========================================================================
+-- v0.62.0  MULTI-WINDOW FRAMEWORK  (Matcha-style)
+-- A window-switcher bar + the window-manager plumbing (registry / z-order /
+-- drag / persistence) every future panel plugs into. THIS phase ships the BAR
+-- fully working -- toggles, drop-in, hover, on/off, click squish -- but wires
+-- NO window bodies yet, so clicking a slot only flips + persists its state and
+-- animates the bar; nothing spawns. Whole thing lives in one IIFE for its own
+-- O0 register budget; all state is published on Koffee.Windows / Shared.Windows.
+-- ==========================================================================
+;(function()
+    local Palette = Theme.Palette
+    local WM = {}
+    Koffee.Windows = WM
+    Shared.Windows  = WM
+
+    -- primary-interface (main UI) open state. setWindowOpen pushes this in, so the
+    -- drag gate ("only draggable while the main UI is open") needs no chunk upvalue.
+    WM._primaryOpen = true
+    function WM._setPrimary(v) WM._primaryOpen = v and true or false end
+    function WM.primaryOpen() return WM._primaryOpen end
+
+    -- persisted: open-state + saved position per window id. The config loader
+    -- deep-merges these (both are dicts keyed by id, so merge-only round-trips and
+    -- never needs REPLACE); positions are stored as {sx, ox, sy, oy}.
+    WM.persist = { open = {}, pos = {} }
+    registerConfig("windows", WM.persist)
+
+    -- registry. `defs` is the ordered master list; the bar renders defs where
+    -- bar==true. kind "primary" = only visible while the main UI is open;
+    -- "secondary" = a free HUD widget. canFloat = may live outside the main UI.
+    -- dead = the greyed placeholder slot (no interaction). locked = can't close
+    -- (details). No `build` field yet -> nothing spawns this phase.
+    WM.defs = {}
+    WM.byId = {}
+    local function def(d) WM.defs[#WM.defs + 1] = d; WM.byId[d.id] = d end
+
+    def{ id = "main",     icon = "pencil",      label = "Menu",           kind = "primary",   canFloat = false, bar = true, default = true }
+    def{ id = "esp",      icon = "user",        label = "ESP Preview",    kind = "primary",   canFloat = false, bar = true }
+    def{ id = "players",  icon = "users",       label = "Player List",    kind = "primary",   canFloat = false, bar = true }
+    def{ id = "explorer", icon = "folder-tree", label = "Explorer",       kind = "primary",   canFloat = false, bar = true }
+    def{ id = "details",  icon = "info",        label = "Details",        kind = "secondary", canFloat = true,  bar = true, default = true }
+    def{ id = "servers",  icon = "server",      label = "Server Browser", kind = "primary",   canFloat = false, bar = true }
+    def{ id = "media",    icon = "music",       label = "Media",          kind = "secondary", canFloat = true,  bar = true }
+    def{ id = "keybinds", icon = "keyboard",    label = "Keybinds",       kind = "secondary", canFloat = true,  bar = true }
+    -- array list is a window but not a bar slot (its own draggable overlay added
+    -- later); registered here so the framework knows it.
+    def{ id = "arraylist", label = "Array List", kind = "secondary", canFloat = true, bar = false }
+
+    -- seed default open-states only where a config hasn't already provided one.
+    for _, d in ipairs(WM.defs) do
+        if WM.persist.open[d.id] == nil then WM.persist.open[d.id] = d.default and true or false end
+    end
+
+    local function isOpen(id) return WM.persist.open[id] == true end
+    WM.isOpen = isOpen
+
+    -- ---- z-order: click a window -> it goes on top of the others (his rule). ----
+    -- Window bodies (added later) register their frame here; the bar always rides
+    -- above them at BAR_Z. Dormant this phase (no frames), but this is the API.
+    WM._frames = {}
+    function WM.register(id, frame) WM._frames[id] = frame end
+    function WM.raise(id)
+        local top = 39
+        for _, f in pairs(WM._frames) do if f.ZIndex > top then top = f.ZIndex end end
+        local f = WM._frames[id]
+        if f then f.ZIndex = math.min(top + 1, 175) end
+    end
+
+    -- ---- drag: gated on the main UI being open; persists the final position. ----
+    -- `frame` is moved; `handle` is the grab target (a title bar, or the frame
+    -- itself for details / array list -- "no extra bar, just click and drag").
+    function WM.makeDraggable(frame, handle, id)
+        handle = handle or frame
+        handle.Active = true
+        local dragging, startPos, startInput = false, nil, nil
+        handle.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+               and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            if not WM._primaryOpen then return end          -- closed main UI = frozen
+            WM.raise(id)
+            dragging, startPos, startInput = true, frame.Position, input.Position
+            local ended
+            ended = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    local p = frame.Position
+                    WM.persist.pos[id] = { p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset }
+                    if ended then ended:Disconnect() end
+                end
+            end)
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if not dragging then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseMovement
+               and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            local d = input.Position - startInput
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                       startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end)
+    end
+
+    -- ======================= the switcher bar (dock) =======================
+    -- A macOS / Windows-11-taskbar dock: the icon nearest the cursor lifts +
+    -- scales, and its neighbours react by proximity, so sweeping (or just resting
+    -- BETWEEN two icons) ripples a smooth wave instead of lighting one logo. The
+    -- pill stays compact and only grows downward to reveal the on-dots when a
+    -- window is actually open. Effect over strength: everything is subtle.
+    local RunService = game:GetService("RunService")
+    local UIS = game:GetService("UserInputService")
+
+    local BAR_Z = 180
+    local BTN_W, GAP, PAD_X = 38, 6, 10
+    local ICON_PX = 20
+    local ICON_REST_Y = 18                 -- icon centre from pill top
+    local COMPACT_H, EXPANDED_H = 34, 42   -- grows downward only when something is on
+    local DOT_Y = 33                       -- dot centre, tucked just under the icon
+    local SIGMA      = 24                   -- proximity spread (px); wider = more icons ride the wave
+    local LIFT_MAX   = 4                    -- how far the focused icon rises UP (subtle)
+    local SCALE_MAX  = 1.18
+    local PRESS_MUL  = 0.94                 -- click: a barely-there shrink
+    local SMOOTH     = 48                   -- lerp tracking (frame-independent; higher = tighter)
+
+    -- slot count fixes the pill width + each slot's resting X.
+    local N = 0
+    for _, d in ipairs(WM.defs) do if d.bar then N = N + 1 end end
+    local PILL_W = 2 * PAD_X + N * BTN_W + (N - 1) * GAP
+
+    local bar = new("Frame", {
+        Name = KID.name("bar"),
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 0, 10),
+        Size = UDim2.new(0, PILL_W, 0, COMPACT_H),
+        BackgroundColor3 = Palette.Panel,
+        BackgroundTransparency = 0.06,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,       -- hides the dots until the pill grows + fall-in
+        ZIndex = BAR_Z,
+        Parent = screen,
+    }, {
+        new("UICorner", { CornerRadius = UDim.new(1, 0) }),   -- full stadium pill
+        stroke(Palette.Border, 1),
+    })
+    WM._bar = bar
+
+    local slots = {}       -- id  -> rec
+    local barSlots = {}    -- ordered recs (dock loop + layout)
+
+    local function colorFor(d) return isOpen(d.id) and Palette.Text or Palette.TextFaint end
+
+    local function buildSlot(d, order)
+        local cx = PAD_X + (order - 1) * (BTN_W + GAP) + BTN_W / 2
+        local btn = new("TextButton", {
+            Name = KID.name("slot"),
+            Text = "", AutoButtonColor = false, AutoLocalize = false,
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0.5, 0),
+            Position = UDim2.new(0, cx, 0, 0),
+            Size = UDim2.new(0, BTN_W, 0, COMPACT_H),   -- click target = icon zone
+            Active = true, ZIndex = BAR_Z + 1, Parent = bar,
+        })
+        -- holder carries the icon + a UIScale anchored at its own centre, so the
+        -- dock scale grows about the icon rather than the button corner.
+        local holder = new("Frame", {
+            Name = "h", BackgroundTransparency = 1, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0, ICON_REST_Y),
+            Size = UDim2.new(0, ICON_PX, 0, ICON_PX),
+            ZIndex = BAR_Z + 1, Parent = btn,
+        }, { new("UIScale", {}) })
+        local scale = holder:FindFirstChildOfClass("UIScale")
+        local icon = Koffee.lucideIcon(holder, d.icon, ICON_PX, colorFor(d), BAR_Z + 2)
+        -- dot sits below the icon in the grow-down zone; the pill's clip hides it
+        -- until the pill expands (i.e. until this slot is on).
+        local dot = new("Frame", {
+            Name = "d", AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0, DOT_Y),
+            Size = UDim2.new(0, 5, 0, 5),
+            BackgroundColor3 = Palette.Accent,
+            BackgroundTransparency = isOpen(d.id) and 0 or 1,
+            BorderSizePixel = 0, ZIndex = BAR_Z + 2, Parent = btn,
+        }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+
+        local rec = { def = d, btn = btn, holder = holder, scale = scale, icon = icon,
+            dot = dot, cx = cx, lift = 0, sc = 1, pressed = false }
+        slots[d.id] = rec
+        barSlots[#barSlots + 1] = rec
+
+        btn.MouseButton1Down:Connect(function() rec.pressed = true end)
+        btn.MouseButton1Up:Connect(function() rec.pressed = false end)
+        btn.MouseLeave:Connect(function() rec.pressed = false end)   -- press ended off-btn
+        btn.MouseButton1Click:Connect(function() WM.toggle(d.id) end)
+        return rec
+    end
+
+    -- on/off visual: white icon + accent dot when on, dark grey + no dot when off.
+    local function applyVisual(id, animate)
+        local rec = slots[id]; if not rec then return end
+        local on = isOpen(id)
+        local col  = on and Palette.Text or Palette.TextFaint
+        local dotT = on and 0 or 1
+        if animate then
+            tween(rec.icon, Theme.Animation.Fast, { ImageColor3 = col })
+            tween(rec.dot,  Theme.Animation.Fast, { BackgroundTransparency = dotT })
+        else
+            rec.icon.ImageColor3 = col
+            rec.dot.BackgroundTransparency = dotT
+        end
+    end
+    WM.applyVisual = applyVisual
+
+    -- the pill grows downward only while at least one slot is on (to reveal dots).
+    local function refreshHeight(animate)
+        local anyOn = false
+        for _, r in ipairs(barSlots) do if isOpen(r.def.id) then anyOn = true; break end end
+        local h = anyOn and EXPANDED_H or COMPACT_H
+        if animate then tween(bar, Theme.Animation.Menu, { Size = UDim2.new(0, PILL_W, 0, h) })
+        else bar.Size = UDim2.new(0, PILL_W, 0, h) end
+    end
+
+    function WM.toggle(id)
+        local d = WM.byId[id]
+        if not d then return end
+        WM.persist.open[id] = not isOpen(id)
+        applyVisual(id, true)
+        refreshHeight(true)
+        -- (future) create/show or destroy/hide the window body via d.build here.
+    end
+
+    -- build every bar slot in def order, then set the initial pill height.
+    do
+        local order = 0
+        for _, d in ipairs(WM.defs) do
+            if d.bar then order = order + 1; buildSlot(d, order) end
+        end
+    end
+    refreshHeight(false)
+
+    -- ---- the dock wave: proximity lift / scale / spread, lerped every frame ----
+    local introActive = false
+    local function falloff(dist)
+        -- gaussian bell: smooth everywhere (no flat cutoff), so small mouse moves
+        -- always ripple the neighbours -> a continuous wave rather than a peaky pop.
+        return math.exp(-(dist * dist) / (2 * SIGMA * SIGMA))
+    end
+    RunService.RenderStepped:Connect(function(dt)
+        if introActive then return end
+        local mp = UIS:GetMouseLocation()
+        local mx, my = mp.X, mp.Y
+        local baseX, baseY = bar.AbsolutePosition.X, bar.AbsolutePosition.Y
+        -- generous vertical band so the 36px GUI-inset ambiguity never matters.
+        local near = bar.Visible and my > baseY - 44 and my < baseY + bar.AbsoluteSize.Y + 44
+        if not near then
+            -- cheap idle early-out: nothing near, everything already at rest.
+            local resting = true
+            for _, r in ipairs(barSlots) do
+                if r.lift > 0.03 or r.sc < 0.999 or r.sc > 1.001 then resting = false; break end
+            end
+            if resting then return end
+        end
+        local a = 1 - math.exp(-dt * SMOOTH)
+        for _, r in ipairs(barSlots) do
+            local tl, ts = 0, 1
+            if near then
+                local infl = falloff(math.abs(mx - (baseX + r.cx)))
+                tl = LIFT_MAX * infl
+                ts = 1 + (SCALE_MAX - 1) * infl
+            end
+            if r.pressed then ts = ts * PRESS_MUL end
+            -- up/down only: icons never shift left/right, so the wave reads natural.
+            r.lift = r.lift + (tl - r.lift) * a
+            r.sc   = r.sc   + (ts - r.sc)   * a
+            r.holder.Position = UDim2.new(0.5, 0, 0, ICON_REST_Y - r.lift)   -- rises UP
+            r.dot.Position    = UDim2.new(0.5, 0, 0, DOT_Y - r.lift)         -- dot follows
+            r.scale.Scale = r.sc
+        end
+    end)
+
+    -- drop-in: replay on load and on config switch. Resets the dock transforms,
+    -- re-syncs each slot's on/off colour (a loaded config may have flipped states),
+    -- then staggers the icons down from behind the pill's top edge with a settle.
+    function WM.playIntro()
+        introActive = true
+        for _, r in ipairs(barSlots) do
+            r.lift, r.sc, r.pressed = 0, 1, false
+            r.scale.Scale = 1
+        end
+        refreshHeight(false)
+        bar.BackgroundTransparency = 1
+        bar.Position = UDim2.new(0.5, 0, 0, 2)
+        tween(bar, Theme.Animation.Menu, {
+            BackgroundTransparency = 0.06, Position = UDim2.new(0.5, 0, 0, 10),
+        })
+        local i = 0
+        for _, d in ipairs(WM.defs) do
+            if d.bar then
+                i = i + 1
+                local rec = slots[d.id]
+                if rec then
+                    rec.icon.ImageColor3 = colorFor(d)   -- right colour before it appears
+                    rec.icon.ImageTransparency = 1
+                    rec.dot.BackgroundTransparency = 1
+                    rec.holder.Position = UDim2.new(0.5, 0, 0, -22)   -- above (clipped)
+                    local step, id = (i - 1) * 0.035, d.id
+                    task.delay(step, function()
+                        if not rec.holder.Parent then return end
+                        tween(rec.holder, Theme.Animation.Pill, { Position = UDim2.new(0.5, 0, 0, ICON_REST_Y) })
+                        tween(rec.icon, Theme.Animation.Menu, { ImageTransparency = 0 })
+                        if isOpen(id) then tween(rec.dot, Theme.Animation.Menu, { BackgroundTransparency = 0 }) end
+                    end)
+                end
+            end
+        end
+        task.delay((N - 1) * 0.035 + 0.42, function() introActive = false end)
+    end
+
+    WM.playIntro()
+end)()
 
 -- v0.0.36: does this input fire a bind? Binds are EnumItems: a KeyCode
 -- (keyboard) OR a UserInputType (mouse/other button).
