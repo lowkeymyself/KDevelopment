@@ -1,7 +1,7 @@
--- koffee v0.60.1
+-- koffee v0.60.2
 
 local Koffee = {}
-Koffee.Version = "0.60.1"
+Koffee.Version = "0.60.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -2853,6 +2853,10 @@ rebuildConfigTabs = function()
     for _, n in ipairs({ "Visuals", "Combat", "World", "Character", "Custom", "Options", "NPC" }) do
         rebuildTabPanel(n)
     end
+    -- v0.60.2: the Extra tab is not rebuilt here (its Mods loop must not respawn),
+    -- but its module checkboxes just lost their watchers in the wipe above. Let the
+    -- anticheat panel re-subscribe + resync its checkboxes to the live state.
+    if Shared and Shared._acResync then pcall(Shared._acResync) end
 end
 
 -- PANEL / CARD (grouped rounded container with optional title)
@@ -22705,11 +22709,24 @@ function AC.buildPanel(host)
         BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
         AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
     })
-    moduleCheckbox(host, "Brute-force Rubberbands", "bruteforce_rb")
-    moduleCheckbox(host, "Anti-rubberbands", "anti_rb")
+    local cbBrute = moduleCheckbox(host, "Brute-force Rubberbands", "bruteforce_rb")
+    local cbAnti  = moduleCheckbox(host, "Anti-rubberbands", "anti_rb")
     slider(host, "Snap Threshold (studs)", 4, 60, AC.SnapThreshold, 0, function(v) AC.SnapThreshold = v end)
-    slider(host, "Match Radius (studs)", 1, 30, AC.MatchRadius, 0, function(v) AC.MatchRadius = v end)
+    slider(host, "Match Radius (studs)", 1, 75, AC.MatchRadius, 0, function(v) AC.MatchRadius = v end)
     slider(host, "Fight Window (s)", 0.1, 2, AC.Window, 1, function(v) AC.Window = v end)
+    -- v0.60.2 fix: the Extra tab is built once and is NOT in rebuildConfigTabs'
+    -- list, but rebuildConfigTabs wipes EVERY module's Watchers globally. That
+    -- orphaned these checkboxes (a config load, e.g. an auto-load, cleared their
+    -- watcher, so toggling the module updated the arraylist but never the box).
+    -- Re-subscribe + resync to the live module state whenever the config rebuilds.
+    Shared._acResync = function()
+        for _, pr in ipairs({ { cbBrute, "bruteforce_rb" }, { cbAnti, "anti_rb" } }) do
+            local ctrl, id = pr[1], pr[2]
+            local m = Modules[id]
+            ctrl.setState(m and m.Enabled or false)
+            subscribeModule(id, function(s) ctrl.setState(s) end)
+        end
+    end
 end
 end)()
 
