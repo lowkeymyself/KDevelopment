@@ -1,7 +1,7 @@
--- koffee v0.58.5
+-- koffee v0.59.0
 
 local Koffee = {}
-Koffee.Version = "0.58.5"
+Koffee.Version = "0.59.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -5083,6 +5083,7 @@ local ESP = {
         -- drawing people who are not there.
         Rescan         = true,
         RescanRate     = 2,          -- seconds between sweeps
+        OverScan       = false,      -- v0.59.0: resolve rigs by username in workspace (PF-style games)
         TeamCheck      = false,
         VisibleCheck   = false,
         TeamBasedColor = false,      -- team color overrides box outline color on same-team
@@ -6046,6 +6047,45 @@ local function cleanRig(rig)
     pcall(function() rig.distLbl:Destroy() end)
 end
 
+-- v0.59.0: OVER-SCAN. Some games (Phantom Forces, etc.) do not expose the visible
+-- rig as player.Character: the real, hittable model sits in the workspace named
+-- after the username. When Over-scan is on, ESP resolves each player's character by
+-- finding a workspace rig whose name matches their username, preferring that over
+-- player.Character. The candidate list (rig-like Models with a Humanoid/HRP) is
+-- built once per short window and shared, so a burst of resolves costs one
+-- GetDescendants, never one per player, and nothing runs per frame.
+-- lives on ESP (not chunk locals) to keep main-chunk registers free -- the main
+-- function is at the 200 ceiling and the executor compiles unoptimized (O0).
+ESP._osCache = { list = nil, at = 0 }
+function ESP.overScanMatch(plr)
+    if plr == LocalPlayer then return nil end
+    local now = os.clock()
+    if not (ESP._osCache.list and (now - ESP._osCache.at) < 0.5) then
+        local out = {}
+        local ok, d = pcall(function() return Workspace:GetDescendants() end)
+        if ok and type(d) == "table" then
+            for _, inst in ipairs(d) do
+                if inst:IsA("Model")
+                   and (inst:FindFirstChildOfClass("Humanoid") or inst:FindFirstChild("HumanoidRootPart")) then
+                    out[#out + 1] = { inst = inst, name = inst.Name:lower() }
+                end
+            end
+        end
+        ESP._osCache.list, ESP._osCache.at = out, now
+    end
+    local ln = plr.Name:lower()
+    local ld = (plr.DisplayName ~= "" and plr.DisplayName ~= plr.Name) and plr.DisplayName:lower() or nil
+    local exact, contains
+    for _, c in ipairs(ESP._osCache.list) do
+        if c.name == ln or (ld and c.name == ld) then
+            exact = c.inst; break
+        elseif not contains and (c.name:find(ln, 1, true) or (ld and c.name:find(ld, 1, true))) then
+            contains = c.inst
+        end
+    end
+    return exact or contains
+end
+
 -- v0.0.13 orphan-box fix: previous applyESP didn't clean the old rig on CharacterAdded, so
 -- boxRoot/cubeEdges/halo/bb from dead characters stayed in ESP.BoxLayer forever
 -- ("boxes stick after death", "new round doesn't work"). Fix: clean before creating, and hook
@@ -6055,6 +6095,9 @@ local function applyESP(plr)
     local entry = { rig = nil, addedConn = nil, removingConn = nil }
     ESP.Rigs[plr] = entry
     local function attach(character)
+        -- v0.59.0: Over-scan prefers a workspace rig named after the player over
+        -- player.Character (which some games leave empty / stubbed).
+        if ESP.Config.OverScan then character = ESP.overScanMatch(plr) or character end
         if not character then return end
         -- kill the previous rig if there was one: prevents leaked frames
         if entry.rig then
@@ -6076,7 +6119,9 @@ local function applyESP(plr)
             entry.rig = nil
         end
     end)
-    if plr.Character then attach(plr.Character) end
+    -- v0.59.0: attach unconditionally so Over-scan can resolve a rig even when the
+    -- player has no player.Character. attach(nil) with Over-scan off just returns.
+    attach(plr.Character)
 end
 
 -- v0.18.4: a rig is stale when its character left Workspace (games reparent
@@ -6085,10 +6130,19 @@ end
 -- PlayerRemoving never reached us. Every case resolves to strip and rebuild.
 local nextRescan = 0
 local function rescanRigs(applyFn, stripFn)
-    if not ESP.Config.Rescan then return end
+    local overscan = ESP.Config.OverScan
+    -- v0.59.0: run the rescan when EITHER Rescan or Over-scan is on (Over-scan needs
+    -- the periodic pass to pick up / follow workspace rigs even if Rescan is off).
+    if not ESP.Config.Rescan and not overscan then return end
     local now = os.clock()
     if now < nextRescan then return end
     nextRescan = now + math.clamp(ESP.Config.RescanRate or 2, 0.25, 10)
+    -- desired character for a player: Over-scan prefers the workspace rig named
+    -- after them, else falls back to player.Character.
+    local function desired(plr)
+        if overscan then return ESP.overScanMatch(plr) or plr.Character end
+        return plr.Character
+    end
     local todo = {}
     for plr, entry in pairs(ESP.Rigs) do
         local rig = entry.rig
@@ -6096,12 +6150,16 @@ local function rescanRigs(applyFn, stripFn)
             todo[#todo + 1] = { plr, false }
         elseif rig then
             local c = rig.character
+            local want = desired(plr)
             if (not c) or (not c:IsDescendantOf(Workspace))
-               or (plr.Character and plr.Character ~= c) then
+               or (want and want ~= c) then
                 todo[#todo + 1] = { plr, true }
             end
-        elseif plr.Character and plr.Character:IsDescendantOf(Workspace) then
-            todo[#todo + 1] = { plr, true }
+        else
+            local want = desired(plr)
+            if want and want:IsDescendantOf(Workspace) then
+                todo[#todo + 1] = { plr, true }
+            end
         end
     end
     for _, e in ipairs(todo) do
@@ -15461,6 +15519,9 @@ addTab("Visuals", function(root)
         popup:slider("Every (s)", 0.25, 10, ESP.Config.RescanRate, 2,
             function(v) ESP.Config.RescanRate = v end)
     end)
+    -- v0.59.0: Over-scan finds each player's rig by username in the workspace, for
+    -- games where player.Character is not the visible/hittable model (e.g. PF).
+    configCheckbox(espPanel, "Over-scan", ESP.Config.OverScan, function(v) ESP.Config.OverScan = v end)
     local visRow = configCheckbox(espPanel, "Visible Check", ESP.Config.VisibleCheck, function(v) ESP.Config.VisibleCheck = v end)
     attachDualSwatch(visRow.row, ESP.Colors.Visible, ESP.Colors.Hidden,
         function(c) ESP.Colors.Visible = c end,
