@@ -1,7 +1,7 @@
--- koffee v0.62.0
+-- koffee v0.63.0
 
 local Koffee = {}
-Koffee.Version = "0.62.0"
+Koffee.Version = "0.63.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1690,7 +1690,21 @@ local function setBackgroundActive(active)
     snowActive = active and (not o or o.MenuSnow ~= false)
     local wantDim  = active and (not o or o.MenuDim  ~= false)
     local wantBlur = active and (not o or o.MenuBlur ~= false)
-    Koffee._clickGuard.Visible = active and (not o or o.MenuBlockInput ~= false)
+    -- v0.62.0: block the GAME's clicks with a ContextActionService sink instead of a
+    -- fullscreen Active button. No overlay means the mouse keeps its native icons
+    -- (arrow vs the selection cursor), and empty areas of floating windows click
+    -- through to whatever's under them (e.g. the main UI).
+    local block = active and (not o or o.MenuBlockInput ~= false)
+    Koffee._guardAction = Koffee._guardAction or ("KMG_" .. tostring(math.random(100000, 999999)))
+    local cas = game:GetService("ContextActionService")
+    if block then
+        cas:BindActionAtPriority(Koffee._guardAction,
+            function() return Enum.ContextActionResult.Sink end, false, 999999,
+            Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseButton2)
+    else
+        pcall(function() cas:UnbindAction(Koffee._guardAction) end)
+    end
+    Koffee._clickGuard.Visible = false
     tween(dim, Theme.Animation.WindowFade, {
         BackgroundTransparency = wantDim and (1 - Theme.Background.DimTransparency) or 1,
     })
@@ -4709,7 +4723,8 @@ end
 -- Nodes: merging would resurrect entries/rules the user deleted since the save.
 local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true,
     Entries = true, Folders = true, Rules = true, Accessories = true,
-    ExcludeNames = true, ExcludeSigs = true }   -- v0.57.0: NPC learn exclusion lists
+    ExcludeNames = true, ExcludeSigs = true,   -- v0.57.0: NPC learn exclusion lists
+    excludes = true }                          -- v0.62.0: player-list Exclude set (by UserId)
 local function applyInto(target, src)
     for k, v in pairs(src) do
         if type(v) == "table" and type(target[k]) == "table" then
@@ -23363,7 +23378,17 @@ setBackgroundActive(true)
     -- primary-interface (main UI) open state. setWindowOpen pushes this in, so the
     -- drag gate ("only draggable while the main UI is open") needs no chunk upvalue.
     WM._primaryOpen = true
-    function WM._setPrimary(v) WM._primaryOpen = v and true or false end
+    function WM._setPrimary(v)
+        WM._primaryOpen = v and true or false
+        -- primary windows vanish with the main UI; re-evaluate every body's visibility.
+        if WM.bodies then for id in pairs(WM.bodies) do WM.applyBodyVis(id) end end
+        -- the switcher bar is part of the primary interface: it hides with the main
+        -- UI and drops back in when the main UI returns.
+        if WM._bar then
+            WM._bar.Visible = WM._primaryOpen
+            if WM._primaryOpen and WM.playIntro then WM.playIntro() end
+        end
+    end
     function WM.primaryOpen() return WM._primaryOpen end
 
     -- persisted: open-state + saved position per window id. The config loader
@@ -23446,6 +23471,40 @@ setBackgroundActive(true)
         end)
     end
 
+    -- ---- window bodies: frames the bar slots show / hide ----
+    -- A window registers its root via attachBody; the framework owns visibility:
+    -- shown = slot on AND (secondary, or the main UI is open). Primary windows
+    -- vanish with the main UI; secondary ones stay as free HUD overlays.
+    WM.bodies = {}
+    function WM.shouldShow(id)
+        local d = WM.byId[id]
+        if not d or not isOpen(id) then return false end
+        if d.kind == "primary" and not WM._primaryOpen then return false end
+        return true
+    end
+    function WM.applyBodyVis(id)
+        local b = WM.bodies[id]; if not b then return end
+        local show = WM.shouldShow(id)
+        if show == b._shown then return end
+        b._shown = show
+        -- when a body provides onShow/onHide it owns root.Visible (so it can animate);
+        -- otherwise the framework flips it directly.
+        if show then
+            WM.raise(id)
+            if b.onShow then task.spawn(b.onShow) else b.root.Visible = true end
+        else
+            if b.onHide then task.spawn(b.onHide) else b.root.Visible = false end
+        end
+    end
+    function WM.attachBody(id, root, opts)
+        WM.bodies[id] = { root = root, onShow = opts and opts.onShow, onHide = opts and opts.onHide, _shown = false }
+        WM._frames[id] = root                       -- z-order registry
+        root.InputBegan:Connect(function(input)     -- click any window -> to front
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then WM.raise(id) end
+        end)
+        WM.applyBodyVis(id)
+    end
+
     -- ======================= the switcher bar (dock) =======================
     -- A macOS / Windows-11-taskbar dock: the icon nearest the cursor lifts +
     -- scales, and its neighbours react by proximity, so sweeping (or just resting
@@ -23462,7 +23521,7 @@ setBackgroundActive(true)
     local COMPACT_H, EXPANDED_H = 34, 42   -- grows downward only when something is on
     local DOT_Y = 33                       -- dot centre, tucked just under the icon
     local SIGMA      = 24                   -- proximity spread (px); wider = more icons ride the wave
-    local LIFT_MAX   = 4                    -- how far the focused icon rises UP (subtle)
+    local LIFT_MAX   = 3                    -- how far the focused icon rises UP (subtle)
     local SCALE_MAX  = 1.18
     local PRESS_MUL  = 0.94                 -- click: a barely-there shrink
     local SMOOTH     = 48                   -- lerp tracking (frame-independent; higher = tighter)
@@ -23570,7 +23629,7 @@ setBackgroundActive(true)
         WM.persist.open[id] = not isOpen(id)
         applyVisual(id, true)
         refreshHeight(true)
-        -- (future) create/show or destroy/hide the window body via d.build here.
+        WM.applyBodyVis(id)   -- show / hide the attached window body, if any
     end
 
     -- build every bar slot in def order, then set the initial pill height.
@@ -23661,6 +23720,575 @@ setBackgroundActive(true)
     end
 
     WM.playIntro()
+end)()
+
+-- ==========================================================================
+-- v0.62.0  PLAYER LIST window (multi-window system, stage 1: UI + data only)
+-- A primary window plugged into the framework. Grid of everyone's pfp + names
+-- on the left, a detail panel on the right. Status (None/Exclude/Prioritize) is
+-- STORED here but nothing reads it yet -- the targeting swap is stage 2.
+-- Own IIFE for its own O0 register budget; state on Shared.PlayerList.
+-- ==========================================================================
+;(function()
+    local WM = Koffee.Windows
+    if not WM then return end
+    local Palette = Theme.Palette
+    local Players = game:GetService("Players")
+    local Teams   = game:GetService("Teams")
+
+    -- ===== data model =====
+    -- Exclude persists per-UserId (like Ignore Friends); Prioritize is session.
+    -- Keys are tostring(UserId) so the config round-trips (JSON keys are strings).
+    local PL = { excludeIds = {}, priorityIds = {}, _joinAt = {} }
+    PL.persist = { excludes = PL.excludeIds }
+    registerConfig("playerlist", PL.persist)
+    Shared.PlayerList = PL
+    for _, p in ipairs(Players:GetPlayers()) do PL._joinAt[p.UserId] = os.clock() end
+    function PL.statusFor(plr)
+        if not plr then return nil end
+        local k = tostring(plr.UserId)
+        if PL.priorityIds[k] then return "prioritize" end
+        if PL.excludeIds[k] then return "exclude" end
+        return nil
+    end
+    function PL.setStatus(plr, s)
+        if not plr then return end
+        local k = tostring(plr.UserId)
+        PL.priorityIds[k], PL.excludeIds[k] = nil, nil
+        if s == "prioritize" then PL.priorityIds[k] = true
+        elseif s == "exclude" then PL.excludeIds[k] = true end
+    end
+
+    -- team text/colour for a player (display-only). Real teams -> team name;
+    -- no teams in the game -> Ally/Enemy from Koffee's own team-check (isTeammate).
+    local function teamInfo(plr)
+        if plr == LocalPlayer then return "You", Palette.Accent, true end
+        if #Teams:GetChildren() > 0 then
+            if plr.Team then
+                local c = plr.TeamColor and plr.TeamColor.Color or Palette.TextMuted
+                return plr.Team.Name, c, false
+            end
+            return "Neutral", Palette.TextMuted, false
+        end
+        local ally = isTeammate and isTeammate(plr) or false
+        return ally and "Ally" or "Enemy", ally and Palette.Success or Palette.Danger, false
+    end
+
+    -- ===== window root =====
+    local W, H = 640, 440
+    local SCALE = 1.2                   -- whole window scaled up (CanvasGroup renders at its
+                                        -- AbsoluteSize, so text stays crisp). Bigger base +
+                                        -- smaller scale = same footprint, smaller contents.
+    local PADX, LEFT_W = 14, 379
+    local rightX = PADX + LEFT_W + 20
+    local rightW = W - rightX - PADX
+    local root = new("CanvasGroup", {
+        Name = KID.name("plist"), Active = false, GroupTransparency = 0,   -- empty areas click through
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 340, 0.5, 20),
+        Size = UDim2.new(0, W, 0, H), BackgroundColor3 = Palette.Background,
+        BorderSizePixel = 0, Visible = false, ZIndex = 50, Parent = screen,
+    }, { corner(Theme.Radius.Large), stroke(Palette.Border), new("UIScale", { Scale = SCALE }) })
+    local uscale = root:FindFirstChildOfClass("UIScale")
+    do
+        local p = WM.persist.pos and WM.persist.pos.players
+        if p then root.Position = UDim2.new(p[1], p[2], p[3], p[4]) end
+    end
+
+    -- ---- header (drag handle + title + live count) ----
+    local header = new("Frame", {
+        Name = "hdr", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34), Parent = root,
+    })
+    local hicon = Koffee.lucideIcon(header, "users", 14, Palette.TextMuted)
+    hicon.AnchorPoint = Vector2.new(0, 0.5); hicon.Position = UDim2.new(0, 14, 0.5, 0)
+    -- title as text + real dot frames (no glyph separators -> never a missing-glyph box).
+    local titleRow = new("Frame", { BackgroundTransparency = 1, Position = UDim2.new(0, 32, 0, 0),
+        Size = UDim2.new(1, -42, 1, 0), Parent = header }, {
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+            VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 8),
+            SortOrder = Enum.SortOrder.LayoutOrder }),
+    })
+    local function titleTxt(t, color, order)
+        return new("TextLabel", { BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.X,
+            Size = UDim2.new(0, 0, 1, 0), FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            TextColor3 = color, Text = t, LayoutOrder = order, Parent = titleRow })
+    end
+    local function titleDot(order)
+        new("Frame", { BackgroundColor3 = Palette.TextFaint, BorderSizePixel = 0,
+            Size = UDim2.new(0, 3, 0, 3), LayoutOrder = order, Parent = titleRow }, { corner(2) })
+    end
+    titleTxt("Koffee", Palette.Text, 1)
+    titleDot(2)
+    titleTxt("Player List", Palette.TextMuted, 3)
+    titleDot(4)
+    local countLbl = titleTxt("0", Palette.Accent, 5)
+    local function setTitle(n) countLbl.Text = tostring(n) end
+
+    -- ---- search + grid ----
+    local search = new("TextBox", {
+        Name = "search", PlaceholderText = "Search player...", Text = "", ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body, TextColor3 = Palette.Text,
+        PlaceholderColor3 = Palette.TextFaint, TextXAlignment = Enum.TextXAlignment.Left,
+        BackgroundColor3 = Palette.Panel, BorderSizePixel = 0,
+        Position = UDim2.new(0, PADX, 0, 40), Size = UDim2.new(0, LEFT_W, 0, 30), Parent = root,
+    }, { corner(8), stroke(Palette.BorderSubtle),
+         new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
+
+    local gridScroll = new("ScrollingFrame", {
+        Name = "grid", BackgroundTransparency = 1, BorderSizePixel = 0,
+        Position = UDim2.new(0, PADX, 0, 80), Size = UDim2.new(0, LEFT_W, 1, -92),
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 4, ScrollBarImageColor3 = Palette.Border,
+        ScrollingDirection = Enum.ScrollingDirection.Y, Parent = root,
+    }, {
+        new("UIGridLayout", {
+            CellSize = UDim2.new(0, 82, 0, 118), CellPadding = UDim2.new(0, 9, 0, 9),
+            SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Left,
+        }),
+        new("UIPadding", { PaddingRight = UDim.new(0, 8) }),
+    })
+
+    -- divider + detail column (persistent shell; updated in place so the User ID
+    -- odometer can animate old -> new instead of the whole panel rebuilding).
+    new("Frame", { BackgroundColor3 = Palette.BorderSubtle, BorderSizePixel = 0,
+        Position = UDim2.new(0, rightX - 12, 0, 44), Size = UDim2.new(0, 1, 1, -58), Parent = root })
+    local detail = new("Frame", { Name = "detail", BackgroundTransparency = 1,
+        Position = UDim2.new(0, rightX, 0, 44), Size = UDim2.new(0, rightW, 1, -58), Parent = root })
+    local placeholder = new("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+        FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body, TextColor3 = Palette.TextFaint,
+        Text = "select a player", Parent = detail })
+    local content = new("Frame", { BackgroundTransparency = 1, Visible = false, Size = UDim2.new(1, 0, 1, 0),
+        Parent = detail }, {
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 8),
+            SortOrder = Enum.SortOrder.LayoutOrder }),
+    })
+    -- header: pfp left, name + user to the right
+    local dHead = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 56),
+        LayoutOrder = 1, Parent = content })
+    local dPfp = new("ImageLabel", { BackgroundColor3 = Palette.PanelElevated, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+        Size = UDim2.new(0, 56, 0, 56), Parent = dHead }, { corner(10) })
+    local dName = new("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 66, 0, 11),
+        Size = UDim2.new(1, -66, 0, 18), TextXAlignment = Enum.TextXAlignment.Left, FontFace = Theme.Fonts.Bold,
+        TextSize = Theme.Text.Header, TextColor3 = Palette.Text, TextTruncate = Enum.TextTruncate.AtEnd,
+        Text = "", Parent = dHead })
+    local dUser = new("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 66, 0, 30),
+        Size = UDim2.new(1, -66, 0, 14), TextXAlignment = Enum.TextXAlignment.Left, FontFace = Theme.Fonts.Bold,
+        TextSize = Theme.Text.Small, TextColor3 = Palette.TextFaint, TextTruncate = Enum.TextTruncate.AtEnd,
+        Text = "", Parent = dHead })
+    new("Frame", { BackgroundColor3 = Palette.BorderSubtle, BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 1), LayoutOrder = 2, Parent = content })
+    local function labelRow(order, label)
+        local r = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18),
+            LayoutOrder = order, Parent = content })
+        new("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(0.5, 0, 1, 0),
+            TextXAlignment = Enum.TextXAlignment.Left, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            TextColor3 = Palette.TextMuted, Text = label, Parent = r })
+        return r
+    end
+    local idRow = labelRow(3, "User ID")
+    local teamRow = labelRow(4, "Team")
+    local dTeam = new("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0.5, 0, 0, 0),
+        Size = UDim2.new(0.5, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Right, FontFace = Theme.Fonts.Bold,
+        TextSize = Theme.Text.Small, TextColor3 = Palette.Text, Text = "", Parent = teamRow })
+
+    -- odometer: User ID animates digit-by-digit (roll up/down, add/remove) with a
+    -- faint fade during the motion to read like motion blur.
+    local ODO_TS, ODO_DW, ODO_DH = 13, 9, 18
+    local idOdo = (function()
+        local holder = new("Frame", { BackgroundTransparency = 1, ClipsDescendants = true,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 0, 0, ODO_DH), AutomaticSize = Enum.AutomaticSize.X, Parent = idRow }, {
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+                HorizontalAlignment = Enum.HorizontalAlignment.Right, VerticalAlignment = Enum.VerticalAlignment.Center,
+                SortOrder = Enum.SortOrder.LayoutOrder }),
+        })
+        local cells = {}
+        local function mkCell(order, ch, entering)
+            local cell = new("Frame", { BackgroundTransparency = 1, ClipsDescendants = true,
+                Size = UDim2.new(0, ODO_DW, 0, ODO_DH), LayoutOrder = order, Parent = holder })
+            local lbl = new("TextLabel", { BackgroundTransparency = 1, Text = ch, FontFace = Theme.Fonts.Bold,
+                TextSize = ODO_TS, TextColor3 = Palette.Text, TextXAlignment = Enum.TextXAlignment.Center,
+                TextYAlignment = Enum.TextYAlignment.Center, Size = UDim2.new(1, 0, 1, 0),
+                Position = UDim2.new(0, 0, 0, entering and ODO_DH or 0), TextTransparency = entering and 1 or 0,
+                Parent = cell })
+            if entering then tween(lbl, Theme.Animation.Menu, { Position = UDim2.new(0, 0, 0, 0), TextTransparency = 0 }) end
+            return { cell = cell, lbl = lbl, ch = ch, gen = 0 }
+        end
+        -- one persistent label per cell: a change slides it out, swaps the glyph at the
+        -- far edge, slides it back. A gen counter drops stale mid-flips so rapid
+        -- switching never leaves ghost digits stacked behind.
+        local function flip(rec, newCh)
+            if rec.ch == newCh then return end
+            local up = (tonumber(newCh) or 0) >= (tonumber(rec.ch) or 0)
+            rec.ch = newCh
+            rec.gen = rec.gen + 1
+            local g, lbl = rec.gen, rec.lbl
+            tween(lbl, Theme.Animation.Menu, { Position = UDim2.new(0, 0, 0, up and -ODO_DH or ODO_DH), TextTransparency = 1 })
+            task.delay(Koffee.Anim.wait(0.14), function()
+                if rec.gen ~= g or not lbl.Parent then return end
+                lbl.Text = newCh
+                lbl.Position = UDim2.new(0, 0, 0, up and ODO_DH or -ODO_DH)
+                lbl.TextTransparency = 0.5   -- faint during the slide = motion-blur feel
+                tween(lbl, Theme.Animation.Menu, { Position = UDim2.new(0, 0, 0, 0), TextTransparency = 0 })
+            end)
+        end
+        -- change count -> only the added digits slide IN or the removed ones slide OUT
+        -- (leading, since numbers are right-aligned); the rest just roll if changed.
+        local api = {}
+        function api.set(str)
+            str = tostring(str)
+            local diff = #str - #cells
+            if diff > 0 then
+                for k = 1, diff do table.insert(cells, k, mkCell(0, str:sub(k, k), true)) end
+            elseif diff < 0 then
+                for _ = 1, -diff do
+                    local rec = table.remove(cells, 1)
+                    local lbl, cc = rec.lbl, rec.cell
+                    rec.gen = rec.gen + 1
+                    tween(lbl, Theme.Animation.Menu, { Position = UDim2.new(0, 0, 0, -ODO_DH), TextTransparency = 1 })
+                    task.delay(Koffee.Anim.wait(0.24), function() if cc then cc:Destroy() end end)
+                end
+            end
+            for i = 1, #cells do
+                cells[i].cell.LayoutOrder = i
+                flip(cells[i], str:sub(i, i))
+            end
+        end
+        return api
+    end)()
+
+    local statusWrap = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 48),
+        LayoutOrder = 5, Parent = content })
+    local selfNote = new("TextLabel", { BackgroundTransparency = 1, Visible = false, Size = UDim2.new(1, 0, 0, 16),
+        TextXAlignment = Enum.TextXAlignment.Left, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+        TextColor3 = Palette.TextFaint, Text = "this is you", LayoutOrder = 6, Parent = content })
+    local actsFrame = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 84),
+        LayoutOrder = 7, Parent = content })
+    -- teleport offset sliders (simple settings under the actions)
+    local tpWrap = new("Frame", { BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.Y,
+        Size = UDim2.new(1, 0, 0, 0), LayoutOrder = 8, Parent = content }, {
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 2),
+            SortOrder = Enum.SortOrder.LayoutOrder }),
+    })
+
+    -- ===== selection state =====
+    local cards = {}
+    local selectedId = nil
+    local spectatingId = nil
+    local curPlr = nil
+    local flinging = false
+    local tpOffX, tpOffY = 0, 3   -- teleport offset (X/Y sliders below the actions)
+    local updateDetail, selectPlayer, rebuildGrid
+    slider(tpWrap, "TP X Offset", 0, 250, 0, 0, function(v) tpOffX = v end)
+    slider(tpWrap, "TP Y Offset", 0, 250, 3, 0, function(v) tpOffY = v end)
+
+    local function ownHumanoid()
+        local c = LocalPlayer.Character
+        return c and c:FindFirstChildOfClass("Humanoid")
+    end
+    local function tpTo(targetChar)
+        local c = LocalPlayer.Character
+        local hrp = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso") or c.PrimaryPart)
+        local thrp = targetChar and (targetChar:FindFirstChild("HumanoidRootPart") or targetChar.PrimaryPart)
+        if not (hrp and thrp) then return end
+        pcall(function() hrp.CFrame = thrp.CFrame + Vector3.new(tpOffX, tpOffY, 0) end)
+    end
+    local function restoreCamera()
+        spectatingId = nil
+        local cam = workspace.CurrentCamera
+        if cam then pcall(function() cam.CameraSubject = ownHumanoid() end) end
+    end
+    -- Fling: adapted from the reference "skid fling" -- cycle the local HRP's CFrame
+    -- around the target with extreme velocity so the physics ejects them; saves +
+    -- restores position, kills fall damage, bails on ejection / timeout. Re-click cancels.
+    local function flingPlayer(plr)
+        if flinging then flinging = false; return end
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = hum and hum.RootPart
+        local tchar = plr and plr.Character
+        local thum = tchar and tchar:FindFirstChildOfClass("Humanoid")
+        local trp = thum and thum.RootPart
+        local thead = tchar and tchar:FindFirstChild("Head")
+        if not (hrp and trp) then return end
+        flinging = true
+        local oldPos = hrp.CFrame
+        local ws = workspace
+        local prevFDH = ws.FallenPartsDestroyHeight
+        pcall(function() ws.FallenPartsDestroyHeight = -50000 end)
+        local bv = Instance.new("BodyVelocity")
+        bv.Name = KID.name("v"); bv.Velocity = Vector3.new(9e8, 9e8, 9e8)
+        bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge); bv.Parent = hrp
+        pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Seated, false) end)
+        local part = (thead and (trp.Position - thead.Position).Magnitude > 5) and thead or trp
+        task.spawn(function()
+            local t0, ang = os.clock(), 0
+            local function fp(pos, angc)
+                pcall(function()
+                    hrp.CFrame = CFrame.new(part.Position) * pos * angc
+                    hrp.AssemblyLinearVelocity = Vector3.new(9e7, 9e8, 9e7)
+                    hrp.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
+                end)
+            end
+            repeat
+                ang = ang + 100
+                local md = thum.MoveDirection * (part.AssemblyLinearVelocity.Magnitude / 1.25)
+                fp(CFrame.new(0, 1.5, 0) + md, CFrame.Angles(math.rad(ang), 0, 0)); task.wait()
+                fp(CFrame.new(0, -1.5, 0) + md, CFrame.Angles(math.rad(ang), 0, 0)); task.wait()
+                fp(CFrame.new(2.25, 1.5, -2.25) + md, CFrame.Angles(math.rad(ang), 0, 0)); task.wait()
+                fp(CFrame.new(-2.25, -1.5, 2.25) + md, CFrame.Angles(math.rad(ang), 0, 0)); task.wait()
+            until not flinging or part.Parent ~= tchar or plr.Parent ~= Players
+                or part.AssemblyLinearVelocity.Magnitude > 500 or os.clock() > t0 + 2.5
+            pcall(function() bv:Destroy() end)
+            pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Seated, true) end)
+            local rt = os.clock()
+            repeat
+                if hrp and hrp.Parent then
+                    pcall(function() hrp.CFrame = oldPos + Vector3.new(0, 0.5, 0) end)
+                    for _, x in ipairs(char:GetChildren()) do
+                        if x:IsA("BasePart") then
+                            x.AssemblyLinearVelocity = Vector3.zero
+                            x.AssemblyAngularVelocity = Vector3.zero
+                        end
+                    end
+                    pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+                end
+                task.wait()
+            until (hrp and (hrp.Position - oldPos.Position).Magnitude < 25) or os.clock() > rt + 2
+            pcall(function() ws.FallenPartsDestroyHeight = prevFDH end)
+            flinging = false
+        end)
+    end
+
+    local followBtn, infoBtn
+    local followId, followConn = nil, nil
+    local RunService = game:GetService("RunService")
+    local function stopFollow()
+        followId = nil
+        if followConn then followConn:Disconnect(); followConn = nil end
+        if followBtn then followBtn.Text = "Follow" end
+    end
+    -- Follow: constantly walk toward the target (re-issues MoveTo, throttled). Re-click cancels.
+    local function toggleFollow()
+        if not curPlr then return end
+        if followId == curPlr.UserId then stopFollow(); return end
+        stopFollow()
+        local target = curPlr
+        followId = target.UserId
+        if followBtn then followBtn.Text = "Following" end
+        local nextAt = 0
+        followConn = RunService.Heartbeat:Connect(function()
+            if followId ~= target.UserId or not target.Parent then stopFollow(); return end
+            local t = os.clock()
+            if t < nextAt then return end
+            nextAt = t + 0.12
+            local myhum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            local thrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+            if myhum and thrp then myhum:MoveTo(thrp.Position) end
+        end)
+    end
+    -- Copy Info: player details -> clipboard.
+    local function copyInfo()
+        if not curPlr then return end
+        local uid = curPlr.UserId
+        local seen, seenStr = PL._joinAt[uid], "unknown"
+        if seen then
+            local s = math.max(0, math.floor(os.clock() - seen))
+            seenStr = string.format("%dm %ds", math.floor(s / 60), s % 60)
+        end
+        local age = 0
+        pcall(function() age = curPlr.AccountAge end)
+        local txt = string.format(
+            "Display: %s\nUsername: @%s\nUser ID: %d\nAccount age: %d days\nSeen this session: %s",
+            curPlr.DisplayName, curPlr.Name, uid, age, seenStr)
+        pcall(function()
+            if setclipboard then setclipboard(txt)
+            elseif toclipboard then toclipboard(txt) end
+        end)
+        if infoBtn then
+            infoBtn.Text = "Copied!"
+            task.delay(1.2, function() if infoBtn and infoBtn.Text == "Copied!" then infoBtn.Text = "Copy Info" end end)
+        end
+    end
+
+    local function actionBtn(text, pos, size, cb)
+        local b = new("TextButton", {
+            Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Bold,
+            TextSize = Theme.Text.Small, TextColor3 = Palette.TextMuted,
+            BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, Position = pos, Size = size, Parent = actsFrame,
+        }, { corner(6), stroke(Palette.BorderSubtle) })
+        b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Palette.Text }) end)
+        b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { TextColor3 = Palette.TextMuted }) end)
+        b.MouseButton1Click:Connect(cb)
+        return b
+    end
+    local half = UDim2.new(0.5, -3, 0, 24)
+    actionBtn("Teleport",   UDim2.new(0, 0, 0, 0),    half, function() if curPlr then tpTo(curPlr.Character) end end)
+    actionBtn("Spectate",   UDim2.new(0.5, 3, 0, 0),  half, function()
+        if not curPlr then return end
+        local h = curPlr.Character and curPlr.Character:FindFirstChildOfClass("Humanoid")
+        if h then
+            spectatingId = curPlr.UserId
+            local cam = workspace.CurrentCamera
+            if cam then pcall(function() cam.CameraSubject = h end) end
+        end
+    end)
+    actionBtn("Unspectate", UDim2.new(0, 0, 0, 30),   half, function() restoreCamera() end)
+    actionBtn("Fling",      UDim2.new(0.5, 3, 0, 30), half, function() if curPlr then flingPlayer(curPlr) end end)
+    followBtn = actionBtn("Follow",    UDim2.new(0, 0, 0, 60),   half, toggleFollow)
+    infoBtn   = actionBtn("Copy Info", UDim2.new(0.5, 3, 0, 60), half, copyInfo)
+
+    function updateDetail(plr)
+        local changed = (plr and plr.UserId) ~= (curPlr and curPlr.UserId)
+        curPlr = plr
+        if not plr or not plr.Parent then content.Visible = false; placeholder.Visible = true; return end
+        placeholder.Visible = false; content.Visible = true
+        local isSelf = (plr == LocalPlayer)
+        dPfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=180&h=180"
+        dName.Text = plr.DisplayName
+        dUser.Text = "@" .. plr.Name
+        idOdo.set(tostring(plr.UserId))
+        local tt, tc = teamInfo(plr)
+        dTeam.Text = tt; dTeam.TextColor3 = tc
+        if followBtn then followBtn.Text = (followId == plr.UserId) and "Following" or "Follow" end
+        if infoBtn then infoBtn.Text = "Copy Info" end
+        statusWrap.Visible = not isSelf
+        actsFrame.Visible = not isSelf
+        tpWrap.Visible = not isSelf
+        selfNote.Visible = isSelf
+        for _, c in ipairs(statusWrap:GetChildren()) do c:Destroy() end
+        if not isSelf then
+            local cur = PL.statusFor(plr)
+            local curName = (cur == "exclude" and "Exclude") or (cur == "prioritize" and "Prioritize") or "None"
+            dropdown(statusWrap, "Status", { "None", "Exclude", "Prioritize" }, curName, function(v)
+                PL.setStatus(plr, (v == "Exclude" and "exclude") or (v == "Prioritize" and "prioritize") or nil)
+            end)
+        end
+        if changed then   -- fade the header (pfp + name + user) in on a new selection
+            dPfp.ImageTransparency, dName.TextTransparency, dUser.TextTransparency = 1, 1, 1
+            tween(dPfp, Theme.Animation.Menu, { ImageTransparency = 0 })
+            tween(dName, Theme.Animation.Menu, { TextTransparency = 0 })
+            tween(dUser, Theme.Animation.Menu, { TextTransparency = 0 })
+        end
+    end
+
+    local function refreshHighlight()
+        for uid, rec in pairs(cards) do
+            local sel = (uid == selectedId)
+            tween(rec.dn, Theme.Animation.Fast, { TextColor3 = sel and Palette.Accent or Palette.Text })
+            if rec.stroke then tween(rec.stroke, Theme.Animation.Fast, { Color = sel and Palette.Accent or Palette.Border }) end
+        end
+    end
+    function selectPlayer(plr)
+        selectedId = plr and plr.UserId or nil
+        WM.raise("players")
+        refreshHighlight()
+        updateDetail(plr)
+    end
+
+    local function makeCard(plr)
+        local card = new("TextButton", { Name = "c" .. plr.UserId, AutoButtonColor = false, Text = "",
+            BackgroundColor3 = Palette.Panel, BorderSizePixel = 0, Parent = gridScroll },
+            { corner(10), stroke(Palette.Border) })
+        local strokeI = card:FindFirstChildOfClass("UIStroke")
+        -- full-body avatar fills the card (rounded on the child, since ClipsDescendants
+        -- is rectangular); legs run under the name strip = "cut off at the bottom".
+        new("ImageLabel", { BackgroundColor3 = Palette.PanelElevated, BorderSizePixel = 0,
+            Image = "rbxthumb://type=Avatar&id=" .. plr.UserId .. "&w=420&h=420",
+            ScaleType = Enum.ScaleType.Crop, Size = UDim2.new(1, 0, 1, 0), Parent = card }, { corner(10) })
+        -- solid name strip (NOT transparent), cleanly separated by a divider line.
+        local strip = new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0),
+            Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = Palette.Panel, BorderSizePixel = 0,
+            ZIndex = 2, Parent = card }, { corner(10) })
+        -- square off the strip's TOP corners so only the bottom two are rounded.
+        new("Frame", { BackgroundColor3 = Palette.Panel, BorderSizePixel = 0, ZIndex = 2,
+            Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 0, 12), Parent = strip })
+        new("Frame", { BackgroundColor3 = Palette.Border, BorderSizePixel = 0, ZIndex = 3,
+            Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 0, 1), Parent = strip })
+        local dn = new("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 4, 0, 3),
+            Size = UDim2.new(1, -8, 0, 11), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3,
+            FontFace = Theme.Fonts.Bold, TextSize = 10, TextColor3 = Palette.Text,
+            TextTruncate = Enum.TextTruncate.AtEnd, Text = plr.DisplayName, Parent = strip })
+        new("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 4, 0, 15),
+            Size = UDim2.new(1, -8, 0, 9), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3,
+            FontFace = Theme.Fonts.Bold, TextSize = 8, TextColor3 = Palette.TextFaint,
+            TextTruncate = Enum.TextTruncate.AtEnd, Text = "@" .. plr.Name, Parent = strip })
+        -- team pill fully INSIDE the pfp's top-right corner.
+        local tt, tc, isSelf = teamInfo(plr)
+        local pill = new("TextLabel", {
+            BackgroundColor3 = isSelf and Palette.Accent or Palette.Background,
+            BackgroundTransparency = isSelf and 0.0 or 0.35, ZIndex = 4,
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -5, 0, 5),
+            AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 15),
+            FontFace = Theme.Fonts.Bold, TextSize = 10,
+            TextColor3 = isSelf and Palette.Background or tc, Text = tt, Parent = card },
+            { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+        card.MouseEnter:Connect(function()
+            if selectedId ~= plr.UserId then tween(dn, Theme.Animation.Fast, { TextColor3 = Palette.Accent }) end end)
+        card.MouseLeave:Connect(function()
+            if selectedId ~= plr.UserId then tween(dn, Theme.Animation.Fast, { TextColor3 = Palette.Text }) end end)
+        card.MouseButton1Click:Connect(function() selectPlayer(plr) end)
+        return { card = card, dn = dn, pill = pill, stroke = strokeI, plr = plr }
+    end
+
+    function rebuildGrid()
+        for _, rec in pairs(cards) do rec.card:Destroy() end
+        cards = {}
+        local q = string.lower(search.Text or "")
+        local list = Players:GetPlayers()
+        local order = 0
+        for _, plr in ipairs(list) do
+            local ok = q == ""
+                or string.find(string.lower(plr.Name), q, 1, true) ~= nil
+                or string.find(string.lower(plr.DisplayName), q, 1, true) ~= nil
+            if ok then
+                local rec = makeCard(plr)
+                rec.card.LayoutOrder = (plr == LocalPlayer) and 0 or (order + 1)
+                cards[plr.UserId] = rec
+                order = order + 1
+            end
+        end
+        refreshHighlight()
+        setTitle(#list)
+    end
+
+    -- ===== live wiring =====
+    Players.PlayerAdded:Connect(function(plr)
+        PL._joinAt[plr.UserId] = os.clock()
+        if root.Visible then rebuildGrid() end
+    end)
+    Players.PlayerRemoving:Connect(function(plr)
+        if plr.UserId == selectedId then selectedId = nil; updateDetail(nil) end
+        if plr.UserId == spectatingId then restoreCamera() end
+        if plr.UserId == followId then stopFollow() end
+        task.defer(function() if root.Visible then rebuildGrid() end end)
+    end)
+    search:GetPropertyChangedSignal("Text"):Connect(function() if root.Visible then rebuildGrid() end end)
+
+    updateDetail(nil)
+
+    -- open / close animation (CanvasGroup fade + a small scale pop).
+    local function animShow()
+        root.Visible = true
+        uscale.Scale = SCALE * 0.94
+        root.GroupTransparency = 1
+        tween(uscale, Theme.Animation.Menu, { Scale = SCALE })
+        tween(root, Theme.Animation.Menu, { GroupTransparency = 0 })
+    end
+    local function animHide()
+        tween(uscale, Theme.Animation.Menu, { Scale = SCALE * 0.94 })
+        tween(root, Theme.Animation.Menu, { GroupTransparency = 1 })
+        task.delay(Koffee.Anim.wait(0.22), function()
+            if not WM.shouldShow("players") then root.Visible = false end
+        end)
+    end
+
+    WM.makeDraggable(root, header, "players")
+    WM.attachBody("players", root, {
+        onShow = function() animShow(); rebuildGrid() end,
+        onHide = animHide,
+    })
 end)()
 
 -- v0.0.36: does this input fire a bind? Binds are EnumItems: a KeyCode
