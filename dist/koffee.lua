@@ -1,7 +1,7 @@
--- koffee v0.61.1
+-- koffee v0.61.2
 
 local Koffee = {}
-Koffee.Version = "0.61.1"
+Koffee.Version = "0.61.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -3458,9 +3458,10 @@ local function buildColorPicker()
         svCursor.Position = UDim2.new(ColorPicker.s, 0, 1 - ColorPicker.v, 0)
         svCursor.BackgroundColor3 = c
         svCursor.BackgroundTransparency = 0
-        -- hue handle: filled OPAQUE with the live colour, magnified in the middle
+        -- hue handle: the PURE hue at the slider position (vivid, matches the rainbow
+        -- directly under it), not the desaturated selected colour.
         hueHandle.Position = UDim2.new(ColorPicker.h, 0, 0.5, 0)
-        hueHandle.BackgroundColor3 = c
+        hueHandle.BackgroundColor3 = Color3.fromHSV(ColorPicker.h, 1, 1)
         hueHandle.BackgroundTransparency = 0
         -- alpha handle: filled with the colour AT the current alpha, so the dot itself
         -- shows the transparency (see-through at low alpha); ring stays solid white.
