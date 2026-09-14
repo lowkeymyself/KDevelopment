@@ -1,7 +1,7 @@
--- koffee v0.59.0
+-- koffee v0.60.0
 
 local Koffee = {}
-Koffee.Version = "0.59.0"
+Koffee.Version = "0.60.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -22569,12 +22569,118 @@ addTab("NPC", function(root) Shared.NPC.buildTab(root) end)
 -- v0.46.0: Extra grows its first sub-tab, Mods: the universal stat mod
 -- from gun research. Pick a source (held tool / any instance), tick values,
 -- pin them held or set-once. Session-only, unpin to restore.
+-- v0.60.0: ANTICHEATS. Two features that fight rubberbanding (an AC teleporting you
+-- back to where you were). Own IIFE for its register budget; publishes
+-- Shared.Anticheat for the Extra tab. Both detect a "backward snap": a jump this
+-- frame too big to be movement (>= SnapThreshold) that lands on a spot you were at
+-- >0.15s ago (within MatchRadius). Normal teleports (spawns, seats) go somewhere
+-- NEW, so they never match the history and are ignored.
+;(function()
+local AC = { SnapThreshold = 16, MatchRadius = 7, Window = 0.5 }
+registerConfig("anticheat", AC)
+Shared.Anticheat = AC
+local RS = RunService
+local KEEP = 1.5   -- seconds of position history kept
+
+local hist = {}
+local lastPos, lastCF = nil, nil
+local fightCF, fightUntil = nil, 0
+local function reset() hist = {}; lastPos, lastCF, fightCF, fightUntil = nil, nil, nil, 0 end
+local function hrp()
+    local c = LocalPlayer.Character
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
+end
+local function slamTo(r, cf)
+    pcall(function()
+        r.CFrame = cf
+        r.AssemblyLinearVelocity = Vector3.zero
+    end)
+end
+-- did we land on a spot we occupied a moment ago? (the signature of a rubberband)
+local function matchesHistory(cur, now)
+    local rad = AC.MatchRadius or 7
+    for i = #hist, 1, -1 do
+        local h = hist[i]
+        if now - h.t > KEEP then break end
+        if (now - h.t) > 0.15 and (h.pos - cur).Magnitude <= rad then return true end
+    end
+    return false
+end
+-- shared responder: while a brute fight is live keep slamming; otherwise detect a
+-- backward snap and slam back to the pre-snap CFrame. Returns true if it acted.
+local function respond(r, now, brute)
+    if brute and now < fightUntil and fightCF then slamTo(r, fightCF); return true end
+    if not lastPos then return false end
+    if (r.Position - lastPos).Magnitude < (AC.SnapThreshold or 16) then return false end
+    if not matchesHistory(r.Position, now) then return false end
+    local back = lastCF or CFrame.new(lastPos)
+    if brute then fightCF, fightUntil = back, now + (AC.Window or 0.5) end
+    slamTo(r, back)
+    return true
+end
+-- Heartbeat owns history + drives the brute response (fast, physics-timed).
+local function hbTick()
+    local r = hrp(); if not r then reset(); return end
+    local now = os.clock()
+    local brute = Modules.bruteforce_rb and Modules.bruteforce_rb.Enabled
+    local anti  = Modules.anti_rb and Modules.anti_rb.Enabled
+    if (brute or anti) and respond(r, now, brute) then return end   -- acted: don't log the bad pos
+    lastPos, lastCF = r.Position, r.CFrame
+    hist[#hist + 1] = { t = now, pos = lastPos }
+    while hist[1] and now - hist[1].t > KEEP do table.remove(hist, 1) end
+end
+-- RenderStepped adds a second correction pass so a local teleport-back script is
+-- caught whichever point in the frame it fires from, and the brute fight gets an
+-- extra slam per frame ("really fast").
+local function rsTick()
+    local r = hrp(); if not r then return end
+    local brute = Modules.bruteforce_rb and Modules.bruteforce_rb.Enabled
+    local anti  = Modules.anti_rb and Modules.anti_rb.Enabled
+    if brute or anti then respond(r, os.clock(), brute) end
+end
+local connHB, connRS
+local function anyOn()
+    return (Modules.bruteforce_rb and Modules.bruteforce_rb.Enabled)
+        or (Modules.anti_rb and Modules.anti_rb.Enabled)
+end
+local function startLoops()
+    if connHB then return end
+    reset()
+    connHB = RS.Heartbeat:Connect(hbTick)
+    connRS = RS.RenderStepped:Connect(rsTick)
+end
+local function stopLoops()
+    if anyOn() then return end   -- the other feature is still using the loops
+    if connHB then connHB:Disconnect(); connHB = nil end
+    if connRS then connRS:Disconnect(); connRS = nil end
+    reset()
+end
+LocalPlayer.CharacterAdded:Connect(reset)
+registerModule("bruteforce_rb", "Brute-force Rubberbands", startLoops, stopLoops)
+registerModule("anti_rb",       "Anti-rubberbands",        startLoops, stopLoops)
+
+function AC.buildPanel(host)
+    new("TextLabel", {
+        Text = "Fights anti-cheat rubberbands (getting teleported back). Brute-force wins the position war vs a server pull; Anti-rubberbands blocks a local teleport-back script.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
+    })
+    moduleCheckbox(host, "Brute-force Rubberbands", "bruteforce_rb")
+    moduleCheckbox(host, "Anti-rubberbands", "anti_rb")
+    slider(host, "Snap Threshold (studs)", 4, 60, AC.SnapThreshold, 0, function(v) AC.SnapThreshold = v end)
+    slider(host, "Match Radius (studs)", 1, 30, AC.MatchRadius, 0, function(v) AC.MatchRadius = v end)
+    slider(host, "Fight Window (s)", 0.1, 2, AC.Window, 1, function(v) AC.Window = v end)
+end
+end)()
+
 addTab("Extra", function(epanel)
     -- v0.48.3: no card title: Combat/Custom cards are titleless so the
     -- secondary bar sits at the very top of the feature box. Same here.
     local card = panel(epanel)
-    local R = Shared.subTabs and Shared.subTabs(card, { "Mods" }) or nil
+    local R = Shared.subTabs and Shared.subTabs(card, { "Mods", "Anticheats" }) or nil
     local host = (R and R["Mods"]) or card
+    if R and R["Anticheats"] and Shared.Anticheat then Shared.Anticheat.buildPanel(R["Anticheats"]) end
     -- pins live across rescans, keyed so a rebuild re-attaches, not dupes.
     -- { on, want, orig, kind } / kind = number|bool|string.
     local pins = {}
