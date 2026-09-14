@@ -1,7 +1,7 @@
--- koffee v0.60.2
+-- koffee v0.61.0
 
 local Koffee = {}
-Koffee.Version = "0.60.2"
+Koffee.Version = "0.61.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1231,6 +1231,10 @@ local function stroke(color, thick)
         Color = color or Theme.Palette.Border,
         Thickness = thick or 1,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        -- v0.61.0: Round joins. The default Miter join spikes out at every rounded
+        -- corner, which reads as tiny rough "outline outliers" all over the UI when
+        -- you look closely. Round hugs the UICorner cleanly. One change, whole UI.
+        LineJoinMode = Enum.LineJoinMode.Round,
     })
 end
 -- v0.0.22: text-specific outline. Contextual mode hugs the GLYPHS of a
@@ -3275,96 +3279,115 @@ local function buildColorPicker()
     -- SV square (full width). Hue background, white left->right, black top->bottom.
     local svArea = new("Frame", {
         Position = UDim2.new(0, 0, 0, 0),
-        Size = UDim2.new(1, 0, 0, 150),
+        Size = UDim2.new(1, 0, 0, 148),
         BackgroundColor3 = Color3.fromHSV(0, 1, 1),
         BorderSizePixel = 0, ZIndex = 251, Parent = root,
-    }, { corner(8) })
+    }, { corner(10) })
     new("Frame", {
         Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(1, 1, 1),
         BorderSizePixel = 0, ZIndex = 252, Parent = svArea,
-    }, { corner(8), new("UIGradient", { Transparency = NumberSequence.new({
+    }, { corner(10), new("UIGradient", { Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) })
     new("Frame", {
         Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0),
         BorderSizePixel = 0, ZIndex = 253, Parent = svArea,
-    }, { corner(8), new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({
+    }, { corner(10), new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) }) }) })
-    -- hollow ring cursor (matches the reference)
+    -- v0.61.0: cursor is a smooth circle FILLED with the live colour (preview in the
+    -- middle) + a clean white ring. Not clipped, so it reads at the very edges.
     local svCursor = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 1, 0),
-        Size = UDim2.new(0, 15, 0, 15), BackgroundTransparency = 1,
-        ZIndex = 254, Parent = svArea,
-    }, { pillCorner(), stroke(Color3.new(1, 1, 1), 2) })
+        Size = UDim2.new(0, 16, 0, 16), BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0, ZIndex = 254, Parent = svArea,
+    }, { pillCorner(), stroke(Color3.new(1, 1, 1), 2.5) })
 
-    -- horizontal hue slider
-    local hueSlider = new("Frame", {
-        Position = UDim2.new(0, 0, 0, 162), Size = UDim2.new(1, 0, 0, 14),
-        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
-        ClipsDescendants = true, ZIndex = 251, Parent = root,
-    }, { corner(5), new("UIGradient", { Color = makeRainbowSequence() }) })
-    local function handle(parent)
-        return new("Frame", {
+    -- v0.61.0: horizontal slider builder. A clipped rounded TRACK (visual) plus a
+    -- circular HANDLE that lives on the row (NOT the track), so it can overhang and
+    -- "magnify" the colour in its middle without the track's clip cutting it.
+    local function makeSlider(y, buildTrack)
+        local row = new("Frame", {
+            Position = UDim2.new(0, 0, 0, y), Size = UDim2.new(1, 0, 0, 16),
+            BackgroundTransparency = 1, ZIndex = 251, Parent = root,
+        })
+        local track = new("Frame", {
+            AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+            Size = UDim2.new(1, 0, 0, 12), BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 251, Parent = row,
+        }, { corner(6) })
+        buildTrack(track)
+        local handle = new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
-            Size = UDim2.new(0, 6, 1, 0), BackgroundColor3 = Color3.new(1, 1, 1),
-            BorderSizePixel = 0, ZIndex = 252, Parent = parent,
-        }, { corner(3), stroke(Color3.fromRGB(0, 0, 0), 1) })
+            Size = UDim2.new(0, 16, 0, 16), BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0, ZIndex = 254, Parent = row,
+        }, { pillCorner(), stroke(Color3.new(1, 1, 1), 2.5) })
+        return row, handle
     end
-    local hueCursor = handle(hueSlider)
 
-    -- horizontal alpha slider over a checkerboard; colour fill fades clear->opaque
-    local alphaBar = new("Frame", {
-        Name = "AlphaBar", Position = UDim2.new(0, 0, 0, 184), Size = UDim2.new(1, 0, 0, 14),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0,
-        ClipsDescendants = true, ZIndex = 251, Parent = root,
-    }, { corner(5) })
-    -- checkerboard: two rows of alternating cells, scaled so it tracks the width
-    local CH_COLS = 28
-    for i = 0, CH_COLS * 2 - 1 do
-        local col, rowi = i % CH_COLS, math.floor(i / CH_COLS)
-        if (col + rowi) % 2 == 1 then
-            new("Frame", {
-                Position = UDim2.new(col / CH_COLS, 0, rowi / 2, 0),
-                Size = UDim2.new(1 / CH_COLS, 1, 0.5, 0),
-                BackgroundColor3 = Color3.fromRGB(150, 150, 150), BorderSizePixel = 0,
-                ZIndex = 251, Parent = alphaBar,
-            })
+    local hueRow, hueHandle = makeSlider(158, function(track)
+        new("UIGradient", { Color = makeRainbowSequence(), Parent = track })
+    end)
+
+    local alphaFill
+    local alphaRow, alphaHandle = makeSlider(182, function(track)
+        -- checkerboard: two rows of alternating cells, scaled to the track width
+        local CH_COLS = 26
+        for i = 0, CH_COLS * 2 - 1 do
+            local col, rowi = i % CH_COLS, math.floor(i / CH_COLS)
+            if (col + rowi) % 2 == 1 then
+                new("Frame", {
+                    Position = UDim2.new(col / CH_COLS, 0, rowi / 2, 0),
+                    Size = UDim2.new(1 / CH_COLS, 1, 0.5, 0),
+                    BackgroundColor3 = Color3.fromRGB(150, 150, 150), BorderSizePixel = 0,
+                    ZIndex = 251, Parent = track,
+                })
+            end
         end
-    end
-    local alphaFill = new("Frame", {
-        Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(1, 1, 1),
-        BorderSizePixel = 0, ZIndex = 252, Parent = alphaBar,
-    }, { new("UIGradient", { Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) }) }) })
-    local alphaCursor = handle(alphaBar)
-    alphaCursor.ZIndex = 253
+        alphaFill = new("Frame", {
+            Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0, ZIndex = 252, Parent = track,
+        }, { new("UIGradient", { Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) }) }) })
+    end)
 
-    -- bottom row: format selector (cycles), value box, alpha %
+    -- bottom row: format DROPDOWN (arrow left) + colour chip + value box + alpha %
     local bottomRow = new("Frame", {
-        Position = UDim2.new(0, 0, 0, 208), Size = UDim2.new(1, 0, 0, 26),
+        Position = UDim2.new(0, 0, 0, 206), Size = UDim2.new(1, 0, 0, 26),
         BackgroundTransparency = 1, ZIndex = 251, Parent = root,
     })
     local FORMATS = { "HEX", "RGB", "HSV" }
     local fmtIdx = 1
     local fmtBtn = new("TextButton", {
-        Text = "HEX", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-        TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.PanelElevated,
-        BackgroundTransparency = 0.2, AutoButtonColor = true, BorderSizePixel = 0,
-        Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(0, 58, 1, 0), ZIndex = 252, Parent = bottomRow,
+        Text = "", AutoButtonColor = true, BackgroundColor3 = Theme.Palette.PanelElevated,
+        BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(0, 60, 1, 0), ZIndex = 252, Parent = bottomRow,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+    local caret = Koffee.lucideIcon(fmtBtn, "chevron-down", 12, Theme.Palette.TextMuted, 253)
+    caret.AnchorPoint = Vector2.new(0, 0.5); caret.Position = UDim2.new(0, 8, 0.5, 0)
+    local fmtLbl = new("TextLabel", {
+        Text = "HEX", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+        BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.new(0, 24, 0, 0), Size = UDim2.new(1, -28, 1, 0), ZIndex = 253, Parent = fmtBtn,
+    })
+    -- dropdown menu (drops below, floats over the card; only 3 short options)
+    local fmtMenu = new("Frame", {
+        Visible = false, BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0,
+        Position = UDim2.new(0, 0, 1, 5), Size = UDim2.new(0, 60, 0, #FORMATS * 24 + 8), ZIndex = 262, Parent = fmtBtn,
     }, { corner(6), stroke(Theme.Palette.BorderSubtle),
-        new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 16) }) })
-    local caret = Koffee.lucideIcon(fmtBtn, "chevron-down", 11, Theme.Palette.TextMuted, 253)
-    caret.AnchorPoint = Vector2.new(1, 0.5); caret.Position = UDim2.new(1, -4, 0.5, 0)
+        new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
+            PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4) }),
+        new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local function closeFmtMenu() fmtMenu.Visible = false end
     local chip = new("Frame", {
-        AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 64, 0.5, 0),
-        Size = UDim2.new(0, 16, 0, 16), BackgroundColor3 = Color3.new(1, 1, 1),
+        AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 68, 0.5, 0),
+        Size = UDim2.new(0, 18, 0, 18), BackgroundColor3 = Color3.new(1, 1, 1),
         BorderSizePixel = 0, ZIndex = 252, Parent = bottomRow,
-    }, { corner(4), stroke(Theme.Palette.Border, 1) })
+    }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
     chip:SetAttribute("KUserColor", true)
     local valueBox = new("TextBox", {
         Text = "#FFFFFF", ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono,
         TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
-        Position = UDim2.new(0, 86, 0, 0), Size = UDim2.new(1, -86, 1, 0), ZIndex = 252, Parent = bottomRow,
+        Position = UDim2.new(0, 92, 0, 0), Size = UDim2.new(1, -92, 1, 0), ZIndex = 252, Parent = bottomRow,
     }, { corner(6), stroke(Theme.Palette.BorderSubtle),
         new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
     local pctBox = new("TextBox", {
@@ -3409,13 +3432,20 @@ local function buildColorPicker()
 
     local function applyToUI()
         svArea.BackgroundColor3 = Color3.fromHSV(ColorPicker.h, 1, 1)
-        svCursor.Position = UDim2.new(ColorPicker.s, 0, 1 - ColorPicker.v, 0)
-        hueCursor.Position = UDim2.new(ColorPicker.h, 0, 0.5, 0)
         local c = Color3.fromHSV(ColorPicker.h, ColorPicker.s, ColorPicker.v)
-        svCursor.BackgroundTransparency = 1
+        -- SV cursor: sits on the point, filled with the live colour (preview inside)
+        svCursor.Position = UDim2.new(ColorPicker.s, 0, 1 - ColorPicker.v, 0)
+        svCursor.BackgroundColor3 = c
+        -- hue handle: filled with the live colour, magnified in the middle
+        hueHandle.Position = UDim2.new(ColorPicker.h, 0, 0.5, 0)
+        hueHandle.BackgroundColor3 = c
+        -- alpha handle: filled with the colour AT the current alpha, so the dot itself
+        -- shows the transparency (see-through at low alpha); ring stays solid white.
+        alphaHandle.Position = UDim2.new(ColorPicker.a, 0, 0.5, 0)
+        alphaHandle.BackgroundColor3 = c
+        alphaHandle.BackgroundTransparency = 1 - ColorPicker.a
         chip.BackgroundColor3 = c
         alphaFill.BackgroundColor3 = c
-        alphaCursor.Position = UDim2.new(ColorPicker.a, 0, 0.5, 0)
         if not valueBox:IsFocused() then valueBox.Text = fmtValue(c) end
         if not pctBox:IsFocused() then pctBox.Text = rnd(ColorPicker.a * 100) .. "%" end
         if ColorPicker.alphaEnabled and ColorPicker.onAlpha then ColorPicker.onAlpha(ColorPicker.a) end
@@ -3432,7 +3462,7 @@ local function buildColorPicker()
         end
         area.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = true; pull(input)
+                dragging = true; closeFmtMenu(); pull(input)
             end
         end)
         area.InputEnded:Connect(function(input)
@@ -3450,14 +3480,14 @@ local function buildColorPicker()
     end
     svArea.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            svDragging = true; svPull(input)
+            svDragging = true; closeFmtMenu(); svPull(input)
         end
     end)
     svArea.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then svDragging = false end
     end)
-    local hueDrag, huePull = bindDrag(hueSlider, function(f) ColorPicker.h = f end)
-    local alphaDrag, alphaPull = bindDrag(alphaBar, function(f) ColorPicker.a = f end)
+    local hueDrag, huePull = bindDrag(hueRow, function(f) ColorPicker.h = f end)
+    local alphaDrag, alphaPull = bindDrag(alphaRow, function(f) ColorPicker.a = f end)
     UserInputService.InputChanged:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
         if svDragging then svPull(input) end
@@ -3465,11 +3495,25 @@ local function buildColorPicker()
         if alphaDrag() then alphaPull(input) end
     end)
 
-    fmtBtn.MouseButton1Click:Connect(function()
-        fmtIdx = (fmtIdx % #FORMATS) + 1
-        fmtBtn.Text = FORMATS[fmtIdx]
-        applyToUI()
-    end)
+    -- format dropdown: click opens the menu; picking an option sets the format.
+    fmtBtn.MouseButton1Click:Connect(function() fmtMenu.Visible = not fmtMenu.Visible end)
+    for i, f in ipairs(FORMATS) do
+        local opt = new("TextButton", {
+            Text = f, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = (i == fmtIdx) and Theme.Palette.Accent or Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.Pill, BackgroundTransparency = 0.4, AutoButtonColor = true,
+            Size = UDim2.new(1, 0, 0, 22), LayoutOrder = i, ZIndex = 263, Parent = fmtMenu,
+        }, { corner(5) })
+        opt.MouseButton1Click:Connect(function()
+            fmtIdx = i
+            fmtLbl.Text = f
+            for _, o in ipairs(fmtMenu:GetChildren()) do
+                if o:IsA("TextButton") then o.TextColor3 = (o.Text == f) and Theme.Palette.Accent or Theme.Palette.Text end
+            end
+            closeFmtMenu()
+            applyToUI()
+        end)
+    end
     valueBox.FocusLost:Connect(function()
         local c = parseValue(valueBox.Text)
         if c then
@@ -3486,17 +3530,18 @@ local function buildColorPicker()
     ColorPicker.root = root
     ColorPicker.apply = applyToUI
     ColorPicker.svArea = svArea
-    ColorPicker.hueSlider = hueSlider
-    ColorPicker.alphaBar = alphaBar
+    ColorPicker.hueSlider = hueRow
+    ColorPicker.alphaBar = alphaRow
     ColorPicker.bottomRow = bottomRow
     ColorPicker.pctBox = pctBox
     -- reflow for alpha: show/hide the alpha slider + %, shift the bottom row, resize.
     ColorPicker.reflow = function(alphaOn)
-        alphaBar.Visible = alphaOn
+        closeFmtMenu()
+        alphaRow.Visible = alphaOn
         pctBox.Visible = alphaOn
-        valueBox.Size = UDim2.new(1, alphaOn and -86 - 52 or -86, 1, 0)
-        bottomRow.Position = UDim2.new(0, 0, 0, alphaOn and 208 or 190)
-        root.Size = UDim2.new(0, 248, 0, alphaOn and 258 or 240)
+        valueBox.Size = UDim2.new(1, alphaOn and -92 - 52 or -92, 1, 0)
+        bottomRow.Position = UDim2.new(0, 0, 0, alphaOn and 206 or 182)
+        root.Size = UDim2.new(0, 248, 0, alphaOn and 258 or 234)
     end
     return root
 end
@@ -3524,7 +3569,7 @@ local function openColorPicker(swatchInstance, initialColor, onChange, opts)
     local abs = swatchInstance.AbsolutePosition
     local siz = swatchInstance.AbsoluteSize
     local vp = Workspace.CurrentCamera.ViewportSize
-    local pickerW, pickerH = 248, (ColorPicker.alphaEnabled and 258 or 240)
+    local pickerW, pickerH = 248, (ColorPicker.alphaEnabled and 258 or 234)
     local dx = math.min(abs.X, vp.X - pickerW - 8)
     local dy = math.min(abs.Y + siz.Y + 6, vp.Y - pickerH - 8)
     -- convert screen-space target -> popup Position offset (inset-safe).
