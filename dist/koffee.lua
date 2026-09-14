@@ -1,7 +1,7 @@
--- koffee v0.58.3
+-- koffee v0.58.4
 
 local Koffee = {}
-Koffee.Version = "0.58.3"
+Koffee.Version = "0.58.4"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -11337,11 +11337,15 @@ local Combat = {
         end
 
         if Combat.Aim.PerfectLock then
-            -- v0.27.0: TRUE snap. Publish the redirect, then set cam.CFrame to an
-            -- exact lookAt this frame: no sensitivity/smoothing/euler, AimType
-            -- ignored. Third Person still drives the cursor at full delta.
+            -- v0.27.0: TRUE snap. Publish the redirect, then aim exactly this frame:
+            -- no sensitivity/smoothing/euler.
+            -- v0.58.4: when AimType is Mouse (or Third Person), drive the REAL mouse
+            -- the FULL delta onto the target's exact screen point instead of writing
+            -- cam.CFrame. Games like Phantom Forces aim off the mouse and run their
+            -- own camera, so a written CFrame is stomped/detected while a perfect
+            -- mouse move feeds the game's own aim pipeline. Camera snap otherwise.
             plPos, plPart = tpos, part
-            if Combat.Aim.ThirdPerson then
+            if Combat.Aim.ThirdPerson or Combat.Aim.AimType == "Mouse" then
                 local sp = cam:WorldToViewportPoint(tpos)
                 if sp.Z > 0 and mousemoverel then
                     local ml = UserInputService:GetMouseLocation()
