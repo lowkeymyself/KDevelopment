@@ -1,7 +1,7 @@
--- koffee v0.60.0
+-- koffee v0.60.1
 
 local Koffee = {}
-Koffee.Version = "0.60.0"
+Koffee.Version = "0.60.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -22583,9 +22583,15 @@ local RS = RunService
 local KEEP = 1.5   -- seconds of position history kept
 
 local hist = {}
-local lastPos, lastCF = nil, nil
-local fightCF, fightUntil = nil, 0
-local function reset() hist = {}; lastPos, lastCF, fightCF, fightUntil = nil, nil, nil, 0 end
+local histN = 0        -- ring buffer count (avoids table.remove's O(n) shift per frame)
+local histHead = 1     -- index of the oldest live entry
+local lastPos, lastCF, lastVel, lastT = nil, nil, nil, nil
+local fightCF, fightUntil, nextRec = nil, 0, 0
+local function reset()
+    hist = {}; histN = 0; histHead = 1
+    lastPos, lastCF, lastVel, lastT = nil, nil, nil, nil
+    fightCF, fightUntil, nextRec = nil, 0, 0
+end
 local function hrp()
     local c = LocalPlayer.Character
     return c and c:FindFirstChild("HumanoidRootPart") or nil
@@ -22596,38 +22602,71 @@ local function slamTo(r, cf)
         r.AssemblyLinearVelocity = Vector3.zero
     end)
 end
+-- mark the current spot as legit (last-good), tracking velocity + time so the next
+-- frame can tell a position teleport apart from plain high velocity.
+local function markGood(r, now)
+    lastPos, lastCF, lastVel, lastT = r.Position, r.CFrame, r.AssemblyLinearVelocity, now
+end
 -- did we land on a spot we occupied a moment ago? (the signature of a rubberband)
 local function matchesHistory(cur, now)
     local rad = AC.MatchRadius or 7
-    for i = #hist, 1, -1 do
+    for i = histN, histHead, -1 do
         local h = hist[i]
-        if now - h.t > KEEP then break end
+        if not h or now - h.t > KEEP then break end
         if (now - h.t) > 0.15 and (h.pos - cur).Magnitude <= rad then return true end
     end
     return false
 end
 -- shared responder: while a brute fight is live keep slamming; otherwise detect a
 -- backward snap and slam back to the pre-snap CFrame. Returns true if it acted.
+-- v0.60.1: a jump only counts as a TELEPORT if position moved further than the
+-- player's own velocity could carry it (excess = displacement - vel*dt). Plain high
+-- velocity (speed) explains its own displacement, so it never reads as a teleport.
 local function respond(r, now, brute)
-    if brute and now < fightUntil and fightCF then slamTo(r, fightCF); return true end
+    if brute and now < fightUntil and fightCF then
+        slamTo(r, fightCF)
+        lastPos, lastCF, lastVel, lastT = fightCF.Position, fightCF, Vector3.zero, now
+        return true
+    end
     if not lastPos then return false end
-    if (r.Position - lastPos).Magnitude < (AC.SnapThreshold or 16) then return false end
+    local dt = math.max(now - (lastT or now), 0)
+    local disp = (r.Position - lastPos).Magnitude
+    local vel = lastVel and lastVel.Magnitude or 0
+    local excess = disp - vel * dt * 1.25   -- 1.25 = jitter tolerance on the velocity term
+    if excess < (AC.SnapThreshold or 16) then return false end
     if not matchesHistory(r.Position, now) then return false end
     local back = lastCF or CFrame.new(lastPos)
     if brute then fightCF, fightUntil = back, now + (AC.Window or 0.5) end
     slamTo(r, back)
+    lastPos, lastCF, lastVel, lastT = back.Position, back, Vector3.zero, now
     return true
 end
 -- Heartbeat owns history + drives the brute response (fast, physics-timed).
+-- v0.60.1: last-good refs update every frame (cheap assignments), but the history
+-- ring is only appended ~25x/s -- enough to know "were you here a moment ago",
+-- without a table churn every frame.
 local function hbTick()
     local r = hrp(); if not r then reset(); return end
     local now = os.clock()
     local brute = Modules.bruteforce_rb and Modules.bruteforce_rb.Enabled
     local anti  = Modules.anti_rb and Modules.anti_rb.Enabled
     if (brute or anti) and respond(r, now, brute) then return end   -- acted: don't log the bad pos
-    lastPos, lastCF = r.Position, r.CFrame
-    hist[#hist + 1] = { t = now, pos = lastPos }
-    while hist[1] and now - hist[1].t > KEEP do table.remove(hist, 1) end
+    markGood(r, now)
+    if now >= nextRec then
+        nextRec = now + 0.04
+        histN = histN + 1
+        hist[histN] = { t = now, pos = lastPos }
+        -- advance the head past entries older than KEEP; compact only when the dead
+        -- prefix grows large, so this is amortized O(1) per append, never per frame.
+        while histHead < histN and (now - hist[histHead].t) > KEEP do
+            hist[histHead] = nil; histHead = histHead + 1
+        end
+        if histHead > 64 then
+            local moved = 0
+            for i = histHead, histN do moved = moved + 1; hist[moved] = hist[i]; hist[i] = nil end
+            histHead, histN = 1, moved
+        end
+    end
 end
 -- RenderStepped adds a second correction pass so a local teleport-back script is
 -- caught whichever point in the frame it fires from, and the brute fight gets an
