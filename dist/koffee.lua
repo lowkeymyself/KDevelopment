@@ -1,7 +1,7 @@
--- koffee v0.63.1
+-- koffee v0.64.0
 
 local Koffee = {}
-Koffee.Version = "0.63.1"
+Koffee.Version = "0.64.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -2656,37 +2656,49 @@ Shared.TargetLock = {
 --   1 = DisplayName contains query
 --   0 = no match
 -- Ties break on the FIRST player scored (arbitrary but deterministic).
+-- v0.63.2: Target Lock now locks onto the player-list PRIORITIZE set (multi-target)
+-- instead of a single typed name. `targetMark` (defined just below) is the resolver;
+-- these two just ask "is the lock engaged, and is this player prioritized?".
 function Shared.targetLockPlayer()
     if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return nil end
-    local query = Shared.TargetLock.Name
-    if not query or query == "" then return nil end
-    query = query:lower()
-
-    local bestPlr, bestScore = nil, 0
     for _, plr in ipairs(Players:GetPlayers()) do
-        local name = plr.Name:lower()
-        local disp = plr.DisplayName:lower()
-        local score
-        if name == query then score = 6
-        elseif disp == query then score = 5
-        elseif name:sub(1, #query) == query then score = 4
-        elseif disp:sub(1, #query) == query then score = 3
-        elseif name:find(query, 1, true) then score = 2
-        elseif disp:find(query, 1, true) then score = 1
-        else score = 0 end
-        if score > bestScore then bestScore, bestPlr = score, plr end
+        if plr ~= Players.LocalPlayer and Shared.targetMark(plr) == "prioritize" then return plr end
     end
-    return bestPlr
+    return nil
 end
 function Shared.targetLockMatches(plr)
     if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return false end
-    return Shared.targetLockPlayer() == plr
+    return Shared.targetMark(plr) == "prioritize"
 end
 local isSameTeam, isFriend, registerConfig, rebuildConfigTabs, isTeammate
 -- v0.0.97 hardening: give the forward-declared registerConfig a real default NOW so
 -- a nil never reaches the registry call sites (the REAL definition is re-assigned
 -- by the config IIFE below: same local slot, later assignment wins at runtime).
 registerConfig = function(name, tbl) end
+
+-- v0.63.2: target eligibility resolver. Precedence: custom-graph (a Custom Features
+-- node -- reserved, nil until stage 3) > player-list status > nothing. Returns
+-- "exclude" | "prioritize" | nil.
+function Shared.targetMark(plr)
+    local cg = Shared._customTargetMark and Shared._customTargetMark(plr)
+    if cg == "exclude" or cg == "prioritize" then return cg end
+    local pl = Shared.PlayerList
+    if pl and pl.statusFor then return pl.statusFor(plr) end
+    return nil
+end
+-- is `plr` a legal aim / trigger target? Exclude = never; lock engaged = ONLY the
+-- Prioritize set; otherwise the normal team-check + ignore-friends filters apply.
+-- (Prioritize is dormant while the lock is off; None defers to those filters.)
+function Shared.aimAllowed(plr, teamCheck)
+    local mark = Shared.targetMark(plr)
+    if mark == "exclude" then return false end
+    if Shared.TargetLock.Enabled and Shared.TargetLock._active then
+        return mark == "prioritize"
+    end
+    if teamCheck and isTeammate and isTeammate(plr) then return false end
+    if Shared.IgnoreFriends and isFriend and isFriend(plr) then return false end
+    return true
+end
 
 -- v0.0.37: OS-level input from the Koffee Helper (Roblox can't see mouse 4/5).
 -- The poll loop at the bottom of the file fills XB1/XB2; binds can be the virtual
@@ -6979,9 +6991,9 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         if not isNPC and ((same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr))) then
             hideRigVisuals(rig); return
         end
-        -- v0.0.97 TARGET LOCK: while engaged, only the named player's rig renders.
+        -- v0.63.2 TARGET LOCK: while engaged, only prioritized rigs render.
         if not isNPC and Shared.TargetLock.Enabled and Shared.TargetLock._active
-        and Shared.targetLockPlayer() ~= plr then
+        and not Shared.targetLockMatches(plr) then
             hideRigVisuals(rig); return
         end
         local dist = (rig.torso.Position - camPos).Magnitude
@@ -10375,14 +10387,11 @@ local Combat = {
                 local alive = char and hum and hum.Health > 0
                 local hcOk = (not cfg.HealthCheck) or (char and healthOk(char, hum))
                 -- v0.0.46: team check (manual list / Advanced) + "Ignore Friends" gate
-                local excluded = (cfg.TeamCheck and isTeammate(plr))
-                              or (Shared.IgnoreFriends and isFriend(plr))
-                if alive and hcOk and not excluded then
-                    -- v0.0.97 TARGET LOCK: while engaged, only the named player is
-                    -- a legal target at all. Everything else is invisible to the
-                    -- targeting loop (aim, silent, trigger all share this).
-                    if not (Shared.TargetLock.Enabled and Shared.TargetLock._active)
-                       or Shared.targetLockPlayer() == plr then
+                -- v0.63.2: unified resolver -- Exclude (never a target) / Prioritize
+                -- (lock engaged -> ONLY these), custom-graph then player-list, folded
+                -- in with the team-check + ignore-friends filters.
+                if alive and hcOk and Shared.aimAllowed(plr, cfg.TeamCheck) then
+                    do
                         local part = aimPart(char, cfg.HitPart)
                         if part then
                             part = poolPick(char, plr, cfg, center) or part
@@ -11774,8 +11783,7 @@ local Combat = {
             if not plr or plr == LocalPlayer then return nil end
             local hum = model:FindFirstChildOfClass("Humanoid")
             if not healthOk(model, hum) then return nil end
-            if Combat.Trigger.TeamCheck and isTeammate(plr) then return nil end
-            if Shared.IgnoreFriends and isFriend(plr) then return nil end
+            if not Shared.aimAllowed(plr, Combat.Trigger.TeamCheck) then return nil end
             return plr
         end
         local hit = castAt(cx, cy)
@@ -11816,9 +11824,7 @@ local Combat = {
                 local char = plr.Character
                 if char then
                     local hum = char:FindFirstChildOfClass("Humanoid")
-                    if healthOk(char, hum)
-                       and not (Combat.Trigger.TeamCheck and isTeammate(plr))
-                       and not (Shared.IgnoreFriends and isFriend(plr)) then
+                    if healthOk(char, hum) and Shared.aimAllowed(plr, Combat.Trigger.TeamCheck) then
                         for _, name in ipairs(parts) do
                             local part = char:FindFirstChild(name)
                             if part then
