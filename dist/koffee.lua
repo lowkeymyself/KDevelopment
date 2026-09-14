@@ -1,7 +1,7 @@
--- koffee v0.63.0
+-- koffee v0.63.1
 
 local Koffee = {}
-Koffee.Version = "0.63.0"
+Koffee.Version = "0.63.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -1690,21 +1690,7 @@ local function setBackgroundActive(active)
     snowActive = active and (not o or o.MenuSnow ~= false)
     local wantDim  = active and (not o or o.MenuDim  ~= false)
     local wantBlur = active and (not o or o.MenuBlur ~= false)
-    -- v0.62.0: block the GAME's clicks with a ContextActionService sink instead of a
-    -- fullscreen Active button. No overlay means the mouse keeps its native icons
-    -- (arrow vs the selection cursor), and empty areas of floating windows click
-    -- through to whatever's under them (e.g. the main UI).
-    local block = active and (not o or o.MenuBlockInput ~= false)
-    Koffee._guardAction = Koffee._guardAction or ("KMG_" .. tostring(math.random(100000, 999999)))
-    local cas = game:GetService("ContextActionService")
-    if block then
-        cas:BindActionAtPriority(Koffee._guardAction,
-            function() return Enum.ContextActionResult.Sink end, false, 999999,
-            Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseButton2)
-    else
-        pcall(function() cas:UnbindAction(Koffee._guardAction) end)
-    end
-    Koffee._clickGuard.Visible = false
+    Koffee._clickGuard.Visible = active and (not o or o.MenuBlockInput ~= false)
     tween(dim, Theme.Animation.WindowFade, {
         BackgroundTransparency = wantDim and (1 - Theme.Background.DimTransparency) or 1,
     })
