@@ -1,7 +1,7 @@
--- koffee v0.66.1
+-- koffee v0.67.0
 
 local Koffee = {}
-Koffee.Version = "0.66.1"
+Koffee.Version = "0.67.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -276,6 +276,11 @@ do
             return cg
         end)
         if hostOk and host then
+            -- v0.67.0: loader UI lives in an IIFE for its own register budget.
+            -- The main chunk rides the 200-local ceiling at O0; this block used
+            -- to spend ~20 of those slots. Flow below is unchanged (manifest loop,
+            -- retry/skip, fade close, no-file-API fallthrough).
+            (function()
             local TweenService = game:GetService("TweenService")
             local ACCENT  = Color3.fromRGB(212, 145, 90)
             local MINT    = Color3.fromRGB(127, 190, 143)
@@ -301,39 +306,82 @@ do
             root.BorderSizePixel = 0
             root.Parent = gui
 
-            -- v0.4.0: subtler loader
-            local brand = Instance.new("TextLabel")
-            brand.AnchorPoint = Vector2.new(0.5, 0)
-            brand.Position = UDim2.new(0.5, 0, 0.5, -34)
-            brand.Size = UDim2.new(0, 220, 0, 24)
-            brand.BackgroundTransparency = 1
-            brand.Text = "koffee"   -- v0.48.3: loader brand is lowercase, per he
-            brand.Font = Enum.Font.GothamMedium
-            brand.TextSize = 20
-            brand.TextColor3 = TEXT
-            brand.TextTransparency = 0.15
-            brand.Parent = root
+            -- v0.67.0: centered card instead of bare floating text. Brand row,
+            -- live file status, thick progress bar with percent + count, and a
+            -- trailing log of the last finished assets. Flow below is untouched.
+            local card = Instance.new("Frame")
+            card.AnchorPoint = Vector2.new(0.5, 0.5)
+            card.Position = UDim2.new(0.5, 0, 0.5, 0)
+            card.Size = UDim2.new(0, 300, 0, 152)
+            card.BackgroundColor3 = PANEL
+            card.BackgroundTransparency = 0.05
+            card.BorderSizePixel = 0
+            card.Parent = root
+            local cardCorner = Instance.new("UICorner")
+            cardCorner.CornerRadius = UDim.new(0, 14)
+            cardCorner.Parent = card
+            local cardStroke = Instance.new("UIStroke")
+            cardStroke.Color = Color3.fromRGB(60, 49, 42)
+            cardStroke.Transparency = 0.4
+            cardStroke.Thickness = 1
+            cardStroke.Parent = card
 
-            local sub = Instance.new("TextLabel")
-            sub.AnchorPoint = Vector2.new(0.5, 0)
-            sub.Position = UDim2.new(0.5, 0, 0.5, -8)
-            sub.Size = UDim2.new(0, 240, 0, 12)
-            sub.BackgroundTransparency = 1
-            sub.Text = "v" .. Koffee.Version
-            sub.Font = Enum.Font.Gotham
-            sub.TextSize = 10
-            sub.TextColor3 = MUTED
-            sub.TextTransparency = 0.4
-            sub.Parent = root
+            local function cardLabel(txt, size, color, trans)
+                local l = Instance.new("TextLabel")
+                l.BackgroundTransparency = 1
+                l.Text = txt
+                l.Font = Enum.Font.Gotham
+                l.TextSize = size
+                l.TextColor3 = color
+                l.TextTransparency = trans or 0
+                l.TextXAlignment = Enum.TextXAlignment.Left
+                l.Parent = card
+                return l
+            end
+
+            local dot = Instance.new("Frame")
+            dot.Position = UDim2.new(0, 18, 0, 20)
+            dot.Size = UDim2.new(0, 8, 0, 8)
+            dot.BackgroundColor3 = ACCENT
+            dot.BorderSizePixel = 0
+            dot.Parent = card
+            local dotCorner = Instance.new("UICorner")
+            dotCorner.CornerRadius = UDim.new(1, 0)
+            dotCorner.Parent = dot
+
+            local brand = cardLabel("koffee", 22, TEXT, 0.1)   -- v0.48.3: lowercase, per he
+            brand.Font = Enum.Font.GothamMedium
+            brand.Position = UDim2.new(0, 32, 0, 8)
+            brand.Size = UDim2.new(0, 180, 0, 28)
+
+            local ver = Instance.new("TextLabel")
+            ver.AnchorPoint = Vector2.new(1, 0)
+            ver.Position = UDim2.new(1, -16, 0, 14)
+            ver.Size = UDim2.new(0, 64, 0, 18)
+            ver.BackgroundColor3 = Color3.fromRGB(50, 40, 34)
+            ver.BackgroundTransparency = 0.2
+            ver.BorderSizePixel = 0
+            ver.Text = "v" .. Koffee.Version
+            ver.Font = Enum.Font.Gotham
+            ver.TextSize = 10
+            ver.TextColor3 = MUTED
+            ver.Parent = card
+            local verCorner = Instance.new("UICorner")
+            verCorner.CornerRadius = UDim.new(1, 0)
+            verCorner.Parent = ver
+
+            local status = cardLabel("", 10, MUTED, 0.3)
+            status.Position = UDim2.new(0, 18, 0, 46)
+            status.Size = UDim2.new(1, -36, 0, 12)
+            status.TextTruncate = Enum.TextTruncate.AtEnd
 
             local track = Instance.new("Frame")
-            track.AnchorPoint = Vector2.new(0.5, 0)
-            track.Position = UDim2.new(0.5, 0, 0.5, 14)
-            track.Size = UDim2.new(0, 160, 0, 2)
-            track.BackgroundColor3 = PANEL
+            track.Position = UDim2.new(0, 18, 0, 66)
+            track.Size = UDim2.new(1, -36, 0, 6)
+            track.BackgroundColor3 = Color3.fromRGB(50, 40, 34)
             track.BackgroundTransparency = 0.35
             track.BorderSizePixel = 0
-            track.Parent = root
+            track.Parent = card
             local tCorner = Instance.new("UICorner")
             tCorner.CornerRadius = UDim.new(1, 0)
             tCorner.Parent = track
@@ -348,26 +396,38 @@ do
             fCorner.CornerRadius = UDim.new(1, 0)
             fCorner.Parent = fill
 
-            local status = Instance.new("TextLabel")
-            status.AnchorPoint = Vector2.new(0.5, 0)
-            status.Position = UDim2.new(0.5, 0, 0.5, 24)
-            status.Size = UDim2.new(0, 260, 0, 12)
-            status.BackgroundTransparency = 1
-            status.Text = ""
-            status.Font = Enum.Font.Gotham
-            status.TextSize = 10
-            status.TextColor3 = MUTED
-            status.TextTransparency = 0.35
-            status.TextTruncate = Enum.TextTruncate.AtEnd
-            status.Parent = root
+            local pctLabel = cardLabel("", 10, MUTED, 0.4)
+            pctLabel.Position = UDim2.new(0, 18, 0, 76)
+            pctLabel.Size = UDim2.new(0, 80, 0, 12)
+
+            local countLabel = cardLabel("", 10, MUTED, 0.4)
+            countLabel.AnchorPoint = Vector2.new(1, 0)
+            countLabel.Position = UDim2.new(1, -18, 0, 76)
+            countLabel.Size = UDim2.new(0, 120, 0, 12)
+            countLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+            local logLines = {}
+            for i = 1, 3 do
+                local l = cardLabel("", 9, MUTED, 0.55 + (i - 1) * 0.15)
+                l.Position = UDim2.new(0, 18, 0, 94 + (i - 1) * 13)
+                l.Size = UDim2.new(1, -36, 0, 12)
+                l.TextTruncate = Enum.TextTruncate.AtEnd
+                logLines[i] = l
+            end
+            local FAILRED = Color3.fromRGB(220, 110, 100)
+            local function pushLog(name, ok)
+                logLines[3].Text = logLines[2].Text
+                logLines[2].Text = logLines[1].Text
+                logLines[1].Text = name
+                logLines[1].TextColor3 = ok and MUTED or FAILRED
+            end
 
             local btnRow = Instance.new("Frame")
-            btnRow.AnchorPoint = Vector2.new(0.5, 0)
-            btnRow.Position = UDim2.new(0.5, 0, 0.5, 46)
-            btnRow.Size = UDim2.new(0, 240, 0, 26)
+            btnRow.Position = UDim2.new(0, 18, 0, 156)
+            btnRow.Size = UDim2.new(1, -36, 0, 26)
             btnRow.BackgroundTransparency = 1
             btnRow.Visible = false
-            btnRow.Parent = root
+            btnRow.Parent = card
 
             local function mkBtn(x, w, label, color)
                 local b = Instance.new("TextButton")
@@ -387,40 +447,35 @@ do
                 bc.Parent = b
                 return b
             end
-            local retryBtn = mkBtn(0, 114, "Retry", TEXT)
-            local skipBtn  = mkBtn(126, 114, "Skip", MUTED)
-
-            local pctLabel = Instance.new("TextLabel")
-            pctLabel.AnchorPoint = Vector2.new(0.5, 0)
-            pctLabel.Position = UDim2.new(0.5, 0, 0.5, -54)
-            pctLabel.Size = UDim2.new(0, 200, 0, 12)
-            pctLabel.BackgroundTransparency = 1
-            pctLabel.Text = ""
-            pctLabel.Font = Enum.Font.Gotham
-            pctLabel.TextSize = 9
-            pctLabel.TextColor3 = MUTED
-            pctLabel.TextTransparency = 0.5
-            pctLabel.Parent = root
+            local retryBtn = mkBtn(0, 128, "Retry", TEXT)
+            local skipBtn  = mkBtn(136, 128, "Skip", MUTED)
 
             local function setBar(done, total)
                 local pct = total > 0 and (done / total) or 1
                 fill:TweenSize(UDim2.new(pct, 0, 1, 0), Enum.EasingDirection.Out,
                     Enum.EasingStyle.Quart, 0.18, true)
                 pctLabel.Text = math.floor(pct * 100 + 0.5) .. "%"
+                countLabel.Text = tostring(done) .. " / " .. tostring(total)
             end
 
             local function close()
                 Koffee._assetsReady = true
                 -- v0.4.0: gentler fade: 0.22 -> 0.36, Sine easing reads softer than
-                -- Quart at these low starting-opacity values.
+                -- Quart at these low starting-opacity values. v0.67.0: fade the
+                -- card as one (every label, fill, and stroke inside it).
                 local out = TweenService:Create(root, TweenInfo.new(0.36, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
                     BackgroundTransparency = 1,
                 })
-                for _, l in ipairs({ brand, sub, status, pctLabel }) do
-                    TweenService:Create(l, out.TweenInfo, { TextTransparency = 1 }):Play()
+                TweenService:Create(card, out.TweenInfo, { BackgroundTransparency = 1 }):Play()
+                for _, d in ipairs(card:GetDescendants()) do
+                    if d:IsA("TextLabel") or d:IsA("TextButton") then
+                        TweenService:Create(d, out.TweenInfo, { TextTransparency = 1 }):Play()
+                    elseif d:IsA("Frame") then
+                        TweenService:Create(d, out.TweenInfo, { BackgroundTransparency = 1 }):Play()
+                    elseif d:IsA("UIStroke") then
+                        TweenService:Create(d, out.TweenInfo, { Transparency = 1 }):Play()
+                    end
                 end
-                TweenService:Create(fill, out.TweenInfo, { BackgroundTransparency = 1 }):Play()
-                TweenService:Create(track, out.TweenInfo, { BackgroundTransparency = 1 }):Play()
                 out:Play()
                 out.Completed:Wait()
                 gui:Destroy()
@@ -470,10 +525,14 @@ do
                             if isfile(f.path) then good = good + 1 end
                         end
                         setBar(good, total)
+                        pushLog(e.name, true)
                     else
                         status.Text = e.name
                         if not settle(e) then
                             table.insert(failed, e)
+                            pushLog(e.name, false)
+                        else
+                            pushLog(e.name, true)
                         end
                         local good = 0
                         for _, f in ipairs(MANIFEST) do
@@ -491,6 +550,8 @@ do
                 status.TextColor3 = Color3.fromRGB(220, 110, 100)
                 status.Text = "Failed: " .. failed[1].name ..
                     (#failed > 1 and (" +" .. tostring(#failed - 1) .. " more") or "")
+                -- grow the card to fit the buttons (hidden otherwise).
+                card.Size = UDim2.new(0, 300, 0, 196)
                 btnRow.Visible = true
                 local choice = nil
                 local c1 = retryBtn.MouseButton1Click:Connect(function() choice = "Retry" end)
@@ -508,6 +569,7 @@ do
             status.TextColor3 = MINT
             status.Text = "Ready"
             close()
+            end)()
         else
             Koffee._assetsReady = true
         end
@@ -686,7 +748,6 @@ local Theme = {
         Danger        = Color3.fromRGB(212, 106, 90),
         Snow          = Color3.fromRGB(255, 253, 248),
     },
-    -- placeholder
     Fonts = (function()
         local MONO  = "rbxasset://fonts/families/RobotoMono.json"
         -- v0.0.29: Matcha's ACTUAL face is Proxima Soft Bold. We auto-download the .ttf once
@@ -2643,6 +2704,12 @@ Shared.TargetLock = {
     Key      = nil,     -- activation keybind (set via the keybind pill)
     _active  = false,   -- runtime: is the lock currently engaged?
 }
+-- v0.67.0: real module so the arraylist shows Armed plus a live on/off while
+-- engaged. OnDisable also disengages, so disable never strands a stale lock.
+registerModule("targetlock", "Target Lock",
+    function() Shared.TargetLock.Enabled = true end,
+    function() Shared.TargetLock.Enabled = false; Shared.TargetLock._active = false end)
+Modules.targetlock.IsActive = function() return Shared.TargetLock._active end
 -- resolve the current TargetLock.Name to a live Player or nil.
 -- v0.3.1: match ranking. Previous first-match-wins picked whoever appeared
 -- earliest in the Players list: typing "a" could lock onto "Anna" when
@@ -2886,6 +2953,9 @@ rebuildConfigTabs = function()
     -- but its module checkboxes just lost their watchers in the wipe above. Let the
     -- anticheat panel re-subscribe + resync its checkboxes to the live state.
     if Shared and Shared._acResync then pcall(Shared._acResync) end
+    -- v0.67.0: same staleness class one window over. The player list is never
+    -- rebuilt, so its Target Lock row re-syncs here (checkbox + keybind pill).
+    if Shared and Shared._targetlockResync then pcall(Shared._targetlockResync) end
     -- v0.62.0: replay the window-switcher bar drop-in on a config switch, and
     -- re-sync each slot's on/off visual to the freshly loaded open-states.
     if Koffee.Windows and Koffee.Windows.playIntro then pcall(Koffee.Windows.playIntro) end
@@ -4772,9 +4842,10 @@ local function loadSnapshot(data)
             if target and type(tbl) == "table" then applyInto(target, tbl) end
         end
     end
-    -- v0.54.0: NPC entries loaded above carry no modules yet; register them before
-    -- the module-enable loop below so their saved on/off state can re-apply.
-    if Shared.NPC and Shared.NPC.reconcile then pcall(Shared.NPC.reconcile) end
+    -- v0.54.0: NPC entries loaded above carry no modules yet; reconcile hands
+    -- them fresh session-unique ids (and applies their saved on/off), so the
+    -- module-enable loop below must skip npc_* rows: their state is already set.
+    if Shared.NPC and Shared.NPC.reconcile then pcall(Shared.NPC.reconcile, data and data.modules) end
     -- per-game custom-anim list (place 155615604): a config saved in another
     -- game can carry an animation Name that doesn't exist in THIS game's list.
     -- Snap it before the tab rebuild renders the dropdown (reads the live
@@ -4802,9 +4873,13 @@ local function loadSnapshot(data)
     end
     if data.modules then
         for id, state in pairs(data.modules) do
-            local m = Modules[id]
-            if m and (m.Enabled and true or false) ~= (state and true or false) then
-                toggleModule(id)
+            -- v0.67.0: npc_* rows are owned by reconcile (fresh ids per load with
+            -- saved on/off already applied); the old ids below no longer exist.
+            if not (type(id) == "string" and id:sub(1, 4) == "npc_") then
+                local m = Modules[id]
+                if m and (m.Enabled and true or false) ~= (state and true or false) then
+                    toggleModule(id)
+                end
             end
         end
     end
@@ -5226,7 +5301,7 @@ local ESP = {
         GradientRotation  = 0,     -- degrees; 0 = horizontal, 90 = vertical
         GradientSpacing   = 0.5,   -- 0..1 where the B color sits between the A ends
         GradientReverse   = false, -- flip travel direction
-        SizingType     = "Bounding",   -- v0.58.3: accurate 8-corner on-screen box by default (per he)
+        SizingType     = "Algorithm",  -- v0.67.0: hard-coded, the dropdown is gone
         RenderDistance = 1000,
         -- v0.11.0 COLOR MODE. One master that resolves the colour for every
         -- Second-Interface element (box, cube, corners, skeleton, tracer, head dot,
@@ -7186,16 +7261,12 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         --   Bounding / Prediction -> 8-corner world projection with optional CharacterOnly.
         local corners, anyInFront, allInFront, worldCF, worldSize
         local isCube = ESP.Boxes.BoxType == "Cube"
-        local effectiveSizing = ESP.Config.SizingType
-        -- v0.56.0: NPCs use the 8-corner Bounding projection (project8 now handles
-        -- bare Parts too), so the box grabs the exact on-screen height + width of
-        -- the model / part instead of the aspect-locked Static approximation.
-        if rig.isNPC then effectiveSizing = "Bounding" end
-        -- v0.65.1: Static AND Algorithm are flat 2D-only projections (no depth), so
-        -- a Cube box falls through to the real 8-corner Bounding for both.
-        if isCube and (effectiveSizing == "Static" or effectiveSizing == "Algorithm") then
-            effectiveSizing = "Bounding"
-        end
+        -- v0.67.0: sizing is hard-coded to Algorithm (tight silhouette). NPCs stay
+        -- on Bounding, and Cube keeps Bounding (flat projections have no depth).
+        local effectiveSizing
+        if rig.isNPC then effectiveSizing = "Bounding"
+        elseif isCube then effectiveSizing = "Bounding"
+        else effectiveSizing = "Algorithm" end
         if effectiveSizing == "Static" then
             corners, anyInFront, allInFront = projectStatic(rig.torso, rig.character)
         elseif effectiveSizing == "Algorithm" then
@@ -10204,6 +10275,7 @@ local Combat = {
         Enabled       = false,
         ActivationKey = Enum.KeyCode.Q,
         ActivationMode= "Hold",
+        -- v0.67.0: inert, kept so old saves still decode. The key gates alone now.
         UseKey        = false,
         Priority      = "Crosshair",
         HitPart       = "Head",
@@ -10792,11 +10864,16 @@ local Combat = {
     local actPills = {}
     -- v0.66.1: Toggle visibly sticks. Each pill registers a held reader; accent
     -- means latched or firing, muted means idle. Skipped mid-rebind ("..." state).
-    local function syncActPills()
+    -- v0.67.0: writes only on change (the Heartbeat calls this every frame for
+    -- XButton-held state, so blind writes were 3 property sets at 60Hz).
+    local function syncActPills(force)
         for _, e in ipairs(actPills) do
             if not (pendingActivation and pendingActivation.pill == e.pill) then
                 local on = e.enabled() and e.held()
-                e.pill.TextColor3 = on and Theme.Palette.Accent or Theme.Palette.TextMuted
+                if force or e._last ~= on then
+                    e._last = on
+                    e.pill.TextColor3 = on and Theme.Palette.Accent or Theme.Palette.TextMuted
+                end
             end
         end
     end
@@ -10833,7 +10910,7 @@ local Combat = {
             opt.MouseButton1Click:Connect(function()
                 cfg.ActivationMode = mode
                 closeChooser()
-                syncActPills()
+                syncActPills(true)
             end)
         end
         local abs, siz = pill.AbsolutePosition, pill.AbsoluteSize
@@ -10857,9 +10934,6 @@ local Combat = {
     end
 
     -- :: activation pill: click = rebind (any input), right-click = hold/toggle ::
-    -- v0.0.97: Target Lock status updater: set by the Combat UI builder (which owns
-    -- tlStatus); the key-toggle handler above calls it after flipping _active.
-    local tlStatusUpdater = nil
     -- v0.66.1: enabled/held readers drive the latch tint. Callers pass closures
     -- over their own armed + held flags so Toggle visibly sticks.
     local function activationPill(row, cfg, enabled, held)
@@ -10873,14 +10947,14 @@ local Combat = {
             pillCorner(), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
         })
-        local function refresh() pill.Text = inputName(cfg.ActivationKey); syncActPills() end
+        local function refresh() pill.Text = inputName(cfg.ActivationKey); syncActPills(true) end
         refresh()
         pill.MouseEnter:Connect(function()
             tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
         end)
         pill.MouseLeave:Connect(function()
             if not (pendingActivation and pendingActivation.pill == pill) then
-                syncActPills()
+                syncActPills(true)
             end
         end)
         pill.MouseButton1Click:Connect(function()
@@ -10902,7 +10976,7 @@ local Combat = {
             enabled = enabled or function() return true end,
             held = held or function() return false end,
         }
-        syncActPills()
+        syncActPills(true)
         return pill
     end
 
@@ -12040,9 +12114,9 @@ local Combat = {
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if not Combat.Trigger.Enabled then return end
-        -- v0.66.1: a bound key always gates. UseKey off with Q bound used to
-        -- ignore the key entirely, so Hold/Toggle read dead for no reason.
-        if (Combat.Trigger.ActivationKey or Combat.Trigger.UseKey) and not trigHeld then return end
+        -- v0.67.0: Use Key is gone. No key bound means always firing while
+        -- enabled; a bound key gates (Hold) or latches (Toggle) the fire.
+        if Combat.Trigger.ActivationKey and not trigHeld then return end
         if trigBusy then return end
         if not triggerShouldFire() then return end
         trigBusy = true
@@ -12545,7 +12619,6 @@ local Combat = {
         if Shared.TargetLock.Enabled and Keybinds["targetlock"]
         and inputMatches(input, Keybinds["targetlock"]) then
             Shared.TargetLock._active = not Shared.TargetLock._active
-            if tlStatusUpdater then tlStatusUpdater() end
             return
         end
         if Combat.Aim.Enabled and inputMatches(input, Combat.Aim.ActivationKey) then
@@ -12626,7 +12699,6 @@ local Combat = {
         if type(Keybinds["targetlock"]) == "string" then
             if Shared.TargetLock.Enabled and edge(Keybinds["targetlock"]) then
                 Shared.TargetLock._active = not Shared.TargetLock._active
-                if tlStatusUpdater then tlStatusUpdater() end
             end
         end
 
@@ -12826,7 +12898,7 @@ local Combat = {
     -- v0.0.73: arraylist "on" indicator: active = held by the activation key, OR (no key
     -- bound) always-active while enabled. Mirrors each feature's real arm gate.
     Modules.aimbot.IsActive     = function() return (not Combat.Aim.ActivationKey)    or aimHeld end
-    Modules.triggerbot.IsActive = function() return (not Combat.Trigger.ActivationKey and not Combat.Trigger.UseKey) or trigHeld end
+    Modules.triggerbot.IsActive = function() return (not Combat.Trigger.ActivationKey) or trigHeld end
     Modules.silentaim.IsActive  = function() return (not Combat.Silent.ActivationKey)  or silentHeld end
     -- v0.66.1: combat uses the single activation pill only. Drop any toggle
     -- bind left from the removed second pill so old configs cannot ghost toggle.
@@ -13232,10 +13304,9 @@ local Combat = {
         local tRow = moduleCheckbox(trigCard, "Enabled", "triggerbot")
         activationPill(tRow.row, Combat.Trigger,
             function() return Combat.Trigger.Enabled end,
-            function() return (not Combat.Trigger.ActivationKey and not Combat.Trigger.UseKey) or trigHeld end)
+            function() return (not Combat.Trigger.ActivationKey) or trigHeld end)
         configCheckbox(trigCard, "Visible Check", Combat.Trigger.VisibleCheck, function(v) Combat.Trigger.VisibleCheck = v end)
         rightClickSettings(configCheckbox(trigCard, "Team Check", Combat.Trigger.TeamCheck, function(v) Combat.Trigger.TeamCheck = v end).row, "Team Check", teamCheckSettings)
-        configCheckbox(trigCard, "Use Key", Combat.Trigger.UseKey, function(v) Combat.Trigger.UseKey = v end)
         slider(trigCard, "Hitbox Mul", 1, 10, Combat.Trigger.HitboxMul, 2, function(v) Combat.Trigger.HitboxMul = v end)
         slider(trigCard, "Delay (ms)", 0, 500, Combat.Trigger.Delay, 0, function(v) Combat.Trigger.Delay = v end)
         slider(trigCard, "Release (ms)", 0, 500, Combat.Trigger.Release, 0, function(v) Combat.Trigger.Release = v end)
@@ -15686,8 +15757,8 @@ addTab("Visuals", function(root)
         ESP.Config.FollowDirection = v
     end)
     configCheckbox(espPanel, "Immediate Mode", ESP.Config.ImmediateMode, function(v) ESP.Config.ImmediateMode = v end)
-    dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction", "Algorithm" }, ESP.Config.SizingType,
-        function(v) ESP.Config.SizingType = v end)
+    -- v0.67.0: sizing is hard-coded to Algorithm (tight silhouette). Saved
+    -- configs carrying an older SizingType are coerced in the dispatch below.
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end, { infinite = true })
     -- v0.0.22: global Feature-Interface thickness; v0.0.23: sub-1 down to 0.1.
@@ -21568,35 +21639,40 @@ end)
 ;(function()
 -- v0.57.0: ExcludeNames/ExcludeSigs feed the Username auto-scan (persist between
 -- configs); _excludeSel is a session-only instance set (underscore -> not saved).
-local NPC = { Entries = {}, Folders = {}, _nid = 0, _fid = 0,
+local NPC = { Entries = {}, Folders = {}, _nid = 0, _fid = 0, _gen = 0,
     ExcludeNames = {}, ExcludeSigs = {}, _excludeSel = {} }
 Shared.NPC = NPC
 -- v0.54.0: persist entries + folders. The serializer skips underscore keys
 -- (_inst/_wrappers/_cache/_nid/_fid) and functions, so only kind/path/sig/name/
 -- method/parentPath/folderId/moduleId + folder name/settings save. Lists REPLACE on load.
 registerConfig("npc", NPC)
-function NPC.reconcile()
-    -- after a config load: re-register each entry's module so its saved on/off
-    -- state can re-apply below, retire modules for NPCs this config dropped (so
-    -- no ghost arraylist rows), and advance the id counters past the loaded max.
-    local present = {}
+function NPC.reconcile(savedModules)
+    -- after a config load: hand every loaded entry a fresh session-unique module
+    -- id, so two configs never share one npc_* row for different NPCs (rapid A/B
+    -- swaps with overlapping counters used to collide). Saved on/off rides along
+    -- via the passed modules snapshot, keyed by each entry's OLD module id.
+    -- v0.67.0: ids are npc_g<load gen>_<entry id>. Stale npc_* modules are first
+    -- disabled, then dropped from the registry so ghosts never pile up.
+    NPC._gen = (NPC._gen or 0) + 1
+    local gen = NPC._gen
+    local present, drop = {}, {}
     local maxN, maxF = NPC._nid or 0, NPC._fid or 0
     for _, e in ipairs(NPC.Entries) do
-        if e.moduleId then
-            present[e.moduleId] = true
-            if not Modules[e.moduleId] then
-                registerModule(e.moduleId, "npc: " .. (e.name or "?"), function() end, function() end)
-            else
-                Modules[e.moduleId].DisplayName = "npc: " .. (e.name or "?")
-            end
-        end
+        local oldId = e.moduleId
+        e.moduleId = "npc_g" .. gen .. "_" .. (e.id or 0)
+        present[e.moduleId] = true
+        registerModule(e.moduleId, "npc: " .. (e.name or "?"), function() end, function() end)
+        local want = savedModules and savedModules[oldId]
+        if want then toggleModule(e.moduleId) end
         if (e.id or 0) > maxN then maxN = e.id end
     end
     for id, m in pairs(Modules) do
-        if type(id) == "string" and id:sub(1, 4) == "npc_" and not present[id] and m.Enabled then
-            toggleModule(id)
+        if type(id) == "string" and id:sub(1, 4) == "npc_" and not present[id] then
+            if m.Enabled then toggleModule(id) end
+            drop[#drop + 1] = id
         end
     end
+    for _, id in ipairs(drop) do Modules[id] = nil end
     for _, f in ipairs(NPC.Folders) do if (f.id or 0) > maxF then maxF = f.id end end
     NPC._nid, NPC._fid = maxN, maxF
 end
@@ -22165,7 +22241,9 @@ local function addEntry(inst, kind, method)
         parentPath = inst.Parent and Shared.pathOf(inst.Parent) or nil,
         sig = signature(inst), name = inst.Name, folderId = nil, _inst = inst,
         method = method or "Path",   -- v0.57.0: Path | Signature | Name
-        moduleId = "npc_" .. id,
+        -- v0.67.0: generation-unique module id, so entries learned under one
+        -- config can never collide with another config's rows.
+        moduleId = "npc_g" .. (NPC._gen or 0) .. "_" .. id,
     }
     registerModule(entry.moduleId, "npc: " .. inst.Name, function() end, function() end)
     NPC.Entries[#NPC.Entries + 1] = entry
@@ -24005,11 +24083,21 @@ end)()
     -- Target Lock (moved out of Combat): Armed checkbox + keybind pill. Arms
     -- Shared.TargetLock; the key toggles it; while engaged it locks onto the
     -- Prioritize set (set each player's Status above).
-    local tlArmed = configCheckbox(tlWrap, "Target Lock", Shared.TargetLock.Enabled, function(v)
-        Shared.TargetLock.Enabled = v
-        if not v then Shared.TargetLock._active = false end
-    end)
-    keybindPill(tlArmed.row, "targetlock", nil, "Target Lock")
+    -- v0.67.0: real module checkbox, so a config load re-syncs it through the
+    -- watcher like every tab toggle. Pill ref + resync below cover the keybind.
+    local tlArmed = moduleCheckbox(tlWrap, "Target Lock", "targetlock")
+    local tlPill = keybindPill(tlArmed.row, "targetlock", nil, "Target Lock")
+    -- v0.67.0: the player list is never rebuilt, so a config load would leave
+    -- this row stale. Re-applied from rebuildConfigTabs like the Extra resync.
+    Shared._targetlockResync = function()
+        local m = Modules.targetlock
+        if m and (m.Enabled and true or false) ~= (Shared.TargetLock.Enabled and true or false) then
+            toggleModule("targetlock")
+        else
+            tlArmed.setState(Shared.TargetLock.Enabled)
+        end
+        tlPill.Text = keyLabel(Keybinds["targetlock"]) or "No Keybind"
+    end
 
     local function ownHumanoid()
         local c = LocalPlayer.Character
@@ -24488,7 +24576,9 @@ end)()
     -- compute the rig's on-screen box the SAME way the live ESP sizes a real player,
     -- honouring the current Sizing Type, so the preview is genuinely accurate.
     local function computeBox()
-        local st = ESP.Config.SizingType
+        -- v0.67.0: mirrors the live dispatch. Algorithm always, except Cube
+        -- boxes which stay on the real 8-corner Bounding like in-game.
+        local st = (ESP.Boxes.BoxType == "Cube") and "Bounding" or "Algorithm"
         local box = { 1e9, 1e9, -1e9, -1e9 }
         if st == "Algorithm" and #rigBodyParts > 0 then
             -- tight silhouette: every body part's own 8 corners (mirrors ESP._projectAlgorithm).
@@ -24501,18 +24591,8 @@ end)()
                     end end end
                 end
             end
-        elseif st == "Static" then
-            -- aspect-locked from the projected height (mirrors ESP STATIC.aspect = 0.5).
-            local top = proj(CENTER + Vector3.new(0, extents.Y * 0.5, 0))
-            local bot = proj(CENTER - Vector3.new(0, extents.Y * 0.5, 0))
-            if top and bot then
-                local h = math.abs(bot.Y - top.Y)
-                local w = h * 0.5 * (STAGE_H / STAGE_W)
-                local cx, cy = (top.X + bot.X) * 0.5, (top.Y + bot.Y) * 0.5
-                box = { cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5 }
-            end
         elseif model then
-            -- Bounding / Prediction: the rig's live oriented bounding box, 8 corners.
+            -- Bounding: the rig's live oriented bounding box, 8 corners.
             local cf, size = model:GetBoundingBox()
             local ax, ay, az = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
             for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
@@ -24942,8 +25022,9 @@ UserInputService.InputBegan:Connect(function(input, processed)
 
     -- module bindings (KeyCode or UserInputType)
     for id, key in pairs(Keybinds) do
-        -- v0.66.1: combat has no toggle bind. Ignore stale entries if they slip in.
-        if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" then
+        -- v0.66.1: combat has no toggle bind. v0.67.0: the lock key only engages,
+        -- never arms. Ignore stale entries if they slip in.
+        if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" and id ~= "targetlock" then
             if bindMatches(input, key) then
                 toggleModule(id)
                 return
@@ -24971,8 +25052,9 @@ end)
             end
         elseif e1 or e2 then
             for id, key in pairs(Keybinds) do
-                -- v0.66.1: combat has no toggle bind. Ignore stale entries if they slip in.
-                if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" then
+                -- v0.66.1: combat has no toggle bind. v0.67.0: lock key only engages.
+                -- Ignore stale entries if they slip in.
+                if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" and id ~= "targetlock" then
                     if (key == "XButton2" and e2) or (key == "XButton1" and e1) then
                         toggleModule(id)
                     end
