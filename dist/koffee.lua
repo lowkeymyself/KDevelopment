@@ -1,7 +1,7 @@
--- koffee v0.68.9
+-- koffee v0.69.0
 
 local Koffee = {}
-Koffee.Version = "0.68.9"
+Koffee.Version = "0.69.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23005,10 +23005,47 @@ local function snapAim()
     local cam = Workspace.CurrentCamera
     if part and cam then pcall(function() cam.CFrame = CFrame.new(cam.CFrame.Position, part.Position) end) end
 end
+-- v0.68.6: fully random escape vector with fresh entropy every shot. Horizontal
+-- spin plus an upward bias, never downward, so a blind jump cannot suicide
+-- into destroy height. Prediction leads velocity; nothing leads randomness.
+local function randomDir()
+    local rng = Random.new()
+    local a = rng:NextNumber(0, math.pi * 2)
+    return Vector3.new(math.cos(a), rng:NextNumber(0, 0.8), math.sin(a))
+end
+-- v0.69.0: void-safe landing. A blind far jump must never land under the kill
+-- plane or over open void (both end at destroy height). Clamp above the plane,
+-- confirm ground below, retry a few vectors, else straight Up and fall home.
+local function killY()
+    local ok, y = pcall(function() return Workspace.FallenPartsDestroyHeight end)
+    return (ok and tonumber(y)) or -500
+end
+local function groundBelow(pos, depth)
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.FilterDescendantsInstances = { LocalPlayer.Character }
+    local ok, hit = pcall(function()
+        return Workspace:Raycast(pos, Vector3.new(0, -1, 0) * depth, rp)
+    end)
+    return ok and hit or nil
+end
+local function safeSpot(origin, dir, dist)
+    local floor = killY() + 100
+    local d = dir
+    for _ = 1, 6 do
+        local cand = origin + d * dist
+        if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
+        if groundBelow(cand, 2000) then return cand end
+        d = randomDir()
+    end
+    return origin + Vector3.new(0, math.min(dist, 2000), 0)
+end
 local function blink(dir, quiet)
     local r = myRoot(); if not r or dir.Magnitude < 0.01 then return end
+    -- land on the sphere surface, never in the void. Rotation preserved.
+    local dest = safeSpot(r.Position, dir.Unit, HV.BlinkDist or 500)
     pcall(function()
-        r.CFrame = r.CFrame + dir.Unit * (HV.BlinkDist or 500)
+        r.CFrame = r.CFrame - r.Position + dest
         r.AssemblyLinearVelocity = Vector3.zero
     end)
     -- quiet travel blinks leave the camera alone. Loud ones re-aim same-tick.
@@ -23028,14 +23065,6 @@ local function awayDir()
 end
 local function escapeBlink()
     if HV.BlinkMode == "Up" then blink(Vector3.new(0, 1, 0)) else blink(awayDir()) end
-end
--- v0.68.6: fully random escape vector with fresh entropy every shot. Horizontal
--- spin plus an upward bias, never downward, so a blind jump cannot suicide
--- into destroy height. Prediction leads velocity; nothing leads randomness.
-local function randomDir()
-    local rng = Random.new()
-    local a = rng:NextNumber(0, math.pi * 2)
-    return Vector3.new(math.cos(a), rng:NextNumber(0, 0.8), math.sin(a))
 end
 -- one directed blink in BlinkDir. Unlocked travel stays quiet (no camera yank);
 -- locked blinks keep eyes on the target through faceFoe + the aim snap.
@@ -23291,8 +23320,10 @@ RunService.Heartbeat:Connect(function()
         end
     end
     if dir.Magnitude < 0.01 then return end
+    -- flash steps ride the same void safety: edges and holes cannot catch you.
+    local dest = safeSpot(r.Position, dir.Unit, HV.FlashStep or 25)
     pcall(function()
-        r.CFrame = r.CFrame + dir.Unit * (HV.FlashStep or 25)
+        r.CFrame = r.CFrame - r.Position + dest
         r.AssemblyLinearVelocity = Vector3.zero
     end)
     faceFoe()
