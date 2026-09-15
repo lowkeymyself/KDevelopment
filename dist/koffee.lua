@@ -1,7 +1,7 @@
--- koffee v0.68.4
+-- koffee v0.68.5
 
 local Koffee = {}
-Koffee.Version = "0.68.4"
+Koffee.Version = "0.68.5"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -22951,6 +22951,13 @@ local HV = {
 }
 registerConfig("hvh", HV)
 Shared.Hvh = HV
+local UIS = UserInputService
+-- v0.68.5: debug channel. Set getgenv().KoffeeHvhDebug = true and the console
+-- narrates every blink fire plus key edges, so a dead Blink answers why.
+local function hvhDbg(msg)
+    local g = getgenv and getgenv()
+    if g and g.KoffeeHvhDebug then print("[koffee][hvh] " .. tostring(msg)) end
+end
 -- v0.68.2: Get-Up, Panic, and Flash need an engaged Target Lock. Manual Blink
 -- is exempt: it fires lock-free. Escapes and flashes answer a locked fight.
 local function lockOn()
@@ -23036,6 +23043,7 @@ local function fireBlink()
         dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
     end
     blink(dir, not lockOn())
+    hvhDbg("blink fired dist=" .. tostring(HV.BlinkDist) .. " mode=" .. tostring(HV.BlinkDir))
 end
 -- v0.68.4: arm + key model (the movement pattern). Checkbox arms, pill key
 -- activates: Hold blinks while held, Toggle latches blinking on/off. No lock
@@ -23119,6 +23127,10 @@ local function blinkMatch(input, bind)
     return false
 end
 UserInputService.InputBegan:Connect(function(input, gpe)
+    -- v0.68.5: re-execs stack input connections (nothing disconnects them).
+    -- Without this, every old run flips Toggle again: two flips per press read
+    -- as "toggle does nothing". Dead runs stay silent now.
+    if Koffee.dead() then return end
     if pendingBlink then
         local it = input.UserInputType
         if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
@@ -23144,10 +23156,12 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     if blinkMatch(input, HV.BlinkKey) then
         if (HV.BlinkKeyMode or "Hold") == "Toggle" then blinkLatch = not blinkLatch
         else blinkHeld = true end
+        hvhDbg("key edge latch=" .. tostring(blinkLatch) .. " held=" .. tostring(blinkHeld))
         syncBlinkPill()
     end
 end)
 UserInputService.InputEnded:Connect(function(input)
+    if Koffee.dead() then return end
     if (HV.BlinkKeyMode or "Hold") == "Hold" and blinkMatch(input, HV.BlinkKey) then
         blinkHeld = false
         syncBlinkPill()
@@ -23205,6 +23219,20 @@ local orbitFlip, nextFlash, nextBlink, pBX = false, 0, 0, { false, false }
 RunService.Heartbeat:Connect(function()
     if Koffee.dead() then return end
     local now = os.clock()
+    -- v0.68.5: state backfill for Hold. A game-consumed key never fires Began,
+    -- so edges alone silently never arm and Blink reads dead. Live polled state
+    -- cannot be eaten. Mirrors the silent-aim LMB backfill precedent.
+    if (HV.BlinkKeyMode or "Hold") == "Hold" then
+        local k = HV.BlinkKey
+        if typeof(k) == "EnumItem" then
+            if k.EnumType == Enum.KeyCode then
+                blinkHeld = UIS:IsKeyDown(k)
+            elseif k.EnumType == Enum.UserInputType then
+                local ok, down = pcall(function() return UIS:IsMouseButtonPressed(k) end)
+                if ok then blinkHeld = down end
+            end
+        end
+    end
     -- XButton driver for the Blink key (Roblox never fires mouse 4/5).
     if type(HV.BlinkKey) == "string" then
         local xb1, xb2 = Helper.XB1, Helper.XB2
