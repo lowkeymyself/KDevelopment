@@ -1,7 +1,7 @@
--- koffee v0.66.0
+-- koffee v0.66.1
 
 local Koffee = {}
-Koffee.Version = "0.66.0"
+Koffee.Version = "0.66.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4791,9 +4791,12 @@ local function loadSnapshot(data)
     if data.keybinds then
         for k in pairs(Keybinds) do Keybinds[k] = nil end
         for id, key in pairs(data.keybinds) do
-            -- accept Roblox EnumItems AND virtual XButton strings (v0.0.37)
-            if typeof(key) == "EnumItem" or key == "XButton1" or key == "XButton2" then
-                Keybinds[id] = key
+            -- v0.66.1: combat has no toggle bind. Skip stale entries from old saves.
+            if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" then
+                -- accept Roblox EnumItems AND virtual XButton strings (v0.0.37)
+                if typeof(key) == "EnumItem" or key == "XButton1" or key == "XButton2" then
+                    Keybinds[id] = key
+                end
             end
         end
     end
@@ -10785,6 +10788,19 @@ local Combat = {
         return "-"
     end
 
+    local pendingActivation = nil
+    local actPills = {}
+    -- v0.66.1: Toggle visibly sticks. Each pill registers a held reader; accent
+    -- means latched or firing, muted means idle. Skipped mid-rebind ("..." state).
+    local function syncActPills()
+        for _, e in ipairs(actPills) do
+            if not (pendingActivation and pendingActivation.pill == e.pill) then
+                local on = e.enabled() and e.held()
+                e.pill.TextColor3 = on and Theme.Palette.Accent or Theme.Palette.TextMuted
+            end
+        end
+    end
+
     -- :: Hold/Toggle chooser popup (right-click the activation pill) ::
     local activeChooser = nil
     local function closeChooser()
@@ -10817,6 +10833,7 @@ local Combat = {
             opt.MouseButton1Click:Connect(function()
                 cfg.ActivationMode = mode
                 closeChooser()
+                syncActPills()
             end)
         end
         local abs, siz = pill.AbsolutePosition, pill.AbsoluteSize
@@ -10840,11 +10857,12 @@ local Combat = {
     end
 
     -- :: activation pill: click = rebind (any input), right-click = hold/toggle ::
-    local pendingActivation = nil
     -- v0.0.97: Target Lock status updater: set by the Combat UI builder (which owns
     -- tlStatus); the key-toggle handler above calls it after flipping _active.
     local tlStatusUpdater = nil
-    local function activationPill(row, cfg)
+    -- v0.66.1: enabled/held readers drive the latch tint. Callers pass closures
+    -- over their own armed + held flags so Toggle visibly sticks.
+    local function activationPill(row, cfg, enabled, held)
         local pill = new("TextButton", {
             Name = "ActivationPill", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
             Size = UDim2.new(0, 30, 0, 16), AutomaticSize = Enum.AutomaticSize.X,
@@ -10855,14 +10873,14 @@ local Combat = {
             pillCorner(), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
         })
-        local function refresh() pill.Text = inputName(cfg.ActivationKey) end
+        local function refresh() pill.Text = inputName(cfg.ActivationKey); syncActPills() end
         refresh()
         pill.MouseEnter:Connect(function()
             tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
         end)
         pill.MouseLeave:Connect(function()
             if not (pendingActivation and pendingActivation.pill == pill) then
-                tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+                syncActPills()
             end
         end)
         pill.MouseButton1Click:Connect(function()
@@ -10879,6 +10897,12 @@ local Combat = {
             pendingActivation = { pill = pill, cfg = cfg, refresh = refresh }
         end)
         pill.MouseButton2Click:Connect(function() openChooser(pill, cfg) end)
+        actPills[#actPills + 1] = {
+            pill = pill,
+            enabled = enabled or function() return true end,
+            held = held or function() return false end,
+        }
+        syncActPills()
         return pill
     end
 
@@ -11484,7 +11508,9 @@ local Combat = {
         -- v0.11.1: cleared every frame and only re-set below, so the redirect can
         -- never outlive the frame that armed it.
         plPos, plPart = nil, nil
-        if not (Combat.Aim.Enabled and aimHeld) then
+        -- v0.66.1: no key bound means always armed while enabled (matches silent).
+        -- An unbound aim key used to wedge aimHeld false forever and kill the aimbot.
+        if not Combat.Aim.Enabled or (Combat.Aim.ActivationKey and not aimHeld) then
             Combat.Aim._target = nil; Combat.Aim._rageLock = nil; return
         end
         -- Perfect Lock answers reads through the __index hook, so it needs that hook
@@ -12014,7 +12040,9 @@ local Combat = {
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if not Combat.Trigger.Enabled then return end
-        if Combat.Trigger.UseKey and not trigHeld then return end
+        -- v0.66.1: a bound key always gates. UseKey off with Q bound used to
+        -- ignore the key entirely, so Hold/Toggle read dead for no reason.
+        if (Combat.Trigger.ActivationKey or Combat.Trigger.UseKey) and not trigHeld then return end
         if trigBusy then return end
         if not triggerShouldFire() then return end
         trigBusy = true
@@ -12530,6 +12558,7 @@ local Combat = {
         if Combat.Trigger.Enabled and inputMatches(input, Combat.Trigger.ActivationKey) then
             if Combat.Trigger.ActivationMode == "Toggle" then trigHeld = not trigHeld else trigHeld = true end
         end
+        syncActPills()
     end)
     -- v0.0.69: a SECOND click signal off the PlayerMouse. It fires in a different order than
     -- UserInputService.InputBegan, so on games where the weapon's InputBegan runs before ours
@@ -12552,6 +12581,7 @@ local Combat = {
         if Combat.Trigger.ActivationMode == "Hold" and inputMatches(input, Combat.Trigger.ActivationKey) then
             trigHeld = false
         end
+        syncActPills()
     end)
 
     -- v0.0.37: VIRTUAL XBUTTON DRIVER. Roblox never fires InputBegan for mouse 4/5,
@@ -12591,6 +12621,7 @@ local Combat = {
                 if edge(Combat.Trigger.ActivationKey) then trigHeld = not trigHeld end
             else trigHeld = down(Combat.Trigger.ActivationKey) end
         end
+        syncActPills()
         -- v0.0.97 TARGET LOCK: toggle the lock on a virtual XButton edge
         if type(Keybinds["targetlock"]) == "string" then
             if Shared.TargetLock.Enabled and edge(Keybinds["targetlock"]) then
@@ -12605,7 +12636,7 @@ local Combat = {
     -- :: modules (arraylist + master toggles) ::
     registerModule("aimbot", "Aimbot",
         function() Combat.Aim.Enabled = true end,
-        function() Combat.Aim.Enabled = false; aimHeld = false; Combat.Aim._target = nil; Combat.Aim._rageLock = nil end)
+        function() Combat.Aim.Enabled = false; aimHeld = false; Combat.Aim._target = nil; Combat.Aim._rageLock = nil; syncActPills() end)
     -- v0.0.79: diagnostic prints on trigger enable/disable so we can see WHO is
     -- toggling it if the checkbox "immediately turns off": caller stack tells us
     -- if it's the click, a config load, a keybind, or something else.
@@ -12617,7 +12648,7 @@ local Combat = {
             end
         end,
         function()
-            Combat.Trigger.Enabled = false; trigHeld = false
+            Combat.Trigger.Enabled = false; trigHeld = false; syncActPills()
             if getgenv and getgenv().KoffeeTrigDebug then
                 print("[koffee][trig] DISABLE @ " .. tostring(os.clock()) .. "  stack=" .. tostring(debug.traceback and debug.traceback("", 2) or "?"))
             end
@@ -12785,7 +12816,7 @@ local Combat = {
     registerModule("silentaim", "Silent Aim",
         function() installSilentHooks(); Combat.Silent.Enabled = true end,
         function()
-            Combat.Silent.Enabled = false
+            Combat.Silent.Enabled = false; silentHeld = false; syncActPills()
             silentTarget = nil
             -- If we were on External, tell the helper to disarm immediately.
             if Combat.Silent.Method == "External" and Koffee.External then
@@ -12795,8 +12826,17 @@ local Combat = {
     -- v0.0.73: arraylist "on" indicator: active = held by the activation key, OR (no key
     -- bound) always-active while enabled. Mirrors each feature's real arm gate.
     Modules.aimbot.IsActive     = function() return (not Combat.Aim.ActivationKey)    or aimHeld end
-    Modules.triggerbot.IsActive = function() return (not Combat.Trigger.ActivationKey) or trigHeld end
+    Modules.triggerbot.IsActive = function() return (not Combat.Trigger.ActivationKey and not Combat.Trigger.UseKey) or trigHeld end
     Modules.silentaim.IsActive  = function() return (not Combat.Silent.ActivationKey)  or silentHeld end
+    -- v0.66.1: combat uses the single activation pill only. Drop any toggle
+    -- bind left from the removed second pill so old configs cannot ghost toggle.
+    for _, id in ipairs({ "aimbot", "silentaim", "triggerbot" }) do Keybinds[id] = nil end
+    if Koffee._keybinds then
+        for i = #Koffee._keybinds, 1, -1 do
+            local id = Koffee._keybinds[i].id
+            if id == "aimbot" or id == "silentaim" or id == "triggerbot" then table.remove(Koffee._keybinds, i) end
+        end
+    end
     -- FOV is an arraylist marker; the two per-context toggles (Aim.FOV / Silent.FOV)
     -- drive rendering. Detail shows "x2" when both circles are active.
     registerModule("fov", "FOV", function() end, function() end)
@@ -12993,8 +13033,9 @@ local Combat = {
 
         -- Aimbot
         local aimRow = moduleCheckbox(L.Aimbot, "Enabled", "aimbot")
-        keybindPill(aimRow.row, "aimbot")   -- toggle keybind (press to enable/disable) + Hotkeys HUD entry
-        activationPill(aimRow.row, Combat.Aim)
+        activationPill(aimRow.row, Combat.Aim,
+            function() return Combat.Aim.Enabled end,
+            function() return (not Combat.Aim.ActivationKey) or aimHeld end)
         rightClickSettings(configCheckbox(L.Aimbot, "Team Check", Combat.Aim.TeamCheck, function(v) Combat.Aim.TeamCheck = v end).row, "Team Check", teamCheckSettings)
         configCheckbox(L.Aimbot, "Visible Check", Combat.Aim.VisibleCheck, function(v) Combat.Aim.VisibleCheck = v end)
         configCheckbox(L.Aimbot, "Behind Cam", Combat.Aim.BehindCam, function(v) Combat.Aim.BehindCam = v end)
@@ -13131,8 +13172,9 @@ local Combat = {
 
         -- Silent Aim
         local sRow = moduleCheckbox(R["Silent Aim"], "Enabled", "silentaim")
-        keybindPill(sRow.row, "silentaim")   -- toggle keybind + Hotkeys HUD entry
-        activationPill(sRow.row, Combat.Silent)
+        activationPill(sRow.row, Combat.Silent,
+            function() return Combat.Silent.Enabled end,
+            function() return (not Combat.Silent.ActivationKey) or silentHeld end)
         rightClickSettings(configCheckbox(R["Silent Aim"], "Team Check", Combat.Silent.TeamCheck, function(v) Combat.Silent.TeamCheck = v end).row, "Team Check", teamCheckSettings)
         configCheckbox(R["Silent Aim"], "Visible Check", Combat.Silent.VisibleCheck, function(v) Combat.Silent.VisibleCheck = v end)
         configCheckbox(R["Silent Aim"], "Behind Cam", Combat.Silent.BehindCam, function(v) Combat.Silent.BehindCam = v end)
@@ -13188,8 +13230,9 @@ local Combat = {
         -- Trigger Bot
         local trigCard = panel(rightCol, "Trigger Bot")
         local tRow = moduleCheckbox(trigCard, "Enabled", "triggerbot")
-        keybindPill(tRow.row, "triggerbot")   -- toggle keybind + Hotkeys HUD entry
-        activationPill(tRow.row, Combat.Trigger)
+        activationPill(tRow.row, Combat.Trigger,
+            function() return Combat.Trigger.Enabled end,
+            function() return (not Combat.Trigger.ActivationKey and not Combat.Trigger.UseKey) or trigHeld end)
         configCheckbox(trigCard, "Visible Check", Combat.Trigger.VisibleCheck, function(v) Combat.Trigger.VisibleCheck = v end)
         rightClickSettings(configCheckbox(trigCard, "Team Check", Combat.Trigger.TeamCheck, function(v) Combat.Trigger.TeamCheck = v end).row, "Team Check", teamCheckSettings)
         configCheckbox(trigCard, "Use Key", Combat.Trigger.UseKey, function(v) Combat.Trigger.UseKey = v end)
@@ -24899,9 +24942,12 @@ UserInputService.InputBegan:Connect(function(input, processed)
 
     -- module bindings (KeyCode or UserInputType)
     for id, key in pairs(Keybinds) do
-        if bindMatches(input, key) then
-            toggleModule(id)
-            return
+        -- v0.66.1: combat has no toggle bind. Ignore stale entries if they slip in.
+        if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" then
+            if bindMatches(input, key) then
+                toggleModule(id)
+                return
+            end
         end
     end
 end)
@@ -24925,8 +24971,11 @@ end)
             end
         elseif e1 or e2 then
             for id, key in pairs(Keybinds) do
-                if (key == "XButton2" and e2) or (key == "XButton1" and e1) then
-                    toggleModule(id)
+                -- v0.66.1: combat has no toggle bind. Ignore stale entries if they slip in.
+                if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" then
+                    if (key == "XButton2" and e2) or (key == "XButton1" and e1) then
+                        toggleModule(id)
+                    end
                 end
             end
         end
