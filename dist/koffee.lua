@@ -1,7 +1,7 @@
--- koffee v0.69.1
+-- koffee v0.69.2
 
 local Koffee = {}
-Koffee.Version = "0.69.1"
+Koffee.Version = "0.69.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -22938,9 +22938,8 @@ end
 end)()
 
 -- v0.68.0: HVH. Manual blink escape plus a return trip: arm it, hold the key
--- to stream random sphere jumps, release to snap back where you started.
--- Own IIFE for its register budget; publishes Shared.Hvh for the Extra tab.
--- Locked blinks re-aim same-tick; unlocked ones travel quiet.
+-- to stream shell jumps around the anchor, release to snap back where you
+-- started. Own IIFE for its register budget; publishes Shared.Hvh for Extra.
 ;(function()
 local HV = {
     BlinkDist = 500, FaceTarget = true,
@@ -22999,13 +22998,15 @@ local function snapAim()
     local cam = Workspace.CurrentCamera
     if part and cam then pcall(function() cam.CFrame = CFrame.new(cam.CFrame.Position, part.Position) end) end
 end
--- v0.68.6: fully random escape vector with fresh entropy every shot. Horizontal
--- spin plus an upward bias, never downward, so a blind jump cannot suicide
--- into destroy height. Prediction leads velocity; nothing leads randomness.
+-- v0.68.6: random escape vector, fresh entropy every shot. v0.69.2: uniform
+-- over the full sphere (sides included, not just up): the shell only works if
+-- every direction is live, and void-ward picks are caught by safeSpot below.
 local function randomDir()
     local rng = Random.new()
+    local z = rng:NextNumber(-1, 1)
     local a = rng:NextNumber(0, math.pi * 2)
-    return Vector3.new(math.cos(a), rng:NextNumber(0, 0.8), math.sin(a))
+    local r = math.sqrt(math.max(1 - z * z, 0))
+    return Vector3.new(r * math.cos(a), z, r * math.sin(a))
 end
 -- v0.69.0: void-safe landing. A blind far jump must never land under the kill
 -- plane or over open void (both end at destroy height). Clamp above the plane,
@@ -23034,23 +23035,21 @@ local function safeSpot(origin, dir, dist)
     end
     return origin + Vector3.new(0, math.min(dist, 2000), 0)
 end
-local function blink(dir, quiet)
-    local r = myRoot(); if not r or dir.Magnitude < 0.01 then return end
-    -- land on the sphere surface, never in the void. Rotation preserved.
-    local dest = safeSpot(r.Position, dir.Unit, HV.BlinkDist or 500)
+-- v0.69.2: the sphere is anchored where the key first went active and stays
+-- there. Every shot picks a fresh random point on its SHELL around the anchor
+-- (never a step from where you stand, which ratchets upward). Radius is
+-- BlinkDist in every direction: height, width, and length alike.
+local function fireBlink()
+    local r = myRoot()
+    if not r then return end
+    local center = r.Position
+    if anchorCF and LocalPlayer.Character == anchorChar then center = anchorCF.Position end
+    local dest = safeSpot(center, randomDir(), HV.BlinkDist or 500)
     pcall(function()
         r.CFrame = r.CFrame - r.Position + dest
         r.AssemblyLinearVelocity = Vector3.zero
     end)
-    -- quiet travel blinks leave the camera alone. Loud ones re-aim same-tick.
-    if not quiet then faceFoe(); snapAim() end
-end
--- one random sphere jump. Unlocked travel stays quiet (no camera yank);
--- locked blinks keep eyes on the target through faceFoe + the aim snap.
-local function fireBlink()
-    local r = myRoot()
-    if not r then return end
-    blink(randomDir(), not lockOn())
+    if lockOn() then faceFoe(); snapAim() end
     hvhDbg("blink fired dist=" .. tostring(HV.BlinkDist))
 end
 -- v0.68.4: arm + key model (the movement pattern). Checkbox arms, pill key
