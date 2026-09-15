@@ -1,7 +1,7 @@
--- koffee v0.68.0
+-- koffee v0.68.1
 
 local Koffee = {}
-Koffee.Version = "0.68.0"
+Koffee.Version = "0.68.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -22942,7 +22942,7 @@ end)()
 local HV = {
     BlinkDist = 60, BlinkMode = "Away", FaceTarget = true,
     FlashStep = 25, FlashMode = "Toward", FlashRate = 0.22,
-    PanicMin = 8, Cooldown = 2.5,
+    PanicMin = 8, Cooldown = 2.5, BlinkDir = "Forward",
 }
 registerConfig("hvh", HV)
 Shared.Hvh = HV
@@ -23097,15 +23097,35 @@ end)
 registerModule("hvh_getup", "Get-Up Blink", function() end, function() end)
 registerModule("hvh_flash", "Flash Engage", function() end, function() end)
 registerModule("hvh_panic", "Panic Blink", function() end, function() end)
+-- v0.68.1: manual blink. Press-to-fire: enabling fires one directed blink,
+-- then disarms so the next press fires again. Any game, not just knockdowns.
+registerModule("hvh_blink", "Blink", function()
+    local r = myRoot()
+    if r then
+        local mode = HV.BlinkDir or "Forward"
+        local dir
+        if mode == "Up" then dir = Vector3.new(0, 1, 0)
+        elseif mode == "Away" then dir = awayDir()
+        else
+            local cam = Workspace.CurrentCamera
+            dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+        end
+        blink(dir)
+    end
+    if Modules.hvh_blink.Enabled then toggleModule("hvh_blink") end
+end, function() end)
 Modules.hvh_flash.IsActive = function() return true end
 
 function HV.buildPanel(host)
     new("TextLabel", {
-        Text = "Hacker-fight escapes. Blink away the moment you stand or eat a burst, strafe in flashes while firing. Every blink re-aims the same tick, so Teleport never costs a frame.",
+        Text = "Hacker-fight escapes. Blink on a key anywhere, blink away the moment you stand or eat a burst, strafe in flashes while firing. Every blink re-aims the same tick, so Teleport never costs a frame.",
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
         AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
     })
+    local cbBlink = moduleCheckbox(host, "Blink", "hvh_blink")
+    keybindPill(cbBlink.row, "hvh_blink", nil, "Blink")
+    dropdown(host, "Blink Direction", { "Forward", "Away", "Up" }, HV.BlinkDir or "Forward", function(v) HV.BlinkDir = v end)
     local cbGetup = moduleCheckbox(host, "Get-Up Blink", "hvh_getup")
     dropdown(host, "Escape Direction", { "Away", "Up" }, HV.BlinkMode, function(v) HV.BlinkMode = v end)
     slider(host, "Blink Distance", 10, 300, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
@@ -23121,7 +23141,7 @@ function HV.buildPanel(host)
     -- Extra is never rebuilt but the watcher wipe is global (see Anticheats
     -- above): re-subscribe + resync here so config loads cannot orphan these.
     Shared._hvhResync = function()
-        for _, pr in ipairs({ { cbGetup, "hvh_getup" }, { cbFlash, "hvh_flash" }, { cbPanic, "hvh_panic" } }) do
+        for _, pr in ipairs({ { cbBlink, "hvh_blink" }, { cbGetup, "hvh_getup" }, { cbFlash, "hvh_flash" }, { cbPanic, "hvh_panic" } }) do
             local ctrl, id = pr[1], pr[2]
             local m = Modules[id]
             ctrl.setState(m and m.Enabled or false)
