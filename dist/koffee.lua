@@ -1,7 +1,7 @@
--- koffee v0.68.1
+-- koffee v0.68.2
 
 local Koffee = {}
-Koffee.Version = "0.68.1"
+Koffee.Version = "0.68.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -22946,6 +22946,11 @@ local HV = {
 }
 registerConfig("hvh", HV)
 Shared.Hvh = HV
+-- v0.68.2: every HvH action needs an engaged Target Lock. No lock, no blink:
+-- escapes and flashes are answers to a locked fight, not free movement.
+local function lockOn()
+    return Shared.TargetLock.Enabled and Shared.TargetLock._active
+end
 local Plrs = game:GetService("Players")
 
 local function myRoot()
@@ -23031,7 +23036,7 @@ local function hookHum(h)
             local now = os.clock()
             if dt >= 0.5 and now - lastGetup >= (HV.Cooldown or 2.5) then
                 local m = Modules.hvh_getup
-                if m and m.Enabled and h.Health > 0 then
+                if m and m.Enabled and h.Health > 0 and lockOn() then
                     lastGetup = now
                     escapeBlink()
                 end
@@ -23046,7 +23051,7 @@ local function hookHum(h)
             local now = os.clock()
             if now - lastPanic >= (HV.Cooldown or 2.5) then
                 local m = Modules.hvh_panic
-                if m and m.Enabled then lastPanic = now; escapeBlink() end
+                if m and m.Enabled and lockOn() then lastPanic = now; escapeBlink() end
             end
         end
     end)
@@ -23064,7 +23069,7 @@ local orbitFlip, nextFlash = false, 0
 RunService.Heartbeat:Connect(function()
     if Koffee.dead() then return end
     local m = Modules.hvh_flash
-    if not (m and m.Enabled) then return end
+    if not (m and m.Enabled and lockOn()) then return end
     local now = os.clock()
     if now < nextFlash then return end
     nextFlash = now + (HV.FlashRate or 0.22)
@@ -23100,25 +23105,27 @@ registerModule("hvh_panic", "Panic Blink", function() end, function() end)
 -- v0.68.1: manual blink. Press-to-fire: enabling fires one directed blink,
 -- then disarms so the next press fires again. Any game, not just knockdowns.
 registerModule("hvh_blink", "Blink", function()
-    local r = myRoot()
-    if r then
-        local mode = HV.BlinkDir or "Forward"
-        local dir
-        if mode == "Up" then dir = Vector3.new(0, 1, 0)
-        elseif mode == "Away" then dir = awayDir()
-        else
-            local cam = Workspace.CurrentCamera
-            dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+    if lockOn() then
+        local r = myRoot()
+        if r then
+            local mode = HV.BlinkDir or "Forward"
+            local dir
+            if mode == "Up" then dir = Vector3.new(0, 1, 0)
+            elseif mode == "Away" then dir = awayDir()
+            else
+                local cam = Workspace.CurrentCamera
+                dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+            end
+            blink(dir)
         end
-        blink(dir)
     end
     if Modules.hvh_blink.Enabled then toggleModule("hvh_blink") end
 end, function() end)
-Modules.hvh_flash.IsActive = function() return true end
+Modules.hvh_flash.IsActive = function() return lockOn() end
 
 function HV.buildPanel(host)
     new("TextLabel", {
-        Text = "Hacker-fight escapes. Blink on a key anywhere, blink away the moment you stand or eat a burst, strafe in flashes while firing. Every blink re-aims the same tick, so Teleport never costs a frame.",
+        Text = "Hacker-fight escapes. Blink on a key anywhere, blink away the moment you stand or eat a burst, strafe in flashes while firing. Everything here needs an engaged Target Lock. Every blink re-aims the same tick, so Teleport never costs a frame.",
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
         AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
