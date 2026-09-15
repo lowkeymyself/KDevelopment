@@ -1,7 +1,7 @@
--- koffee v0.68.7
+-- koffee v0.68.8
 
 local Koffee = {}
-Koffee.Version = "0.68.7"
+Koffee.Version = "0.68.8"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23323,10 +23323,10 @@ function HV.buildPanel(host)
     slider(host, "Blink Interval (s)", 0, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
     local cbGetup = moduleCheckbox(host, "Get-Up Blink", "hvh_getup")
     dropdown(host, "Escape Direction", { "Away", "Up" }, HV.BlinkMode, function(v) HV.BlinkMode = v end)
-    -- v0.68.7: 100k cap. Float holds well past this (it bites near ~10M);
-    -- the real limits are falling (far horizontal is over void, pair with fly)
-    -- and destroy height below. 100k out-ranges every stream radius 100x over.
-    slider(host, "Blink Distance", 10, 100000, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
+    -- v0.68.8: 1M cap. Float holds to ~10M; falling/void and destroy height
+    -- are the real limits (pair far jumps with fly, Up is always safe). Past
+    -- 1M a linear drag slider loses all granularity, so this is the ceiling.
+    slider(host, "Blink Distance", 10, 1000000, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
     configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
     local cbFlash = moduleCheckbox(host, "Flash Engage", "hvh_flash")
     keybindPill(cbFlash.row, "hvh_flash", nil, "Flash Engage")
