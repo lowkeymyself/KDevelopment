@@ -1,7 +1,7 @@
--- koffee v0.68.5
+-- koffee v0.68.6
 
 local Koffee = {}
-Koffee.Version = "0.68.5"
+Koffee.Version = "0.68.6"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -22946,7 +22946,7 @@ end)()
 local HV = {
     BlinkDist = 500, BlinkMode = "Away", FaceTarget = true,
     FlashStep = 25, FlashMode = "Toward", FlashRate = 0.22,
-    PanicMin = 8, Cooldown = 2.5, BlinkDir = "Forward",
+    PanicMin = 8, Cooldown = 2.5, BlinkDir = "Random",
     BlinkKeyMode = "Hold", BlinkRate = 0.25,
 }
 registerConfig("hvh", HV)
@@ -23029,15 +23029,24 @@ end
 local function escapeBlink()
     if HV.BlinkMode == "Up" then blink(Vector3.new(0, 1, 0)) else blink(awayDir()) end
 end
+-- v0.68.6: fully random escape vector with fresh entropy every shot. Horizontal
+-- spin plus an upward bias, never downward, so a blind jump cannot suicide
+-- into destroy height. Prediction leads velocity; nothing leads randomness.
+local function randomDir()
+    local rng = Random.new()
+    local a = rng:NextNumber(0, math.pi * 2)
+    return Vector3.new(math.cos(a), rng:NextNumber(0, 0.8), math.sin(a))
+end
 -- one directed blink in BlinkDir. Unlocked travel stays quiet (no camera yank);
 -- locked blinks keep eyes on the target through faceFoe + the aim snap.
 local function fireBlink()
     local r = myRoot()
     if not r then return end
-    local mode = HV.BlinkDir or "Forward"
+    local mode = HV.BlinkDir or "Random"
     local dir
     if mode == "Up" then dir = Vector3.new(0, 1, 0)
     elseif mode == "Away" then dir = awayDir()
+    elseif mode == "Random" then dir = randomDir()
     else
         local cam = Workspace.CurrentCamera
         dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
@@ -23309,7 +23318,7 @@ function HV.buildPanel(host)
     })
     local cbBlink = moduleCheckbox(host, "Blink", "hvh_blink")
     local blinkRef = blinkPill(cbBlink.row)
-    dropdown(host, "Blink Direction", { "Forward", "Away", "Up" }, HV.BlinkDir or "Forward", function(v) HV.BlinkDir = v end)
+    dropdown(host, "Blink Direction", { "Forward", "Away", "Up", "Random" }, HV.BlinkDir or "Random", function(v) HV.BlinkDir = v end)
     slider(host, "Blink Interval (s)", 0.08, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
     local cbGetup = moduleCheckbox(host, "Get-Up Blink", "hvh_getup")
     dropdown(host, "Escape Direction", { "Away", "Up" }, HV.BlinkMode, function(v) HV.BlinkMode = v end)
