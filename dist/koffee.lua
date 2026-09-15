@@ -1,7 +1,7 @@
--- koffee v0.67.0
+-- koffee v0.68.0
 
 local Koffee = {}
-Koffee.Version = "0.67.0"
+Koffee.Version = "0.68.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -2956,6 +2956,8 @@ rebuildConfigTabs = function()
     -- v0.67.0: same staleness class one window over. The player list is never
     -- rebuilt, so its Target Lock row re-syncs here (checkbox + keybind pill).
     if Shared and Shared._targetlockResync then pcall(Shared._targetlockResync) end
+    -- v0.68.0: Extra is never rebuilt either. Same treatment for the HvH rows.
+    if Shared and Shared._hvhResync then pcall(Shared._hvhResync) end
     -- v0.62.0: replay the window-switcher bar drop-in on a config switch, and
     -- re-sync each slot's on/off visual to the freshly loaded open-states.
     if Koffee.Windows and Koffee.Windows.playIntro then pcall(Koffee.Windows.playIntro) end
@@ -22930,13 +22932,213 @@ function AC.buildPanel(host)
 end
 end)()
 
+-- v0.68.0: HVH. Escape + re-engage tools for hacker fights (Da Hood class):
+-- Get-Up Blink steals the stand-up window, Flash Engage strafes in blinks while
+-- firing, Panic Blink breaks their lock when you take a burst. Own IIFE for its
+-- register budget; publishes Shared.Hvh for the Extra tab. Every blink ends with
+-- a same-tick camera snap onto the current aim target, so Teleport never costs
+-- an aimbot frame: you materialize already looking at him.
+;(function()
+local HV = {
+    BlinkDist = 60, BlinkMode = "Away", FaceTarget = true,
+    FlashStep = 25, FlashMode = "Toward", FlashRate = 0.22,
+    PanicMin = 8, Cooldown = 2.5,
+}
+registerConfig("hvh", HV)
+Shared.Hvh = HV
+local Plrs = game:GetService("Players")
+
+local function myRoot()
+    local c = LocalPlayer.Character
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
+end
+local function myHum()
+    local c = LocalPlayer.Character
+    return c and c:FindFirstChildOfClass("Humanoid") or nil
+end
+-- nearest living enemy root. Stale ghosts are fine: blink direction only.
+local function nearestFoe()
+    local r = myRoot(); if not r then return nil end
+    local best, bd = nil, math.huge
+    for _, p in ipairs(Plrs:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local h = p.Character:FindFirstChildOfClass("Humanoid")
+            local hr = p.Character:FindFirstChild("HumanoidRootPart")
+            if h and h.Health > 0 and hr then
+                local d = (hr.Position - r.Position).Magnitude
+                if d < bd then bd, best = d, hr end
+            end
+        end
+    end
+    return best
+end
+local function faceFoe()
+    if not HV.FaceTarget then return end
+    local foe = nearestFoe()
+    local cam = Workspace.CurrentCamera
+    if foe and cam then pcall(function() cam.CFrame = CFrame.new(cam.CFrame.Position, foe.Position) end) end
+end
+-- same-tick aim snap onto the live aim target. The aimbot loop would fix this
+-- next frame; doing it here means a blink never donates a frame of free damage.
+local function snapAim()
+    local combat = Shared.Combat
+    local t = combat and combat.Aim.Enabled and combat.Aim._target or nil
+    local ch = t and t.Character
+    local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
+    local cam = Workspace.CurrentCamera
+    if part and cam then pcall(function() cam.CFrame = CFrame.new(cam.CFrame.Position, part.Position) end) end
+end
+local function blink(dir)
+    local r = myRoot(); if not r or dir.Magnitude < 0.01 then return end
+    pcall(function()
+        r.CFrame = r.CFrame + dir.Unit * (HV.BlinkDist or 60)
+        r.AssemblyLinearVelocity = Vector3.zero
+    end)
+    faceFoe()
+    snapAim()
+end
+local function awayDir()
+    local r = myRoot(); if not r then return Vector3.new(0, 1, 0) end
+    local foe = nearestFoe()
+    if foe then
+        local d = r.Position - foe.Position
+        d = Vector3.new(d.X, 0, d.Z)
+        if d.Magnitude > 1 then return d end
+    end
+    local cam = Workspace.CurrentCamera
+    if cam then return -cam.CFrame.LookVector end
+    return Vector3.new(0, 1, 0)
+end
+local function escapeBlink()
+    if HV.BlinkMode == "Up" then blink(Vector3.new(0, 1, 0)) else blink(awayDir()) end
+end
+
+-- get-up tracking: Ragdoll/FallingDown entered, then left after >= 0.5s, means
+-- a knockdown ended (brief trips never arm it). Da Hood knock lasts seconds.
+local DOWN = { [Enum.HumanoidStateType.Ragdoll] = true, [Enum.HumanoidStateType.FallingDown] = true }
+local downAt, lastGetup, lastPanic = 0, 0, 0
+local lastHP = nil
+local function hookHum(h)
+    if not h then return end
+    lastHP = h.Health
+    h.StateChanged:Connect(function(_, new)
+        if Koffee.dead() then return end
+        if DOWN[new] then
+            downAt = os.clock()
+        elseif downAt > 0 then
+            local dt = os.clock() - downAt
+            downAt = 0
+            local now = os.clock()
+            if dt >= 0.5 and now - lastGetup >= (HV.Cooldown or 2.5) then
+                local m = Modules.hvh_getup
+                if m and m.Enabled and h.Health > 0 then
+                    lastGetup = now
+                    escapeBlink()
+                end
+            end
+        end
+    end)
+    h.HealthChanged:Connect(function(hp)
+        if Koffee.dead() then return end
+        local drop = (lastHP or hp) - hp
+        lastHP = hp
+        if drop >= (HV.PanicMin or 8) and hp > 0 then
+            local now = os.clock()
+            if now - lastPanic >= (HV.Cooldown or 2.5) then
+                local m = Modules.hvh_panic
+                if m and m.Enabled then lastPanic = now; escapeBlink() end
+            end
+        end
+    end)
+end
+LocalPlayer.CharacterAdded:Connect(function()
+    downAt = 0
+    task.wait(0.5)
+    hookHum(myHum())
+end)
+hookHum(myHum())
+
+-- flash engage: repeated blinks while the module is on, rate-limited. Toward
+-- closes on the crosshair target's side, Orbit alternates flanks, Away kites.
+local orbitFlip, nextFlash = false, 0
+RunService.Heartbeat:Connect(function()
+    if Koffee.dead() then return end
+    local m = Modules.hvh_flash
+    if not (m and m.Enabled) then return end
+    local now = os.clock()
+    if now < nextFlash then return end
+    nextFlash = now + (HV.FlashRate or 0.22)
+    local r = myRoot(); if not r then return end
+    local mode = HV.FlashMode or "Toward"
+    local dir
+    if mode == "Away" then
+        dir = awayDir()
+    elseif mode == "Orbit" then
+        orbitFlip = not orbitFlip
+        local a = awayDir()
+        dir = Vector3.new(-a.Z, 0, a.X) * (orbitFlip and 1 or -1)
+    else
+        local foe = nearestFoe()
+        if foe then dir = foe.Position - r.Position
+        else
+            local cam = Workspace.CurrentCamera
+            dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+        end
+    end
+    if dir.Magnitude < 0.01 then return end
+    pcall(function()
+        r.CFrame = r.CFrame + dir.Unit * (HV.FlashStep or 25)
+        r.AssemblyLinearVelocity = Vector3.zero
+    end)
+    faceFoe()
+    snapAim()
+end)
+
+registerModule("hvh_getup", "Get-Up Blink", function() end, function() end)
+registerModule("hvh_flash", "Flash Engage", function() end, function() end)
+registerModule("hvh_panic", "Panic Blink", function() end, function() end)
+Modules.hvh_flash.IsActive = function() return true end
+
+function HV.buildPanel(host)
+    new("TextLabel", {
+        Text = "Hacker-fight escapes. Blink away the moment you stand or eat a burst, strafe in flashes while firing. Every blink re-aims the same tick, so Teleport never costs a frame.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
+    })
+    local cbGetup = moduleCheckbox(host, "Get-Up Blink", "hvh_getup")
+    dropdown(host, "Escape Direction", { "Away", "Up" }, HV.BlinkMode, function(v) HV.BlinkMode = v end)
+    slider(host, "Blink Distance", 10, 300, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
+    configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
+    local cbFlash = moduleCheckbox(host, "Flash Engage", "hvh_flash")
+    keybindPill(cbFlash.row, "hvh_flash", nil, "Flash Engage")
+    dropdown(host, "Flash Direction", { "Toward", "Orbit", "Away" }, HV.FlashMode, function(v) HV.FlashMode = v end)
+    slider(host, "Flash Step (studs)", 5, 80, HV.FlashStep, 0, function(v) HV.FlashStep = v end)
+    slider(host, "Flash Interval (s)", 0.08, 0.6, HV.FlashRate, 2, function(v) HV.FlashRate = v end)
+    local cbPanic = moduleCheckbox(host, "Panic Blink", "hvh_panic")
+    slider(host, "Min Burst Damage", 2, 40, HV.PanicMin, 0, function(v) HV.PanicMin = v end)
+    slider(host, "Escape Cooldown (s)", 0.5, 8, HV.Cooldown, 1, function(v) HV.Cooldown = v end)
+    -- Extra is never rebuilt but the watcher wipe is global (see Anticheats
+    -- above): re-subscribe + resync here so config loads cannot orphan these.
+    Shared._hvhResync = function()
+        for _, pr in ipairs({ { cbGetup, "hvh_getup" }, { cbFlash, "hvh_flash" }, { cbPanic, "hvh_panic" } }) do
+            local ctrl, id = pr[1], pr[2]
+            local m = Modules[id]
+            ctrl.setState(m and m.Enabled or false)
+            subscribeModule(id, function(s) ctrl.setState(s) end)
+        end
+    end
+end
+end)()
+
 addTab("Extra", function(epanel)
     -- v0.48.3: no card title: Combat/Custom cards are titleless so the
     -- secondary bar sits at the very top of the feature box. Same here.
     local card = panel(epanel)
-    local R = Shared.subTabs and Shared.subTabs(card, { "Mods", "Anticheats" }) or nil
+    local R = Shared.subTabs and Shared.subTabs(card, { "Mods", "Anticheats", "Hvh" }) or nil
     local host = (R and R["Mods"]) or card
     if R and R["Anticheats"] and Shared.Anticheat then Shared.Anticheat.buildPanel(R["Anticheats"]) end
+    if R and R["Hvh"] and Shared.Hvh then Shared.Hvh.buildPanel(R["Hvh"]) end
     -- pins live across rescans, keyed so a rebuild re-attaches, not dupes.
     -- { on, want, orig, kind } / kind = number|bool|string.
     local pins = {}
