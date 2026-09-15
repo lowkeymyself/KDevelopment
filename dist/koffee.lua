@@ -1,7 +1,7 @@
--- koffee v0.69.0
+-- koffee v0.69.1
 
 local Koffee = {}
-Koffee.Version = "0.69.0"
+Koffee.Version = "0.69.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4864,8 +4864,9 @@ local function loadSnapshot(data)
     if data.keybinds then
         for k in pairs(Keybinds) do Keybinds[k] = nil end
         for id, key in pairs(data.keybinds) do
-            -- v0.66.1: combat has no toggle bind. Skip stale entries from old saves.
-            if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" then
+            -- v0.66.1: combat has no toggle bind. v0.69.1: the HvH box is Blink
+            -- alone now. Skip stale entries from old saves.
+            if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" and id ~= "hvh_flash" then
                 -- accept Roblox EnumItems AND virtual XButton strings (v0.0.37)
                 if typeof(key) == "EnumItem" or key == "XButton1" or key == "XButton2" then
                     Keybinds[id] = key
@@ -22936,21 +22937,18 @@ function AC.buildPanel(host)
 end
 end)()
 
--- v0.68.0: HVH. Escape + re-engage tools for hacker fights (Da Hood class):
--- Get-Up Blink steals the stand-up window, Flash Engage strafes in blinks while
--- firing, Panic Blink breaks their lock when you take a burst. Own IIFE for its
--- register budget; publishes Shared.Hvh for the Extra tab. Every blink ends with
--- a same-tick camera snap onto the current aim target, so Teleport never costs
--- an aimbot frame: you materialize already looking at him.
+-- v0.68.0: HVH. Manual blink escape plus a return trip: arm it, hold the key
+-- to stream random sphere jumps, release to snap back where you started.
+-- Own IIFE for its register budget; publishes Shared.Hvh for the Extra tab.
+-- Locked blinks re-aim same-tick; unlocked ones travel quiet.
 ;(function()
 local HV = {
-    BlinkDist = 500, BlinkMode = "Away", FaceTarget = true,
-    FlashStep = 25, FlashMode = "Toward", FlashRate = 0.22,
-    PanicMin = 8, Cooldown = 2.5, BlinkDir = "Random",
-    BlinkKeyMode = "Hold", BlinkRate = 0.25,
+    BlinkDist = 500, FaceTarget = true,
+    BlinkKeyMode = "Hold", BlinkRate = 0.25, BlinkReturn = true,
 }
 registerConfig("hvh", HV)
 Shared.Hvh = HV
+Keybinds["hvh_flash"] = nil
 local UIS = UserInputService
 -- v0.68.5: debug channel. Set getgenv().KoffeeHvhDebug = true and the console
 -- narrates every blink fire plus key edges, so a dead Blink answers why.
@@ -22968,10 +22966,6 @@ local Plrs = game:GetService("Players")
 local function myRoot()
     local c = LocalPlayer.Character
     return c and c:FindFirstChild("HumanoidRootPart") or nil
-end
-local function myHum()
-    local c = LocalPlayer.Character
-    return c and c:FindFirstChildOfClass("Humanoid") or nil
 end
 -- nearest living enemy root. Stale ghosts are fine: blink direction only.
 local function nearestFoe()
@@ -23051,37 +23045,13 @@ local function blink(dir, quiet)
     -- quiet travel blinks leave the camera alone. Loud ones re-aim same-tick.
     if not quiet then faceFoe(); snapAim() end
 end
-local function awayDir()
-    local r = myRoot(); if not r then return Vector3.new(0, 1, 0) end
-    local foe = nearestFoe()
-    if foe then
-        local d = r.Position - foe.Position
-        d = Vector3.new(d.X, 0, d.Z)
-        if d.Magnitude > 1 then return d end
-    end
-    local cam = Workspace.CurrentCamera
-    if cam then return -cam.CFrame.LookVector end
-    return Vector3.new(0, 1, 0)
-end
-local function escapeBlink()
-    if HV.BlinkMode == "Up" then blink(Vector3.new(0, 1, 0)) else blink(awayDir()) end
-end
--- one directed blink in BlinkDir. Unlocked travel stays quiet (no camera yank);
+-- one random sphere jump. Unlocked travel stays quiet (no camera yank);
 -- locked blinks keep eyes on the target through faceFoe + the aim snap.
 local function fireBlink()
     local r = myRoot()
     if not r then return end
-    local mode = HV.BlinkDir or "Random"
-    local dir
-    if mode == "Up" then dir = Vector3.new(0, 1, 0)
-    elseif mode == "Away" then dir = awayDir()
-    elseif mode == "Random" then dir = randomDir()
-    else
-        local cam = Workspace.CurrentCamera
-        dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
-    end
-    blink(dir, not lockOn())
-    hvhDbg("blink fired dist=" .. tostring(HV.BlinkDist) .. " mode=" .. tostring(HV.BlinkDir))
+    blink(randomDir(), not lockOn())
+    hvhDbg("blink fired dist=" .. tostring(HV.BlinkDist))
 end
 -- v0.68.4: arm + key model (the movement pattern). Checkbox arms, pill key
 -- activates: Hold blinks while held, Toggle latches blinking on/off. No lock
@@ -23206,54 +23176,15 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
--- get-up tracking: Ragdoll/FallingDown entered, then left after >= 0.5s, means
--- a knockdown ended (brief trips never arm it). Da Hood knock lasts seconds.
-local DOWN = { [Enum.HumanoidStateType.Ragdoll] = true, [Enum.HumanoidStateType.FallingDown] = true }
-local downAt, lastGetup, lastPanic = 0, 0, 0
-local lastHP = nil
-local function hookHum(h)
-    if not h then return end
-    lastHP = h.Health
-    h.StateChanged:Connect(function(_, new)
-        if Koffee.dead() then return end
-        if DOWN[new] then
-            downAt = os.clock()
-        elseif downAt > 0 then
-            local dt = os.clock() - downAt
-            downAt = 0
-            local now = os.clock()
-            if dt >= 0.5 and now - lastGetup >= (HV.Cooldown or 2.5) then
-                local m = Modules.hvh_getup
-                if m and m.Enabled and h.Health > 0 and lockOn() then
-                    lastGetup = now
-                    escapeBlink()
-                end
-            end
-        end
-    end)
-    h.HealthChanged:Connect(function(hp)
-        if Koffee.dead() then return end
-        local drop = (lastHP or hp) - hp
-        lastHP = hp
-        if drop >= (HV.PanicMin or 8) and hp > 0 then
-            local now = os.clock()
-            if now - lastPanic >= (HV.Cooldown or 2.5) then
-                local m = Modules.hvh_panic
-                if m and m.Enabled and lockOn() then lastPanic = now; escapeBlink() end
-            end
-        end
-    end)
-end
-LocalPlayer.CharacterAdded:Connect(function()
-    downAt = 0
-    task.wait(0.5)
-    hookHum(myHum())
-end)
-hookHum(myHum())
+-- boomerang anchor: where you stood when the key first went active. Release
+-- (or unlatch, or disarm) snaps you back to it. Cleared on respawn so death
+-- never slingshots a fresh body back into the fight that killed it.
+local anchorCF, anchorChar, wasBlinkActive = nil, nil, false
+LocalPlayer.CharacterAdded:Connect(function() anchorCF, anchorChar, wasBlinkActive = nil, nil, false end)
 
--- flash engage: repeated blinks while the module is on, rate-limited. Toward
--- closes on the crosshair target's side, Orbit alternates flanks, Away kites.
-local orbitFlip, nextFlash, nextBlink, pBX = false, 0, 0, { false, false }
+-- armed Blink auto-fires on its interval while its key is active. Rising edge
+-- saves the anchor; falling edge snaps back to it when Return is on.
+local nextBlink, pBX = 0, { false, false }
 RunService.Heartbeat:Connect(function()
     if Koffee.dead() then return end
     local now = os.clock()
@@ -23291,54 +23222,40 @@ RunService.Heartbeat:Connect(function()
     end
     -- armed Blink auto-fires on its interval while its key is active. No lock
     -- needed: manual mobility works in any fight, locked or not.
-    do
-        local b = Modules.hvh_blink
-        if b and b.Enabled and blinkKeyActive() and now >= nextBlink then
-            nextBlink = now + (HV.BlinkRate or 0.25)
-            fireBlink()
-        end
+    local b = Modules.hvh_blink
+    local active = b and b.Enabled and blinkKeyActive()
+    if active and not wasBlinkActive then
+        local r = myRoot()
+        if r then anchorCF, anchorChar = r.CFrame, LocalPlayer.Character end
     end
-    local m = Modules.hvh_flash
-    if not (m and m.Enabled and lockOn()) then return end
-    if now < nextFlash then return end
-    nextFlash = now + (HV.FlashRate or 0.22)
-    local r = myRoot(); if not r then return end
-    local mode = HV.FlashMode or "Toward"
-    local dir
-    if mode == "Away" then
-        dir = awayDir()
-    elseif mode == "Orbit" then
-        orbitFlip = not orbitFlip
-        local a = awayDir()
-        dir = Vector3.new(-a.Z, 0, a.X) * (orbitFlip and 1 or -1)
-    else
-        local foe = nearestFoe()
-        if foe then dir = foe.Position - r.Position
-        else
-            local cam = Workspace.CurrentCamera
-            dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
-        end
+    if active and now >= nextBlink then
+        nextBlink = now + (HV.BlinkRate or 0.25)
+        fireBlink()
     end
-    if dir.Magnitude < 0.01 then return end
-    -- flash steps ride the same void safety: edges and holes cannot catch you.
-    local dest = safeSpot(r.Position, dir.Unit, HV.FlashStep or 25)
-    pcall(function()
-        r.CFrame = r.CFrame - r.Position + dest
-        r.AssemblyLinearVelocity = Vector3.zero
-    end)
-    faceFoe()
-    snapAim()
+    if not active and wasBlinkActive then
+        if HV.BlinkReturn ~= false then
+            local r = myRoot()
+            if r and anchorCF and LocalPlayer.Character == anchorChar then
+                pcall(function()
+                    r.CFrame = anchorCF
+                    r.AssemblyLinearVelocity = Vector3.zero
+                end)
+                hvhDbg("blink returned")
+            end
+        end
+        anchorCF, anchorChar = nil, nil
+    end
+    wasBlinkActive = active
 end)
 
-registerModule("hvh_getup", "Get-Up Blink", function() end, function() end)
-registerModule("hvh_flash", "Flash Engage", function() end, function() end)
-registerModule("hvh_panic", "Panic Blink", function() end, function() end)
 -- v0.68.1: manual blink. v0.68.4: arm + key (movement pattern). The checkbox
 -- arms, the pill key activates (Hold streams, Toggle latches). Fires alone.
 registerModule("hvh_blink", "Blink", function() end,
     function() blinkLatch, blinkHeld = false, false; syncBlinkPill(true) end)
-Modules.hvh_blink.IsActive = function() return blinkKeyActive() end
-Modules.hvh_flash.IsActive = function() return lockOn() end
+Modules.hvh_blink.IsActive = function()
+    local m = Modules.hvh_blink
+    return (m and m.Enabled and blinkKeyActive()) and true or false
+end
 
 function HV.buildPanel(host)
     new("TextLabel", {
@@ -23349,11 +23266,8 @@ function HV.buildPanel(host)
     })
     local cbBlink = moduleCheckbox(host, "Blink", "hvh_blink")
     local blinkRef = blinkPill(cbBlink.row)
-    dropdown(host, "Blink Direction", { "Forward", "Away", "Up", "Random" }, HV.BlinkDir or "Random", function(v) HV.BlinkDir = v end)
     -- v0.68.7: 0 means uncapped (every Heartbeat). Random escapes want max rate.
     slider(host, "Blink Interval (s)", 0, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
-    local cbGetup = moduleCheckbox(host, "Get-Up Blink", "hvh_getup")
-    dropdown(host, "Escape Direction", { "Away", "Up" }, HV.BlinkMode, function(v) HV.BlinkMode = v end)
     -- v0.68.9: exact entry, not a drag slider. Past 1M one slider pixel is
     -- thousands of studs, so small and huge jumps cannot share a control.
     -- Typing keeps both 500 and 8000000 settable. Clamped 10 to 10000000:
@@ -23383,19 +23297,14 @@ function HV.buildPanel(host)
         end
         distBox.Text = tostring(math.floor(HV.BlinkDist or 500))
     end)
+    -- v0.69.1: release (or unlatch, or disarm) snaps back to the anchor saved
+    -- when the key first went active. Unchecked means one-way trips only.
+    configCheckbox(host, "Return To Start", HV.BlinkReturn ~= false, function(v) HV.BlinkReturn = v end)
     configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
-    local cbFlash = moduleCheckbox(host, "Flash Engage", "hvh_flash")
-    keybindPill(cbFlash.row, "hvh_flash", nil, "Flash Engage")
-    dropdown(host, "Flash Direction", { "Toward", "Orbit", "Away" }, HV.FlashMode, function(v) HV.FlashMode = v end)
-    slider(host, "Flash Step (studs)", 5, 300, HV.FlashStep, 0, function(v) HV.FlashStep = v end)
-    slider(host, "Flash Interval (s)", 0.08, 0.6, HV.FlashRate, 2, function(v) HV.FlashRate = v end)
-    local cbPanic = moduleCheckbox(host, "Panic Blink", "hvh_panic")
-    slider(host, "Min Burst Damage", 2, 40, HV.PanicMin, 0, function(v) HV.PanicMin = v end)
-    slider(host, "Escape Cooldown (s)", 0.5, 8, HV.Cooldown, 1, function(v) HV.Cooldown = v end)
     -- Extra is never rebuilt but the watcher wipe is global (see Anticheats
     -- above): re-subscribe + resync here so config loads cannot orphan these.
     Shared._hvhResync = function()
-        for _, pr in ipairs({ { cbBlink, "hvh_blink" }, { cbGetup, "hvh_getup" }, { cbFlash, "hvh_flash" }, { cbPanic, "hvh_panic" } }) do
+        for _, pr in ipairs({ { cbBlink, "hvh_blink" } }) do
             local ctrl, id = pr[1], pr[2]
             local m = Modules[id]
             ctrl.setState(m and m.Enabled or false)
