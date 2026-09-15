@@ -1,7 +1,7 @@
--- koffee v0.69.3
+-- koffee v0.69.4
 
 local Koffee = {}
-Koffee.Version = "0.69.3"
+Koffee.Version = "0.69.4"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23251,24 +23251,26 @@ RunService.Heartbeat:Connect(function()
             end
         end
     end
-    -- XButton driver for the Blink key (Roblox never fires mouse 4/5).
-    if type(HV.BlinkKey) == "string" then
-        local xb1, xb2 = Helper.XB1, Helper.XB2
-        local e1, e2 = (xb1 and not pBX[1]), (xb2 and not pBX[2])
-        local function down(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
-        local function edge(k) return (k == "XButton1" and e1) or (k == "XButton2" and e2) or false end
-        if pendingBlink then
-            local k = (e2 and "XButton2") or (e1 and "XButton1") or nil
-            if k then HV.BlinkKey = k; blinkHeld, blinkLatch = false, false
-                pendingBlink.refresh(); pendingBlink = nil end
-        elseif (HV.BlinkKeyMode or "Hold") == "Toggle" then
-            if edge(HV.BlinkKey) then blinkLatch = not blinkLatch; syncBlinkPill() end
+    -- XButton driver for the Blink key (Roblox never fires mouse 4/5). Reads the
+    -- feed unconditionally like combat does: gating capture on "already bound
+    -- to XB" made XB unbindable, the pill sat on "..." forever. That was the bug.
+    local xb1, xb2 = Helper.XB1, Helper.XB2
+    local e1, e2 = (xb1 and not pBX[1]), (xb2 and not pBX[2])
+    local function xbDown(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
+    local function xbEdge(k) return (k == "XButton1" and e1) or (k == "XButton2" and e2) or false end
+    if pendingBlink then
+        local k = (e2 and "XButton2") or (e1 and "XButton1") or nil
+        if k then HV.BlinkKey = k; blinkHeld, blinkLatch = false, false
+            pendingBlink.refresh(); pendingBlink = nil end
+    elseif type(HV.BlinkKey) == "string" then
+        if (HV.BlinkKeyMode or "Hold") == "Toggle" then
+            if xbEdge(HV.BlinkKey) then blinkLatch = not blinkLatch; syncBlinkPill() end
         else
-            local held = down(HV.BlinkKey)
+            local held = xbDown(HV.BlinkKey)
             if held ~= blinkHeld then blinkHeld = held; syncBlinkPill() end
         end
-        pBX[1], pBX[2] = xb1, xb2
     end
+    pBX[1], pBX[2] = xb1, xb2
     -- armed Blink auto-fires on its interval while its key is active. No lock
     -- needed: manual mobility works in any fight, locked or not.
     local b = Modules.hvh_blink
