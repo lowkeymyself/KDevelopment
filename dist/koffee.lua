@@ -1,7 +1,7 @@
--- koffee v0.68.3
+-- koffee v0.68.4
 
 local Koffee = {}
-Koffee.Version = "0.68.3"
+Koffee.Version = "0.68.4"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -5303,7 +5303,7 @@ local ESP = {
         GradientRotation  = 0,     -- degrees; 0 = horizontal, 90 = vertical
         GradientSpacing   = 0.5,   -- 0..1 where the B color sits between the A ends
         GradientReverse   = false, -- flip travel direction
-        SizingType     = "Algorithm",  -- v0.67.0: hard-coded, the dropdown is gone
+        SizingType     = "Algorithm",  -- v0.65.1: tight silhouette default
         RenderDistance = 1000,
         -- v0.11.0 COLOR MODE. One master that resolves the colour for every
         -- Second-Interface element (box, cube, corners, skeleton, tracer, head dot,
@@ -7263,12 +7263,16 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         --   Bounding / Prediction -> 8-corner world projection with optional CharacterOnly.
         local corners, anyInFront, allInFront, worldCF, worldSize
         local isCube = ESP.Boxes.BoxType == "Cube"
-        -- v0.67.0: sizing is hard-coded to Algorithm (tight silhouette). NPCs stay
-        -- on Bounding, and Cube keeps Bounding (flat projections have no depth).
-        local effectiveSizing
-        if rig.isNPC then effectiveSizing = "Bounding"
-        elseif isCube then effectiveSizing = "Bounding"
-        else effectiveSizing = "Algorithm" end
+        local effectiveSizing = ESP.Config.SizingType
+        -- v0.56.0: NPCs use the 8-corner Bounding projection (project8 now handles
+        -- bare Parts too), so the box grabs the exact on-screen height + width of
+        -- the model / part instead of the aspect-locked Static approximation.
+        if rig.isNPC then effectiveSizing = "Bounding" end
+        -- v0.65.1: Static AND Algorithm are flat 2D-only projections (no depth), so
+        -- a Cube box falls through to the real 8-corner Bounding for both.
+        if isCube and (effectiveSizing == "Static" or effectiveSizing == "Algorithm") then
+            effectiveSizing = "Bounding"
+        end
         if effectiveSizing == "Static" then
             corners, anyInFront, allInFront = projectStatic(rig.torso, rig.character)
         elseif effectiveSizing == "Algorithm" then
@@ -15759,8 +15763,8 @@ addTab("Visuals", function(root)
         ESP.Config.FollowDirection = v
     end)
     configCheckbox(espPanel, "Immediate Mode", ESP.Config.ImmediateMode, function(v) ESP.Config.ImmediateMode = v end)
-    -- v0.67.0: sizing is hard-coded to Algorithm (tight silhouette). Saved
-    -- configs carrying an older SizingType are coerced in the dispatch below.
+    dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction", "Algorithm" }, ESP.Config.SizingType,
+        function(v) ESP.Config.SizingType = v end)
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end, { infinite = true })
     -- v0.0.22: global Feature-Interface thickness; v0.0.23: sub-1 down to 0.1.
@@ -22940,14 +22944,15 @@ end)()
 -- an aimbot frame: you materialize already looking at him.
 ;(function()
 local HV = {
-    BlinkDist = 60, BlinkMode = "Away", FaceTarget = true,
+    BlinkDist = 500, BlinkMode = "Away", FaceTarget = true,
     FlashStep = 25, FlashMode = "Toward", FlashRate = 0.22,
     PanicMin = 8, Cooldown = 2.5, BlinkDir = "Forward",
+    BlinkKeyMode = "Hold", BlinkRate = 0.25,
 }
 registerConfig("hvh", HV)
 Shared.Hvh = HV
--- v0.68.2: every HvH action needs an engaged Target Lock. No lock, no blink:
--- escapes and flashes are answers to a locked fight, not free movement.
+-- v0.68.2: Get-Up, Panic, and Flash need an engaged Target Lock. Manual Blink
+-- is exempt: it fires lock-free. Escapes and flashes answer a locked fight.
 local function lockOn()
     return Shared.TargetLock.Enabled and Shared.TargetLock._active
 end
@@ -22993,14 +22998,14 @@ local function snapAim()
     local cam = Workspace.CurrentCamera
     if part and cam then pcall(function() cam.CFrame = CFrame.new(cam.CFrame.Position, part.Position) end) end
 end
-local function blink(dir)
+local function blink(dir, quiet)
     local r = myRoot(); if not r or dir.Magnitude < 0.01 then return end
     pcall(function()
-        r.CFrame = r.CFrame + dir.Unit * (HV.BlinkDist or 60)
+        r.CFrame = r.CFrame + dir.Unit * (HV.BlinkDist or 500)
         r.AssemblyLinearVelocity = Vector3.zero
     end)
-    faceFoe()
-    snapAim()
+    -- quiet travel blinks leave the camera alone. Loud ones re-aim same-tick.
+    if not quiet then faceFoe(); snapAim() end
 end
 local function awayDir()
     local r = myRoot(); if not r then return Vector3.new(0, 1, 0) end
@@ -23017,7 +23022,8 @@ end
 local function escapeBlink()
     if HV.BlinkMode == "Up" then blink(Vector3.new(0, 1, 0)) else blink(awayDir()) end
 end
--- shared manual-blink shot, used by the toggle (on arm) and the lock-engage edge.
+-- one directed blink in BlinkDir. Unlocked travel stays quiet (no camera yank);
+-- locked blinks keep eyes on the target through faceFoe + the aim snap.
 local function fireBlink()
     local r = myRoot()
     if not r then return end
@@ -23029,8 +23035,124 @@ local function fireBlink()
         local cam = Workspace.CurrentCamera
         dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
     end
-    blink(dir)
+    blink(dir, not lockOn())
 end
+-- v0.68.4: arm + key model (the movement pattern). Checkbox arms, pill key
+-- activates: Hold blinks while held, Toggle latches blinking on/off. No lock
+-- needed, manual mobility works in any fight. Nil key means never, not always.
+local blinkHeld, blinkLatch, pendingBlink = false, false, nil
+local blinkPillInst, blinkPillCache = nil, nil
+local function blinkKeyActive()
+    if HV.BlinkKey == nil then return false end
+    if (HV.BlinkKeyMode or "Hold") == "Toggle" then return blinkLatch end
+    return blinkHeld
+end
+-- event-driven pill tint (accent while blinking). Cached so the Heartbeat's
+-- XButton poll can call it every frame for free.
+local function syncBlinkPill(force)
+    local pill = blinkPillInst
+    if not pill or (pendingBlink and pendingBlink.pill == pill) then return end
+    local m = Modules.hvh_blink
+    local on = (m and m.Enabled and blinkKeyActive()) and true or false
+    if force or blinkPillCache ~= on then
+        blinkPillCache = on
+        pill.TextColor3 = on and Theme.Palette.Accent or Theme.Palette.TextMuted
+    end
+end
+local function blinkPill(row)
+    local pill = new("TextButton", {
+        Name = "BlinkPill", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 30, 0, 16), AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        AutoButtonColor = false, Text = "-", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+        TextColor3 = Theme.Palette.TextMuted, ZIndex = 38, Parent = row,
+    }, {
+        pillCorner(), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+    })
+    local function refresh()
+        local nm = keyLabel(HV.BlinkKey)
+        if not nm then
+            if type(HV.BlinkKey) == "string" then nm = HV.BlinkKey == "XButton1" and "XB1" or "XB2"
+            else nm = "-" end
+        end
+        pill.Text = nm .. " " .. (HV.BlinkKeyMode or "Hold")
+        syncBlinkPill(true)
+    end
+    refresh()
+    blinkPillInst = pill
+    pill.MouseEnter:Connect(function()
+        tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
+    end)
+    pill.MouseLeave:Connect(function()
+        if not (pendingBlink and pendingBlink.pill == pill) then
+            syncBlinkPill(true)
+        end
+    end)
+    pill.MouseButton1Click:Connect(function()
+        if pendingBlink and pendingBlink.pill == pill then
+            pendingBlink.refresh(); pendingBlink = nil
+            return
+        end
+        if pendingBlink then pendingBlink.refresh() end
+        pill.Text = "..."
+        tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
+        pendingBlink = { pill = pill, refresh = refresh }
+    end)
+    -- right-click flips Hold/Toggle. The mode rides in the pill text. Latch is
+    -- cleared so a stale Toggle-on cannot leak into a fresh Hold bind.
+    pill.MouseButton2Click:Connect(function()
+        HV.BlinkKeyMode = (HV.BlinkKeyMode or "Hold") == "Hold" and "Toggle" or "Hold"
+        blinkLatch = false
+        refresh()
+    end)
+    popFx(pill)
+    return refresh
+end
+local function blinkMatch(input, bind)
+    if typeof(bind) ~= "EnumItem" then return false end
+    if bind.EnumType == Enum.KeyCode then
+        return input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == bind
+    elseif bind.EnumType == Enum.UserInputType then
+        return input.UserInputType == bind
+    end
+    return false
+end
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if pendingBlink then
+        local it = input.UserInputType
+        if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
+            HV.BlinkKey = nil; blinkHeld, blinkLatch = false, false
+            pendingBlink.refresh(); pendingBlink = nil; return
+        end
+        if gpe and (it == Enum.UserInputType.MouseButton1
+                or it == Enum.UserInputType.MouseButton2
+                or it == Enum.UserInputType.MouseButton3) then
+            return
+        end
+        local bind
+        if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then bind = input.KeyCode
+        elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
+           and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
+           and it ~= Enum.UserInputType.TextInput and it ~= Enum.UserInputType.InputMethod then bind = it end
+        -- fresh key, fresh state: a held-down old key must not stick blinking on.
+        if bind then HV.BlinkKey = bind; blinkHeld, blinkLatch = false, false
+            pendingBlink.refresh(); pendingBlink = nil end
+        return
+    end
+    if gpe then return end
+    if blinkMatch(input, HV.BlinkKey) then
+        if (HV.BlinkKeyMode or "Hold") == "Toggle" then blinkLatch = not blinkLatch
+        else blinkHeld = true end
+        syncBlinkPill()
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if (HV.BlinkKeyMode or "Hold") == "Hold" and blinkMatch(input, HV.BlinkKey) then
+        blinkHeld = false
+        syncBlinkPill()
+    end
+end)
 
 -- get-up tracking: Ragdoll/FallingDown entered, then left after >= 0.5s, means
 -- a knockdown ended (brief trips never arm it). Da Hood knock lasts seconds.
@@ -23079,19 +23201,39 @@ hookHum(myHum())
 
 -- flash engage: repeated blinks while the module is on, rate-limited. Toward
 -- closes on the crosshair target's side, Orbit alternates flanks, Away kites.
-local orbitFlip, nextFlash, lastLock = false, 0, false
+local orbitFlip, nextFlash, nextBlink, pBX = false, 0, 0, { false, false }
 RunService.Heartbeat:Connect(function()
     if Koffee.dead() then return end
-    -- v0.68.3: armed Blink fires on arm (see onEnable) and on lock engage.
-    local lock = lockOn()
-    if lock and not lastLock then
-        local b = Modules.hvh_blink
-        if b and b.Enabled then fireBlink() end
-    end
-    lastLock = lock
-    local m = Modules.hvh_flash
-    if not (m and m.Enabled and lock) then return end
     local now = os.clock()
+    -- XButton driver for the Blink key (Roblox never fires mouse 4/5).
+    if type(HV.BlinkKey) == "string" then
+        local xb1, xb2 = Helper.XB1, Helper.XB2
+        local e1, e2 = (xb1 and not pBX[1]), (xb2 and not pBX[2])
+        local function down(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
+        local function edge(k) return (k == "XButton1" and e1) or (k == "XButton2" and e2) or false end
+        if pendingBlink then
+            local k = (e2 and "XButton2") or (e1 and "XButton1") or nil
+            if k then HV.BlinkKey = k; blinkHeld, blinkLatch = false, false
+                pendingBlink.refresh(); pendingBlink = nil end
+        elseif (HV.BlinkKeyMode or "Hold") == "Toggle" then
+            if edge(HV.BlinkKey) then blinkLatch = not blinkLatch; syncBlinkPill() end
+        else
+            local held = down(HV.BlinkKey)
+            if held ~= blinkHeld then blinkHeld = held; syncBlinkPill() end
+        end
+        pBX[1], pBX[2] = xb1, xb2
+    end
+    -- armed Blink auto-fires on its interval while its key is active. No lock
+    -- needed: manual mobility works in any fight, locked or not.
+    do
+        local b = Modules.hvh_blink
+        if b and b.Enabled and blinkKeyActive() and now >= nextBlink then
+            nextBlink = now + (HV.BlinkRate or 0.25)
+            fireBlink()
+        end
+    end
+    local m = Modules.hvh_flash
+    if not (m and m.Enabled and lockOn()) then return end
     if now < nextFlash then return end
     nextFlash = now + (HV.FlashRate or 0.22)
     local r = myRoot(); if not r then return end
@@ -23123,12 +23265,11 @@ end)
 registerModule("hvh_getup", "Get-Up Blink", function() end, function() end)
 registerModule("hvh_flash", "Flash Engage", function() end, function() end)
 registerModule("hvh_panic", "Panic Blink", function() end, function() end)
--- v0.68.1: manual blink. v0.68.3: true toggle, it stays on. Fires on arm and
--- whenever the lock engages while armed, so arming early still pays off.
-registerModule("hvh_blink", "Blink", function()
-    if lockOn() then fireBlink() end
-end, function() end)
-Modules.hvh_blink.IsActive = function() return lockOn() end
+-- v0.68.1: manual blink. v0.68.4: arm + key (movement pattern). The checkbox
+-- arms, the pill key activates (Hold streams, Toggle latches). Fires alone.
+registerModule("hvh_blink", "Blink", function() end,
+    function() blinkLatch, blinkHeld = false, false; syncBlinkPill(true) end)
+Modules.hvh_blink.IsActive = function() return blinkKeyActive() end
 Modules.hvh_flash.IsActive = function() return lockOn() end
 
 function HV.buildPanel(host)
@@ -23139,16 +23280,20 @@ function HV.buildPanel(host)
         AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
     })
     local cbBlink = moduleCheckbox(host, "Blink", "hvh_blink")
-    keybindPill(cbBlink.row, "hvh_blink", nil, "Blink")
+    local blinkRef = blinkPill(cbBlink.row)
     dropdown(host, "Blink Direction", { "Forward", "Away", "Up" }, HV.BlinkDir or "Forward", function(v) HV.BlinkDir = v end)
+    slider(host, "Blink Interval (s)", 0.08, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
     local cbGetup = moduleCheckbox(host, "Get-Up Blink", "hvh_getup")
     dropdown(host, "Escape Direction", { "Away", "Up" }, HV.BlinkMode, function(v) HV.BlinkMode = v end)
-    slider(host, "Blink Distance", 10, 300, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
+    -- v0.68.4: millions of studs break float32 physics (limbs jitter, then the
+    -- rig falls apart) and dunk you past destroy height, so the cap is 10k:
+    -- every real sky base and map cross fits single-digit thousands.
+    slider(host, "Blink Distance", 10, 10000, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
     configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
     local cbFlash = moduleCheckbox(host, "Flash Engage", "hvh_flash")
     keybindPill(cbFlash.row, "hvh_flash", nil, "Flash Engage")
     dropdown(host, "Flash Direction", { "Toward", "Orbit", "Away" }, HV.FlashMode, function(v) HV.FlashMode = v end)
-    slider(host, "Flash Step (studs)", 5, 80, HV.FlashStep, 0, function(v) HV.FlashStep = v end)
+    slider(host, "Flash Step (studs)", 5, 300, HV.FlashStep, 0, function(v) HV.FlashStep = v end)
     slider(host, "Flash Interval (s)", 0.08, 0.6, HV.FlashRate, 2, function(v) HV.FlashRate = v end)
     local cbPanic = moduleCheckbox(host, "Panic Blink", "hvh_panic")
     slider(host, "Min Burst Damage", 2, 40, HV.PanicMin, 0, function(v) HV.PanicMin = v end)
@@ -23162,6 +23307,7 @@ function HV.buildPanel(host)
             ctrl.setState(m and m.Enabled or false)
             subscribeModule(id, function(s) ctrl.setState(s) end)
         end
+        if blinkRef then blinkRef() end
     end
 end
 end)()
@@ -24813,9 +24959,7 @@ end)()
     -- compute the rig's on-screen box the SAME way the live ESP sizes a real player,
     -- honouring the current Sizing Type, so the preview is genuinely accurate.
     local function computeBox()
-        -- v0.67.0: mirrors the live dispatch. Algorithm always, except Cube
-        -- boxes which stay on the real 8-corner Bounding like in-game.
-        local st = (ESP.Boxes.BoxType == "Cube") and "Bounding" or "Algorithm"
+        local st = ESP.Config.SizingType
         local box = { 1e9, 1e9, -1e9, -1e9 }
         if st == "Algorithm" and #rigBodyParts > 0 then
             -- tight silhouette: every body part's own 8 corners (mirrors ESP._projectAlgorithm).
@@ -24828,8 +24972,18 @@ end)()
                     end end end
                 end
             end
+        elseif st == "Static" then
+            -- aspect-locked from the projected height (mirrors ESP STATIC.aspect = 0.5).
+            local top = proj(CENTER + Vector3.new(0, extents.Y * 0.5, 0))
+            local bot = proj(CENTER - Vector3.new(0, extents.Y * 0.5, 0))
+            if top and bot then
+                local h = math.abs(bot.Y - top.Y)
+                local w = h * 0.5 * (STAGE_H / STAGE_W)
+                local cx, cy = (top.X + bot.X) * 0.5, (top.Y + bot.Y) * 0.5
+                box = { cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5 }
+            end
         elseif model then
-            -- Bounding: the rig's live oriented bounding box, 8 corners.
+            -- Bounding / Prediction: the rig's live oriented bounding box, 8 corners.
             local cf, size = model:GetBoundingBox()
             local ax, ay, az = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
             for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
