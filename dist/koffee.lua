@@ -1,7 +1,7 @@
--- koffee v0.68.8
+-- koffee v0.68.9
 
 local Koffee = {}
-Koffee.Version = "0.68.8"
+Koffee.Version = "0.68.9"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23323,10 +23323,35 @@ function HV.buildPanel(host)
     slider(host, "Blink Interval (s)", 0, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
     local cbGetup = moduleCheckbox(host, "Get-Up Blink", "hvh_getup")
     dropdown(host, "Escape Direction", { "Away", "Up" }, HV.BlinkMode, function(v) HV.BlinkMode = v end)
-    -- v0.68.8: 1M cap. Float holds to ~10M; falling/void and destroy height
-    -- are the real limits (pair far jumps with fly, Up is always safe). Past
-    -- 1M a linear drag slider loses all granularity, so this is the ceiling.
-    slider(host, "Blink Distance", 10, 1000000, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
+    -- v0.68.9: exact entry, not a drag slider. Past 1M one slider pixel is
+    -- thousands of studs, so small and huge jumps cannot share a control.
+    -- Typing keeps both 500 and 8000000 settable. Clamped 10 to 10000000:
+    -- float32 holds ~0.1 studs at 1M and ~1 stud at 10M (past that the rig
+    -- itself degrades, verified by our own 253M probe reading ~16 studs off).
+    local distRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, ZIndex = 34, Parent = host,
+    })
+    new("TextLabel", {
+        Text = "Blink Distance", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, -110, 1, 0),
+        ZIndex = 34, Parent = distRow,
+    })
+    local distBox = new("TextBox", {
+        Text = tostring(math.floor(HV.BlinkDist or 500)), ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Body, TextColor3 = Theme.Palette.Text,
+        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 100, 0, 22), ZIndex = 35, Parent = distRow,
+    }, { corner(7), stroke(Theme.Palette.BorderSubtle) })
+    distBox.FocusLost:Connect(function(enter)
+        if enter then
+            local n = tonumber(distBox.Text:gsub("[^%d%.]", ""))
+            if n then HV.BlinkDist = math.clamp(math.floor(n), 10, 10000000) end
+        end
+        distBox.Text = tostring(math.floor(HV.BlinkDist or 500))
+    end)
     configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
     local cbFlash = moduleCheckbox(host, "Flash Engage", "hvh_flash")
     keybindPill(cbFlash.row, "hvh_flash", nil, "Flash Engage")
@@ -23346,6 +23371,11 @@ function HV.buildPanel(host)
             subscribeModule(id, function(s) ctrl.setState(s) end)
         end
         if blinkRef then blinkRef() end
+        pcall(function()
+            if distBox and not distBox:IsFocused() then
+                distBox.Text = tostring(math.floor(HV.BlinkDist or 500))
+            end
+        end)
     end
 end
 end)()
