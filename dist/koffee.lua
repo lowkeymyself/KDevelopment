@@ -1,7 +1,7 @@
--- koffee v0.65.0
+-- koffee v0.66.0
 
 local Koffee = {}
-Koffee.Version = "0.65.0"
+Koffee.Version = "0.66.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -3174,7 +3174,20 @@ end
 local Keybinds = {}     -- moduleId -> Enum.KeyCode
 local pendingRebind = nil    -- { moduleId, pill } while waiting for next key
 
-local function keybindPill(row, moduleId, initialKey)
+local function keybindPill(row, moduleId, initialKey, label)
+    -- v0.66.0: register this bindable feature (id + friendly label) so the Keybinds
+    -- window can enumerate every hotkey. Ordered list lives on Koffee (a field, not a
+    -- new main-chunk local, since the chunk is at the 200-register ceiling).
+    Koffee._keybinds = Koffee._keybinds or {}
+    Koffee._keybindSeen = Koffee._keybindSeen or {}
+    -- label priority: explicit arg -> the module's own DisplayName -> the raw id.
+    local lbl = label or (Modules[moduleId] and Modules[moduleId].DisplayName) or moduleId
+    if not Koffee._keybindSeen[moduleId] then
+        Koffee._keybindSeen[moduleId] = true
+        Koffee._keybinds[#Koffee._keybinds + 1] = { id = moduleId, label = lbl }
+    elseif lbl ~= moduleId then
+        for _, e in ipairs(Koffee._keybinds) do if e.id == moduleId then e.label = lbl end end
+    end
     -- v0.0.34: only seed the default when nothing is bound yet, so a config load
     -- (or a tab rebuild) never clobbers the user's chosen / loaded keybind.
     if initialKey and Keybinds[moduleId] == nil then Keybinds[moduleId] = initialKey end
@@ -6562,6 +6575,102 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
     return screenCorners, anyInFront, allInFront, cf, size
 end
 
+-- v0.65.1: "Algorithm" sizing. project8 builds ONE 3D box (a world/oriented AABB
+-- or GetBoundingBox) and projects its 8 corners; that single box is what makes
+-- CharacterOnly "sometimes miss the head" (a depth-capped / axis-aligned box can
+-- clip an extremity when projected) and makes the non-CharacterOnly path "way too
+-- big" (GetBoundingBox swallows hats/held tools). Algorithm skips the single box
+-- entirely: it projects EVERY body part's own 8 corners to the screen and takes
+-- the 2D min/max across all of them. The result hugs the true on-screen
+-- silhouette regardless of pose -> the head sets the top, the feet the bottom, and
+-- whichever arm reaches furthest sets each side (exactly the extremity scan he
+-- described, but generalised so R6/R15 and any pose fall out for free). It only
+-- walks the rig parts when CharacterOnly is on, so accessories never inflate it.
+-- Attached to ESP (not a new local) because the main chunk is at the 200-register
+-- ceiling. Returns a flat 8-corner rect like projectStatic (no real depth), so
+-- Cube falls through to Bounding upstream.
+function ESP._algoParts(character, characterOnly, bodyParts, rig)
+    if characterOnly then
+        -- mirror project8's refresh: a rig cached before R15 limbs finished loading
+        -- holds < 6 parts and would otherwise draw a torso-only box.
+        if not bodyParts or #bodyParts < 6 then
+            local fresh = collectBodyParts(character)
+            if rig then rig.bodyParts = fresh end
+            bodyParts = fresh
+        end
+        return bodyParts
+    end
+    -- not CharacterOnly: rig parts PLUS accessory/tool handles (one level deep, so
+    -- it stays cheap). A tighter silhouette than GetBoundingBox even here, but hats
+    -- and held items are allowed to extend it, which is what "off" means.
+    local parts = {}
+    for _, ch in ipairs(character:GetChildren()) do
+        if ch:IsA("BasePart") then
+            parts[#parts + 1] = ch
+        elseif ch:IsA("Accessory") or ch:IsA("Tool") then
+            local h = ch:FindFirstChild("Handle") or ch:FindFirstChildWhichIsA("BasePart")
+            if h then parts[#parts + 1] = h end
+        end
+    end
+    return parts
+end
+
+function ESP._projectAlgorithm(character, characterOnly, bodyParts, rig)
+    if not character then return nil, false, false end
+    local cam = Workspace.CurrentCamera
+    if not cam then return nil, false, false end
+
+    local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+    local sumZ, zN = 0, 0
+    local anyInFront = false
+
+    -- accumulate the 2D extremes of a single part's 8 projected corners.
+    local function scan(part)
+        if not part or not part.Parent then return end
+        local pcf, ps = part.CFrame, part.Size
+        local hx, hy, hz = ps.X * 0.5, ps.Y * 0.5, ps.Z * 0.5
+        for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
+            local sp = cam:WorldToViewportPoint((pcf * CFrame.new(sx * hx, sy * hy, sz * hz)).Position)
+            -- skip corners behind the camera: WorldToViewportPoint mirrors those
+            -- through the origin into garbage coordinates that would blow the box out.
+            if sp.Z > 0 then
+                anyInFront = true
+                if sp.X < minX then minX = sp.X end
+                if sp.X > maxX then maxX = sp.X end
+                if sp.Y < minY then minY = sp.Y end
+                if sp.Y > maxY then maxY = sp.Y end
+                sumZ = sumZ + sp.Z; zN = zN + 1
+            end
+        end end end
+    end
+
+    if character:IsA("BasePart") then
+        -- defensive: a bare-part NPC (NPCs are forced to Bounding upstream, so this
+        -- rarely runs) is just its own box.
+        scan(character)
+    else
+        local parts = ESP._algoParts(character, characterOnly, bodyParts, rig)
+        if not parts or #parts == 0 then return nil, false, false end
+        for _, part in ipairs(parts) do scan(part) end
+    end
+
+    if not anyInFront or zN == 0 or minX == math.huge then return nil, false, false end
+    local avgZ = sumZ / zN
+    -- emit 8 flat corners (front == back) so the render pipeline treats Algorithm
+    -- like Static: a pure 2D silhouette rect. Cube never reaches here (it falls
+    -- through to Bounding), so a zero-depth box is exactly right.
+    local c = table.create(8)
+    c[1] = { x = maxX, y = minY, z = avgZ }
+    c[2] = { x = minX, y = minY, z = avgZ }
+    c[3] = { x = maxX, y = maxY, z = avgZ }
+    c[4] = { x = minX, y = maxY, z = avgZ }
+    c[5] = { x = maxX, y = minY, z = avgZ }
+    c[6] = { x = minX, y = minY, z = avgZ }
+    c[7] = { x = maxX, y = maxY, z = avgZ }
+    c[8] = { x = minX, y = maxY, z = avgZ }
+    return c, true, true
+end
+
 local function hideRigVisuals(rig)
     rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
@@ -7079,11 +7188,17 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- bare Parts too), so the box grabs the exact on-screen height + width of
         -- the model / part instead of the aspect-locked Static approximation.
         if rig.isNPC then effectiveSizing = "Bounding" end
-        if isCube and effectiveSizing == "Static" then
+        -- v0.65.1: Static AND Algorithm are flat 2D-only projections (no depth), so
+        -- a Cube box falls through to the real 8-corner Bounding for both.
+        if isCube and (effectiveSizing == "Static" or effectiveSizing == "Algorithm") then
             effectiveSizing = "Bounding"
         end
         if effectiveSizing == "Static" then
             corners, anyInFront, allInFront = projectStatic(rig.torso, rig.character)
+        elseif effectiveSizing == "Algorithm" then
+            -- per-part screen-space silhouette AABB: hugs the true on-screen limbs.
+            corners, anyInFront, allInFront =
+                ESP._projectAlgorithm(rig.character, ESP.Config.CharacterOnly, rig.bodyParts, rig)
         else
             corners, anyInFront, allInFront, worldCF, worldSize =
                 project8(rig.character, effectiveSizing,
@@ -9994,7 +10109,7 @@ Koffee._characterTab = function(root)
     -- v0.0.94 3rd Person: toggle + keybind pill (combo-aware: accepts Shift+C etc.).
     -- No default keybind so it doesn't conflict with anything the user has bound.
     local tpRow = moduleCheckbox(vis, "3rd Person", "thirdperson")
-    keybindPill(tpRow.row, "thirdperson", nil)
+    keybindPill(tpRow.row, "thirdperson", nil, "3rd Person")
     -- v0.28.0: right-click the row for the camera settings (sens, zoom, shoulder
     -- offset / height, zoom clamps). TP is registered below so these persist.
     rightClickSettings(tpRow.row, "3rd person", function(api)
@@ -12878,6 +12993,7 @@ local Combat = {
 
         -- Aimbot
         local aimRow = moduleCheckbox(L.Aimbot, "Enabled", "aimbot")
+        keybindPill(aimRow.row, "aimbot")   -- toggle keybind (press to enable/disable) + Hotkeys HUD entry
         activationPill(aimRow.row, Combat.Aim)
         rightClickSettings(configCheckbox(L.Aimbot, "Team Check", Combat.Aim.TeamCheck, function(v) Combat.Aim.TeamCheck = v end).row, "Team Check", teamCheckSettings)
         configCheckbox(L.Aimbot, "Visible Check", Combat.Aim.VisibleCheck, function(v) Combat.Aim.VisibleCheck = v end)
@@ -13015,6 +13131,7 @@ local Combat = {
 
         -- Silent Aim
         local sRow = moduleCheckbox(R["Silent Aim"], "Enabled", "silentaim")
+        keybindPill(sRow.row, "silentaim")   -- toggle keybind + Hotkeys HUD entry
         activationPill(sRow.row, Combat.Silent)
         rightClickSettings(configCheckbox(R["Silent Aim"], "Team Check", Combat.Silent.TeamCheck, function(v) Combat.Silent.TeamCheck = v end).row, "Team Check", teamCheckSettings)
         configCheckbox(R["Silent Aim"], "Visible Check", Combat.Silent.VisibleCheck, function(v) Combat.Silent.VisibleCheck = v end)
@@ -13071,6 +13188,7 @@ local Combat = {
         -- Trigger Bot
         local trigCard = panel(rightCol, "Trigger Bot")
         local tRow = moduleCheckbox(trigCard, "Enabled", "triggerbot")
+        keybindPill(tRow.row, "triggerbot")   -- toggle keybind + Hotkeys HUD entry
         activationPill(tRow.row, Combat.Trigger)
         configCheckbox(trigCard, "Visible Check", Combat.Trigger.VisibleCheck, function(v) Combat.Trigger.VisibleCheck = v end)
         rightClickSettings(configCheckbox(trigCard, "Team Check", Combat.Trigger.TeamCheck, function(v) Combat.Trigger.TeamCheck = v end).row, "Team Check", teamCheckSettings)
@@ -15449,7 +15567,7 @@ addTab("Visuals", function(root)
     local espPanel = panel(espSub, "ESP")
     local master = moduleCheckbox(espPanel, "Enabled", "esp")
     -- v0.0.34: ESP ships with NO keybind by default (pill reads "no keybind").
-    keybindPill(master.row, "esp", nil)
+    keybindPill(master.row, "esp", nil, "ESP")
     rightClickSettings(configCheckbox(espPanel, "Team Check", ESP.Config.TeamCheck, function(v) ESP.Config.TeamCheck = v end).row, "Team Check", teamCheckSettings)
     -- v0.18.4: sweeps for rigs whose character left Workspace or whose player is
     -- gone. Rate is a trade: faster clears ghosts sooner, slower costs less.
@@ -15525,7 +15643,7 @@ addTab("Visuals", function(root)
         ESP.Config.FollowDirection = v
     end)
     configCheckbox(espPanel, "Immediate Mode", ESP.Config.ImmediateMode, function(v) ESP.Config.ImmediateMode = v end)
-    dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction" }, ESP.Config.SizingType,
+    dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction", "Algorithm" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end, { infinite = true })
@@ -23231,15 +23349,10 @@ window.GroupTransparency = 0
 window.Visible = true
 setBackgroundActive(true)
 
--- ==========================================================================
--- v0.62.0  MULTI-WINDOW FRAMEWORK  (Matcha-style)
--- A window-switcher bar + the window-manager plumbing (registry / z-order /
--- drag / persistence) every future panel plugs into. THIS phase ships the BAR
--- fully working -- toggles, drop-in, hover, on/off, click squish -- but wires
--- NO window bodies yet, so clicking a slot only flips + persists its state and
--- animates the bar; nothing spawns. Whole thing lives in one IIFE for its own
--- O0 register budget; all state is published on Koffee.Windows / Shared.Windows.
--- ==========================================================================
+-- v0.62.0 multi-window framework (Matcha-style): a window-switcher bar + the
+-- window-manager plumbing (registry / z-order / drag / persistence) every future
+-- panel plugs into. One IIFE for its own O0 register budget; all state is published
+-- on Koffee.Windows / Shared.Windows.
 ;(function()
     local Palette = Theme.Palette
     local WM = {}
@@ -23284,7 +23397,7 @@ setBackgroundActive(true)
     def{ id = "details",  icon = "info",        label = "Details",        kind = "secondary", canFloat = true,  bar = true, default = true }
     def{ id = "servers",  icon = "server",      label = "Server Browser", kind = "primary",   canFloat = false, bar = true }
     def{ id = "media",    icon = "music",       label = "Media",          kind = "secondary", canFloat = true,  bar = true }
-    def{ id = "keybinds", icon = "keyboard",    label = "Keybinds",       kind = "secondary", canFloat = true,  bar = true }
+    def{ id = "keybinds", icon = "keyboard",    label = "Hotkeys",        kind = "secondary", canFloat = true,  bar = true }
     -- array list is a window but not a bar slot (its own draggable overlay added
     -- later); registered here so the framework knows it.
     def{ id = "arraylist", label = "Array List", kind = "secondary", canFloat = true, bar = false }
@@ -23376,7 +23489,7 @@ setBackgroundActive(true)
         WM.applyBodyVis(id)
     end
 
-    -- ======================= the switcher bar (dock) =======================
+    -- the switcher bar (dock)
     -- A macOS / Windows-11-taskbar dock: the icon nearest the cursor lifts +
     -- scales, and its neighbours react by proximity, so sweeping (or just resting
     -- BETWEEN two icons) ripples a smooth wave instead of lighting one logo. The
@@ -23593,13 +23706,10 @@ setBackgroundActive(true)
     WM.playIntro()
 end)()
 
--- ==========================================================================
--- v0.62.0  PLAYER LIST window (multi-window system, stage 1: UI + data only)
--- A primary window plugged into the framework. Grid of everyone's pfp + names
--- on the left, a detail panel on the right. Status (None/Exclude/Prioritize) is
--- STORED here but nothing reads it yet -- the targeting swap is stage 2.
--- Own IIFE for its own O0 register budget; state on Shared.PlayerList.
--- ==========================================================================
+-- v0.62.0 player list window: a primary window plugged into the framework. Grid of
+-- everyone's pfp + names on the left, a detail panel on the right. Status
+-- (None/Exclude/Prioritize) drives the targeting resolver. Own IIFE for its own O0
+-- register budget; state on Shared.PlayerList.
 ;(function()
     local WM = Koffee.Windows
     if not WM then return end
@@ -23607,7 +23717,7 @@ end)()
     local Players = game:GetService("Players")
     local Teams   = game:GetService("Teams")
 
-    -- ===== data model =====
+    -- data model
     -- Exclude persists per-UserId (like Ignore Friends); Prioritize is session.
     -- Keys are tostring(UserId) so the config round-trips (JSON keys are strings).
     local PL = { excludeIds = {}, priorityIds = {}, _joinAt = {} }
@@ -23645,7 +23755,7 @@ end)()
         return ally and "Ally" or "Enemy", ally and Palette.Success or Palette.Danger, false
     end
 
-    -- ===== window root =====
+    -- window root
     local W, H = 640, 440
     local SCALE = 1.2                   -- whole window scaled up (CanvasGroup renders at its
                                         -- AbsoluteSize, so text stays crisp). Bigger base +
@@ -23842,7 +23952,7 @@ end)()
             SortOrder = Enum.SortOrder.LayoutOrder }),
     })
 
-    -- ===== selection state =====
+    -- selection state
     local cards = {}
     local selectedId = nil
     local spectatingId = nil
@@ -23856,7 +23966,7 @@ end)()
         Shared.TargetLock.Enabled = v
         if not v then Shared.TargetLock._active = false end
     end)
-    keybindPill(tlArmed.row, "targetlock", nil)
+    keybindPill(tlArmed.row, "targetlock", nil, "Target Lock")
 
     local function ownHumanoid()
         local c = LocalPlayer.Character
@@ -24129,7 +24239,7 @@ end)()
         setTitle(#list)
     end
 
-    -- ===== live wiring =====
+    -- live wiring
     Players.PlayerAdded:Connect(function(plr)
         PL._joinAt[plr.UserId] = os.clock()
         if root.Visible then rebuildGrid() end
@@ -24165,6 +24275,547 @@ end)()
         onShow = function() animShow(); rebuildGrid() end,
         onHide = animHide,
     })
+end)()
+
+-- v0.66.0 ESP preview window (id "esp", the 2nd bar button after the pen): a
+-- floating primary window with a real R6 rig in a ViewportFrame and the live ESP
+-- box/name/distance/etc drawn on it, so the ESP styling can be eyeballed without
+-- another player. No logo in the header; its last segment shows the rig render mode.
+-- A settings button flips render type (2D static / 3D spin) and rig size. Own IIFE
+-- for its own O0 register budget.
+;(function()
+    local WM = Koffee.Windows
+    if not WM then return end
+    local Palette = Theme.Palette
+    local RunService = game:GetService("RunService")
+    local Players = game:GetService("Players")
+
+    -- preview-local state: rig display mode + rig size (%). render "3D" spins the
+    -- rig; "2D" holds it static, facing forward. (This is about the RIG, not the ESP
+    -- box type -- that mirrors ESP.Boxes.BoxType independently.) Persisted.
+    local PV = { render = "3D", size = 100 }
+    registerConfig("esppreview", PV)
+
+    -- window root
+    local W, H = 300, 372
+    local SCALE = 1.15
+    -- v0.66.0: MUST be a plain Frame, NOT a CanvasGroup. A CanvasGroup flattens its
+    -- children into a texture and a ViewportFrame's 3D pass does not compose into it,
+    -- so the rig would render blank. Plain Frame + Active=false still clicks through
+    -- empty areas; the open/close uses a scale-pop instead of a group fade.
+    local root = new("Frame", {
+        Name = KID.name("espprev"), Active = false,   -- empty areas click through
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, -360, 0.5, 0),
+        Size = UDim2.new(0, W, 0, H), BackgroundColor3 = Palette.Background,
+        BorderSizePixel = 0, Visible = false, ZIndex = 50, Parent = screen,
+    }, { corner(Theme.Radius.Large), stroke(Palette.Border), new("UIScale", { Scale = SCALE }) })
+    local uscale = root:FindFirstChildOfClass("UIScale")
+    do
+        local p = WM.persist.pos and WM.persist.pos.esp
+        if p then root.Position = UDim2.new(p[1], p[2], p[3], p[4]) end
+    end
+
+    -- ---- header (drag handle + breadcrumb + settings button; NO logo icon) ----
+    local header = new("Frame", { Name = "hdr", BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 32), Parent = root })
+    local titleRow = new("Frame", { BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 0),
+        Size = UDim2.new(1, -70, 1, 0), Parent = header }, {
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+            VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 8),
+            SortOrder = Enum.SortOrder.LayoutOrder }),
+    })
+    local function titleTxt(t, color, order)
+        return new("TextLabel", { BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.X,
+            Size = UDim2.new(0, 0, 1, 0), FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            TextColor3 = color, Text = t, LayoutOrder = order, Parent = titleRow })
+    end
+    local function titleDot(order)
+        new("Frame", { BackgroundColor3 = Palette.TextFaint, BorderSizePixel = 0,
+            Size = UDim2.new(0, 3, 0, 3), LayoutOrder = order, Parent = titleRow }, { corner(2) })
+    end
+    titleTxt("ESP", Palette.TextMuted, 1)
+    titleDot(2)
+    titleTxt("Preview", Palette.Text, 3)
+    titleDot(4)
+    local renderLbl = titleTxt(PV.render, Palette.Accent, 5)
+
+    -- settings button (top-right of the bar)
+    local gearBtn = new("TextButton", { Text = "", AutoButtonColor = false,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.new(0, 24, 0, 24), BackgroundColor3 = Palette.Panel,
+        BackgroundTransparency = 0.25, BorderSizePixel = 0, Parent = header },
+        { corner(6), stroke(Palette.BorderSubtle) })
+    local gearIcon = Koffee.lucideIcon(gearBtn, "sliders-horizontal", 14, Palette.TextMuted)
+    gearIcon.AnchorPoint = Vector2.new(0.5, 0.5); gearIcon.Position = UDim2.new(0.5, 0, 0.5, 0)
+
+    -- viewport stage
+    local stage = new("Frame", { Name = "stage", BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BorderSizePixel = 0, Position = UDim2.new(0, 12, 0, 38), Size = UDim2.new(1, -24, 1, -50),
+        Parent = root }, { corner(10), stroke(Palette.BorderSubtle),
+        new("UIGradient", { Rotation = 90, Color = ColorSequence.new(
+            Color3.fromRGB(40, 40, 47), Color3.fromRGB(20, 20, 24)) }) })
+    local vpf = new("ViewportFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+        Ambient = Color3.fromRGB(225, 225, 225), LightColor = Color3.fromRGB(255, 255, 255),
+        LightDirection = Vector3.new(-0.4, -0.7, -1), Parent = stage })
+    local world = new("WorldModel", { Parent = vpf })
+    local cam = new("Camera", { FieldOfView = 60, Parent = vpf })
+    vpf.CurrentCamera = cam
+
+    -- 2D overlays (drawn OVER the viewport; a live mirror of the real ESP)
+    -- manual projection for the viewport camera (there is no WorldToViewportPoint for
+    -- a ViewportFrame). Returns a 0..1 fraction of the stage; only the aspect ratio
+    -- of the stage matters, which is constant, so AbsoluteSize is never needed here.
+    local STAGE_W, STAGE_H = 276, 322
+    local function proj(worldPos)
+        local rel = cam.CFrame:PointToObjectSpace(worldPos)
+        local depth = -rel.Z
+        if depth <= 0.05 then return nil end
+        local tanY = math.tan(math.rad(cam.FieldOfView) * 0.5)
+        local ndcX = (rel.X / depth) / (tanY * (STAGE_W / STAGE_H))
+        local ndcY = (rel.Y / depth) / tanY
+        return Vector2.new(ndcX * 0.5 + 0.5, 1 - (ndcY * 0.5 + 0.5))
+    end
+
+    local overlay = new("Frame", { Name = "overlay", BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0), ZIndex = 5, Parent = stage })
+    local box2D = new("Frame", { Name = "box2D", BackgroundColor3 = ESP.Boxes.FillColor,
+        BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false, ZIndex = 5, Parent = overlay },
+        { new("UIStroke", { Color = ESP.Boxes.Color, Thickness = 1.5,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border }) })
+    local box2Dstroke = box2D:FindFirstChildOfClass("UIStroke")
+    local headDot = new("Frame", { Name = "headDot", BackgroundColor3 = ESP.Indicators.HeadDot.Color,
+        AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 6, 0, 6), Visible = false,
+        ZIndex = 7, Parent = overlay }, { corner(999) })
+    local hpBg = new("Frame", { Name = "hpBg", BackgroundColor3 = Color3.fromRGB(18, 18, 20),
+        BorderSizePixel = 0, Visible = false, ZIndex = 6, Parent = overlay }, { corner(2) })
+    local hpFill = new("Frame", { Name = "hpFill", BackgroundColor3 = ESP.Health.Bar.Color,
+        AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0), Size = UDim2.new(1, 0, 0.72, 0),
+        BorderSizePixel = 0, ZIndex = 7, Parent = hpBg }, { corner(2) })
+    local tracer = new("Frame", { Name = "tracer", BackgroundColor3 = ESP.Tracer.Color,
+        AnchorPoint = Vector2.new(0, 0.5), BorderSizePixel = 0, Visible = false, ZIndex = 4, Parent = overlay })
+    local function overlayTxt(anchorTop)
+        return new("TextLabel", { BackgroundTransparency = 1, Text = "Name", Visible = false,
+            FontFace = Theme.Fonts.Medium, TextSize = 14, TextColor3 = Palette.Text,
+            TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 18),
+            Position = anchorTop and UDim2.new(0, 0, 0, 8) or UDim2.new(0, 0, 1, -26),
+            ZIndex = 7, Parent = overlay }, {
+            new("UIStroke", { Color = Color3.fromRGB(0, 0, 0), Thickness = 1.4,
+                Transparency = 0.25, LineJoinMode = Enum.LineJoinMode.Round }) })
+    end
+    local nameLbl = overlayTxt(true)
+    local distLbl = overlayTxt(false); distLbl.Text = "10m"
+
+    -- rig + 3D cube (real R6 rig loaded async; box parts spin with it)
+    local CENTER = Vector3.new(0, -0.5, 0)
+    local model, basePivot, curBox
+    local extents = Vector3.new(4, 5, 1)
+    local edges3D, edgeBase = {}, {}
+
+    local function buildCube()
+        local hx, hy, hz = extents.X * 0.5 + 0.1, extents.Y * 0.5 + 0.1, extents.Z * 0.5 + 0.15
+        local c = {
+            CENTER + Vector3.new( hx,  hy,  hz), CENTER + Vector3.new(-hx,  hy,  hz),
+            CENTER + Vector3.new( hx, -hy,  hz), CENTER + Vector3.new(-hx, -hy,  hz),
+            CENTER + Vector3.new( hx,  hy, -hz), CENTER + Vector3.new(-hx,  hy, -hz),
+            CENTER + Vector3.new( hx, -hy, -hz), CENTER + Vector3.new(-hx, -hy, -hz),
+        }
+        local E = { {1,2},{3,4},{1,3},{2,4},{5,6},{7,8},{5,7},{6,8},{1,5},{2,6},{3,7},{4,8} }
+        for _, e in ipairs(E) do
+            local a, b = c[e[1]], c[e[2]]
+            local d = b - a
+            local p = new("Part", { Name = "edge", Anchored = true, CanCollide = false, CastShadow = false,
+                Material = Enum.Material.Neon, Color = ESP.Boxes.Color, Transparency = 1,
+                Size = Vector3.new(0.06, 0.06, d.Magnitude), CFrame = CFrame.lookAt(a + d * 0.5, b),
+                Parent = world })
+            edgeBase[p] = p.CFrame; edges3D[#edges3D + 1] = p
+        end
+    end
+
+    -- the rig treated as a real player: parts + head, filled when the rig loads.
+    local rigBodyParts, rigHead = {}, nil
+
+    local function accBox(pt, box)
+        if not pt then return end
+        if pt.X < box[1] then box[1] = pt.X end
+        if pt.X > box[3] then box[3] = pt.X end
+        if pt.Y < box[2] then box[2] = pt.Y end
+        if pt.Y > box[4] then box[4] = pt.Y end
+    end
+
+    -- compute the rig's on-screen box the SAME way the live ESP sizes a real player,
+    -- honouring the current Sizing Type, so the preview is genuinely accurate.
+    local function computeBox()
+        local st = ESP.Config.SizingType
+        local box = { 1e9, 1e9, -1e9, -1e9 }
+        if st == "Algorithm" and #rigBodyParts > 0 then
+            -- tight silhouette: every body part's own 8 corners (mirrors ESP._projectAlgorithm).
+            for _, prt in ipairs(rigBodyParts) do
+                if prt.Parent then
+                    local pcf, ps = prt.CFrame, prt.Size
+                    local ax, ay, az = ps.X * 0.5, ps.Y * 0.5, ps.Z * 0.5
+                    for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
+                        accBox(proj((pcf * CFrame.new(sx * ax, sy * ay, sz * az)).Position), box)
+                    end end end
+                end
+            end
+        elseif st == "Static" then
+            -- aspect-locked from the projected height (mirrors ESP STATIC.aspect = 0.5).
+            local top = proj(CENTER + Vector3.new(0, extents.Y * 0.5, 0))
+            local bot = proj(CENTER - Vector3.new(0, extents.Y * 0.5, 0))
+            if top and bot then
+                local h = math.abs(bot.Y - top.Y)
+                local w = h * 0.5 * (STAGE_H / STAGE_W)
+                local cx, cy = (top.X + bot.X) * 0.5, (top.Y + bot.Y) * 0.5
+                box = { cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5 }
+            end
+        elseif model then
+            -- Bounding / Prediction: the rig's live oriented bounding box, 8 corners.
+            local cf, size = model:GetBoundingBox()
+            local ax, ay, az = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+            for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
+                accBox(proj((cf * CFrame.new(sx * ax, sy * ay, sz * az)).Position), box)
+            end end end
+        end
+        if box[1] > box[3] then return nil end
+        return box[1], box[2], box[3] - box[1], box[4] - box[2]
+    end
+
+    -- position every 2D overlay from the computed screen box (called each frame).
+    local function positionOverlays(bx, by, bw, bh)
+        curBox = { x = bx, y = by, w = bw, h = bh }
+        box2D.Position = UDim2.fromScale(bx, by); box2D.Size = UDim2.fromScale(bw, bh)
+        local hp = (rigHead and rigHead.Parent) and proj(rigHead.Position) or proj(CENTER + Vector3.new(0, extents.Y * 0.5, 0))
+        if hp then headDot.Position = UDim2.fromScale(hp.X, hp.Y) end
+        hpBg.Position = UDim2.fromScale(bx - 0.05, by); hpBg.Size = UDim2.fromScale(0.028, bh)
+        nameLbl.Position = UDim2.new(0, 0, by, -20)
+        distLbl.Position = UDim2.new(0, 0, by + bh, 4)
+    end
+
+    local function finalizeRig(m)
+        m.Parent = world
+        local cf, size = m:GetBoundingBox()
+        m:PivotTo(CFrame.new(CENTER - cf.Position) * m:GetPivot())   -- centre bbox at CENTER
+        extents = size; basePivot = m:GetPivot(); model = m
+        rigBodyParts = collectBodyParts(m)   -- the rig's real body parts, for Algorithm sizing
+        rigHead = m:FindFirstChild("Head")
+        buildCube()
+    end
+
+    local function buildFallback()
+        local m = Instance.new("Model")
+        local function bp(name, size, color, pos)
+            local p = new("Part", { Name = name, Size = size, Color = color, Anchored = true,
+                CanCollide = false, CastShadow = false, Material = Enum.Material.SmoothPlastic,
+                CFrame = CFrame.new(pos), Parent = m })
+            return p
+        end
+        bp("Torso", Vector3.new(2, 2, 1), Color3.fromRGB(13, 105, 172), Vector3.new(0, 0, 0))
+        local h = bp("Head", Vector3.new(2, 1, 1), Color3.fromRGB(245, 205, 48), Vector3.new(0, 1.5, 0))
+        new("SpecialMesh", { MeshType = Enum.MeshType.Head, Parent = h })
+        new("Decal", { Texture = "rbxasset://textures/face.png", Face = Enum.NormalId.Back, Parent = h })
+        bp("Right Arm", Vector3.new(1, 2, 1), Color3.fromRGB(245, 205, 48), Vector3.new( 1.5, 0, 0))
+        bp("Left Arm",  Vector3.new(1, 2, 1), Color3.fromRGB(245, 205, 48), Vector3.new(-1.5, 0, 0))
+        bp("Right Leg", Vector3.new(1, 2, 1), Color3.fromRGB(164, 189, 71), Vector3.new( 0.5, -2, 0))
+        bp("Left Leg",  Vector3.new(1, 2, 1), Color3.fromRGB(164, 189, 71), Vector3.new(-0.5, -2, 0))
+        m.PrimaryPart = m:FindFirstChild("Torso")
+        return m
+    end
+
+    task.spawn(function()
+        local ok, m = pcall(function()
+            -- a blank HumanoidDescription defaults every body colour to black, which the
+            -- engine paints on AFTER creation (racing any post-load recolour). Bake the
+            -- classic default colours into the description so the engine applies them.
+            local desc = Instance.new("HumanoidDescription")
+            desc.HeadColor    = Color3.fromRGB(245, 205, 48)
+            desc.TorsoColor   = Color3.fromRGB(13, 105, 172)
+            desc.LeftArmColor = Color3.fromRGB(245, 205, 48)
+            desc.RightArmColor= Color3.fromRGB(245, 205, 48)
+            desc.LeftLegColor = Color3.fromRGB(164, 189, 71)
+            desc.RightLegColor= Color3.fromRGB(164, 189, 71)
+            return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R6)
+        end)
+        if ok and typeof(m) == "Instance" and m:IsA("Model") then
+            local an = m:FindFirstChild("Animate"); if an then an:Destroy() end
+            local hum = m:FindFirstChildOfClass("Humanoid")
+            if hum then pcall(function() hum.EvaluateStateMachine = false end) end
+            -- a blank HumanoidDescription rig ships dark default colours + shirt/pants,
+            -- so it renders as a black silhouette. Strip the clothing and paint the
+            -- classic default body colours (the iconic yellow/blue/green avatar).
+            local COL = {
+                Head        = Color3.fromRGB(245, 205, 48), Torso       = Color3.fromRGB(13, 105, 172),
+                ["Left Arm"]= Color3.fromRGB(245, 205, 48), ["Right Arm"]= Color3.fromRGB(245, 205, 48),
+                ["Left Leg"]= Color3.fromRGB(164, 189, 71), ["Right Leg"]= Color3.fromRGB(164, 189, 71),
+            }
+            for _, p in ipairs(m:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    p.Anchored = true; p.CanCollide = false; p.CastShadow = false
+                    local c = COL[p.Name]; if c then p.Color = c; p.Material = Enum.Material.SmoothPlastic end
+                elseif p:IsA("Shirt") or p:IsA("Pants") or p:IsA("ShirtGraphic") or p:IsA("BodyColors") then
+                    p:Destroy()
+                end
+            end
+            finalizeRig(m)
+        else
+            finalizeRig(buildFallback())   -- CreateHumanoidModelFromDescription unsupported -> box rig
+        end
+    end)
+
+    -- camera
+    local function applyCamera()
+        local dist = 700 / math.clamp(PV.size, 40, 220)
+        cam.CFrame = CFrame.lookAt(CENTER + Vector3.new(0, 0, dist), CENTER)
+    end
+    applyCamera()
+
+    -- live mirror of the ESP config (runs each visible frame)
+    local function syncFromESP()
+        local B = ESP.Boxes
+        local cube = B.BoxType == "Cube"
+        local show2D = B.Enabled and not cube
+        box2D.Visible = show2D
+        if show2D then
+            box2Dstroke.Color = B.Color
+            box2D.BackgroundColor3 = B.FillColor
+            box2D.BackgroundTransparency = B.FillBox and B.FillTransparency or 1
+        end
+        -- edges are Parts (no .Visible property) -> hide via Transparency.
+        local edgeT = (B.Enabled and cube) and 0 or 1
+        for _, e in ipairs(edges3D) do e.Transparency = edgeT; e.Color = B.Color end
+        nameLbl.Visible = ESP.Names.Enabled; nameLbl.TextColor3 = ESP.Names.Color
+        distLbl.Visible = ESP.Indicators.Distance.Enabled; distLbl.TextColor3 = ESP.Indicators.Distance.Color
+        local hd = ESP.Indicators.HeadDot
+        headDot.Visible = hd.Enabled; headDot.BackgroundColor3 = hd.Color
+        headDot.Size = UDim2.new(0, hd.Size, 0, hd.Size)
+        local hb = ESP.Health.Bar
+        hpBg.Visible = hb.Enabled
+        if hb.Enabled then
+            hpFill.BackgroundColor3 = ESP.Health.Based
+                and Color3.fromRGB(230, 70, 70):Lerp(Color3.fromRGB(90, 220, 120), 0.72) or hb.Color
+        end
+        local T = ESP.Tracer
+        tracer.Visible = T.Enabled
+        if T.Enabled and curBox then
+            tracer.BackgroundColor3 = T.Color
+            local sz = overlay.AbsoluteSize
+            local oy = ({ Bottom = 1, Top = 0, Middle = 0.5, Mouse = 1 })[T.Origin] or 1
+            local ey = ({ Below = curBox.y + curBox.h, Middle = curBox.y + curBox.h * 0.5, Above = curBox.y })[T.Location]
+                or (curBox.y + curBox.h * 0.5)
+            local p0 = Vector2.new(0.5 * sz.X, oy * sz.Y)
+            local p1 = Vector2.new((curBox.x + curBox.w * 0.5) * sz.X, ey * sz.Y)
+            local d = p1 - p0
+            tracer.Position = UDim2.fromOffset(p0.X, p0.Y)
+            tracer.Size = UDim2.fromOffset(d.Magnitude, 2)
+            tracer.Rotation = math.deg(math.atan2(d.Y, d.X))
+        end
+    end
+
+    -- spin loop (idles when hidden)
+    RunService.RenderStepped:Connect(function()
+        if not root.Visible then return end
+        if model then
+            -- Render Type drives the RIG: 3D spins it, 2D holds it static facing forward
+            -- (ang 0 = the rig's base pose, which faces the camera).
+            local ang = (PV.render == "3D") and (tick() * 0.7) % (math.pi * 2) or 0
+            local about = CFrame.new(CENTER) * CFrame.Angles(0, ang, 0) * CFrame.new(-CENTER)
+            model:PivotTo(about * basePivot)
+            for _, e in ipairs(edges3D) do e.CFrame = about * edgeBase[e] end
+            local bx, by, bw, bh = computeBox()          -- box sized like the live ESP
+            if bx then positionOverlays(bx, by, bw, bh) end
+        end
+        syncFromESP()
+    end)
+
+    -- settings popup
+    local settings = new("Frame", { Name = "settings", Visible = false, BackgroundColor3 = Palette.Panel,
+        BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 32),
+        Size = UDim2.new(0, 190, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 60, Parent = root },
+        { corner(8), stroke(Palette.Border),
+        new("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8),
+            PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }),
+        new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    -- Render Type: a segmented 2D | 3D toggle (reliable in a cramped popup where the
+    -- dropdown's fly-out was awkward). It drives the REAL ESP box type, so the preview,
+    -- the header, and the live ESP all stay in sync.
+    local rtWrap = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 44), Parent = settings })
+    new("TextLabel", { BackgroundTransparency = 1, Text = "Render Type", FontFace = Theme.Fonts.Regular,
+        TextSize = Theme.Text.Small, TextColor3 = Palette.TextMuted, TextXAlignment = Enum.TextXAlignment.Left,
+        Size = UDim2.new(1, 0, 0, 14), Parent = rtWrap })
+    local seg = new("Frame", { BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = 0.15,
+        BorderSizePixel = 0, Position = UDim2.new(0, 0, 0, 18), Size = UDim2.new(1, 0, 0, 26), Parent = rtWrap },
+        { corner(4), stroke(Palette.BorderSubtle),
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local segBtns = {}
+    local function setRender(mode)
+        PV.render = mode
+        renderLbl.Text = mode
+        for m, b in pairs(segBtns) do
+            local on = m == mode
+            b.BackgroundTransparency = on and 0 or 1
+            b.TextColor3 = on and Color3.fromRGB(20, 20, 22) or Palette.TextMuted
+        end
+    end
+    for i, mode in ipairs({ "2D", "3D" }) do
+        local b = new("TextButton", { Text = mode, AutoButtonColor = false, BackgroundColor3 = Palette.Accent,
+            BackgroundTransparency = 1, BorderSizePixel = 0, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            TextColor3 = Palette.TextMuted, Size = UDim2.new(0.5, 0, 1, 0), LayoutOrder = i, Parent = seg }, { corner(3) })
+        segBtns[mode] = b
+        b.MouseButton1Click:Connect(function() setRender(mode) end)
+    end
+    setRender(PV.render == "2D" and "2D" or "3D")
+    slider(settings, "Rig Size", 60, 160, PV.size, 0, function(v) PV.size = v; applyCamera() end)
+    gearBtn.MouseButton1Click:Connect(function()
+        WM.raise("esp")
+        settings.Visible = not settings.Visible
+    end)
+
+    -- open / close animation
+    local function animShow()
+        settings.Visible = false
+        root.Visible = true
+        uscale.Scale = SCALE * 0.9
+        tween(uscale, Theme.Animation.Menu, { Scale = SCALE })
+    end
+    local function animHide()
+        tween(uscale, Theme.Animation.Menu, { Scale = SCALE * 0.9 })
+        task.delay(Koffee.Anim.wait(0.22), function()
+            if not WM.shouldShow("esp") then root.Visible = false end
+        end)
+    end
+
+    WM.makeDraggable(root, header, "esp")
+    WM.attachBody("esp", root, { onShow = animShow, onHide = animHide })
+end)()
+
+-- v0.66.0 keybinds window (the "Hotkeys" HUD): a floating secondary HUD, a stack of
+-- very-rounded pills each showing a [key cap] + the action it fires, driven live off
+-- the keybind registry (Koffee._keybinds) and the live Keybinds table. A held key
+-- glows green. Own IIFE for its own O0 register budget.
+;(function()
+    local WM = Koffee.Windows
+    if not WM then return end
+    local Palette = Theme.Palette
+    local RunService = game:GetService("RunService")
+    local UIS = game:GetService("UserInputService")
+
+    -- CanvasGroup so the whole HUD fades as one; Active=false clicks through. It
+    -- auto-sizes to its pills (each pill hugs its own text), so nothing is full-width.
+    local root = new("CanvasGroup", {
+        Name = KID.name("keybinds"), Active = false, GroupTransparency = 0,
+        Position = UDim2.new(0, 24, 0, 130), Size = UDim2.new(0, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1,
+        BorderSizePixel = 0, Visible = false, ZIndex = 40, Parent = screen,
+    }, {
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 7),
+            HorizontalAlignment = Enum.HorizontalAlignment.Left, SortOrder = Enum.SortOrder.LayoutOrder }),
+    })
+    do
+        local p = WM.persist.pos and WM.persist.pos.keybinds
+        if p then root.Position = UDim2.new(p[1], p[2], p[3], p[4]) end
+    end
+
+    -- shared pill: dark, a touch transparent, fully rounded, hugs its own content.
+    local PILL_BG, PILL_T = Color3.fromRGB(20, 20, 24), 0.15
+    local function pill(order, parent, padX)
+        return new("Frame", { BackgroundColor3 = PILL_BG, BackgroundTransparency = PILL_T,
+            BorderSizePixel = 0, AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 32),
+            LayoutOrder = order, Parent = parent }, { pillCorner(), stroke(Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, padX), PaddingRight = UDim.new(0, padX) }) })
+    end
+    local function pillText(parent, text)
+        return new("TextLabel", { BackgroundTransparency = 1, Text = text, FontFace = Theme.Fonts.Bold,
+            TextSize = Theme.Text.Body, TextColor3 = Palette.Text, AutomaticSize = Enum.AutomaticSize.X,
+            TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(0, 0, 1, 0), LayoutOrder = 1, Parent = parent })
+    end
+
+    -- header pill (also the drag handle): "Keybinds" + a keyboard glyph.
+    local header = pill(0, root, 14)
+    header.Name = "hdr"
+    new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 10),
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Parent = header })
+    pillText(header, "Hotkeys")
+    local hicon = Koffee.lucideIcon(header, "keyboard", 15, Palette.TextMuted); hicon.LayoutOrder = 2
+
+    -- empty-state pill (shown when nothing is bound)
+    local empty = pill(998, root, 12); empty.Name = "empty"; empty.Visible = false
+    local emptyLbl = pillText(empty, "No hotkeys set")
+    emptyLbl.TextColor3 = Palette.TextFaint
+
+    local function isHeld(bind)
+        if typeof(bind) == "EnumItem" and bind.EnumType == Enum.KeyCode then
+            return UIS:IsKeyDown(bind)
+        elseif type(bind) == "table" and bind.mod and bind.key then
+            return UIS:IsKeyDown(bind.mod) and UIS:IsKeyDown(bind.key)
+        end
+        return false
+    end
+
+    -- one row: two disconnected pills, [key] then [name], each hugging its own text.
+    local rows = {}   -- moduleId -> { row, keyPill, keyLbl, bind }
+    local function makeEntry(id, label, bind, order)
+        local row = new("Frame", { Name = "kb_" .. id, BackgroundTransparency = 1,
+            AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 32), LayoutOrder = order, Parent = root },
+            { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 7),
+                VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local keyPill = pill(1, row, 12)
+        local keyLbl = pillText(keyPill, keyLabel(bind) or "-")
+        local namePill = pill(2, row, 12)
+        pillText(namePill, label)
+        rows[id] = { row = row, keyPill = keyPill, keyLbl = keyLbl, bind = bind }
+    end
+
+    -- the currently-bound keybinds, in registration order.
+    local function boundList()
+        local out = {}
+        for _, e in ipairs(Koffee._keybinds or {}) do
+            local bind = Keybinds[e.id]
+            if bind ~= nil then out[#out + 1] = { id = e.id, label = e.label, bind = bind } end
+        end
+        return out
+    end
+    local function signature(bl)
+        local parts = {}
+        for _, e in ipairs(bl) do parts[#parts + 1] = e.id .. "=" .. (keyLabel(e.bind) or "?") end
+        return table.concat(parts, "|")
+    end
+    local shownSig = nil
+    local function rebuild()
+        for _, r in pairs(rows) do r.row:Destroy() end
+        rows = {}
+        local bl = boundList()
+        empty.Visible = #bl == 0
+        for i, e in ipairs(bl) do makeEntry(e.id, e.label, e.bind, i) end
+        shownSig = signature(bl)
+    end
+
+    -- live: rebuild when the bound set changes; glow held keys each frame.
+    RunService.RenderStepped:Connect(function()
+        if not root.Visible then return end
+        local bl = boundList()
+        if signature(bl) ~= shownSig then rebuild() end
+        for _, r in pairs(rows) do
+            local held = isHeld(r.bind)
+            r.keyPill.BackgroundColor3 = held and Color3.fromRGB(120, 220, 130) or PILL_BG
+            r.keyPill.BackgroundTransparency = held and 0 or PILL_T
+            r.keyLbl.TextColor3 = held and Color3.fromRGB(18, 24, 18) or Palette.Text
+        end
+    end)
+
+    local function animShow()
+        root.Visible = true
+        rebuild()
+        root.GroupTransparency = 1
+        tween(root, Theme.Animation.Menu, { GroupTransparency = 0 })
+    end
+    local function animHide()
+        tween(root, Theme.Animation.Menu, { GroupTransparency = 1 })
+        task.delay(Koffee.Anim.wait(0.22), function()
+            if not WM.shouldShow("keybinds") then root.Visible = false end
+        end)
+    end
+
+    WM.makeDraggable(root, header, "keybinds")
+    WM.attachBody("keybinds", root, { onShow = animShow, onHide = animHide })
 end)()
 
 -- v0.0.36: does this input fire a bind? Binds are EnumItems: a KeyCode
