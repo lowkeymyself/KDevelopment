@@ -1,7 +1,7 @@
--- koffee v0.68.2
+-- koffee v0.68.3
 
 local Koffee = {}
-Koffee.Version = "0.68.2"
+Koffee.Version = "0.68.3"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23017,6 +23017,20 @@ end
 local function escapeBlink()
     if HV.BlinkMode == "Up" then blink(Vector3.new(0, 1, 0)) else blink(awayDir()) end
 end
+-- shared manual-blink shot, used by the toggle (on arm) and the lock-engage edge.
+local function fireBlink()
+    local r = myRoot()
+    if not r then return end
+    local mode = HV.BlinkDir or "Forward"
+    local dir
+    if mode == "Up" then dir = Vector3.new(0, 1, 0)
+    elseif mode == "Away" then dir = awayDir()
+    else
+        local cam = Workspace.CurrentCamera
+        dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+    end
+    blink(dir)
+end
 
 -- get-up tracking: Ragdoll/FallingDown entered, then left after >= 0.5s, means
 -- a knockdown ended (brief trips never arm it). Da Hood knock lasts seconds.
@@ -23065,11 +23079,18 @@ hookHum(myHum())
 
 -- flash engage: repeated blinks while the module is on, rate-limited. Toward
 -- closes on the crosshair target's side, Orbit alternates flanks, Away kites.
-local orbitFlip, nextFlash = false, 0
+local orbitFlip, nextFlash, lastLock = false, 0, false
 RunService.Heartbeat:Connect(function()
     if Koffee.dead() then return end
+    -- v0.68.3: armed Blink fires on arm (see onEnable) and on lock engage.
+    local lock = lockOn()
+    if lock and not lastLock then
+        local b = Modules.hvh_blink
+        if b and b.Enabled then fireBlink() end
+    end
+    lastLock = lock
     local m = Modules.hvh_flash
-    if not (m and m.Enabled and lockOn()) then return end
+    if not (m and m.Enabled and lock) then return end
     local now = os.clock()
     if now < nextFlash then return end
     nextFlash = now + (HV.FlashRate or 0.22)
@@ -23102,30 +23123,17 @@ end)
 registerModule("hvh_getup", "Get-Up Blink", function() end, function() end)
 registerModule("hvh_flash", "Flash Engage", function() end, function() end)
 registerModule("hvh_panic", "Panic Blink", function() end, function() end)
--- v0.68.1: manual blink. Press-to-fire: enabling fires one directed blink,
--- then disarms so the next press fires again. Any game, not just knockdowns.
+-- v0.68.1: manual blink. v0.68.3: true toggle, it stays on. Fires on arm and
+-- whenever the lock engages while armed, so arming early still pays off.
 registerModule("hvh_blink", "Blink", function()
-    if lockOn() then
-        local r = myRoot()
-        if r then
-            local mode = HV.BlinkDir or "Forward"
-            local dir
-            if mode == "Up" then dir = Vector3.new(0, 1, 0)
-            elseif mode == "Away" then dir = awayDir()
-            else
-                local cam = Workspace.CurrentCamera
-                dir = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
-            end
-            blink(dir)
-        end
-    end
-    if Modules.hvh_blink.Enabled then toggleModule("hvh_blink") end
+    if lockOn() then fireBlink() end
 end, function() end)
+Modules.hvh_blink.IsActive = function() return lockOn() end
 Modules.hvh_flash.IsActive = function() return lockOn() end
 
 function HV.buildPanel(host)
     new("TextLabel", {
-        Text = "Hacker-fight escapes. Blink on a key anywhere, blink away the moment you stand or eat a burst, strafe in flashes while firing. Everything here needs an engaged Target Lock. Every blink re-aims the same tick, so Teleport never costs a frame.",
+        Text = "Hacker vs Hacker features.",
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
         AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
