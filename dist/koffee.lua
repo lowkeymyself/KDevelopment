@@ -1,7 +1,7 @@
--- koffee v0.69.2
+-- koffee v0.69.3
 
 local Koffee = {}
-Koffee.Version = "0.69.2"
+Koffee.Version = "0.69.3"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23074,6 +23074,62 @@ local function syncBlinkPill(force)
         pill.TextColor3 = on and Theme.Palette.Accent or Theme.Palette.TextMuted
     end
 end
+-- v0.69.3: Hold/Toggle chooser popup (right-click the pill), the same pattern
+-- as every other activation pill. Mode shows by selection, never pill text.
+local blinkChooser = nil
+local function closeBlinkChooser()
+    if blinkChooser then
+        pcall(function() blinkChooser.frame:Destroy() end)
+        if blinkChooser.conn then blinkChooser.conn:Disconnect() end
+        blinkChooser = nil
+    end
+end
+local function openBlinkChooser(pill)
+    closeBlinkChooser()
+    local frame = new("Frame", {
+        Name = "BlinkModeChooser", Size = UDim2.new(0, 120, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.Palette.Panel,
+        BackgroundTransparency = 0.02, BorderSizePixel = 0, ZIndex = 230, Parent = popupScreen,
+    }, {
+        corner(6), stroke(Theme.Palette.Border, 1),
+        new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+            PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
+        new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+    })
+    for _, mode in ipairs({ "Hold", "Toggle" }) do
+        local sel = (HV.BlinkKeyMode or "Hold") == mode
+        local opt = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = sel and 0.2 or 1, AutoButtonColor = false, Text = mode,
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+            TextColor3 = sel and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 231, Parent = frame,
+        }, { corner(4) })
+        opt.MouseButton1Click:Connect(function()
+            HV.BlinkKeyMode = mode
+            blinkLatch = false
+            closeBlinkChooser()
+            syncBlinkPill(true)
+        end)
+    end
+    local abs, siz = pill.AbsolutePosition, pill.AbsoluteSize
+    local ox, oy = popupOffsetFor(frame, abs.X + siz.X - 120, abs.Y + siz.Y + 6)
+    frame.Position = UDim2.new(0, ox, 0, oy)
+    blinkChooser = { frame = frame }
+    task.defer(function()
+        if not blinkChooser then return end
+        blinkChooser.conn = UserInputService.InputBegan:Connect(function(input)
+            local it = input.UserInputType
+            if it == Enum.UserInputType.MouseButton1 or it == Enum.UserInputType.MouseButton2
+            or it == Enum.UserInputType.Touch then
+                local mp = input.Position
+                local a, s = frame.AbsolutePosition, frame.AbsoluteSize
+                if not (mp.X >= a.X and mp.X <= a.X + s.X and mp.Y >= a.Y and mp.Y <= a.Y + s.Y) then
+                    closeBlinkChooser()
+                end
+            end
+        end)
+    end)
+end
 local function blinkPill(row)
     local pill = new("TextButton", {
         Name = "BlinkPill", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
@@ -23091,7 +23147,7 @@ local function blinkPill(row)
             if type(HV.BlinkKey) == "string" then nm = HV.BlinkKey == "XButton1" and "XB1" or "XB2"
             else nm = "-" end
         end
-        pill.Text = nm .. " " .. (HV.BlinkKeyMode or "Hold")
+        pill.Text = nm
         syncBlinkPill(true)
     end
     refresh()
@@ -23114,13 +23170,7 @@ local function blinkPill(row)
         tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
         pendingBlink = { pill = pill, refresh = refresh }
     end)
-    -- right-click flips Hold/Toggle. The mode rides in the pill text. Latch is
-    -- cleared so a stale Toggle-on cannot leak into a fresh Hold bind.
-    pill.MouseButton2Click:Connect(function()
-        HV.BlinkKeyMode = (HV.BlinkKeyMode or "Hold") == "Hold" and "Toggle" or "Hold"
-        blinkLatch = false
-        refresh()
-    end)
+    pill.MouseButton2Click:Connect(function() openBlinkChooser(pill) end)
     popFx(pill)
     return refresh
 end
@@ -23291,7 +23341,9 @@ function HV.buildPanel(host)
     }, { corner(7), stroke(Theme.Palette.BorderSubtle) })
     distBox.FocusLost:Connect(function(enter)
         if enter then
-            local n = tonumber(distBox.Text:gsub("[^%d%.]", ""))
+            -- parens: gsub returns (string, count) and count would land in
+            -- tonumber's base slot (the exact crash in the screenshot).
+            local n = tonumber((distBox.Text:gsub("[^%d%.]", "")))
             if n then HV.BlinkDist = math.clamp(math.floor(n), 10, 10000000) end
         end
         distBox.Text = tostring(math.floor(HV.BlinkDist or 500))
