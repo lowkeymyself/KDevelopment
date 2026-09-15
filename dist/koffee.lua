@@ -1,7 +1,7 @@
--- koffee v0.68.6
+-- koffee v0.68.7
 
 local Koffee = {}
-Koffee.Version = "0.68.6"
+Koffee.Version = "0.68.7"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23319,13 +23319,14 @@ function HV.buildPanel(host)
     local cbBlink = moduleCheckbox(host, "Blink", "hvh_blink")
     local blinkRef = blinkPill(cbBlink.row)
     dropdown(host, "Blink Direction", { "Forward", "Away", "Up", "Random" }, HV.BlinkDir or "Random", function(v) HV.BlinkDir = v end)
-    slider(host, "Blink Interval (s)", 0.08, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
+    -- v0.68.7: 0 means uncapped (every Heartbeat). Random escapes want max rate.
+    slider(host, "Blink Interval (s)", 0, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
     local cbGetup = moduleCheckbox(host, "Get-Up Blink", "hvh_getup")
     dropdown(host, "Escape Direction", { "Away", "Up" }, HV.BlinkMode, function(v) HV.BlinkMode = v end)
-    -- v0.68.4: millions of studs break float32 physics (limbs jitter, then the
-    -- rig falls apart) and dunk you past destroy height, so the cap is 10k:
-    -- every real sky base and map cross fits single-digit thousands.
-    slider(host, "Blink Distance", 10, 10000, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
+    -- v0.68.7: 100k cap. Float holds well past this (it bites near ~10M);
+    -- the real limits are falling (far horizontal is over void, pair with fly)
+    -- and destroy height below. 100k out-ranges every stream radius 100x over.
+    slider(host, "Blink Distance", 10, 100000, HV.BlinkDist, 0, function(v) HV.BlinkDist = v end)
     configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
     local cbFlash = moduleCheckbox(host, "Flash Engage", "hvh_flash")
     keybindPill(cbFlash.row, "hvh_flash", nil, "Flash Engage")
