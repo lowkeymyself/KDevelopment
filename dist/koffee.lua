@@ -1,7 +1,7 @@
--- koffee v0.70.1
+-- koffee v0.70.2
 
 local Koffee = {}
-Koffee.Version = "0.70.1"
+Koffee.Version = "0.70.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -2888,6 +2888,10 @@ local function addTab(name, buildFn)
             Parent = panel,
         })
         new("UIPadding", {
+            -- v0.70.2: 2px breathing room on three sides. Feature-box UIStrokes
+            -- draw half outside the card rect and the scroller clips them.
+            PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2),
+            PaddingRight = UDim.new(0, 2),
             PaddingBottom = UDim.new(0, 12),   -- room past last panel so scroll feels right
             Parent = panel,
         })
