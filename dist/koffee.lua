@@ -1,7 +1,7 @@
--- koffee v0.71.0
+-- koffee v0.72.0
 
 local Koffee = {}
-Koffee.Version = "0.71.0"
+Koffee.Version = "0.72.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9000,6 +9000,7 @@ registerConfig("world_freecam", FC)
 Shared.FreeCam = FC
 local pos, yaw, pitch = Vector3.new(), 0, 0
 local rmb, lastM = false, nil
+local savedControls, anchorPart = nil, nil
 local function cam() return Workspace.CurrentCamera end
 -- window is built later in the file, so it cannot be an upvalue here. Resolve
 -- through screen at call time instead; missing window means not open yet.
@@ -9069,11 +9070,32 @@ registerModule("freecam", "Freecam",
         grab()
         local c = cam()
         if c then pcall(function() c.CameraType = Enum.CameraType.Scriptable end) end
+        -- v0.72.0: park the body. Controls:Disable cuts movement input cleanly
+        -- (no physics touched, nothing replicates); anchored HRP is the fallback
+        -- for runtimes without a reachable PlayerModule. Either way WASD stops
+        -- walking the character while it flies the camera.
+        local ok = pcall(function()
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            local pm = ps and ps:FindFirstChild("PlayerModule")
+            assert(pm, "no PlayerModule")
+            savedControls = require(pm):GetControls()
+            savedControls:Disable()
+        end)
+        if not ok then
+            local ch = LocalPlayer.Character
+            anchorPart = ch and ch:FindFirstChild("HumanoidRootPart") or nil
+            if anchorPart then pcall(function() anchorPart.Anchored = true end) end
+        end
         pcall(function() RunService:UnbindFromRenderStep("KFreeCam") end)
         RunService:BindToRenderStep("KFreeCam", Enum.RenderPriority.Last.Value + 2, step)
     end,
     function()
         pcall(function() RunService:UnbindFromRenderStep("KFreeCam") end)
+        if savedControls then pcall(function() savedControls:Enable() end); savedControls = nil end
+        if anchorPart then
+            pcall(function() anchorPart.Anchored = false end)
+            anchorPart = nil
+        end
         local c = cam()
         if c then pcall(function()
             c.CameraType = Enum.CameraType.Custom
@@ -9083,6 +9105,14 @@ registerModule("freecam", "Freecam",
         end) end
         rmb, lastM = false, nil
     end)
+LocalPlayer.CharacterAdded:Connect(function()
+    local m = Modules.freecam
+    if m and m.Enabled and savedControls == nil then
+        local ch = LocalPlayer.Character
+        anchorPart = ch and ch:FindFirstChild("HumanoidRootPart") or nil
+        if anchorPart then pcall(function() anchorPart.Anchored = true end) end
+    end
+end)
 end)()
 
 -- MOVEMENT MODULES (v0.0.49)
@@ -24911,8 +24941,13 @@ end)()
         end
         local plr = Shared.crosshairTarget and Shared.crosshairTarget(which)
         if not plr or plr == LocalPlayer then return end
-        if PL.statusFor(plr) == "prioritize" then PL.setStatus(plr, nil)
-        else PL.setStatus(plr, "prioritize") end
+        if PL.statusFor(plr) == "prioritize" then
+            PL.setStatus(plr, nil)
+            Koffee.notify("Target removed", "@" .. plr.Name, { severity = "info" })
+        else
+            PL.setStatus(plr, "prioritize")
+            Koffee.notify("Priority target", "@" .. plr.Name, { severity = "success" })
+        end
         if curPlr and curPlr.UserId == plr.UserId then updateDetail(plr) end
     end
     UserInputService.InputBegan:Connect(function(input, gpe)
@@ -25798,6 +25833,128 @@ end)()
 
     WM.makeDraggable(root, header, "keybinds")
     WM.attachBody("keybinds", root, { onShow = animShow, onHide = animHide })
+end)()
+
+-- v0.72.0 TOASTS. Bottom-right stack, max 3 visible, overflow queues. Each card
+-- carries an accent edge, a Lucide icon, a ProximaSoft Bold title + muted
+-- message, and a lifetime bar. Cards are translucent (light, the game shows
+-- through) with a hairline stroke. Entrance is fade + pop, exit is fade; hover
+-- pauses the timer, click dismisses. Identical toasts coalesce, never stack.
+-- Own IIFE for its register budget. Front door: Koffee.notify(title, msg, opts)
+-- with opts.severity ("info" | "success" | "error") and opts.duration (seconds).
+;(function()
+local MAXVIS = 3
+local SEV = {
+    info    = { color = Theme.Palette.Accent,  icon = "info"  },
+    success = { color = Theme.Palette.Success, icon = "check" },
+    error   = { color = Theme.Palette.Danger,  icon = "x"     },
+}
+local root = new("CanvasGroup", {
+    Name = KID.name("toasts"), Active = false, BackgroundTransparency = 1,
+    BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 1),
+    Position = UDim2.new(1, -16, 1, -16), Size = UDim2.new(0, 300, 0, 0),
+    AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 60, Parent = screen,
+}, {
+    new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 8),
+        VerticalAlignment = Enum.VerticalAlignment.Bottom, SortOrder = Enum.SortOrder.LayoutOrder }),
+})
+local live, queued, order = {}, {}, 0
+local function pump()
+    while #live < MAXVIS and #queued > 0 do
+        local job = table.remove(queued, 1)
+        job.show()
+    end
+end
+local function dismiss(rec, instant)
+    for i, r in ipairs(live) do if r == rec then table.remove(live, i); break end end
+    rec.done = true
+    pcall(function()
+        if instant then rec.wrap:Destroy()
+        else
+            tween(rec.wrap, Theme.Animation.Menu, { GroupTransparency = 1 })
+            task.delay(Koffee.Anim.wait(0.22), function() pcall(function() rec.wrap:Destroy() end) end)
+        end
+    end)
+    pump()
+end
+function Koffee.notify(title, msg, opts)
+    opts = opts or {}
+    local sev = SEV[opts.severity] or SEV.info
+    local key = (opts.severity or "info") .. "\0" .. tostring(title) .. "\0" .. tostring(msg)
+    for _, r in ipairs(live) do
+        if r.key == key then r.remain = r.total; return end
+    end
+    for i, q in ipairs(queued) do
+        if q.key == key then table.remove(queued, i); break end
+    end
+    local total = tonumber(opts.duration) or (3 + #tostring(msg or "") * 0.04)
+    local rec = { key = key, total = total, remain = total, done = false }
+    local function show()
+        if Koffee.dead() then return end
+        order = order + 1
+        local wrap = new("CanvasGroup", {
+            Name = KID.name("toast"), Active = false, BackgroundTransparency = 1,
+            BorderSizePixel = 0, AutomaticSize = Enum.AutomaticSize.XY,
+            Size = UDim2.new(0, 300, 0, 0), GroupTransparency = 1,
+            LayoutOrder = order, Parent = root,
+        })
+        local scale = new("UIScale", { Scale = 0.96, Parent = wrap })
+        local card = new("Frame", {
+            BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.35,
+            BorderSizePixel = 0, AutomaticSize = Enum.AutomaticSize.Y,
+            Size = UDim2.new(0, 300, 0, 0), Parent = wrap,
+        }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
+        new("Frame", {
+            BackgroundColor3 = sev.color, BorderSizePixel = 0,
+            Position = UDim2.new(0, 0, 0, 10), Size = UDim2.new(0, 2, 1, -20),
+            Parent = card,
+        }, { pillCorner() })
+        Koffee.lucideIcon(card, sev.icon, 15, sev.color, 2).Position = UDim2.new(0, 12, 0, 12)
+        new("TextLabel", {
+            Text = tostring(title or ""), FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            Position = UDim2.new(0, 34, 0, 8), Size = UDim2.new(1, -44, 0, 16), Parent = card,
+        })
+        local body = new("TextLabel", {
+            Text = tostring(msg or ""), FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
+            AutomaticSize = Enum.AutomaticSize.Y,
+            Position = UDim2.new(0, 34, 0, 26), Size = UDim2.new(1, -44, 0, 14), Parent = card,
+        })
+        local bar = new("Frame", {
+            BackgroundColor3 = sev.color, BackgroundTransparency = 0.25, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 10, 1, -6),
+            Size = UDim2.new(1, -20, 0, 2), Parent = card,
+        }, { pillCorner() })
+        new("UIPadding", { PaddingBottom = UDim.new(0, 10), Parent = card })
+        rec.wrap = wrap
+        live[#live + 1] = rec
+        tween(wrap, Theme.Animation.Menu, { GroupTransparency = 0 })
+        tween(scale, Theme.Animation.Menu, { Scale = 1 })
+        local paused = false
+        card.MouseEnter:Connect(function() paused = true end)
+        card.MouseLeave:Connect(function() paused = false end)
+        card.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then dismiss(rec) end
+        end)
+        task.spawn(function()
+            while not rec.done and rec.remain > 0 do
+                task.wait(0.1)
+                if Koffee.dead() or not wrap.Parent then rec.done = true; break end
+                if not paused then
+                    rec.remain = rec.remain - 0.1
+                    pcall(function()
+                        bar.Size = UDim2.new(math.clamp(rec.remain / rec.total, 0, 1), -20, 0, 2)
+                    end)
+                end
+            end
+            if not rec.done then dismiss(rec) end
+        end)
+    end
+    if #live < MAXVIS then show() else queued[#queued + 1] = { key = key, show = show } end
+end
 end)()
 
 -- v0.0.36: does this input fire a bind? Binds are EnumItems: a KeyCode
