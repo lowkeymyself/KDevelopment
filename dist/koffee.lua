@@ -1,7 +1,7 @@
--- koffee v0.72.2
+-- koffee v0.72.3
 
 local Koffee = {}
-Koffee.Version = "0.72.2"
+Koffee.Version = "0.72.3"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4585,16 +4585,28 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         for _, entry in pairs(openDropdowns) do entry.close(true) end
         isOpen = true
         openSettingsPopups[popupFrame] = closePopup
-        -- v0.72.2: open at the cursor, not the row rect. The old row anchor sat
-        -- far right of where you clicked. Kept the viewport clamps + the inset
-        -- correction so popups still cannot run off-screen.
+        -- v0.72.2: open at the cursor, not the row rect. v0.72.3: no guessed
+        -- sizes or offsets. GetMouseLocation includes the topbar inset while
+        -- popup space does not (that gap was the downward drift), and the
+        -- popup's real size is measured one frame after showing, then clamped.
         local mp = UserInputService:GetMouseLocation()
+        local inset = game:GetService("GuiService"):GetGuiInset()
         local vp = viewport()
-        local dx = math.min(mp.X - 20, math.max(4, vp.X - 214))
-        local dy = math.min(mp.Y - 10, math.max(4, vp.Y - 90))
-        local ox, oy = popupOffsetFor(popupFrame, dx, dy)
+        local cx, cy = mp.X - inset.X - 4, mp.Y - inset.Y - 4
+        local ox, oy = popupOffsetFor(popupFrame, cx, cy)
         popupFrame.Position = UDim2.new(0, ox, 0, oy)
         popupFrame.Visible = true
+        task.defer(function()
+            if not isOpen or not popupFrame.Parent then return end
+            local w, h = popupFrame.AbsoluteSize.X, popupFrame.AbsoluteSize.Y
+            local px, py = cx, cy
+            if px + w > vp.X - 4 then px = vp.X - 4 - w end
+            if py + h > vp.Y - 4 then py = vp.Y - 4 - h end
+            if px < 4 then px = 4 end
+            if py < 4 then py = 4 end
+            local fx, fy = popupOffsetFor(popupFrame, px, py)
+            popupFrame.Position = UDim2.new(0, fx, 0, fy)
+        end)
         -- v0.0.98: settings popup grows open. v0.48.0: gated on Popups; off
         -- leaves the scale at rest (a close-shrink may have left 0.94 behind).
         local psc = uScaleOf(popupFrame)   -- v0.0.98: settings popup grows open
