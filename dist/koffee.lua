@@ -1,7 +1,7 @@
--- koffee v0.70.0
+-- koffee v0.70.1
 
 local Koffee = {}
-Koffee.Version = "0.70.0"
+Koffee.Version = "0.70.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9178,6 +9178,8 @@ FEAT.teleportwalk = {
 -- v0.70.0: Jitter-walk. Lateral blink-steps along the facing X axis, throttled
 -- to 10/s. Every jump clears 4 studs minimum (wider than any rig), so it never
 -- reads as sliding: resolvers lead the old spot, you are already sideways.
+-- v0.70.1: velocity untouched. Zeroing it ate WalkSpeed momentum (slower) and
+-- the jump impulse (no air): the CFrame jump is the whole move, keep momentum.
 local lastJit = 0
 FEAT.jitterwalk = {
     step = function()
@@ -9188,10 +9190,7 @@ FEAT.jitterwalk = {
         local rng = Random.new()
         local range = math.max(tonumber(Move.Jitter.Range) or 12, 4)
         local d = rng:NextNumber(4, range) * (rng:NextNumber() < 0.5 and -1 or 1)
-        pcall(function()
-            r.CFrame = r.CFrame + r.CFrame.RightVector * d
-            r.AssemblyLinearVelocity = Vector3.zero
-        end)
+        pcall(function() r.CFrame = r.CFrame + r.CFrame.RightVector * d end)
     end,
 }
 
@@ -23310,9 +23309,14 @@ local function primeAim(plr)
 end
 -- boomerang anchor: where you stood when the key first went active. Release
 -- (or unlatch, or disarm) snaps you back to it. Cleared on respawn so death
--- never slingshots a fresh body back into the fight that killed it.
+-- never slingshots a fresh body back into the fight that killed it. Spam TP
+-- keeps its own anchor pair under the same Return toggle.
 local anchorCF, anchorChar, wasBlinkActive = nil, nil, false
-LocalPlayer.CharacterAdded:Connect(function() anchorCF, anchorChar, wasBlinkActive = nil, nil, false end)
+local spamAnchorCF, spamAnchorChar, wasSpamActive = nil, nil, false
+LocalPlayer.CharacterAdded:Connect(function()
+    anchorCF, anchorChar, wasBlinkActive = nil, nil, false
+    spamAnchorCF, spamAnchorChar, wasSpamActive = nil, nil, false
+end)
 
 -- armed Blink auto-fires on its interval while its key is active. Rising edge
 -- saves the anchor; falling edge snaps back to it when Return is on.
@@ -23392,9 +23396,15 @@ RunService.Heartbeat:Connect(function()
     wasBlinkActive = active
     -- Spam TP: sphere follows the locked target, fresh inside-ball point per
     -- interval, targets primed so aim starts aimed. Idles with no live target.
+    -- v0.70.1: same boomerang contract as Blink under the shared Return toggle.
     do
         local s = Modules.hvh_spam
-        if s and s.Enabled and keyActive(SpamK) and now >= nextSpam then
+        local on = s and s.Enabled and keyActive(SpamK)
+        if on and not wasSpamActive then
+            local r = myRoot()
+            if r then spamAnchorCF, spamAnchorChar = r.CFrame, LocalPlayer.Character end
+        end
+        if on and now >= nextSpam then
             nextSpam = now + (HV.SpamRate or 0.25)
             local plr, ch = lockTarget()
             local r = myRoot()
@@ -23409,6 +23419,20 @@ RunService.Heartbeat:Connect(function()
                 hvhDbg("spam tp")
             end
         end
+        if not on and wasSpamActive then
+            if HV.BlinkReturn ~= false then
+                local r = myRoot()
+                if r and spamAnchorCF and LocalPlayer.Character == spamAnchorChar then
+                    pcall(function()
+                        r.CFrame = spamAnchorCF
+                        r.AssemblyLinearVelocity = Vector3.zero
+                    end)
+                    hvhDbg("spam returned")
+                end
+            end
+            spamAnchorCF, spamAnchorChar = nil, nil
+        end
+        wasSpamActive = on
     end
 end)
 
@@ -23513,7 +23537,6 @@ local function note(uid, reason)
     local k = tostring(uid)
     if not SUS[k] then
         SUS[k] = { reason = reason, at = os.clock() }
-        print("[koffee][sus] " .. tostring(uid) .. " " .. tostring(reason))
         if Shared._playerListRefresh then pcall(Shared._playerListRefresh) end
     else
         SUS[k].reason, SUS[k].at = reason, os.clock()
@@ -23525,7 +23548,7 @@ RunService.Heartbeat:Connect(function()
     if now < nextSweep then return end
     nextSweep = now + 0.25
     for k, f in pairs(SUS) do
-        if now - f.at > 120 then SUS[k] = nil end
+        if now - f.at > 90 then SUS[k] = nil end
     end
     for _, p in ipairs(Plrs:GetPlayers()) do
         if p ~= LocalPlayer and p.Character then
@@ -24577,7 +24600,10 @@ end)()
             CellSize = UDim2.new(0, 82, 0, 118), CellPadding = UDim2.new(0, 9, 0, 9),
             SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Left,
         }),
-        new("UIPadding", { PaddingRight = UDim.new(0, 8) }),
+        -- v0.70.1: 2px breathing room on three sides. Card UIStrokes draw half
+        -- outside the card rect and the scroller clips them at the edges.
+        new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2),
+            PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 2) }),
     })
 
     -- divider + detail column (persistent shell; updated in place so the User ID
@@ -24972,17 +24998,18 @@ end)()
             FontFace = Theme.Fonts.Bold, TextSize = 10,
             TextColor3 = isSelf and Palette.Background or tc, Text = tt, Parent = card },
             { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
-        -- v0.70.0: suspect badge, top-left mirror. Reads Shared.Suspects live at
-        -- card build; the scanner rebuilds the grid when a new flag lands.
+        -- v0.70.1: suspect mark is a 14px "!" box, top-left mirror of the team
+        -- pill. No warning glyph exists in either icon set and a new asset for
+        -- a 14px badge is not worth the preloader weight. Rebuilds on new flags.
         local sus = Shared.Suspects and Shared.Suspects[tostring(plr.UserId)]
         if sus then
             new("TextLabel", {
                 BackgroundColor3 = Palette.Danger, BackgroundTransparency = 0.15, ZIndex = 4,
                 AnchorPoint = Vector2.new(0, 0), Position = UDim2.new(0, 5, 0, 5),
-                AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 15),
+                Size = UDim2.new(0, 14, 0, 14),
                 FontFace = Theme.Fonts.Bold, TextSize = 10,
-                TextColor3 = Palette.Text, Text = "SUS", Parent = card },
-                { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+                TextColor3 = Palette.Text, Text = "!", Parent = card },
+                { corner(4) })
         end
         card.MouseEnter:Connect(function()
             if selectedId ~= plr.UserId then tween(dn, Theme.Animation.Fast, { TextColor3 = Palette.Accent }) end end)
@@ -25746,13 +25773,13 @@ end)()
                 if type(data) == "table" then
                     if not Helper.Connected then
                         Helper.Connected = true
-                        print("[koffee] helper connected: XButton1/2 available")
+                        print("Helper connected - K")
                     end
                     Helper.XB1 = data.xb1 and true or false
                     Helper.XB2 = data.xb2 and true or false
                     task.wait(0.03)
                 else
-                    if Helper.Connected then print("[koffee] helper disconnected") end
+                    if Helper.Connected then print("Helper disconnected - K") end
                     Helper.Connected, Helper.XB1, Helper.XB2 = false, false, false
                     task.wait(1)
                 end
