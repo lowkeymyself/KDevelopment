@@ -1,7 +1,7 @@
--- koffee v0.70.2
+-- koffee v0.70.3
 
 local Koffee = {}
-Koffee.Version = "0.70.2"
+Koffee.Version = "0.70.3"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -24750,6 +24750,9 @@ end)()
     local tlPill = keybindPill(tlArmed.row, "targetlock", nil, "Target Lock")
     -- v0.67.0: the player list is never rebuilt, so a config load would leave
     -- this row stale. Re-applied from rebuildConfigTabs like the Extra resync.
+    -- v0.70.3 fix: the wipe kills EVERY watcher, so re-subscribe here (the Extra
+    -- pattern) or the box freezes after the first config load. That was the bug.
+    local tkRow, tkPill
     Shared._targetlockResync = function()
         local m = Modules.targetlock
         if m and (m.Enabled and true or false) ~= (Shared.TargetLock.Enabled and true or false) then
@@ -24757,7 +24760,66 @@ end)()
         else
             tlArmed.setState(Shared.TargetLock.Enabled)
         end
+        subscribeModule("targetlock", function(s) tlArmed.setState(s) end)
         tlPill.Text = keyLabel(Keybinds["targetlock"]) or "No Keybind"
+        if tkPill then tkPill.Text = keyLabel(Keybinds["targetkeybind"]) or "No Keybind" end
+        if tkRow then tkRow.setState(TK.Enabled) end
+    end
+    -- v0.70.3: Target Keybind. A global key that toggles whoever sits closest
+    -- to the biggest FOV center into/out of Prioritize (multi-target; same
+    -- person twice returns them to None). Resolver + detail read the set live.
+    PL.persist.targetkey = PL.persist.targetkey or { Enabled = false }
+    local TK = PL.persist.targetkey
+    tkRow = configCheckbox(tlWrap, "Target Keybind", TK.Enabled, function(v) TK.Enabled = v end)
+    tkPill = keybindPill(tkRow.row, "targetkeybind", nil, "Target Keybind")
+    local TUIS = game:GetService("UserInputService")
+    local function tkMatch(input, bind)
+        if type(bind) == "table" and bind.mod and bind.key then
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return false end
+            if input.KeyCode ~= bind.key then return false end
+            return TUIS:IsKeyDown(bind.mod)
+        end
+        if typeof(bind) ~= "EnumItem" then return false end
+        if bind.EnumType == Enum.KeyCode then
+            return input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == bind
+        elseif bind.EnumType == Enum.UserInputType then
+            return input.UserInputType == bind
+        end
+        return false
+    end
+    local function tkFire()
+        if not TK.Enabled then return end
+        local combat = Shared.Combat
+        local which = "Aim"
+        if combat then
+            local asz = (combat.Aim.FOV.Enabled and combat.Aim.FOV.Size) or 0
+            local ssz = (combat.Silent.FOV.Enabled and combat.Silent.FOV.Size) or 0
+            if ssz > asz then which = "Silent" end
+        end
+        local plr = Shared.crosshairTarget and Shared.crosshairTarget(which)
+        if not plr or plr == LocalPlayer then return end
+        if PL.statusFor(plr) == "prioritize" then PL.setStatus(plr, nil)
+        else PL.setStatus(plr, "prioritize") end
+        if curPlr and curPlr.UserId == plr.UserId then updateDetail(plr) end
+    end
+    UserInputService.InputBegan:Connect(function(input, gpe)
+        if Koffee.dead() then return end
+        if pendingRebind then return end
+        if gpe then return end
+        if tkMatch(input, Keybinds["targetkeybind"]) then tkFire() end
+    end)
+    do
+        local px1, px2 = false, false
+        RunService.Heartbeat:Connect(function()
+            if Koffee.dead() then return end
+            local xb1, xb2 = Helper.XB1, Helper.XB2
+            local e1, e2 = (xb1 and not px1), (xb2 and not px2)
+            local k = Keybinds["targetkeybind"]
+            if TK.Enabled and type(k) == "string" then
+                if (k == "XButton1" and e1) or (k == "XButton2" and e2) then tkFire() end
+            end
+            px1, px2 = xb1, xb2
+        end)
     end
 
     local function ownHumanoid()
