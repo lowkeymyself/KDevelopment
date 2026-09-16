@@ -1,7 +1,7 @@
--- koffee v0.72.0
+-- koffee v0.72.1
 
 local Koffee = {}
-Koffee.Version = "0.72.0"
+Koffee.Version = "0.72.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -10858,8 +10858,13 @@ local Combat = {
         if not pr.Enabled then return pos end
         local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then return pos end
+        -- v0.72.1: schema is {Enabled,X,Y}, there is no Z. v0.1.1 pointed the Z
+        -- term at pr.Z and made EVERY enabled frame throw (dead aimbot + silent).
+        -- Z is horizontal like X, so it rides the X division again, guarded.
         local v = hrp.AssemblyLinearVelocity
-        return pos + Vector3.new(v.X / math.max(pr.X, 0.01), v.Y / math.max(pr.Y, 0.01), v.Z / math.max(pr.Z, 0.01))
+        local dx = math.max(tonumber(pr.X) or 1, 0.01)
+        local dy = math.max(tonumber(pr.Y) or 1, 0.01)
+        return pos + Vector3.new(v.X / dx, v.Y / dy, v.Z / dx)
     end
 
     -- :: FOV circles (one per context: aimbot + silent, both can be active) ::
