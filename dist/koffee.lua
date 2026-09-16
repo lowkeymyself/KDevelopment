@@ -1,7 +1,7 @@
--- koffee v0.69.4
+-- koffee v0.70.0
 
 local Koffee = {}
-Koffee.Version = "0.69.4"
+Koffee.Version = "0.70.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9035,6 +9035,7 @@ local Move = {
     Noclip       = {              Key = nil, Mode = "Toggle" },
     Float        = { Speed = 50,  Key = nil, Mode = "Hold"   },
     ClickTP      = {              Key = nil, Mode = "Toggle" },
+    Jitter       = { Range = 12,  Key = nil, Mode = "Hold"   },
 }
 registerConfig("movement", Move)
 
@@ -9043,7 +9044,7 @@ local CustomAnimCFG = { Key = nil, Mode = "Toggle", Name = "Orbit 1" }
 local CFG = {
     walkspeed = Move.WalkSpeed, teleportwalk = Move.TeleportWalk, fly = Move.Fly,
     spinbot = Move.Spin, noclip = Move.Noclip, float = Move.Float, clicktp = Move.ClickTP,
-    customanim = CustomAnimCFG,
+    jitterwalk = Move.Jitter, customanim = CustomAnimCFG,
 }
 -- v0.0.96: CustomAnim got its own registry slot. Its Key/Mode live here (off
 -- the movement CFG table) and the Name field must survive a config save/load just
@@ -9171,6 +9172,26 @@ FEAT.teleportwalk = {
         local h, r = humOf(), rootOf(); if not (h and r) then return end
         local d = h.MoveDirection
         if d.Magnitude > 0 then r.CFrame = r.CFrame + d * (Move.TeleportWalk.Speed * dt) end
+    end,
+}
+
+-- v0.70.0: Jitter-walk. Lateral blink-steps along the facing X axis, throttled
+-- to 10/s. Every jump clears 4 studs minimum (wider than any rig), so it never
+-- reads as sliding: resolvers lead the old spot, you are already sideways.
+local lastJit = 0
+FEAT.jitterwalk = {
+    step = function()
+        local now = os.clock()
+        if now - lastJit < 0.1 then return end
+        lastJit = now
+        local h, r = humOf(), rootOf(); if not (h and r) then return end
+        local rng = Random.new()
+        local range = math.max(tonumber(Move.Jitter.Range) or 12, 4)
+        local d = rng:NextNumber(4, range) * (rng:NextNumber() < 0.5 and -1 or 1)
+        pcall(function()
+            r.CFrame = r.CFrame + r.CFrame.RightVector * d
+            r.AssemblyLinearVelocity = Vector3.zero
+        end)
     end,
 }
 
@@ -9612,6 +9633,7 @@ local function reg(id, name)
     return m
 end
 reg("walkspeed", "WalkSpeed"); reg("teleportwalk", "Teleport Walk"); reg("fly", "Fly")
+reg("jitterwalk", "Jitter-Walk")
 reg("spinbot", "Spinbot"); reg("noclip", "Noclip"); reg("float", "Float"); reg("clicktp", "Click TP")
 reg("customanim", "Custom Anim")
 registerModule("antifling", "Antifling", function() end, function() end)   -- no keybind: on = on
@@ -10138,6 +10160,8 @@ Koffee._characterTab = function(root)
     feat("Float", "float")
     slider(mv, "Float Speed", 0, 200, Move.Float.Speed, 0, function(v) Move.Float.Speed = v end)
     feat("Click TP", "clicktp")
+    feat("Jitter-Walk", "jitterwalk")
+    slider(mv, "Jitter Range", 4, 40, Move.Jitter.Range, 0, function(v) Move.Jitter.Range = v end)
     moduleCheckbox(mv, "Antifling", "antifling")
 
     -- visual box
@@ -22944,6 +22968,7 @@ end)()
 local HV = {
     BlinkDist = 500, FaceTarget = true,
     BlinkKeyMode = "Hold", BlinkRate = 0.25, BlinkReturn = true,
+    SpamMode = "Hold", SpamDist = 300, SpamRate = 0.25,
 }
 registerConfig("hvh", HV)
 Shared.Hvh = HV
@@ -23052,42 +23077,48 @@ local function fireBlink()
     if lockOn() then faceFoe(); snapAim() end
     hvhDbg("blink fired dist=" .. tostring(HV.BlinkDist))
 end
--- v0.68.4: arm + key model (the movement pattern). Checkbox arms, pill key
--- activates: Hold blinks while held, Toggle latches blinking on/off. No lock
--- needed, manual mobility works in any fight. Nil key means never, not always.
-local blinkHeld, blinkLatch, pendingBlink = false, false, nil
-local blinkPillInst, blinkPillCache = nil, nil
-local function blinkKeyActive()
-    if HV.BlinkKey == nil then return false end
-    if (HV.BlinkKeyMode or "Hold") == "Toggle" then return blinkLatch end
-    return blinkHeld
+-- v0.70.0: keyed activation registry. Blink + Spam TP share one pill builder,
+-- one input edge handler, one XB poll, one tint sync. Entries read bind + mode
+-- live off HV so configs apply without rebuilds. Nil bind means never, not always.
+local keyReg = {}
+local pendingKey = nil   -- { e, pill, refresh } while arming a rebind
+local function newKey(modId, keyF, modeF)
+    local e = { mod = modId, k = keyF, m = modeF, held = false, latch = false, pill = nil, cache = nil }
+    keyReg[#keyReg + 1] = e
+    return e
 end
--- event-driven pill tint (accent while blinking). Cached so the Heartbeat's
--- XButton poll can call it every frame for free.
-local function syncBlinkPill(force)
-    local pill = blinkPillInst
-    if not pill or (pendingBlink and pendingBlink.pill == pill) then return end
-    local m = Modules.hvh_blink
-    local on = (m and m.Enabled and blinkKeyActive()) and true or false
-    if force or blinkPillCache ~= on then
-        blinkPillCache = on
+local BlinkK = newKey("hvh_blink", "BlinkKey", "BlinkKeyMode")
+local SpamK = newKey("hvh_spam", "SpamKey", "SpamMode")
+local function keyActive(e)
+    if HV[e.k] == nil then return false end
+    if (HV[e.m] or "Hold") == "Toggle" then return e.latch end
+    return e.held
+end
+-- event-driven pill tint (accent while firing). Cached so per-frame callers pay
+-- a boolean compare instead of property writes.
+local function syncKeyPill(e, force)
+    local pill = e.pill
+    if not pill or (pendingKey and pendingKey.pill == pill) then return end
+    local m = Modules[e.mod]
+    local on = (m and m.Enabled and keyActive(e)) and true or false
+    if force or e.cache ~= on then
+        e.cache = on
         pill.TextColor3 = on and Theme.Palette.Accent or Theme.Palette.TextMuted
     end
 end
--- v0.69.3: Hold/Toggle chooser popup (right-click the pill), the same pattern
--- as every other activation pill. Mode shows by selection, never pill text.
-local blinkChooser = nil
-local function closeBlinkChooser()
-    if blinkChooser then
-        pcall(function() blinkChooser.frame:Destroy() end)
-        if blinkChooser.conn then blinkChooser.conn:Disconnect() end
-        blinkChooser = nil
+-- Hold/Toggle chooser popup (right-click), same pattern as every activation pill.
+local keyChooser = nil
+local function closeKeyChooser()
+    if keyChooser then
+        pcall(function() keyChooser.frame:Destroy() end)
+        if keyChooser.conn then keyChooser.conn:Disconnect() end
+        keyChooser = nil
     end
 end
-local function openBlinkChooser(pill)
-    closeBlinkChooser()
+local function openKeyChooser(e)
+    closeKeyChooser()
     local frame = new("Frame", {
-        Name = "BlinkModeChooser", Size = UDim2.new(0, 120, 0, 0),
+        Name = "HvHModeChooser", Size = UDim2.new(0, 120, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.Palette.Panel,
         BackgroundTransparency = 0.02, BorderSizePixel = 0, ZIndex = 230, Parent = popupScreen,
     }, {
@@ -23097,7 +23128,7 @@ local function openBlinkChooser(pill)
         new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
     })
     for _, mode in ipairs({ "Hold", "Toggle" }) do
-        local sel = (HV.BlinkKeyMode or "Hold") == mode
+        local sel = (HV[e.m] or "Hold") == mode
         local opt = new("TextButton", {
             Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Theme.Palette.PanelElevated,
             BackgroundTransparency = sel and 0.2 or 1, AutoButtonColor = false, Text = mode,
@@ -23105,34 +23136,34 @@ local function openBlinkChooser(pill)
             TextColor3 = sel and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 231, Parent = frame,
         }, { corner(4) })
         opt.MouseButton1Click:Connect(function()
-            HV.BlinkKeyMode = mode
-            blinkLatch = false
-            closeBlinkChooser()
-            syncBlinkPill(true)
+            HV[e.m] = mode
+            e.latch = false
+            closeKeyChooser()
+            syncKeyPill(e, true)
         end)
     end
-    local abs, siz = pill.AbsolutePosition, pill.AbsoluteSize
+    local abs, siz = e.pill.AbsolutePosition, e.pill.AbsoluteSize
     local ox, oy = popupOffsetFor(frame, abs.X + siz.X - 120, abs.Y + siz.Y + 6)
     frame.Position = UDim2.new(0, ox, 0, oy)
-    blinkChooser = { frame = frame }
+    keyChooser = { frame = frame }
     task.defer(function()
-        if not blinkChooser then return end
-        blinkChooser.conn = UserInputService.InputBegan:Connect(function(input)
+        if not keyChooser then return end
+        keyChooser.conn = UserInputService.InputBegan:Connect(function(input)
             local it = input.UserInputType
             if it == Enum.UserInputType.MouseButton1 or it == Enum.UserInputType.MouseButton2
             or it == Enum.UserInputType.Touch then
                 local mp = input.Position
                 local a, s = frame.AbsolutePosition, frame.AbsoluteSize
                 if not (mp.X >= a.X and mp.X <= a.X + s.X and mp.Y >= a.Y and mp.Y <= a.Y + s.Y) then
-                    closeBlinkChooser()
+                    closeKeyChooser()
                 end
             end
         end)
     end)
 end
-local function blinkPill(row)
+local function actPill(row, e)
     local pill = new("TextButton", {
-        Name = "BlinkPill", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        Name = "HvHKeyPill", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
         Size = UDim2.new(0, 30, 0, 16), AutomaticSize = Enum.AutomaticSize.X,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
         AutoButtonColor = false, Text = "-", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
@@ -23142,39 +23173,40 @@ local function blinkPill(row)
         new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
     })
     local function refresh()
-        local nm = keyLabel(HV.BlinkKey)
+        local bind = HV[e.k]
+        local nm = keyLabel(bind)
         if not nm then
-            if type(HV.BlinkKey) == "string" then nm = HV.BlinkKey == "XButton1" and "XB1" or "XB2"
+            if type(bind) == "string" then nm = bind == "XButton1" and "XB1" or "XB2"
             else nm = "-" end
         end
         pill.Text = nm
-        syncBlinkPill(true)
+        syncKeyPill(e, true)
     end
     refresh()
-    blinkPillInst = pill
+    e.pill, e.refresh = pill, refresh
     pill.MouseEnter:Connect(function()
         tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
     end)
     pill.MouseLeave:Connect(function()
-        if not (pendingBlink and pendingBlink.pill == pill) then
-            syncBlinkPill(true)
+        if not (pendingKey and pendingKey.pill == pill) then
+            syncKeyPill(e, true)
         end
     end)
     pill.MouseButton1Click:Connect(function()
-        if pendingBlink and pendingBlink.pill == pill then
-            pendingBlink.refresh(); pendingBlink = nil
+        if pendingKey and pendingKey.pill == pill then
+            pendingKey.refresh(); pendingKey = nil
             return
         end
-        if pendingBlink then pendingBlink.refresh() end
+        if pendingKey then pendingKey.refresh() end
         pill.Text = "..."
         tween(pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Accent })
-        pendingBlink = { pill = pill, refresh = refresh }
+        pendingKey = { e = e, pill = pill, refresh = refresh }
     end)
-    pill.MouseButton2Click:Connect(function() openBlinkChooser(pill) end)
+    pill.MouseButton2Click:Connect(function() openKeyChooser(e) end)
     popFx(pill)
     return refresh
 end
-local function blinkMatch(input, bind)
+local function keyMatch(input, bind)
     if typeof(bind) ~= "EnumItem" then return false end
     if bind.EnumType == Enum.KeyCode then
         return input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == bind
@@ -23188,11 +23220,12 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     -- Without this, every old run flips Toggle again: two flips per press read
     -- as "toggle does nothing". Dead runs stay silent now.
     if Koffee.dead() then return end
-    if pendingBlink then
+    if pendingKey then
+        local e = pendingKey.e
         local it = input.UserInputType
         if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
-            HV.BlinkKey = nil; blinkHeld, blinkLatch = false, false
-            pendingBlink.refresh(); pendingBlink = nil; return
+            HV[e.k] = nil; e.held, e.latch = false, false
+            pendingKey.refresh(); pendingKey = nil; return
         end
         if gpe and (it == Enum.UserInputType.MouseButton1
                 or it == Enum.UserInputType.MouseButton2
@@ -23204,27 +23237,77 @@ UserInputService.InputBegan:Connect(function(input, gpe)
         elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
            and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
            and it ~= Enum.UserInputType.TextInput and it ~= Enum.UserInputType.InputMethod then bind = it end
-        -- fresh key, fresh state: a held-down old key must not stick blinking on.
-        if bind then HV.BlinkKey = bind; blinkHeld, blinkLatch = false, false
-            pendingBlink.refresh(); pendingBlink = nil end
+        -- fresh key, fresh state: a held-down old key must not stick firing on.
+        if bind then HV[e.k] = bind; e.held, e.latch = false, false
+            pendingKey.refresh(); pendingKey = nil end
         return
     end
     if gpe then return end
-    if blinkMatch(input, HV.BlinkKey) then
-        if (HV.BlinkKeyMode or "Hold") == "Toggle" then blinkLatch = not blinkLatch
-        else blinkHeld = true end
-        hvhDbg("key edge latch=" .. tostring(blinkLatch) .. " held=" .. tostring(blinkHeld))
-        syncBlinkPill()
+    for _, e in ipairs(keyReg) do
+        if keyMatch(input, HV[e.k]) then
+            if (HV[e.m] or "Hold") == "Toggle" then e.latch = not e.latch
+            else e.held = true end
+            hvhDbg(e.mod .. " edge")
+            syncKeyPill(e)
+        end
     end
 end)
 UserInputService.InputEnded:Connect(function(input)
     if Koffee.dead() then return end
-    if (HV.BlinkKeyMode or "Hold") == "Hold" and blinkMatch(input, HV.BlinkKey) then
-        blinkHeld = false
-        syncBlinkPill()
+    for _, e in ipairs(keyReg) do
+        if (HV[e.m] or "Hold") == "Hold" and keyMatch(input, HV[e.k]) then
+            e.held = false
+            syncKeyPill(e)
+        end
     end
 end)
 
+-- v0.70.0: Spam TP helpers. The sphere follows the locked target (first
+-- prioritized player while engaged); without a live one it idles instead of
+-- scattering you somewhere dumb.
+local nextSpam = 0
+local function lockTarget()
+    if not lockOn() then return nil end
+    local plr = Shared.targetLockPlayer and Shared.targetLockPlayer()
+    local ch = plr and plr.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health > 0 then return plr, ch end
+    return nil
+end
+-- uniform random point INSIDE a ball: unit direction scaled by radius with a
+-- cube-root roll, so volume (not just shell) fills evenly.
+local function ballPoint(center, R)
+    local rng = Random.new()
+    local z = rng:NextNumber(-1, 1)
+    local a = rng:NextNumber(0, math.pi * 2)
+    local rr = math.sqrt(math.max(1 - z * z, 0))
+    local rad = R * (rng:NextNumber(0, 1) ^ (1 / 3))
+    return center + Vector3.new(rr * math.cos(a), z, rr * math.sin(a)) * rad
+end
+-- inside-ball landing with shell-grade void safety. Retries fresh points;
+-- falls back to just above the target, a rage-style commit either way.
+local function safeBall(center, R)
+    local floor = killY() + 100
+    for _ = 1, 6 do
+        local cand = ballPoint(center, R)
+        if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
+        if groundBelow(cand, 2000) then return cand end
+    end
+    return center + Vector3.new(0, math.min(R, 500), 0)
+end
+-- hand the aim systems their target directly: prime both _targets and snap
+-- the camera same-tick, so the loop after a teleport starts aimed, not sweeping.
+local function primeAim(plr)
+    local combat = Shared.Combat
+    if combat then
+        if combat.Aim then combat.Aim._target = plr end
+        if combat.Silent then combat.Silent._target = plr end
+    end
+    local ch = plr.Character
+    local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
+    local cam = Workspace.CurrentCamera
+    if part and cam then pcall(function() cam.CFrame = CFrame.new(cam.CFrame.Position, part.Position) end) end
+end
 -- boomerang anchor: where you stood when the key first went active. Release
 -- (or unlatch, or disarm) snaps you back to it. Cleared on respawn so death
 -- never slingshots a fresh body back into the fight that killed it.
@@ -23237,44 +23320,54 @@ local nextBlink, pBX = 0, { false, false }
 RunService.Heartbeat:Connect(function()
     if Koffee.dead() then return end
     local now = os.clock()
-    -- v0.68.5: state backfill for Hold. A game-consumed key never fires Began,
-    -- so edges alone silently never arm and Blink reads dead. Live polled state
-    -- cannot be eaten. Mirrors the silent-aim LMB backfill precedent.
-    if (HV.BlinkKeyMode or "Hold") == "Hold" then
-        local k = HV.BlinkKey
-        if typeof(k) == "EnumItem" then
-            if k.EnumType == Enum.KeyCode then
-                blinkHeld = UIS:IsKeyDown(k)
-            elseif k.EnumType == Enum.UserInputType then
-                local ok, down = pcall(function() return UIS:IsMouseButtonPressed(k) end)
-                if ok then blinkHeld = down end
+    -- v0.68.5: Hold backfill for every key. A game-consumed key never fires
+    -- Began, so edges alone silently never arm. Live polled state cannot be
+    -- eaten. Mirrors the silent-aim LMB backfill precedent.
+    for _, e in ipairs(keyReg) do
+        if (HV[e.m] or "Hold") == "Hold" then
+            local k = HV[e.k]
+            if typeof(k) == "EnumItem" then
+                local before = e.held
+                if k.EnumType == Enum.KeyCode then
+                    e.held = UIS:IsKeyDown(k)
+                elseif k.EnumType == Enum.UserInputType then
+                    local ok, down = pcall(function() return UIS:IsMouseButtonPressed(k) end)
+                    if ok then e.held = down end
+                end
+                if e.held ~= before then syncKeyPill(e) end
             end
         end
     end
-    -- XButton driver for the Blink key (Roblox never fires mouse 4/5). Reads the
+    -- XButton driver for every key (Roblox never fires mouse 4/5). Reads the
     -- feed unconditionally like combat does: gating capture on "already bound
     -- to XB" made XB unbindable, the pill sat on "..." forever. That was the bug.
     local xb1, xb2 = Helper.XB1, Helper.XB2
     local e1, e2 = (xb1 and not pBX[1]), (xb2 and not pBX[2])
     local function xbDown(k) return (k == "XButton1" and xb1) or (k == "XButton2" and xb2) or false end
     local function xbEdge(k) return (k == "XButton1" and e1) or (k == "XButton2" and e2) or false end
-    if pendingBlink then
+    if pendingKey then
+        local e = pendingKey.e
         local k = (e2 and "XButton2") or (e1 and "XButton1") or nil
-        if k then HV.BlinkKey = k; blinkHeld, blinkLatch = false, false
-            pendingBlink.refresh(); pendingBlink = nil end
-    elseif type(HV.BlinkKey) == "string" then
-        if (HV.BlinkKeyMode or "Hold") == "Toggle" then
-            if xbEdge(HV.BlinkKey) then blinkLatch = not blinkLatch; syncBlinkPill() end
-        else
-            local held = xbDown(HV.BlinkKey)
-            if held ~= blinkHeld then blinkHeld = held; syncBlinkPill() end
+        if k then HV[e.k] = k; e.held, e.latch = false, false
+            pendingKey.refresh(); pendingKey = nil end
+    else
+        for _, e in ipairs(keyReg) do
+            local k = HV[e.k]
+            if type(k) == "string" then
+                if (HV[e.m] or "Hold") == "Toggle" then
+                    if xbEdge(k) then e.latch = not e.latch; syncKeyPill(e) end
+                else
+                    local held = xbDown(k)
+                    if held ~= e.held then e.held = held; syncKeyPill(e) end
+                end
+            end
         end
     end
     pBX[1], pBX[2] = xb1, xb2
     -- armed Blink auto-fires on its interval while its key is active. No lock
     -- needed: manual mobility works in any fight, locked or not.
     local b = Modules.hvh_blink
-    local active = b and b.Enabled and blinkKeyActive()
+    local active = b and b.Enabled and keyActive(BlinkK)
     if active and not wasBlinkActive then
         local r = myRoot()
         if r then anchorCF, anchorChar = r.CFrame, LocalPlayer.Character end
@@ -23297,15 +23390,41 @@ RunService.Heartbeat:Connect(function()
         anchorCF, anchorChar = nil, nil
     end
     wasBlinkActive = active
+    -- Spam TP: sphere follows the locked target, fresh inside-ball point per
+    -- interval, targets primed so aim starts aimed. Idles with no live target.
+    do
+        local s = Modules.hvh_spam
+        if s and s.Enabled and keyActive(SpamK) and now >= nextSpam then
+            nextSpam = now + (HV.SpamRate or 0.25)
+            local plr, ch = lockTarget()
+            local r = myRoot()
+            local hr = ch and ch:FindFirstChild("HumanoidRootPart")
+            if plr and r and hr then
+                local dest = safeBall(hr.Position, HV.SpamDist or 300)
+                pcall(function()
+                    r.CFrame = r.CFrame - r.Position + dest
+                    r.AssemblyLinearVelocity = Vector3.zero
+                end)
+                primeAim(plr)
+                hvhDbg("spam tp")
+            end
+        end
+    end
 end)
 
 -- v0.68.1: manual blink. v0.68.4: arm + key (movement pattern). The checkbox
 -- arms, the pill key activates (Hold streams, Toggle latches). Fires alone.
 registerModule("hvh_blink", "Blink", function() end,
-    function() blinkLatch, blinkHeld = false, false; syncBlinkPill(true) end)
+    function() BlinkK.held, BlinkK.latch = false, false; syncKeyPill(BlinkK, true) end)
+registerModule("hvh_spam", "Spam TP", function() end,
+    function() SpamK.held, SpamK.latch = false, false; syncKeyPill(SpamK, true) end)
 Modules.hvh_blink.IsActive = function()
     local m = Modules.hvh_blink
-    return (m and m.Enabled and blinkKeyActive()) and true or false
+    return (m and m.Enabled and keyActive(BlinkK)) and true or false
+end
+Modules.hvh_spam.IsActive = function()
+    local m = Modules.hvh_spam
+    return (m and m.Enabled and keyActive(SpamK)) and true or false
 end
 
 function HV.buildPanel(host)
@@ -23316,9 +23435,15 @@ function HV.buildPanel(host)
         AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
     })
     local cbBlink = moduleCheckbox(host, "Blink", "hvh_blink")
-    local blinkRef = blinkPill(cbBlink.row)
+    local blinkRef = actPill(cbBlink.row, BlinkK)
     -- v0.68.7: 0 means uncapped (every Heartbeat). Random escapes want max rate.
     slider(host, "Blink Interval (s)", 0, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
+    local cbSpam = moduleCheckbox(host, "Spam TP", "hvh_spam")
+    local spamRef = actPill(cbSpam.row, SpamK)
+    -- v0.70.0: follow-sphere radius around the locked target, capped at 10000.
+    -- Points land INSIDE the ball (volume), void-checked like shell landings.
+    slider(host, "Spam Radius", 10, 10000, HV.SpamDist or 300, 0, function(v) HV.SpamDist = v end)
+    slider(host, "Spam Interval (s)", 0, 0.6, HV.SpamRate or 0.25, 2, function(v) HV.SpamRate = v end)
     -- v0.68.9: exact entry, not a drag slider. Past 1M one slider pixel is
     -- thousands of studs, so small and huge jumps cannot share a control.
     -- Typing keeps both 500 and 8000000 settable. Clamped 10 to 10000000:
@@ -23357,13 +23482,14 @@ function HV.buildPanel(host)
     -- Extra is never rebuilt but the watcher wipe is global (see Anticheats
     -- above): re-subscribe + resync here so config loads cannot orphan these.
     Shared._hvhResync = function()
-        for _, pr in ipairs({ { cbBlink, "hvh_blink" } }) do
+        for _, pr in ipairs({ { cbBlink, "hvh_blink" }, { cbSpam, "hvh_spam" } }) do
             local ctrl, id = pr[1], pr[2]
             local m = Modules[id]
             ctrl.setState(m and m.Enabled or false)
             subscribeModule(id, function(s) ctrl.setState(s) end)
         end
         if blinkRef then blinkRef() end
+        if spamRef then spamRef() end
         pcall(function()
             if distBox and not distBox:IsFocused() then
                 distBox.Text = tostring(math.floor(HV.BlinkDist or 500))
@@ -23371,6 +23497,67 @@ function HV.buildPanel(host)
         end)
     end
 end
+end)()
+
+-- v0.70.0: suspect scanner. Watches every living rig for teleport jumps and
+-- sustained inhuman velocity, one cheap roster sweep per 0.25s (positions +
+-- velocity only, no raycasts, respawns re-baseline silently). Flags publish on
+-- Shared.Suspects for the player list; stale flags expire after two minutes.
+;(function()
+local SUS = {}
+Shared.Suspects = SUS
+local Plrs = game:GetService("Players")
+local track, nextSweep = {}, 0
+Plrs.PlayerRemoving:Connect(function(p) track[p] = nil; SUS[tostring(p.UserId)] = nil end)
+local function note(uid, reason)
+    local k = tostring(uid)
+    if not SUS[k] then
+        SUS[k] = { reason = reason, at = os.clock() }
+        print("[koffee][sus] " .. tostring(uid) .. " " .. tostring(reason))
+        if Shared._playerListRefresh then pcall(Shared._playerListRefresh) end
+    else
+        SUS[k].reason, SUS[k].at = reason, os.clock()
+    end
+end
+RunService.Heartbeat:Connect(function()
+    if Koffee.dead() then return end
+    local now = os.clock()
+    if now < nextSweep then return end
+    nextSweep = now + 0.25
+    for k, f in pairs(SUS) do
+        if now - f.at > 120 then SUS[k] = nil end
+    end
+    for _, p in ipairs(Plrs:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            local hr = p.Character:FindFirstChild("HumanoidRootPart")
+            if hum and hum.Health > 0 and hr then
+                local t = track[p]
+                local pos, vel = hr.Position, hr.AssemblyLinearVelocity
+                if not t or t.char ~= p.Character then
+                    track[p] = { char = p.Character, pos = pos, vel = vel, t = now, events = {}, fast = 0 }
+                else
+                    local dt = math.max(now - t.t, 0.001)
+                    local disp = (pos - t.pos).Magnitude
+                    local carried = (t.vel and t.vel.Magnitude or 0) * dt * 1.25
+                    t.pos, t.vel, t.t = pos, vel, now
+                    local ev, n = t.events, 0
+                    for i = #ev, 1, -1 do if now - ev[i] > 10 then table.remove(ev, i) else n = n + 1 end end
+                    if disp - carried > 40 then
+                        ev[#ev + 1] = now; n = n + 1
+                        if n >= 3 then note(p.UserId, "teleports x" .. n .. "/10s") end
+                    end
+                    local spd = vel and vel.Magnitude or 0
+                    local seated = hum:GetState() == Enum.HumanoidStateType.Seated
+                    if not seated and spd > 300 then
+                        t.fast = (t.fast or 0) + 1
+                        if t.fast >= 3 then note(p.UserId, "velocity " .. math.floor(spd)) end
+                    else t.fast = 0 end
+                end
+            else track[p] = nil end
+        end
+    end
+end)
 end)()
 
 addTab("Extra", function(epanel)
@@ -24785,6 +24972,18 @@ end)()
             FontFace = Theme.Fonts.Bold, TextSize = 10,
             TextColor3 = isSelf and Palette.Background or tc, Text = tt, Parent = card },
             { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+        -- v0.70.0: suspect badge, top-left mirror. Reads Shared.Suspects live at
+        -- card build; the scanner rebuilds the grid when a new flag lands.
+        local sus = Shared.Suspects and Shared.Suspects[tostring(plr.UserId)]
+        if sus then
+            new("TextLabel", {
+                BackgroundColor3 = Palette.Danger, BackgroundTransparency = 0.15, ZIndex = 4,
+                AnchorPoint = Vector2.new(0, 0), Position = UDim2.new(0, 5, 0, 5),
+                AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 15),
+                FontFace = Theme.Fonts.Bold, TextSize = 10,
+                TextColor3 = Palette.Text, Text = "SUS", Parent = card },
+                { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+        end
         card.MouseEnter:Connect(function()
             if selectedId ~= plr.UserId then tween(dn, Theme.Animation.Fast, { TextColor3 = Palette.Accent }) end end)
         card.MouseLeave:Connect(function()
@@ -24813,6 +25012,8 @@ end)()
         refreshHighlight()
         setTitle(#list)
     end
+    -- v0.70.0: lets the suspect scanner re-render badges when a new flag lands.
+    Shared._playerListRefresh = function() if root.Visible then rebuildGrid() end end
 
     -- live wiring
     Players.PlayerAdded:Connect(function(plr)
