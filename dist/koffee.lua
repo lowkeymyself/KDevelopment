@@ -1,7 +1,7 @@
--- koffee v0.72.1
+-- koffee v0.72.2
 
 local Koffee = {}
-Koffee.Version = "0.72.1"
+Koffee.Version = "0.72.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4585,9 +4585,13 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         for _, entry in pairs(openDropdowns) do entry.close(true) end
         isOpen = true
         openSettingsPopups[popupFrame] = closePopup
-        local abs, siz, vp = btn.AbsolutePosition, btn.AbsoluteSize, viewport()
-        local dx = math.min(abs.X + siz.X - 40, math.max(4, vp.X - 214))
-        local dy = math.min(abs.Y, math.max(4, vp.Y - 90))
+        -- v0.72.2: open at the cursor, not the row rect. The old row anchor sat
+        -- far right of where you clicked. Kept the viewport clamps + the inset
+        -- correction so popups still cannot run off-screen.
+        local mp = UserInputService:GetMouseLocation()
+        local vp = viewport()
+        local dx = math.min(mp.X - 20, math.max(4, vp.X - 214))
+        local dy = math.min(mp.Y - 10, math.max(4, vp.Y - 90))
         local ox, oy = popupOffsetFor(popupFrame, dx, dy)
         popupFrame.Position = UDim2.new(0, ox, 0, oy)
         popupFrame.Visible = true
