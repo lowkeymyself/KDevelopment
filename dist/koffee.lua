@@ -1,7 +1,7 @@
--- koffee v0.70.3
+-- koffee v0.71.0
 
 local Koffee = {}
-Koffee.Version = "0.70.3"
+Koffee.Version = "0.71.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -8989,6 +8989,102 @@ registerModule("lowgfx", "Low Graphics",
     end
 )
 
+-- v0.71.0 FREECAM. Detached Scriptable camera: RMB-hold to look, WASD + Space
+-- / Ctrl to move, Shift for speed, wheel dollies along the look in snaps.
+-- Runs one render notch AFTER the aimbot so it owns the final CFrame: camera
+-- aimbot fights it (both write the camera), silent aim + triggerbot do not,
+-- they read the weapon and the freecam view, so that is the pairing.
+;(function()
+local FC = { Speed = 120, FastMul = 4, WheelStep = 20 }
+registerConfig("world_freecam", FC)
+Shared.FreeCam = FC
+local pos, yaw, pitch = Vector3.new(), 0, 0
+local rmb, lastM = false, nil
+local function cam() return Workspace.CurrentCamera end
+-- window is built later in the file, so it cannot be an upvalue here. Resolve
+-- through screen at call time instead; missing window means not open yet.
+local function menuHidden()
+    local w = screen and screen:FindFirstChild("Window")
+    return not (w and w.GroupTransparency < 1)
+end
+local function grab()
+    local c = cam(); if not c then return end
+    pos = c.CFrame.Position
+    local lv = c.CFrame.LookVector
+    yaw = math.atan2(-lv.X, -lv.Z)
+    pitch = math.asin(math.clamp(lv.Y, -1, 1))
+end
+local function push()
+    local c = cam(); if not c then return end
+    c.CFrame = CFrame.new(pos) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+end
+local function lookDir()
+    return (CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)).LookVector
+end
+UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then rmb = true; lastM = nil end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then rmb = false; lastM = nil end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    local m = Modules.freecam
+    if not (m and m.Enabled) then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        if rmb and menuHidden() then
+            local mp = input.Position
+            if lastM then
+                yaw = yaw - (mp.X - lastM.X) * 0.0045
+                pitch = math.clamp(pitch - (mp.Y - lastM.Y) * 0.0045, -1.55, 1.55)
+            end
+            lastM = mp
+        else lastM = nil end
+    elseif input.UserInputType == Enum.UserInputType.MouseWheel then
+        -- wheel dollies along the look in snaps. Scriptable cameras ignore zoom,
+        -- so while the menu is open the wheel stays the UI's (scrolls tab lists).
+        if menuHidden() then pos = pos + lookDir() * (input.Position.Z * (FC.WheelStep or 20)) end
+    end
+end)
+local function step(dt)
+    local c = cam(); if not c then return end
+    local speed = (FC.Speed or 120)
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+    or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+        speed = speed * (FC.FastMul or 4)
+    end
+    local cf = CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+    local v = Vector3.new()
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then v = v + cf.LookVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then v = v - cf.LookVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then v = v + cf.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then v = v - cf.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then v = v + Vector3.new(0, 1, 0) end
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+    or UserInputService:IsKeyDown(Enum.KeyCode.C) then v = v - Vector3.new(0, 1, 0) end
+    if v.Magnitude > 0 then pos = pos + v.Unit * speed * dt end
+    push()
+end
+registerModule("freecam", "Freecam",
+    function()
+        grab()
+        local c = cam()
+        if c then pcall(function() c.CameraType = Enum.CameraType.Scriptable end) end
+        pcall(function() RunService:UnbindFromRenderStep("KFreeCam") end)
+        RunService:BindToRenderStep("KFreeCam", Enum.RenderPriority.Last.Value + 2, step)
+    end,
+    function()
+        pcall(function() RunService:UnbindFromRenderStep("KFreeCam") end)
+        local c = cam()
+        if c then pcall(function()
+            c.CameraType = Enum.CameraType.Custom
+            local ch = LocalPlayer.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            if hum then c.CameraSubject = hum end
+        end) end
+        rmb, lastM = false, nil
+    end)
+end)()
+
 -- MOVEMENT MODULES (v0.0.49)
 -- No Jump Cooldown / Infinite Jump. Both bypass client anti-jumps that throttle via
 -- GetPropertyChangedSignal("Jump"): we drive ChangeState(Jumping) instead, so their
@@ -16180,8 +16276,8 @@ addTab("World", function(root)
     -- Lighting / Effects sub-tabs; new Rules sub-tab is a full list UI with
     -- plus/delete/rename + rule creation flow (type picker -> per-type popups).
     local wCard = panel(root)
-    local W = Shared.subTabs and Shared.subTabs(wCard, { "Lighting", "Effects", "Rules" })
-        or { Lighting = root, Effects = root, Rules = root }
+    local W = Shared.subTabs and Shared.subTabs(wCard, { "Lighting", "Effects", "Rules", "Camera" })
+        or { Lighting = root, Effects = root, Rules = root, Camera = root }
 
     local lighting = panel(W.Lighting, "World Lighting")
     moduleCheckbox(lighting, "Fullbright",  "fullbright")
@@ -16380,6 +16476,23 @@ addTab("World", function(root)
     end
     Shared._rulesListRefresh = refreshRules
     refreshRules()
+
+    -- v0.71.0: Freecam. Detached camera that never touches the character, so
+    -- silent aim + triggerbot keep working from wherever you park it (they read
+    -- the weapon and the view, not the body). Camera aimbot fights it instead:
+    -- both write the camera, freecam wins the frame. Pair accordingly.
+    local camCard = panel(W.Camera, "Freecam")
+    new("TextLabel", {
+        Text = "Hold Right Click to look, WASD + Space / Ctrl to move, Shift for speed, wheel dollies. Menu open keeps mouse + wheel for the UI.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = camCard,
+    })
+    local fcRow = moduleCheckbox(camCard, "Freecam", "freecam")
+    keybindPill(fcRow.row, "freecam", nil, "Freecam")
+    slider(camCard, "Speed", 10, 600, Shared.FreeCam.Speed, 0, function(v) Shared.FreeCam.Speed = v end)
+    slider(camCard, "Fast Multiplier", 1, 10, Shared.FreeCam.FastMul, 0, function(v) Shared.FreeCam.FastMul = v end)
+    slider(camCard, "Wheel Step (studs)", 5, 100, Shared.FreeCam.WheelStep, 0, function(v) Shared.FreeCam.WheelStep = v end)
 end)
 
 -- v0.55.0: Avatar Deco. Wear catalog accessories (hats / capes / gear) by asset
