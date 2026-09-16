@@ -1,7 +1,7 @@
--- koffee v0.72.3
+-- koffee v0.72.4
 
 local Koffee = {}
-Koffee.Version = "0.72.3"
+Koffee.Version = "0.72.4"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -25858,9 +25858,9 @@ end)()
 
 -- v0.72.0 TOASTS. Bottom-right stack, max 3 visible, overflow queues. Each card
 -- carries an accent edge, a Lucide icon, a ProximaSoft Bold title + muted
--- message, and a lifetime bar. Cards are translucent (light, the game shows
--- through) with a hairline stroke. Entrance is fade + pop, exit is fade; hover
--- pauses the timer, click dismisses. Identical toasts coalesce, never stack.
+-- message. Cards are translucent (light, the game shows through) with a
+-- hairline stroke. Entrance is fade + pop, exit is fade; hover pauses the
+-- timer, click dismisses. Identical toasts coalesce, never stack.
 -- Own IIFE for its register budget. Front door: Koffee.notify(title, msg, opts)
 -- with opts.severity ("info" | "success" | "error") and opts.duration (seconds).
 ;(function()
@@ -25944,11 +25944,8 @@ function Koffee.notify(title, msg, opts)
             AutomaticSize = Enum.AutomaticSize.Y,
             Position = UDim2.new(0, 34, 0, 26), Size = UDim2.new(1, -44, 0, 14), Parent = card,
         })
-        local bar = new("Frame", {
-            BackgroundColor3 = sev.color, BackgroundTransparency = 0.25, BorderSizePixel = 0,
-            AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 10, 1, -6),
-            Size = UDim2.new(1, -20, 0, 2), Parent = card,
-        }, { pillCorner() })
+        -- v0.72.4: lifetime bar removed (read as clutter). Dwell time still
+        -- scales with content length; hover still pauses, click still dismisses.
         new("UIPadding", { PaddingBottom = UDim.new(0, 10), Parent = card })
         rec.wrap = wrap
         live[#live + 1] = rec
@@ -25964,12 +25961,7 @@ function Koffee.notify(title, msg, opts)
             while not rec.done and rec.remain > 0 do
                 task.wait(0.1)
                 if Koffee.dead() or not wrap.Parent then rec.done = true; break end
-                if not paused then
-                    rec.remain = rec.remain - 0.1
-                    pcall(function()
-                        bar.Size = UDim2.new(math.clamp(rec.remain / rec.total, 0, 1), -20, 0, 2)
-                    end)
-                end
+                if not paused then rec.remain = rec.remain - 0.1 end
             end
             if not rec.done then dismiss(rec) end
         end)
