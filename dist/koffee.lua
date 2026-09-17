@@ -1,7 +1,7 @@
--- koffee v0.73.1
+-- koffee v0.73.2
 
 local Koffee = {}
-Koffee.Version = "0.73.1"
+Koffee.Version = "0.73.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23763,7 +23763,6 @@ function HV.buildPanel(host)
     configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
     local cbVelo = moduleCheckbox(host, "Velocity Desync", "hvh_velo")
     local veloPill = keybindPill(cbVelo.row, "hvh_velo", nil, "Velocity Desync")
-    keybindPill(cbVelo.row, "hvh_velo", nil, "Velocity Desync")
     dropdown(host, "Velo Direction", { "Up", "Random" }, HV.VeloDir or "Up", function(v) HV.VeloDir = v end)
     slider(host, "Velo Speed", 500, 5000, HV.VeloSpeed or 1500, 0, function(v) HV.VeloSpeed = v end)
     local cbDraw = moduleCheckbox(host, "Fast Draw", "hvh_draw")
