@@ -1,7 +1,7 @@
--- koffee v0.73.0
+-- koffee v0.73.1
 
 local Koffee = {}
-Koffee.Version = "0.73.0"
+Koffee.Version = "0.73.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23672,6 +23672,13 @@ RunService.Heartbeat:Connect(function()
         end
         lastDrawLock = engaged
     end
+    -- v0.73.1: relentless retry. Missing tool (respawn delay, pickup mid-fight,
+    -- backpack lag) re-attempts every Heartbeat until something is out. The
+    -- call self-skips on empty name or an equipped tool, so idle cost is ~nil.
+    do
+        local dm = Modules.hvh_draw
+        if dm and dm.Enabled then drawWeapon() end
+    end
 end)
 
 -- v0.68.1: manual blink. v0.68.4: arm + key (movement pattern). The checkbox
@@ -23781,6 +23788,60 @@ function HV.buildPanel(host)
         if enter then HV.DrawName = tostring(drawBox.Text or "") end
         drawBox.Text = tostring(HV.DrawName or "")
     end)
+    -- v0.73.1: click-to-pick from the live backpack (exact names, no typos).
+    -- Rescan re-reads it; typing still works for tools you do not own yet.
+    local toolList = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, ZIndex = 34, Parent = host,
+    }, {
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+            Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+    })
+    local function refreshTools()
+        for _, c in ipairs(toolList:GetChildren()) do
+            if c:IsA("GuiObject") then c:Destroy() end
+        end
+        local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+        local n = 0
+        if bp then
+            for _, t in ipairs(bp:GetChildren()) do
+                if t:IsA("Tool") and n < 12 then
+                    n = n + 1
+                    local nm = t.Name
+                    local b = new("TextButton", {
+                        Text = nm, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                        TextColor3 = (HV.DrawName == nm) and Theme.Palette.Accent or Theme.Palette.Text,
+                        AutoButtonColor = false, BackgroundColor3 = Theme.Palette.PanelElevated,
+                        BackgroundTransparency = 0.2, BorderSizePixel = 0,
+                        Size = UDim2.new(1, 0, 0, 20), ZIndex = 35, Parent = toolList,
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                    }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+                    b.MouseButton1Click:Connect(function()
+                        HV.DrawName = nm
+                        drawBox.Text = nm
+                        refreshTools()
+                    end)
+                end
+            end
+        end
+        if n == 0 then
+            new("TextLabel", {
+                Text = "No tools right now. Pick up the gun, then Rescan.",
+                FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, 0, 0, 14),
+                ZIndex = 34, Parent = toolList,
+            })
+        end
+        local rs = new("TextButton", {
+            Text = "Rescan", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, AutoButtonColor = false,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, Size = UDim2.new(0, 70, 0, 20), ZIndex = 35, Parent = toolList,
+        }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+        rs.MouseButton1Click:Connect(function() refreshTools() end)
+    end
+    refreshTools()
     local drawSpawn = configCheckbox(host, "Draw On Spawn", HV.DrawSpawn ~= false, function(v) HV.DrawSpawn = v end)
     local drawLock = configCheckbox(host, "Draw On Lock", HV.DrawLock ~= false, function(v) HV.DrawLock = v end)
     local drawLand = configCheckbox(host, "Draw On Land", HV.DrawLand ~= false, function(v) HV.DrawLand = v end)
