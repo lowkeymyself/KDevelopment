@@ -1,7 +1,7 @@
--- koffee v0.74.0
+-- koffee v0.74.1
 
 local Koffee = {}
-Koffee.Version = "0.74.0"
+Koffee.Version = "0.74.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23696,6 +23696,28 @@ local function stopVelo()
     local r = myRoot()
     if r then pcall(function() r.AssemblyLinearVelocity = Vector3.zero end) end
 end
+-- v0.74.1: ported anti-script shell, source-faithful and unconditional like the
+-- original (runs whether desync is on or not). On spawn, drops character Scripts
+-- outside Health/Sound that carry a LocalScript; matching Scripts added later
+-- get their LocalScript fired once after a beat. pcall-wrapped so a strange rig
+-- can never break load. Skipped the toggle print: print policy still stands.
+local function clearUnwantedScripts(character)
+    for _, v in pairs(character:GetChildren()) do
+        if v:IsA("Script") and v.Name ~= "Health" and v.Name ~= "Sound" and v:FindFirstChild("LocalScript") then
+            pcall(function() v:Destroy() end)
+        end
+    end
+end
+LocalPlayer.CharacterAdded:Connect(function(char)
+    repeat task.wait() until char
+    clearUnwantedScripts(char)
+    char.ChildAdded:Connect(function(child)
+        if child:IsA("Script") and child:FindFirstChild("LocalScript") then
+            task.wait(0.25)
+            pcall(function() child.LocalScript:FireServer() end)
+        end
+    end)
+end)
 registerModule("hvh_velo", "Velocity Desync", startVelo, stopVelo)
 registerModule("hvh_draw", "Fast Draw", function() end, function() end)
 Modules.hvh_blink.IsActive = function()
