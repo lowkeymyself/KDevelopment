@@ -1,7 +1,7 @@
--- koffee v0.74.2
+-- koffee v0.75.0
 
 local Koffee = {}
-Koffee.Version = "0.74.2"
+Koffee.Version = "0.75.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4839,6 +4839,7 @@ end
 local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true,
     Entries = true, Folders = true, Rules = true, Accessories = true,
     ExcludeNames = true, ExcludeSigs = true,   -- v0.57.0: NPC learn exclusion lists
+    Pins = true,                               -- v0.75.0: gun-mod pins (saved set wins)
     excludes = true }                          -- v0.62.0: player-list Exclude set (by UserId)
 local function applyInto(target, src)
     for k, v in pairs(src) do
@@ -4868,6 +4869,9 @@ local function loadSnapshot(data)
     -- them fresh session-unique ids (and applies their saved on/off), so the
     -- module-enable loop below must skip npc_* rows: their state is already set.
     if Shared.NPC and Shared.NPC.reconcile then pcall(Shared.NPC.reconcile, data and data.modules) end
+    -- v0.75.0: gun-mod pins reseed from the loaded set (best resolving source
+    -- re-scanned); the heartbeat re-hooks + enforces from there.
+    if Shared._modsReconcile then pcall(Shared._modsReconcile) end
     -- per-game custom-anim list (place 155615604): a config saved in another
     -- game can carry an animation Name that doesn't exist in THIS game's list.
     -- Snap it before the tab rebuild renders the dropdown (reads the live
@@ -4887,8 +4891,11 @@ local function loadSnapshot(data)
             -- v0.66.1: combat has no toggle bind. v0.69.1: the HvH box is Blink
             -- alone now. Skip stale entries from old saves.
             if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" and id ~= "hvh_flash" then
+                -- v0.75.0: combo binds ({mod,key} tables) decoded fine but were
+                -- dropped here, so Shift+C-style pills forgot their bind on load.
+                local isCombo = type(key) == "table" and typeof(key.mod) == "EnumItem" and typeof(key.key) == "EnumItem"
                 -- accept Roblox EnumItems AND virtual XButton strings (v0.0.37)
-                if typeof(key) == "EnumItem" or key == "XButton1" or key == "XButton2" then
+                if typeof(key) == "EnumItem" or key == "XButton1" or key == "XButton2" or isCombo then
                     Keybinds[id] = key
                 end
             end
@@ -23477,16 +23484,20 @@ local function ballPoint(center, R)
     local rad = R * (rng:NextNumber(0, 1) ^ (1 / 3))
     return center + Vector3.new(rr * math.cos(a), z, rr * math.sin(a)) * rad
 end
--- inside-ball landing with shell-grade void safety. Retries fresh points;
--- falls back to just above the target, a rage-style commit either way.
+-- inside-ball landing with shell-grade void safety, but spam favors motion over
+-- caution: every failed check used to return one fixed Up fallback, parking
+-- the user in a single spot that read as "locked". Two ground chances, then
+-- the raw (clamped) point goes anyway. Falling beats standing still here.
 local function safeBall(center, R)
     local floor = killY() + 100
-    for _ = 1, 6 do
+    for _ = 1, 2 do
         local cand = ballPoint(center, R)
         if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
         if groundBelow(cand, 2000) then return cand end
     end
-    return center + Vector3.new(0, math.min(R, 500), 0)
+    local cand = ballPoint(center, R)
+    if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
+    return cand
 end
 -- hand the aim systems their target directly: prime both _targets and snap
 -- the camera same-tick, so the loop after a teleport starts aimed, not sweeping.
@@ -23970,7 +23981,16 @@ addTab("Extra", function(epanel)
     if R and R["Hvh"] and Shared.Hvh then Shared.Hvh.buildPanel(R["Hvh"]) end
     -- pins live across rescans, keyed so a rebuild re-attaches, not dupes.
     -- { on, want, orig, kind } / kind = number|bool|string.
+    -- v0.75.0: pins persist. ModSave mirrors {id, on, want, kind} (never orig,
+    -- conns, or instances) at every mutation; reconcile re-seeds from it load.
+    local ModSave = { Pins = {} }
+    registerConfig("modpins", ModSave)
     local pins = {}
+    local function syncPinSave(id)
+        local pin = pins[id]
+        if not pin then ModSave.Pins[id] = nil; return end
+        ModSave.Pins[id] = { id = id, on = pin.on and true or false, want = pin.want, kind = pin.kind }
+    end
     local rows = {}   -- id -> { cur, entry } for the heartbeat refresh
     local srcLabel, listBox
     local current = { mode = "none", inst = nil, path = "" }
@@ -24132,6 +24152,7 @@ addTab("Extra", function(epanel)
                 if pin.orig ~= nil then writeEntry(e, pin.orig) end
             end
             paintPin()
+            syncPinSave(id)
         end)
         if kind == "bool" then
             local flip = new("TextButton", {
@@ -24150,6 +24171,7 @@ addTab("Extra", function(epanel)
                 snapOrig()
                 writeEntry(e, pin.want)
                 flip.Text = tostring(pin.want)
+                syncPinSave(id)
             end)
         else
             local box = new("TextBox", {
@@ -24168,6 +24190,7 @@ addTab("Extra", function(epanel)
                 pin.want = w
                 snapOrig()
                 writeEntry(e, w)
+                syncPinSave(id)
             end)
         end
         return row   -- v0.48.0: scan() staggers rows in on rebuild
@@ -24315,6 +24338,7 @@ addTab("Extra", function(epanel)
                 writeEntry(rows[id].entry, pin.orig)
             end
             pin.on = false
+            syncPinSave(id)
         end
         scan()
     end)
@@ -24368,6 +24392,62 @@ addTab("Extra", function(epanel)
             end
         end
     end)
+    -- v0.75.0: pin reconcile. Retires live pins (originals restored), reseeds
+    -- from the loaded set, switches to the saved source with the most pins
+    -- that still resolves, and scans. The heartbeat re-hooks + enforces after.
+    local function splitPinId(id)
+        local src, sub, nm = id:match("^(.*)|(.*)|(.*)$")
+        if not (src and sub and nm) then return nil end
+        return src, sub, nm
+    end
+    local function resolveSrc(src)
+        local tname = src:match("^tool:(.*)$")
+        if tname then
+            local ch = LocalPlayer and LocalPlayer.Character
+            local t = ch and ch:FindFirstChild(tname)
+            if t and t:IsA("Tool") then return t end
+            local bp = LocalPlayer and LocalPlayer:FindFirstChildOfClass("Backpack")
+            t = bp and bp:FindFirstChild(tname)
+            if t and t:IsA("Tool") then return t end
+            return nil
+        end
+        local path = src:match("^path:(.*)$")
+        if path and path ~= "" and Shared.resolvePath then
+            local ok, inst = pcall(Shared.resolvePath, path)
+            if ok and inst and inst.Parent then return inst end
+        end
+        return nil
+    end
+    Shared._modsReconcile = function()
+        for id, pin in pairs(pins) do
+            unhookPin(pin)
+            if pin.orig ~= nil and rows[id] then
+                writeEntry(rows[id].entry, pin.orig)
+            end
+        end
+        for k in pairs(pins) do pins[k] = nil end
+        local counts = {}
+        for id, sp in pairs(ModSave.Pins or {}) do
+            if type(sp) == "table" and type(id) == "string" and splitPinId(id) then
+                local src = splitPinId(id)
+                pins[id] = { on = sp.on and true or false, want = sp.want, orig = nil, kind = sp.kind }
+                counts[src] = (counts[src] or 0) + 1
+            end
+        end
+        local best, bestN = nil, 0
+        for src, n in pairs(counts) do
+            if n > bestN and resolveSrc(src) then best, bestN = src, n end
+        end
+        if best then
+            local tname = best:match("^tool:(.*)$")
+            if tname then
+                current = { mode = "tool", toolName = tname, inst = nil, path = "" }
+            else
+                current = { mode = "picked", inst = nil, path = best:match("^path:(.*)$") or "" }
+            end
+        end
+        scan()
+    end
 end)
 
 -- select first tab AFTER layout AND positioning have settled.
