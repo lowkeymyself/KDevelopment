@@ -1,7 +1,7 @@
--- koffee v0.73.2
+-- koffee v0.74.0
 
 local Koffee = {}
-Koffee.Version = "0.73.2"
+Koffee.Version = "0.74.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23136,7 +23136,6 @@ local HV = {
     BlinkDist = 500, FaceTarget = true,
     BlinkKeyMode = "Hold", BlinkRate = 0.25, BlinkReturn = true,
     SpamMode = "Hold", SpamDist = 300, SpamRate = 0.25,
-    VeloSpeed = 1500, VeloDir = "Up",
     DrawName = "", DrawSpawn = true, DrawLock = true, DrawLand = true,
 }
 registerConfig("hvh", HV)
@@ -23513,17 +23512,12 @@ LocalPlayer.CharacterAdded:Connect(function()
     anchorCF, anchorChar, wasBlinkActive = nil, nil, false
     spamAnchorCF, spamAnchorChar, wasSpamActive = nil, nil, false
     lastDrawLock = false
-    -- v0.73.0: re-arm the fresh rig (desync state) and hand it the gun, delayed
-    -- past rig + backpack replication so both actually exist to touch.
+    -- v0.73.0: hand the fresh rig the gun, delayed past rig + backpack
+    -- replication so both actually exist to touch. (v0.74.0: no desync state
+    -- to re-arm anymore; the cadence needs no per-rig setup.)
     task.spawn(function()
         task.wait(1)
         if Koffee.dead() then return end
-        local vm = Modules.hvh_velo
-        if vm and vm.Enabled then
-            local ch = LocalPlayer.Character
-            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-            if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end) end
-        end
         local dm = Modules.hvh_draw
         if dm and dm.Enabled and HV.DrawSpawn ~= false then drawWeapon() end
     end)
@@ -23645,25 +23639,9 @@ RunService.Heartbeat:Connect(function()
         end
         wasSpamActive = on
     end
-    -- v0.73.0: velocity desync. Pins position, lies about velocity: every other
-    -- client extrapolates the lie and renders you somewhere you are not, while
-    -- the server keeps the tethered truth. Stationary by design (it holds the
-    -- CFrame); silent aim is unaffected, so shoot from the bunker. Test on an
-    -- alt first: velocity-magnitude checks flag this class on strict games.
-    do
-        local v = Modules.hvh_velo
-        if v and v.Enabled then
-            local r = myRoot()
-            if r then
-                local dir = (HV.VeloDir == "Random") and randomDir() or Vector3.new(0, 1, 0)
-                pcall(function()
-                    r.CFrame = r.CFrame
-                    r.AssemblyLinearVelocity = dir * (HV.VeloSpeed or 1500)
-                end)
-            end
-        end
-    end
-    -- v0.73.0: Fast Draw on lock engage.
+    -- v0.74.0: velocity desync lives on its own connection (Wait interleaves
+    -- render; the shared tick must never stall behind it). See registration.
+    -- Fast Draw on lock engage.
     do
         local dm = Modules.hvh_draw
         local engaged = lockOn()
@@ -23687,18 +23665,38 @@ registerModule("hvh_blink", "Blink", function() end,
     function() BlinkK.held, BlinkK.latch = false, false; syncKeyPill(BlinkK, true) end)
 registerModule("hvh_spam", "Spam TP", function() end,
     function() SpamK.held, SpamK.latch = false, false; syncKeyPill(SpamK, true) end)
-registerModule("hvh_velo", "Velocity Desync", function()
-    local ch = LocalPlayer.Character
-    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end) end
-end, function()
-    -- parked velocity must die with the toggle or the rig rockets on release.
+-- v0.74.0: ported desync cadence. Every Heartbeat: micro-rotate the root
+-- (marks it dirty so it replicates without moving), write a huge fresh random
+-- velocity, hold it through the render step, then restore the saved one. Other
+-- clients extrapolate the lie and render you wrong; you keep your velocity, so
+-- walking, jumps, and fly all feel normal. No pinning, no state changes: one
+-- toggle. Own connection (the render Wait must not stall the shared tick).
+local veloConn = nil
+local function startVelo()
+    if veloConn then return end
+    veloConn = RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
+        local m = Modules.hvh_velo
+        if not (m and m.Enabled) then return end
+        local r = myRoot()
+        if not r then return end
+        local ok, saved = pcall(function() return r.AssemblyLinearVelocity end)
+        pcall(function()
+            r.CFrame = r.CFrame * CFrame.Angles(0, math.rad(0.0001), 0)
+            local rng = Random.new()
+            r.AssemblyLinearVelocity = Vector3.new(
+                rng:NextNumber(2000, 4000), rng:NextNumber(2000, 4000), rng:NextNumber(2000, 4000))
+        end)
+        RunService.RenderStepped:Wait()
+        if ok then pcall(function() r.AssemblyLinearVelocity = saved end) end
+    end)
+end
+local function stopVelo()
+    if veloConn then veloConn:Disconnect(); veloConn = nil end
     local r = myRoot()
     if r then pcall(function() r.AssemblyLinearVelocity = Vector3.zero end) end
-    local ch = LocalPlayer.Character
-    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end) end
-end)
+end
+registerModule("hvh_velo", "Velocity Desync", startVelo, stopVelo)
 registerModule("hvh_draw", "Fast Draw", function() end, function() end)
 Modules.hvh_blink.IsActive = function()
     local m = Modules.hvh_blink
@@ -23763,8 +23761,6 @@ function HV.buildPanel(host)
     configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
     local cbVelo = moduleCheckbox(host, "Velocity Desync", "hvh_velo")
     local veloPill = keybindPill(cbVelo.row, "hvh_velo", nil, "Velocity Desync")
-    dropdown(host, "Velo Direction", { "Up", "Random" }, HV.VeloDir or "Up", function(v) HV.VeloDir = v end)
-    slider(host, "Velo Speed", 500, 5000, HV.VeloSpeed or 1500, 0, function(v) HV.VeloSpeed = v end)
     local cbDraw = moduleCheckbox(host, "Fast Draw", "hvh_draw")
     local drawRow = new("Frame", {
         Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, ZIndex = 34, Parent = host,
