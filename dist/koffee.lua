@@ -1,7 +1,7 @@
--- koffee v0.74.1
+-- koffee v0.74.2
 
 local Koffee = {}
-Koffee.Version = "0.74.1"
+Koffee.Version = "0.74.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23708,13 +23708,24 @@ local function clearUnwantedScripts(character)
         end
     end
 end
+-- v0.74.1: ported anti-script shell, source-faithful. v0.74.2: gated on the
+-- velo toggle. Unconditional firing blind-fired game remotes on every spawn,
+-- which is the prime suspect for weird-feeling joins. Same mechanism, armed
+-- only while you actually want desync running.
+local function shellOn()
+    local vm = Modules.hvh_velo
+    return vm and vm.Enabled
+end
 LocalPlayer.CharacterAdded:Connect(function(char)
     repeat task.wait() until char
-    clearUnwantedScripts(char)
+    if shellOn() then clearUnwantedScripts(char) end
     char.ChildAdded:Connect(function(child)
         if child:IsA("Script") and child:FindFirstChild("LocalScript") then
             task.wait(0.25)
-            pcall(function() child.LocalScript:FireServer() end)
+            if shellOn() then
+                hvhDbg("shell fire " .. tostring(child.Name))
+                pcall(function() child.LocalScript:FireServer() end)
+            end
         end
     end)
 end)
