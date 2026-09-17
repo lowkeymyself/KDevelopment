@@ -1,7 +1,7 @@
--- koffee v0.72.4
+-- koffee v0.73.0
 
 local Koffee = {}
-Koffee.Version = "0.72.4"
+Koffee.Version = "0.73.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -23136,6 +23136,8 @@ local HV = {
     BlinkDist = 500, FaceTarget = true,
     BlinkKeyMode = "Hold", BlinkRate = 0.25, BlinkReturn = true,
     SpamMode = "Hold", SpamDist = 300, SpamRate = 0.25,
+    VeloSpeed = 1500, VeloDir = "Up",
+    DrawName = "", DrawSpawn = true, DrawLock = true, DrawLand = true,
 }
 registerConfig("hvh", HV)
 Shared.Hvh = HV
@@ -23227,6 +23229,29 @@ local function safeSpot(origin, dir, dist)
     end
     return origin + Vector3.new(0, math.min(dist, 2000), 0)
 end
+-- v0.73.0: Fast Draw. Equips the named tool the instant it matters (spawn,
+-- lock engage, blink landing) instead of after fumbling for a number key.
+-- Skips when something is already out, substring match, case-insensitive.
+local function drawWeapon()
+    local want = HV.DrawName
+    if not want or want == "" then return end
+    want = string.lower(tostring(want))
+    local ch = LocalPlayer.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    for _, c in ipairs(ch:GetChildren()) do
+        if c:IsA("Tool") then return end
+    end
+    local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if bp then
+        for _, t in ipairs(bp:GetChildren()) do
+            if t:IsA("Tool") and string.find(string.lower(t.Name), want, 1, true) then
+                pcall(function() hum:EquipTool(t) end)
+                return
+            end
+        end
+    end
+end
 -- v0.69.2: the sphere is anchored where the key first went active and stays
 -- there. Every shot picks a fresh random point on its SHELL around the anchor
 -- (never a step from where you stand, which ratchets upward). Radius is
@@ -23242,6 +23267,8 @@ local function fireBlink()
         r.AssemblyLinearVelocity = Vector3.zero
     end)
     if lockOn() then faceFoe(); snapAim() end
+    local dm = Modules.hvh_draw
+    if dm and dm.Enabled and HV.DrawLand ~= false then drawWeapon() end
     hvhDbg("blink fired dist=" .. tostring(HV.BlinkDist))
 end
 -- v0.70.0: keyed activation registry. Blink + Spam TP share one pill builder,
@@ -23481,9 +23508,25 @@ end
 -- keeps its own anchor pair under the same Return toggle.
 local anchorCF, anchorChar, wasBlinkActive = nil, nil, false
 local spamAnchorCF, spamAnchorChar, wasSpamActive = nil, nil, false
+local lastDrawLock = false
 LocalPlayer.CharacterAdded:Connect(function()
     anchorCF, anchorChar, wasBlinkActive = nil, nil, false
     spamAnchorCF, spamAnchorChar, wasSpamActive = nil, nil, false
+    lastDrawLock = false
+    -- v0.73.0: re-arm the fresh rig (desync state) and hand it the gun, delayed
+    -- past rig + backpack replication so both actually exist to touch.
+    task.spawn(function()
+        task.wait(1)
+        if Koffee.dead() then return end
+        local vm = Modules.hvh_velo
+        if vm and vm.Enabled then
+            local ch = LocalPlayer.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end) end
+        end
+        local dm = Modules.hvh_draw
+        if dm and dm.Enabled and HV.DrawSpawn ~= false then drawWeapon() end
+    end)
 end)
 
 -- armed Blink auto-fires on its interval while its key is active. Rising edge
@@ -23602,6 +23645,33 @@ RunService.Heartbeat:Connect(function()
         end
         wasSpamActive = on
     end
+    -- v0.73.0: velocity desync. Pins position, lies about velocity: every other
+    -- client extrapolates the lie and renders you somewhere you are not, while
+    -- the server keeps the tethered truth. Stationary by design (it holds the
+    -- CFrame); silent aim is unaffected, so shoot from the bunker. Test on an
+    -- alt first: velocity-magnitude checks flag this class on strict games.
+    do
+        local v = Modules.hvh_velo
+        if v and v.Enabled then
+            local r = myRoot()
+            if r then
+                local dir = (HV.VeloDir == "Random") and randomDir() or Vector3.new(0, 1, 0)
+                pcall(function()
+                    r.CFrame = r.CFrame
+                    r.AssemblyLinearVelocity = dir * (HV.VeloSpeed or 1500)
+                end)
+            end
+        end
+    end
+    -- v0.73.0: Fast Draw on lock engage.
+    do
+        local dm = Modules.hvh_draw
+        local engaged = lockOn()
+        if engaged and not lastDrawLock then
+            if dm and dm.Enabled and HV.DrawLock ~= false then drawWeapon() end
+        end
+        lastDrawLock = engaged
+    end
 end)
 
 -- v0.68.1: manual blink. v0.68.4: arm + key (movement pattern). The checkbox
@@ -23610,6 +23680,19 @@ registerModule("hvh_blink", "Blink", function() end,
     function() BlinkK.held, BlinkK.latch = false, false; syncKeyPill(BlinkK, true) end)
 registerModule("hvh_spam", "Spam TP", function() end,
     function() SpamK.held, SpamK.latch = false, false; syncKeyPill(SpamK, true) end)
+registerModule("hvh_velo", "Velocity Desync", function()
+    local ch = LocalPlayer.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end) end
+end, function()
+    -- parked velocity must die with the toggle or the rig rockets on release.
+    local r = myRoot()
+    if r then pcall(function() r.AssemblyLinearVelocity = Vector3.zero end) end
+    local ch = LocalPlayer.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end) end
+end)
+registerModule("hvh_draw", "Fast Draw", function() end, function() end)
 Modules.hvh_blink.IsActive = function()
     local m = Modules.hvh_blink
     return (m and m.Enabled and keyActive(BlinkK)) and true or false
@@ -23671,10 +23754,40 @@ function HV.buildPanel(host)
     -- when the key first went active. Unchecked means one-way trips only.
     configCheckbox(host, "Return To Start", HV.BlinkReturn ~= false, function(v) HV.BlinkReturn = v end)
     configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
+    local cbVelo = moduleCheckbox(host, "Velocity Desync", "hvh_velo")
+    local veloPill = keybindPill(cbVelo.row, "hvh_velo", nil, "Velocity Desync")
+    keybindPill(cbVelo.row, "hvh_velo", nil, "Velocity Desync")
+    dropdown(host, "Velo Direction", { "Up", "Random" }, HV.VeloDir or "Up", function(v) HV.VeloDir = v end)
+    slider(host, "Velo Speed", 500, 5000, HV.VeloSpeed or 1500, 0, function(v) HV.VeloSpeed = v end)
+    local cbDraw = moduleCheckbox(host, "Fast Draw", "hvh_draw")
+    local drawRow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, ZIndex = 34, Parent = host,
+    })
+    new("TextLabel", {
+        Text = "Draw Weapon", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, -110, 1, 0),
+        ZIndex = 34, Parent = drawRow,
+    })
+    local drawBox = new("TextBox", {
+        Text = tostring(HV.DrawName or ""), ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Body, TextColor3 = Theme.Palette.Text,
+        BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 100, 0, 22), ZIndex = 35, Parent = drawRow,
+    }, { corner(7), stroke(Theme.Palette.BorderSubtle) })
+    drawBox.FocusLost:Connect(function(enter)
+        if enter then HV.DrawName = tostring(drawBox.Text or "") end
+        drawBox.Text = tostring(HV.DrawName or "")
+    end)
+    local drawSpawn = configCheckbox(host, "Draw On Spawn", HV.DrawSpawn ~= false, function(v) HV.DrawSpawn = v end)
+    local drawLock = configCheckbox(host, "Draw On Lock", HV.DrawLock ~= false, function(v) HV.DrawLock = v end)
+    local drawLand = configCheckbox(host, "Draw On Land", HV.DrawLand ~= false, function(v) HV.DrawLand = v end)
     -- Extra is never rebuilt but the watcher wipe is global (see Anticheats
     -- above): re-subscribe + resync here so config loads cannot orphan these.
     Shared._hvhResync = function()
-        for _, pr in ipairs({ { cbBlink, "hvh_blink" }, { cbSpam, "hvh_spam" } }) do
+        for _, pr in ipairs({ { cbBlink, "hvh_blink" }, { cbSpam, "hvh_spam" }, { cbVelo, "hvh_velo" }, { cbDraw, "hvh_draw" } }) do
             local ctrl, id = pr[1], pr[2]
             local m = Modules[id]
             ctrl.setState(m and m.Enabled or false)
@@ -23682,10 +23795,17 @@ function HV.buildPanel(host)
         end
         if blinkRef then blinkRef() end
         if spamRef then spamRef() end
+        if veloPill then veloPill.Text = keyLabel(Keybinds["hvh_velo"]) or "No Keybind" end
+        drawSpawn.setState(HV.DrawSpawn ~= false)
+        drawLock.setState(HV.DrawLock ~= false)
+        drawLand.setState(HV.DrawLand ~= false)
         pcall(function()
             if distBox and not distBox:IsFocused() then
                 distBox.Text = tostring(math.floor(HV.BlinkDist or 500))
             end
+        end)
+        pcall(function()
+            if not drawBox:IsFocused() then drawBox.Text = tostring(HV.DrawName or "") end
         end)
     end
 end
@@ -23694,7 +23814,7 @@ end)()
 -- v0.70.0: suspect scanner. Watches every living rig for teleport jumps and
 -- sustained inhuman velocity, one cheap roster sweep per 0.25s (positions +
 -- velocity only, no raycasts, respawns re-baseline silently). Flags publish on
--- Shared.Suspects for the player list; stale flags expire after two minutes.
+-- Shared.Suspects for the player list; stale flags expire after 90 seconds.
 ;(function()
 local SUS = {}
 Shared.Suspects = SUS
