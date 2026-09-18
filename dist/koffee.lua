@@ -1,7 +1,7 @@
--- koffee v0.75.1
+-- koffee v0.75.2
 
 local Koffee = {}
-Koffee.Version = "0.75.1"
+Koffee.Version = "0.75.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -6913,8 +6913,46 @@ end
 -- the feature Gradient on, every outline turned rainbow ("outline doesn't work with
 -- gradient on"). A UIGradient placed INSIDE the stroke, holding a flat one-colour
 -- sequence, overrides the bleed and keeps the outline its own solid colour.
+
+-- v0.75.2: per-feature FindFirstChild was a top ESP cost (12 cube edges + up to 19
+-- skeleton bones + name/dist/pfp each with 2-3 lookups). Weak-keyed cache; cleaned
+-- rigs GC out; refreshes when a cached child's Parent mismatches or on post-create.
+ESP._childCache = setmetatable({}, { __mode = "k" })
+function ESP._getChild(frame, name)
+    local cache = ESP._childCache[frame]
+    if cache then
+        local c = cache[name]
+        if c and c.Parent == frame then return c end
+    end
+    local c = frame:FindFirstChild(name)
+    if c then
+        cache = cache or {}
+        cache[name] = c
+        ESP._childCache[frame] = cache
+    end
+    return c
+end
+function ESP._getChildOfClass(frame, cls)
+    local key = "@" .. cls
+    local cache = ESP._childCache[frame]
+    if cache then
+        local c = cache[key]
+        if c and c.Parent == frame then return c end
+    end
+    local c = frame:FindFirstChildOfClass(cls)
+    if c then
+        cache = cache or {}
+        cache[key] = c
+        ESP._childCache[frame] = cache
+    end
+    return c
+end
+-- v0.75.2: hoisted for updateLookLine; was allocated fresh per rig per frame.
+ESP._lookRayParams = RaycastParams.new()
+ESP._lookRayParams.FilterType = Enum.RaycastFilterType.Exclude
+
 local function pinStrokeColor(stroke, on, color)
-    local g = stroke:FindFirstChildOfClass("UIGradient")
+    local g = ESP._getChildOfClass(stroke, "UIGradient")
     if not on then
         if g then g.Enabled = false end
         return
@@ -6927,7 +6965,7 @@ local function pinStrokeColor(stroke, on, color)
 end
 
 local function applyLineOutline(frame, on, color, thick)
-    local s = frame:FindFirstChild("KOutline")
+    local s = ESP._getChild(frame, "KOutline")
     if not s then return end
     s.Enabled = on
     if on then
@@ -6935,7 +6973,7 @@ local function applyLineOutline(frame, on, color, thick)
         s.Thickness = thick
     end
     -- keep the outline solid even when the frame's KGrad is animating
-    local grad = frame:FindFirstChild("KGrad")
+    local grad = ESP._getChild(frame, "KGrad")
     pinStrokeColor(s, on and grad ~= nil and grad.Enabled, color)
 end
 
@@ -6943,14 +6981,14 @@ end
 -- the glyphs; the Outline toggle drives whether it shows and in what colour.
 -- v0.0.28: optional thickness + gradient-pin so the outline survives a text gradient.
 local function applyTextOutline(lbl, on, color, thick)
-    local s = lbl:FindFirstChildOfClass("UIStroke")
+    local s = ESP._getChildOfClass(lbl, "UIStroke")
     if not s then return end
     s.Enabled = on
     if on then
         s.Color = color
         if thick then s.Thickness = thick end
     end
-    local grad = lbl:FindFirstChildOfClass("UIGradient")
+    local grad = ESP._getChildOfClass(lbl, "UIGradient")
     pinStrokeColor(s, on and grad ~= nil and grad.Enabled, color)
 end
 
@@ -6960,7 +6998,7 @@ end
 -- box stuck white, colour/gradient don't work"). Driving the gradient from within
 -- the stroke makes it show, and lets the flat-colour fallback restore any colour.
 local function applyStrokeGradient(stroke, on, a, b)
-    local g = stroke:FindFirstChildOfClass("UIGradient")
+    local g = ESP._getChildOfClass(stroke, "UIGradient")
     if not on then
         if g then g.Enabled = false end
         return
@@ -6972,7 +7010,7 @@ local function applyStrokeGradient(stroke, on, a, b)
     g.Offset = gradOffset()
 end
 local function applyGradient(lbl, on)
-    local g = lbl:FindFirstChildOfClass("UIGradient")
+    local g = ESP._getChildOfClass(lbl, "UIGradient")
     if not g then return end
     g.Enabled = on
     if on then
@@ -6985,7 +7023,7 @@ end
 -- OVERRIDES the feature colour (forces white so the gradient shows its own colours
 --: gradient wins over per-feature colours, per he).
 local function applyLineGradient(frame, on)
-    local g = frame:FindFirstChild("KGrad")
+    local g = ESP._getChild(frame, "KGrad")
     if not g then return end
     g.Enabled = on
     if on then
@@ -7154,11 +7192,27 @@ local function updateSkeleton(rig, overrideColor, dist)
         return
     end
     local col = overrideColor or cfg.Color
+    -- v0.75.2: cache bone-part refs on the rig. Was 2 FindFirstChild per bone x 19
+    -- bones = 38 per rig per frame; at 30 players in DH, ~1140/frame just here.
+    -- Resync every 2s so limbs that load AFTER the rig (R15 racing spawn) still land.
+    local now = os.clock()
+    if rig.skelChar ~= char or not rig.skelParts or (rig._skelResync or 0) < now then
+        local sp = {}
+        for _, bone in ipairs(SKELETON_BONES) do
+            local pa = char:FindFirstChild(bone[1])
+            local pb = char:FindFirstChild(bone[2])
+            if pa and pb and pa:IsA("BasePart") and pb:IsA("BasePart") then
+                sp[#sp + 1] = { pa, pb }
+            end
+        end
+        rig.skelChar = char
+        rig.skelParts = sp
+        rig._skelResync = now + 2
+    end
     local slot = 0
-    for _, bone in ipairs(SKELETON_BONES) do
-        local pa = char:FindFirstChild(bone[1])
-        local pb = char:FindFirstChild(bone[2])
-        if pa and pb and pa:IsA("BasePart") and pb:IsA("BasePart") then
+    for _, pair in ipairs(rig.skelParts) do
+        local pa, pb = pair[1], pair[2]
+        if pa.Parent == char and pb.Parent == char then
             local a = cam:WorldToViewportPoint(pa.Position)
             local b = cam:WorldToViewportPoint(pb.Position)
             if a.Z > 0 and b.Z > 0 then
@@ -7196,11 +7250,10 @@ local function updateLookLine(rig, overrideColor, dist)
         return
     end
     if not cfg.ThroughWalls then
-        local rp = RaycastParams.new()
-        rp.FilterType = Enum.RaycastFilterType.Exclude
-        rp.FilterDescendantsInstances = { char, LocalPlayer.Character, cam }
+        -- v0.75.2: reuse a hoisted params object; was allocated fresh per rig per frame.
+        ESP._lookRayParams.FilterDescendantsInstances = { char, LocalPlayer.Character, cam }
         local from = cam.CFrame.Position
-        if Workspace:Raycast(from, head.Position - from, rp) then
+        if Workspace:Raycast(from, head.Position - from, ESP._lookRayParams) then
             for _, l in ipairs(segs) do l.Visible = false end
             return
         end
@@ -7709,38 +7762,16 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- v0.0.21 HEALTH BAR: vertical bar just left of the box, full body
         -- height, fill grows up from the bottom by health %.
         if ESP.Health.Bar.Enabled then
-            local hum = rig.character:FindFirstChildOfClass("Humanoid")
+            -- v0.75.2: reuse the outer hum (was refetched here) and drop the per-frame
+            -- body-parts scan. The box corners already give the on-screen extent; the
+            -- scan added ~17 WorldToViewportPoint calls per rig per frame for a bar
+            -- that reads correctly off minX/minY/maxY alone (slight over-height with
+            -- Bounding + big hats, but the box is already that shape, so it lines up).
             local frac = 1
             if hum and hum.MaxHealth > 0 then
                 frac = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
             end
-            -- v0.0.25: glue to the ACTUAL body, adaptive to R6/R15/any rig.
-            --   vertical span = highest -> lowest projected body part (head->feet)
-            --   left edge     = torso centre minus the torso's projected half-width
-            -- so it hugs the body core: not the wide Cube AABB, not outstretched
-            -- arms, and not a fixed R6-calibrated stud offset (the old bug).
             local hbLeft, hbTop, hbBot = minX, minY, maxY
-            do
-                local parts = rig.bodyParts
-                if not parts or #parts < 6 then parts = collectBodyParts(rig.character); rig.bodyParts = parts end
-                local pminY, pmaxY, any = math.huge, -math.huge, false
-                for _, p in ipairs(parts) do
-                    if p.Parent then
-                        local sp = cam:WorldToViewportPoint(p.Position)
-                        if sp.Z > 0 then
-                            any = true
-                            if sp.Y < pminY then pminY = sp.Y end
-                            if sp.Y > pmaxY then pmaxY = sp.Y end
-                        end
-                    end
-                end
-                local tcp = cam:WorldToViewportPoint(rig.torso.Position)
-                local trp = cam:WorldToViewportPoint(rig.torso.Position + cam.CFrame.RightVector * 1.6)
-                if any and tcp.Z > 0 then
-                    hbTop, hbBot = pminY, pmaxY
-                    hbLeft = tcp.X - math.abs(trp.X - tcp.X)
-                end
-            end
             -- v0.0.81: bar width proportional to the ON-SCREEN body height so both
             -- dimensions shrink together as the target moves away: reads correctly
             -- at any range. Was distance-scaled in v0.0.76 which made the bar THICKER
