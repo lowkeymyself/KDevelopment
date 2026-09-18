@@ -1,7 +1,7 @@
--- koffee v0.75.0
+-- koffee v0.75.1
 
 local Koffee = {}
-Koffee.Version = "0.75.0"
+Koffee.Version = "0.75.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -195,6 +195,67 @@ if game.PlaceId == 13997018456 then pcall(function()
     end)
 end) end
 
+-- dahood neutra
+if game.PlaceId == 2788229376 then
+    if not game:IsLoaded() then
+        game.Loaded:Wait()
+    end
+    local function executed(kickreason)
+        game:GetService("Players").LocalPlayer:Kick("K - " .. kickreason)
+    end
+    coroutine.wrap(function()
+        local yes, err = pcall(function()
+            local grm = getrawmetatable(game)
+            setreadonly(grm, false)
+            old__namecall1 = grm.__namecall
+            grm.__namecall = newcclosure(function(self, ...)
+                local args = {...}
+                local remoteName = tostring(args[1])
+                local blockedRemotes = {
+                    TeleportDetect = true,
+                    CHECKER_1 = true,
+                    CHECKER = true,
+                    GUI_CHECK = true,
+                    OneMoreTime = true,
+                    checkingSPEED = true,
+                    BANREMOTE = true,
+                    PERMAIDBAN = true,
+                    KICKREMOTE = true,
+                    BR_KICKPC = true,
+                    BR_KICKMOBILE = true,
+                }
+                if blockedRemotes[remoteName] then
+                    return
+                end
+                return old__namecall1(self, ...)
+            end)
+        end)
+        if not yes then
+            executed("trashexec: " .. tostring(err))
+            return
+        end
+    end)()
+
+    local mt = getrawmetatable(game)
+    setreadonly(mt, false)
+    local oldIndex = mt.__index
+    local oldNewIndex = mt.__newindex
+    mt.__index = newcclosure(function(self, key)
+        if not checkcaller() and self and typeof(self) == "Instance" and self:IsA("Humanoid") and key == "WalkSpeed" then
+            return 16
+        end
+        return oldIndex(self, key)
+    end)
+    -- dont remove this write.
+    mt.__newindex = newcclosure(function(self, key, value)
+        if not checkcaller() and self and typeof(self) == "Instance" and self:IsA("Humanoid") and key == "WalkSpeed" then
+            return
+        end
+        return oldNewIndex(self, key, value)
+    end)
+    setreadonly(mt, true)
+end
+
 -- v0.1.3 ASSET PRELOADER + LOADING SCREEN
 do
     local BASE = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/"
@@ -349,7 +410,7 @@ do
             dotCorner.CornerRadius = UDim.new(1, 0)
             dotCorner.Parent = dot
 
-            local brand = cardLabel("koffee", 22, TEXT, 0.1)   -- v0.48.3: lowercase, per he
+            local brand = cardLabel("koffee", 22, TEXT, 0.1)
             brand.Font = Enum.Font.GothamMedium
             brand.Position = UDim2.new(0, 32, 0, 8)
             brand.Size = UDim2.new(0, 180, 0, 28)
