@@ -1,7 +1,7 @@
--- koffee v0.77.0
+-- koffee v0.77.1
 
 local Koffee = {}
-Koffee.Version = "0.77.0"
+Koffee.Version = "0.77.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -5393,6 +5393,9 @@ local ESP = {
         GradientSpacing   = 0.5,   -- 0..1 where the B color sits between the A ends
         GradientReverse   = false, -- flip travel direction
         SizingType     = "Algorithm",  -- v0.65.1: tight silhouette default
+        -- v0.77.1: grown targets force the live Bounding projection so the box
+        -- shows the hittable area. Untouched rigs keep SizingType.
+        HitboxBox      = false,
         RenderDistance = 1000,
         -- v0.11.0 COLOR MODE. One master that resolves the colour for every
         -- Second-Interface element (box, cube, corners, skeleton, tracer, head dot,
@@ -7413,6 +7416,13 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- v0.65.1: Static AND Algorithm are flat 2D-only projections (no depth), so
         -- a Cube box falls through to the real 8-corner Bounding for both.
         if isCube and (effectiveSizing == "Static" or effectiveSizing == "Algorithm") then
+            effectiveSizing = "Bounding"
+        end
+        -- v0.77.1 HITBOX BOX: a grown target's box forces Bounding (which reads
+        -- the live expanded part sizes), so ESP shows the hittable area. Shared
+        -- Hitbox is published by the hitbox engine, one entry per grown player.
+        if ESP.Config.HitboxBox and not rig.isNPC and plr
+           and Shared.Hitbox and Shared.Hitbox[plr] then
             effectiveSizing = "Bounding"
         end
         if effectiveSizing == "Static" then
@@ -10170,9 +10180,11 @@ local ANIM_IDS = {
 }
 local ANIM_LOOP = {}
 local ANIM_DROPDOWN = { "Orbit 1", "Orbit 2", "Orbit 3", "Orbit 4", "Aura 1", "Aura 2", "Aura 3", "Small Body 1", "Small Body 2" }
--- v0.18.0: one named gate for everything that only exists on this place. The anim
--- list below and the Combat > Misc gun extras both hang off it.
+-- v0.18.0: one named gate for everything that only exists on this place.
+-- v0.77.1: the Combat > Misc gun extras moved to their own gate below.
 Koffee._gunGame = game.PlaceId == 155615604
+-- v0.77.1: gun-mod rows (catalog + ammo spoof) only show on this place.
+Koffee._gunModsGame = game.PlaceId == 286090429
 -- the weapon's "holding it properly" track. Seated animations stop it, which is
 -- half of why the gun refuses to fire in a car.
 Koffee._gunHoldAnim = "rbxassetid://388726667"
@@ -13522,26 +13534,28 @@ local Combat = {
         -- v0.75.0: dwell cluster radius. Wider forgives jittery trails (locks the
         -- anchor through strafing); tighter only bites true stand-stills.
         slider(miscCard, "Dwell Radius", 4, 30, Combat.Misc.DwellRadius or 16, 0, function(v) Combat.Misc.DwellRadius = v end)
-        -- v0.77.0: weapon extras are name-matched and universal, so the rows
-        -- show on every game. Each is off by default and no-ops without a match.
-        configCheckbox(miscCard, "Anti-Spread", Combat.Gun.AntiSpread,
-            function(v) Combat.Gun.AntiSpread = v end)
-        configCheckbox(miscCard, "Shoot In Car", Combat.Gun.ShootInCar,
-            function(v) Combat.Gun.ShootInCar = v end)
-        configCheckbox(miscCard, "No Recoil", Combat.Gun.NoRecoil,
-            function(v) Combat.Gun.NoRecoil = v end)
-        configCheckbox(miscCard, "No Spread", Combat.Gun.NoSpread,
-            function(v) Combat.Gun.NoSpread = v end)
-        configCheckbox(miscCard, "Rapid Fire", Combat.Gun.RapidFire,
-            function(v) Combat.Gun.RapidFire = v end)
-        slider(miscCard, "Fire Rate", 0.01, 0.5, Combat.Gun.RapidFireRate or 0.05, 2,
-            function(v) Combat.Gun.RapidFireRate = v end)
-        configCheckbox(miscCard, "Fast Reload", Combat.Gun.FastReload,
-            function(v) Combat.Gun.FastReload = v end)
-        configCheckbox(miscCard, "Instant Equip", Combat.Gun.InstantEquip,
-            function(v) Combat.Gun.InstantEquip = v end)
-        configCheckbox(miscCard, "Infinite Ammo", Combat.Gun.InfiniteAmmo,
-            function(v) Combat.Gun.InfiniteAmmo = v end)
+        -- v0.77.1: gun rows only show on the gun-mods place. Hitbox rows stay
+        -- universal in Combat Misc. All gun flags default off and no-op unmatched.
+        if Koffee._gunModsGame then
+            configCheckbox(miscCard, "Anti-Spread", Combat.Gun.AntiSpread,
+                function(v) Combat.Gun.AntiSpread = v end)
+            configCheckbox(miscCard, "Shoot In Car", Combat.Gun.ShootInCar,
+                function(v) Combat.Gun.ShootInCar = v end)
+            configCheckbox(miscCard, "No Recoil", Combat.Gun.NoRecoil,
+                function(v) Combat.Gun.NoRecoil = v end)
+            configCheckbox(miscCard, "No Spread", Combat.Gun.NoSpread,
+                function(v) Combat.Gun.NoSpread = v end)
+            configCheckbox(miscCard, "Rapid Fire", Combat.Gun.RapidFire,
+                function(v) Combat.Gun.RapidFire = v end)
+            slider(miscCard, "Fire Rate", 0.01, 0.5, Combat.Gun.RapidFireRate or 0.05, 2,
+                function(v) Combat.Gun.RapidFireRate = v end)
+            configCheckbox(miscCard, "Fast Reload", Combat.Gun.FastReload,
+                function(v) Combat.Gun.FastReload = v end)
+            configCheckbox(miscCard, "Instant Equip", Combat.Gun.InstantEquip,
+                function(v) Combat.Gun.InstantEquip = v end)
+            configCheckbox(miscCard, "Infinite Ammo", Combat.Gun.InfiniteAmmo,
+                function(v) Combat.Gun.InfiniteAmmo = v end)
+        end
         configCheckbox(miscCard, "Hitbox Expander", Combat.Gun.HitboxExpander,
             function(v) Combat.Gun.HitboxExpander = v end)
         slider(miscCard, "Hitbox Size", 1, 30, Combat.Gun.HitboxSize or 10, 0,
@@ -13898,10 +13912,14 @@ end)();
     local Players = game:GetService("Players")
     local PARTS = { "HeadHB", "Head", "UpperTorso", "Torso" }
     local snap, conn, nextPass = {}, nil, 0
+    -- v0.77.1: live grown-player set for the ESP Hitbox toggle. Cleared by
+    -- forget() on every exit path, so ESP never reads a stale entry.
+    Shared.Hitbox = {}
     local function forget(plr, restoreIt)
         local rec = snap[plr]
         if not rec then return end
         snap[plr] = nil
+        Shared.Hitbox[plr] = nil
         if restoreIt then
             for inst, o in pairs(rec.parts) do
                 pcall(function()
@@ -13944,6 +13962,7 @@ end)();
                     rec = { char = ch, parts = {} }
                     snap[plr] = rec
                 end
+                Shared.Hitbox[plr] = want
                 for _, nm in ipairs(PARTS) do
                     local p = ch:FindFirstChild(nm)
                     if p and p:IsA("BasePart") then
@@ -16332,6 +16351,8 @@ addTab("Visuals", function(root)
     configCheckbox(espPanel, "Immediate Mode", ESP.Config.ImmediateMode, function(v) ESP.Config.ImmediateMode = v end)
     dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction", "Algorithm" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
+    -- v0.77.1: grown hitboxes redraw the ESP box around the hittable area.
+    configCheckbox(espPanel, "Hitbox", ESP.Config.HitboxBox, function(v) ESP.Config.HitboxBox = v end)
     slider(espPanel, "Render Distance", 1, 30000, ESP.Config.RenderDistance, 0,
         function(v) ESP.Config.RenderDistance = v end, { infinite = true })
     -- v0.0.22: global Feature-Interface thickness; v0.0.23: sub-1 down to 0.1.
