@@ -1,7 +1,7 @@
--- koffee v0.75.2
+-- koffee v0.76.0
 
 local Koffee = {}
-Koffee.Version = "0.75.2"
+Koffee.Version = "0.76.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -10605,7 +10605,7 @@ local Combat = {
         SpoofScope    = "Auto (Learn)",
         _hooked       = false,
     },
-    Misc = { Resolver = false },
+    Misc = { Resolver = false, DwellRadius = 16 },
     -- v0.18.0: place-gated weapon extras (only on _gunGame).
     --   AntiSpread: pins SpreadRadius to 0
     --   ShootInCar: spoof IsPlaying and SeatPart to allow seated fire
@@ -10980,6 +10980,49 @@ local Combat = {
         local dx = math.max(tonumber(pr.X) or 1, 0.01)
         local dy = math.max(tonumber(pr.Y) or 1, 0.01)
         return pos + Vector3.new(v.X / dx, v.Y / dy, v.Z / dx)
+    end
+    -- v0.75.0: dwell-centroid resolver (stolen shape). Each engaged target grows
+    -- a root trail (0.25s samples, 120 cap); the aim point becomes the densest
+    -- 4+ cluster centroid instead of the live point, so teleport spammers get
+    -- shot where they dwell, not where they flash. Cold or clusterless trails
+    -- fall back to live. Hit-part offset rides along from the live point.
+    local dwellHist = {}
+    local function dwellPos(plr, part, live)
+        local now = os.clock()
+        local ch = plr.Character
+        local root = ch and ch:FindFirstChild("HumanoidRootPart")
+        if not root then return live end
+        local rec = dwellHist[plr]
+        if not rec then rec = { pts = {}, at = 0, touch = now }; dwellHist[plr] = rec end
+        rec.touch = now
+        if now - rec.at >= 0.25 and #rec.pts < 120 then
+            rec.at = now
+            rec.pts[#rec.pts + 1] = root.Position
+        end
+        local nkeys = 0
+        for _ in pairs(dwellHist) do nkeys = nkeys + 1 end
+        if nkeys > 32 then
+            for k, r in pairs(dwellHist) do
+                if now - r.touch > 30 then dwellHist[k] = nil end
+            end
+        end
+        local pts, rad = rec.pts, (tonumber(Combat.Misc.DwellRadius) or 16)
+        if #pts < 10 then return live end
+        local bestN, bestSum = 0, nil
+        for i = 1, #pts do
+            local pi, n, sx, sy, sz = pts[i], 0, 0, 0, 0
+            for j = 1, #pts do
+                local pj = pts[j]
+                if (pi - pj).Magnitude <= rad then
+                    n = n + 1; sx, sy, sz = sx + pj.X, sy + pj.Y, sz + pj.Z
+                end
+            end
+            if n >= 4 and n > bestN then
+                bestN, bestSum = n, Vector3.new(sx / n, sy / n, sz / n)
+            end
+        end
+        if not bestSum then return live end
+        return bestSum + (live - root.Position)
     end
 
     -- :: FOV circles (one per context: aimbot + silent, both can be active) ::
@@ -11891,6 +11934,7 @@ local Combat = {
             end
             if not (lock and part) then return end
             local tpos = predicted(lock, part, Combat.Aim.Predict)
+            if Combat.Misc.Resolver then tpos = dwellPos(lock, part, tpos) end
             if Combat.Aim.RageType == "Character Teleport" then
                 local myc = LocalPlayer.Character
                 local myroot = myc and (myc:FindFirstChild("HumanoidRootPart") or findTorso(myc))
@@ -11935,6 +11979,7 @@ local Combat = {
         end
         if not (plr and part) then return end
         local tpos = predicted(plr, part, Combat.Aim.Predict)
+        if Combat.Misc.Resolver then tpos = dwellPos(plr, part, tpos) end
 
         -- v0.50.0 legit kit. Reaction holds fire on fresh locks; jitter offsets
         -- the aim point by true angle (range independent); overshoot starts off
@@ -12762,6 +12807,7 @@ local Combat = {
                 silentTarget = part
                 -- prediction shifts the redirect point for lead; the hooks read silentPos
                 silentPos = predicted(plr, part, Combat.Silent.Predict)
+                if Combat.Misc.Resolver then silentPos = dwellPos(plr, part, silentPos) end
             -- v0.50.0 silent jitter: scatter the redirect point by up to N studs.
             local sj = Combat.Silent.Legit.Jitter or 0
             if sj > 0 then
@@ -13447,6 +13493,9 @@ local Combat = {
         -- Misc
         local miscCard = panel(leftCol, "Misc")
         configCheckbox(miscCard, "Resolver", Combat.Misc.Resolver, function(v) Combat.Misc.Resolver = v end)
+        -- v0.75.0: dwell cluster radius. Wider forgives jittery trails (locks the
+        -- anchor through strafing); tighter only bites true stand-stills.
+        slider(miscCard, "Dwell Radius", 4, 30, Combat.Misc.DwellRadius or 16, 0, function(v) Combat.Misc.DwellRadius = v end)
         -- v0.18.0: this place's weapon extras. The rows only exist here, so on any
         -- other game the Misc card is unchanged rather than showing dead toggles.
         if Koffee._gunGame then
