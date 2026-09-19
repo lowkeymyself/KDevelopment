@@ -1,7 +1,7 @@
--- koffee v0.76.0
+-- koffee v0.77.0
 
 local Koffee = {}
-Koffee.Version = "0.76.0"
+Koffee.Version = "0.77.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -10606,10 +10606,16 @@ local Combat = {
         _hooked       = false,
     },
     Misc = { Resolver = false, DwellRadius = 16 },
-    -- v0.18.0: place-gated weapon extras (only on _gunGame).
-    --   AntiSpread: pins SpreadRadius to 0
-    --   ShootInCar: spoof IsPlaying and SeatPart to allow seated fire
-    Gun  = { AntiSpread = false, ShootInCar = false },
+    -- v0.18.0: weapon extras. Name-matched and universal, not per-game.
+    --   AntiSpread/ShootInCar: attribute pin + seated-fire spoof (original pair)
+    --   NoRecoil/NoSpread/RapidFire/FastReload/InstantEquip: auto catalog engine
+    --   InfiniteAmmo: __index read spoof. HitboxExpander/Size: hitbox engine.
+    Gun  = { AntiSpread = false, ShootInCar = false,
+        NoRecoil = false, NoSpread = false,
+        RapidFire = false, RapidFireRate = 0.05,
+        FastReload = false, InstantEquip = false,
+        InfiniteAmmo = false,
+        HitboxExpander = false, HitboxSize = 10 },
     -- v0.0.88 HIT / KILL SOUNDS. Detection: universal Humanoid.Health drop watcher
     -- (A) per player. Attribution: "invisible target lock": each frame while LMB
     -- held, the enemy CLOSEST to the mouse cursor (screen-space, within MouseRadius
@@ -10716,7 +10722,7 @@ local Combat = {
     registerConfig("combat_silent",  Combat.Silent)
     registerConfig("combat_trigger", Combat.Trigger)
     registerConfig("combat_misc",    Combat.Misc)
-    if Koffee._gunGame then registerConfig("combat_gun", Combat.Gun) end
+    registerConfig("combat_gun", Combat.Gun)
     registerConfig("combat_sounds",  Combat.HitSounds)
     -- v0.7.0 hit/kill visual effects. Rides HitSounds attribution.
     registerConfig("combat_hiteffects", Combat.HitEffects)
@@ -11461,6 +11467,26 @@ local Combat = {
                     -- ours only. Spoofing every humanoid would desync other players'
                     -- seated state for anything in the game that reads it.
                     if self.Parent == LocalPlayer.Character then return true, nil end
+                end
+                return PASS_H, PASS_V
+            end
+            -- v0.77.0 INFINITE AMMO (universal): spoof .Value reads on HUD ammo
+            -- counters instead of writing them. Reads lie, writes pass through,
+            -- so regen and reload code never sees a dirty value to correct.
+            -- Scope is PlayerGui only (fail open when the gui cache is empty).
+            if Combat.Gun.InfiniteAmmo and key == "Value"
+               and typeof(self) == "Instance" and self:IsA("ValueBase") then
+                local nm = string.lower(tostring(self.Name))
+                if nm == "ammocount" or nm == "ammocount2" or nm == "ammo"
+                   or nm == "currentammo" or nm == "magammo" or nm == "clipammo" then
+                    local gui = Combat.Gun._ammoGui
+                    if gui ~= nil then
+                        local p, depth = self.Parent, 0
+                        while p ~= nil and depth < 10 do
+                            if p == gui then return true, 999 end
+                            p, depth = p.Parent, depth + 1
+                        end
+                    end
                 end
                 return PASS_H, PASS_V
             end
@@ -13496,14 +13522,30 @@ local Combat = {
         -- v0.75.0: dwell cluster radius. Wider forgives jittery trails (locks the
         -- anchor through strafing); tighter only bites true stand-stills.
         slider(miscCard, "Dwell Radius", 4, 30, Combat.Misc.DwellRadius or 16, 0, function(v) Combat.Misc.DwellRadius = v end)
-        -- v0.18.0: this place's weapon extras. The rows only exist here, so on any
-        -- other game the Misc card is unchanged rather than showing dead toggles.
-        if Koffee._gunGame then
-            configCheckbox(miscCard, "Anti-Spread", Combat.Gun.AntiSpread,
-                function(v) Combat.Gun.AntiSpread = v end)
-            configCheckbox(miscCard, "Shoot In Car", Combat.Gun.ShootInCar,
-                function(v) Combat.Gun.ShootInCar = v end)
-        end
+        -- v0.77.0: weapon extras are name-matched and universal, so the rows
+        -- show on every game. Each is off by default and no-ops without a match.
+        configCheckbox(miscCard, "Anti-Spread", Combat.Gun.AntiSpread,
+            function(v) Combat.Gun.AntiSpread = v end)
+        configCheckbox(miscCard, "Shoot In Car", Combat.Gun.ShootInCar,
+            function(v) Combat.Gun.ShootInCar = v end)
+        configCheckbox(miscCard, "No Recoil", Combat.Gun.NoRecoil,
+            function(v) Combat.Gun.NoRecoil = v end)
+        configCheckbox(miscCard, "No Spread", Combat.Gun.NoSpread,
+            function(v) Combat.Gun.NoSpread = v end)
+        configCheckbox(miscCard, "Rapid Fire", Combat.Gun.RapidFire,
+            function(v) Combat.Gun.RapidFire = v end)
+        slider(miscCard, "Fire Rate", 0.01, 0.5, Combat.Gun.RapidFireRate or 0.05, 2,
+            function(v) Combat.Gun.RapidFireRate = v end)
+        configCheckbox(miscCard, "Fast Reload", Combat.Gun.FastReload,
+            function(v) Combat.Gun.FastReload = v end)
+        configCheckbox(miscCard, "Instant Equip", Combat.Gun.InstantEquip,
+            function(v) Combat.Gun.InstantEquip = v end)
+        configCheckbox(miscCard, "Infinite Ammo", Combat.Gun.InfiniteAmmo,
+            function(v) Combat.Gun.InfiniteAmmo = v end)
+        configCheckbox(miscCard, "Hitbox Expander", Combat.Gun.HitboxExpander,
+            function(v) Combat.Gun.HitboxExpander = v end)
+        slider(miscCard, "Hitbox Size", 1, 30, Combat.Gun.HitboxSize or 10, 0,
+            function(v) Combat.Gun.HitboxSize = v end)
 
         -- v0.0.88 Sounds panel. Hit + Kill each have Enabled, Preset dropdown,
         -- Custom Sound Id (0 = use preset), Volume, Pitch, Cooldown. Also a
@@ -13656,11 +13698,10 @@ local Combat = {
     -- can reuse the same pill-switcher builder Combat pioneered. Chunk-scope
     -- would blow the 200-register ceiling; Shared is the natural handoff.
     Shared.subTabs = subTabs
-end)()
+end)();
 
--- v0.18.0 ANTI-SPREAD (place-gated): pin SpreadRadius to 0. Attribute-signal
+-- v0.18.0 ANTI-SPREAD (now universal): pin SpreadRadius to 0. Attribute-signal
 -- driven with slow sweep (handles swap/re-parent/re-attribute). Own IIFE.
-if Koffee._gunGame then
 (function()
     -- Combat is scoped to its own IIFE; Shared.Combat is the published handle
     local G = Shared.Combat.Gun
@@ -13715,8 +13756,211 @@ if Koffee._gunGame then
         nextSweep = now + 2
         sweep()
     end)
+end)();
+
+-- v0.77.0 GUN CATALOG (universal): name-matched weapon stat enforcement.
+-- Covers both Arsenal-style tuning folders (ReplicatedStorage, 12s cached
+-- scan) and tool-held values (character + backpack sweep, ChildAdded for
+-- respawns and mid-fight pickups). Originals snapshot per value, restore on
+-- toggle-off. Instant Equip also forces ready-state flags both ways.
+(function()
+    local G = Shared.Combat.Gun
+    local RS = game:GetService("ReplicatedStorage")
+    local orig = setmetatable({}, { __mode = "k" })
+    local watchedC = setmetatable({}, { __mode = "k" })
+    local rsCache, rsAt, nextSweep = nil, 0, 0
+    local NUM = {
+        RapidFire  = { FireRate = true, BFireRate = true },
+        FastReload = { ReloadTime = true, EReloadTime = true },
+        NoSpread   = { MaxSpread = true, Spread = true, SpreadControl = true },
+        NoRecoil   = { RecoilControl = true, Recoil = true },
+    }
+    local AUTO = { Auto = true, AutoFire = true, Automatic = true,
+        AutoShoot = true, AutoGun = true }
+    local EQ_A = { "equip", "draw", "switch", "deploy", "raise",
+        "holster", "unsheath" }
+    local EQ_B = { "time", "delay", "duration" }
+    local EQ_FALSE = { equipping = true, isequipping = true, switching = true,
+        isswitching = true, deploying = true, drawing = true,
+        raising = true, holstering = true }
+    local EQ_TRUE = { canshoot = true, canfire = true, canattack = true,
+        readytofire = true }
+
+    local function armed()
+        return G.NoRecoil or G.NoSpread or G.RapidFire or G.FastReload or G.InstantEquip
+    end
+    local function hasFrag(nm, list)
+        for _, f in ipairs(list) do
+            if string.find(nm, f, 1, true) then return true end
+        end
+        return false
+    end
+    local function restore(inst)
+        local v = orig[inst]
+        if v ~= nil then
+            orig[inst] = nil
+            pcall(function() if inst.Parent then inst.Value = v end end)
+        end
+    end
+    local function force(inst, want)
+        if orig[inst] == nil then orig[inst] = inst.Value end
+        if inst.Value ~= want then pcall(function() inst.Value = want end) end
+    end
+    local function route(inst)
+        if not inst.Parent then orig[inst] = nil; return end
+        local nm = string.lower(tostring(inst.Name))
+        if inst:IsA("NumberValue") then
+            for mod, set in pairs(NUM) do
+                if set[inst.Name] then
+                    if G[mod] then
+                        local want = (mod == "RapidFire") and (G.RapidFireRate or 0.05)
+                            or (mod == "FastReload" and 0.01 or 0)
+                        force(inst, want)
+                    else restore(inst) end
+                    return
+                end
+            end
+            if hasFrag(nm, EQ_A) and hasFrag(nm, EQ_B) then
+                if G.InstantEquip then force(inst, 0.01) else restore(inst) end
+            end
+        elseif inst:IsA("BoolValue") then
+            if AUTO[inst.Name] then
+                if G.RapidFire then force(inst, true) else restore(inst) end
+            elseif EQ_FALSE[nm] then
+                if G.InstantEquip then force(inst, false) else restore(inst) end
+            elseif EQ_TRUE[nm] then
+                if G.InstantEquip then force(inst, true) else restore(inst) end
+            end
+        end
+    end
+    local function applyList(list)
+        for _, d in ipairs(list) do
+            if d:IsA("NumberValue") or d:IsA("BoolValue") then route(d) end
+        end
+    end
+    local function sweep()
+        local now = os.clock()
+        if not rsCache or now >= rsAt then
+            local ok, desc = pcall(function() return RS:GetDescendants() end)
+            rsCache, rsAt = (ok and desc) or {}, now + 12
+        end
+        applyList(rsCache)
+        local ch = LocalPlayer.Character
+        if ch then
+            local ok, desc = pcall(function() return ch:GetDescendants() end)
+            if ok and desc then applyList(desc) end
+        end
+        local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+        if bp then
+            local ok, desc = pcall(function() return bp:GetDescendants() end)
+            if ok and desc then applyList(desc) end
+        end
+        -- ammo gui cache for the __index read spoof (fail open when absent).
+        G._ammoGui = LocalPlayer:FindFirstChild("PlayerGui")
+    end
+    local function watch(container)
+        if not container or watchedC[container] then return end
+        watchedC[container] = true
+        container.ChildAdded:Connect(function(c)
+            if Koffee.dead() or not armed() then return end
+            task.defer(function()
+                if c:IsA("NumberValue") or c:IsA("BoolValue") then route(c) end
+                local ok, desc = pcall(function() return c:GetDescendants() end)
+                if ok and desc then applyList(desc) end
+            end)
+        end)
+    end
+    watch(LocalPlayer.Character)
+    watch(LocalPlayer:FindFirstChildOfClass("Backpack"))
+    LocalPlayer.CharacterAdded:Connect(function(ch)
+        task.wait(0.5)
+        if Koffee.dead() then return end
+        watch(ch)
+        watch(LocalPlayer:FindFirstChildOfClass("Backpack"))
+        if armed() then sweep() end
+    end)
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() or not armed() then return end
+        local now = os.clock()
+        if now < nextSweep then return end
+        nextSweep = now + 2
+        sweep()
+    end)
+end)();
+
+-- v0.77.0 HITBOX EXPANDER (universal): grows enemy hit parts to HitboxSize
+-- studs, invisible and non-colliding, for client-hitreg games. Team-gated
+-- through aimAllowed (lock-gated too), dead-gated on Humanoid. 4Hz passes
+-- with cached refs, never a per-frame FindFirstChild sweep. Tradeoff: grown
+-- heads read headless on your screen while it runs. Restores on off/respawn.
+(function()
+    local G = Shared.Combat.Gun
+    local Players = game:GetService("Players")
+    local PARTS = { "HeadHB", "Head", "UpperTorso", "Torso" }
+    local snap, conn, nextPass = {}, nil, 0
+    local function forget(plr, restoreIt)
+        local rec = snap[plr]
+        if not rec then return end
+        snap[plr] = nil
+        if restoreIt then
+            for inst, o in pairs(rec.parts) do
+                pcall(function()
+                    if inst.Parent then
+                        inst.CanCollide = o.c
+                        inst.Transparency = o.t
+                        inst.Size = o.s
+                    end
+                end)
+            end
+        end
+    end
+    Players.PlayerRemoving:Connect(function(plr) forget(plr, false) end)
+    conn = RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then
+            for plr in pairs(snap) do forget(plr, true) end
+            if conn then conn:Disconnect() end
+            return
+        end
+        if not G.HitboxExpander then
+            for plr in pairs(snap) do forget(plr, true) end
+            return
+        end
+        local now = os.clock()
+        if now < nextPass then return end
+        nextPass = now + 0.25
+        local want = math.clamp(tonumber(G.HitboxSize) or 10, 1, 30)
+        local size = Vector3.new(want, want, want)
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local ch = plr.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            if plr == LocalPlayer or not ch or not hum or hum.Health <= 0
+               or hum:GetState() == Enum.HumanoidStateType.Dead
+               or not Shared.aimAllowed(plr, true) then
+                forget(plr, true)
+            else
+                local rec = snap[plr]
+                if not rec or rec.char ~= ch then
+                    forget(plr, true)
+                    rec = { char = ch, parts = {} }
+                    snap[plr] = rec
+                end
+                for _, nm in ipairs(PARTS) do
+                    local p = ch:FindFirstChild(nm)
+                    if p and p:IsA("BasePart") then
+                        if rec.parts[p] == nil then
+                            rec.parts[p] = { c = p.CanCollide, t = p.Transparency, s = p.Size }
+                        end
+                        pcall(function()
+                            p.CanCollide = false
+                            p.Transparency = 1
+                            if (p.Size - size).Magnitude > 0.01 then p.Size = size end
+                        end)
+                    end
+                end
+            end
+        end
+    end)
 end)()
-end
 
 -- helper: attach two color swatches (visible + hidden) to a Visible Check row
 local function attachDualSwatch(row, visColor, hidColor, onVis, onHid)
