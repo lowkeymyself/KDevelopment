@@ -1,7 +1,7 @@
--- koffee v0.82.1
+-- koffee v0.82.2
 
 local Koffee = {}
-Koffee.Version = "0.82.1"
+Koffee.Version = "0.82.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -24967,18 +24967,18 @@ addTab("Extra", function(epanel)
             if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
         end
         rows = {}
-        -- v0.82.0: Full Game scope with nothing picked sweeps the game into
-        -- the results picker instead of asking for a tool.
+        -- v0.82.0/v0.82.2: Full Game scope never needs a source. Nothing
+        -- picked, or a dead one, sweeps the game into the results picker.
         local scopeOn = ((Shared.Combat and Shared.Combat.Gun
             and Shared.Combat.Gun.ScanScope) or "Replicated") == "Full Game"
-        if scopeOn and current.mode == "none" and gameSweep then
+        local root = resolveRoot()
+        if scopeOn and (current.mode == "none" or not root) and gameSweep then
+            current = { mode = "none", inst = nil, path = "" }
             gameSweep()
             return
         end
-        local root = resolveRoot()
         if not root then
-            srcLabel.Text = current.mode == "none" and "Hold a gun, pick an instance, or set Scope to Full Game"
-                or "Source gone: rescan"
+            srcLabel.Text = "Source gone: rescan"
             return
         end
         srcLabel.Text = (current.mode == "tool" and "tool: " or "instance: ") .. root.Name
@@ -25188,7 +25188,15 @@ addTab("Extra", function(epanel)
         if not host.Visible then return end
         local on = ((Shared.Combat and Shared.Combat.Gun
             and Shared.Combat.Gun.ScanScope) or "Replicated") == "Full Game"
-        if on and current.mode == "none" and gameSweep then gameSweep() end
+        -- v0.82.2: no results yet and no live source: sweep. Never wipes
+        -- an existing pick or populated dropdown.
+        if on and gameSweep and (not resMap or #resMap == 0) then
+            local root = resolveRoot()
+            if current.mode == "none" or not root then
+                current = { mode = "none", inst = nil, path = "" }
+                gameSweep()
+            end
+        end
     end)
     refreshFullUI()
     -- reassert pins + refresh live values, throttled. Resolves fresh per
