@@ -1,7 +1,7 @@
--- koffee v0.79.1
+-- koffee v0.79.2
 
 local Koffee = {}
-Koffee.Version = "0.79.1"
+Koffee.Version = "0.79.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -10667,7 +10667,7 @@ local Combat = {
         -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
         -- v0.51.0: PartMode picks from the enabled Parts pool; Spread sprays
         -- the redirect in a disc. Empty pool means everything enabled.
-        Legit         = { Jitter = 0, HitChance = 100, PartMode = "Single Part", Parts = {}, Spread = 0, ForceMiss = false },
+        Legit         = { Jitter = 0, HitChance = 100, PartMode = "Single Part", Parts = {}, Spread = 0, SpreadUnit = "Studs", Bloom = 0, ForceMiss = false },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default: fire-read is always
         -- on. The ~90% of games that don't read mouse.Hit build their shot from
         -- Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON
@@ -12882,6 +12882,11 @@ local Combat = {
             if plr then Combat.Silent._target = plr end
         end
         if plr and part then
+            -- v0.79.2: bloom stamp. A fresh target (or the first frame back
+            -- from a dropout) restarts lock age; Sticky holds keep it running.
+            if Combat.Silent._bloomPlr ~= plr then
+                Combat.Silent._bloomPlr, Combat.Silent._lockAt = plr, os.clock()
+            end
             -- v0.50.0 Hit Chance. A failed roll fires clean this frame: clear
             -- the redirect with no grace window, so the shot truly misses.
             -- v0.51.1 Force Miss: same failed roll, but the lock holds and the
@@ -12916,11 +12921,24 @@ local Combat = {
             end
             -- v0.51.0 fake spread: lateral disc around the point, uniform area,
             -- so bursts walk like real spray instead of stacking one hole.
+            -- v0.79.2: Degrees mode reinterprets the radius as angular error
+            -- (studs = tan(rad) * distance), so far targets spread wide and
+            -- close ones stay tight like real aim. Bloom multiplies the radius
+            -- with lock age (recoil fatigue), ramping to full over 5s.
             local spread = Combat.Silent.Legit.Spread or 0
+            local bloom = Combat.Silent.Legit.Bloom or 0
+            if bloom > 0 and spread > 0 then
+                local age = math.min(os.clock() - (Combat.Silent._lockAt or os.clock()), 5)
+                spread = spread * (1 + (bloom / 100) * (age / 5) * 3)
+            end
             if spread > 0 then
                 local sc = Workspace.CurrentCamera
                 if sc then
                     local cf = sc.CFrame
+                    if (Combat.Silent.Legit.SpreadUnit or "Studs") == "Degrees" then
+                        local dist = (silentPos - cf.Position).Magnitude
+                        spread = math.tan(math.rad(spread)) * dist
+                    end
                     local a = math.random() * math.pi * 2
                     local rr = math.sqrt(math.random()) * spread
                     silentPos = silentPos
@@ -12972,6 +12990,7 @@ local Combat = {
                 SR.camPos = nil; SR.screen = nil
                 SR.camLook = nil; SR.rootPos = nil
                 Combat.Silent._lastGoodAt = nil
+                Combat.Silent._bloomPlr = nil
                 if not Combat.Silent.Sticky then Combat.Silent._target = nil end
             end
         end
@@ -13740,6 +13759,11 @@ local Combat = {
             end)
         end
         slider(R.Legit, "Spread (studs)", 0, 5, Combat.Silent.Legit.Spread, 1, function(v) Combat.Silent.Legit.Spread = v end)
+        -- v0.79.2: hit-position killcams read group shape. Degrees mode makes
+        -- error angular (human), Bloom grows it with beam time (fatigue).
+        dropdown(R.Legit, "Spread Unit", { "Studs", "Degrees" }, Combat.Silent.Legit.SpreadUnit or "Studs",
+            function(v) Combat.Silent.Legit.SpreadUnit = v end)
+        slider(R.Legit, "Bloom (%)", 0, 200, Combat.Silent.Legit.Bloom or 0, 0, function(v) Combat.Silent.Legit.Bloom = v end)
 
         -- FOV (same shared control set as the aimbot side)
         buildFovTab(R.FOV, Combat.Silent.FOV, Combat.Silent)
