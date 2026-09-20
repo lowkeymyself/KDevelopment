@@ -1,7 +1,7 @@
--- koffee v0.81.1
+-- koffee v0.81.2
 
 local Koffee = {}
-Koffee.Version = "0.81.1"
+Koffee.Version = "0.81.2"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -14027,6 +14027,33 @@ end)();
             end
         end
     end
+    -- v0.81.2 AUTO RE-EQUIP: games that read tuning once at equip run on
+    -- stale cache after we pin. On every armed-signature change, cycle the
+    -- equipped tool backpack->character over two heartbeats so the game
+    -- re-reads the forced values. No user re-equip needed.
+    local prevSig, reeq, reeqPhase, reeqCool = "", nil, 0, 0
+    local function sig()
+        return (G.RapidFire and "R" or "") .. (G.FastReload and "F" or "")
+            .. (G.NoSpread and "S" or "") .. (G.NoRecoil and "N" or "")
+            .. (G.InstantEquip and "E" or "")
+    end
+    local function pumpReequip()
+        if not reeq then return end
+        local ch = LocalPlayer.Character
+        local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+        if not reeq.Parent or not ch or not bp then reeq = nil; return end
+        if reeqPhase == 0 then
+            if reeq.Parent == ch then
+                pcall(function() reeq.Parent = bp end)
+                reeqPhase = 1
+            else reeq = nil end
+        else
+            if reeq.Parent == bp then
+                pcall(function() reeq.Parent = ch end)
+            end
+            reeq = nil
+        end
+    end
     local function sweep()
         local now = os.clock()
         local scope = G.ScanScope or "Replicated"
@@ -14068,6 +14095,19 @@ end)();
         end
         -- ammo gui cache for the __index read spoof (fail open when absent).
         G._ammoGui = LocalPlayer:FindFirstChild("PlayerGui")
+        -- signature change while armed: refresh the equipped tool's cache.
+        -- Holds prevSig through cooldown/tool-less sweeps so it retries.
+        local s = sig()
+        if s ~= prevSig then
+            if s ~= "" then
+                local ch = LocalPlayer.Character
+                local tool = ch and ch:FindFirstChildOfClass("Tool")
+                if tool and now - reeqCool > 5 then
+                    reeq, reeqPhase, reeqCool = tool, 0, now
+                    prevSig = s
+                end
+            else prevSig = s end
+        end
     end
     local function watch(container, fullOnly)
         if not container or watchedC[container] then return end
@@ -14095,6 +14135,7 @@ end)();
     end)
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
+        pumpReequip()
         local now = os.clock()
         -- hunter cadence: 8s while armed (getgc walks are heavy), full
         -- restore flush once everything disarms.
@@ -24970,12 +25011,12 @@ addTab("Extra", function(epanel)
         local nxt = cur == "Replicated" and "Full Game"
             or cur == "Full Game" and "Character" or "Replicated"
         G.ScanScope = nxt
-        scopeBtn.Text = "Scope: " .. nxt
+        if scopeBtn then scopeBtn.Text = "Scope: " .. nxt end
     end)
     scopeBtn.Size = UDim2.new(0, 128, 0, 22)
     do
         local G = Shared.Combat and Shared.Combat.Gun
-        if G then scopeBtn.Text = "Scope: " .. (G.ScanScope or "Replicated") end
+        if G and scopeBtn then scopeBtn.Text = "Scope: " .. (G.ScanScope or "Replicated") end
     end
     srcLabel = new("TextLabel", {
         Text = "Hold a gun, or pick an instance", FontFace = Theme.Fonts.Regular,
