@@ -1,7 +1,7 @@
--- koffee v0.81.3
+-- koffee v0.82.0
 
 local Koffee = {}
-Koffee.Version = "0.81.3"
+Koffee.Version = "0.82.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -2082,6 +2082,9 @@ KoffeeOptions = {
     -- v0.26.0: the three window-open background effects, each independently off-able
     MenuDim = true, MenuSnow = true, MenuBlur = true,
     MenuBlockInput = true,   -- v0.56.0: block clicks off the menu while it is open
+    -- v0.82.0: every workspace Humanoid model counts as a person (ESP +
+    -- combat + player list, through the NPC feed). Off by default.
+    IncludeHumanoids = false,
     -- v0.0.97 custom feature-interface font (arraylist / ESP / health text / HUD stats,
     -- everything outside the main Koffee window). On/Name/Size ride the config system.
     CustomFontOn   = false,
@@ -14027,6 +14030,53 @@ end)();
             end
         end
     end
+    -- v0.82.0 FULL RESULTS: Mods-tab picker over the whole game. Values only
+    -- (attributes stay manual-pick): parents holding 1+ catalog names, capped
+    -- at 200 groups, own 15s cache so the picker never waits on the sweep.
+    Shared.GunMods = Shared.GunMods or {}
+    do
+        local gsCache, gsAt = nil, 0
+        local function gsMatch(nm, isBool)
+            if NUM[nm] then return true end
+            if isBool and AUTO[nm] then return true end
+            local lnm = string.lower(nm)
+            if hasFrag(lnm, EQ_A) and hasFrag(lnm, EQ_B) then return true end
+            return false
+        end
+        Shared.GunMods.fullScan = function()
+            local now = os.clock()
+            if gsCache and now - gsAt < 15 then return gsCache end
+            local groups, order = {}, {}
+            local ok, desc = pcall(function() return game:GetDescendants() end)
+            if ok and desc then
+                local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                for _, d in ipairs(desc) do
+                    if #order >= 200 then break end
+                    if d:IsA("NumberValue") or d:IsA("BoolValue") then
+                        local p = d.Parent
+                        if p and (not pg or not d:IsDescendantOf(pg))
+                            and gsMatch(d.Name, d:IsA("BoolValue")) then
+                            if not groups[p] then
+                                groups[p] = 0
+                                order[#order + 1] = p
+                            end
+                            groups[p] = groups[p] + 1
+                        end
+                    end
+                end
+            end
+            local out = {}
+            for _, p in ipairs(order) do
+                local path = ""
+                pcall(function()
+                    path = (Shared.pathOf and Shared.pathOf(p)) or p:GetFullName()
+                end)
+                out[#out + 1] = { inst = p, name = p.Name, count = groups[p], path = path }
+            end
+            gsCache, gsAt = out, now
+            return out
+        end
+    end
     -- v0.81.2 AUTO RE-EQUIP: games that read tuning once at equip run on
     -- stale cache after we pin. On every armed-signature change, cycle the
     -- equipped tool backpack->character over two heartbeats so the game
@@ -17464,6 +17514,12 @@ addTab("Options", function(root)
     configCheckbox(uiPanel, "Top Bar", KoffeeOptions.TopBar, function(v)
         KoffeeOptions.TopBar = v
         applyTopBar()
+    end)
+    -- v0.82.0: all-humanoids feed (ESP + combat + player list, via NPC feed).
+    -- Refreshes the player list if it is open.
+    configCheckbox(uiPanel, "Include all Humanoids", KoffeeOptions.IncludeHumanoids == true, function(v)
+        KoffeeOptions.IncludeHumanoids = v
+        if Shared._playerListRefresh then pcall(Shared._playerListRefresh) end
     end)
 
     -- v0.26.0: the three background effects that play while the window is open.
@@ -22732,6 +22788,25 @@ local function usernameMatches()
     _uScan, _uScanAt = out, now
     return out
 end
+-- v0.82.0: every workspace Humanoid model nobody owns. Same 1.2s cache shape
+-- as the username scan. Player characters never match (owned), corpses do
+-- (combat death-gates them; ESP shows them like dead players).
+local _aScan, _aScanAt = nil, 0
+local function allHumanoids()
+    local now = os.clock()
+    if _aScan and (now - _aScanAt) < 1.2 then return _aScan end
+    local out = {}
+    for _, inst in ipairs(wsDescendants()) do
+        if inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid")
+            and npcAnchor(inst) and not isExcludedInst(inst)
+            and not Players:GetPlayerFromCharacter(inst) then
+            out[#out + 1] = inst
+        end
+    end
+    _aScan, _aScanAt = out, now
+    return out
+end
+NPC.allHumanoids = allHumanoids
 
 -- read a value off a model for a Name or Health rule (child value, attribute,
 -- or a direct property). Missing reads return nil so the default is kept.
@@ -22805,6 +22880,13 @@ function NPC.entities()
             f._uHolder = f._uHolder or { _wrappers = setmetatable({}, { __mode = "k" }) }
             for _, model in ipairs(usernameMatches()) do emit(f._uHolder, model, f.settings) end
         end
+    end
+    -- v0.82.0: Include all Humanoids (Options, off default). Manual entries
+    -- emit first so they win the dedupe; the all-feed takes the leftovers
+    -- with default settings and no per-feature exclusions.
+    if KoffeeOptions.IncludeHumanoids then
+        NPC._allHolder = NPC._allHolder or { _wrappers = setmetatable({}, { __mode = "k" }) }
+        for _, model in ipairs(allHumanoids()) do emit(NPC._allHolder, model, DEFAULTS) end
     end
     NPC._cache, NPC._cacheAt = out, now
     return out
@@ -24653,6 +24735,9 @@ addTab("Extra", function(epanel)
     end
     local rows = {}   -- id -> { cur, entry } for the heartbeat refresh
     local srcLabel, listBox
+    -- v0.82.0: Full Game results picker. Forward-declared: the scope dropdown
+    -- above calls refreshFullUI, defined after scan().
+    local refreshFullUI, gameSweep, resDD, resMap
     local current = { mode = "none", inst = nil, path = "" }
 
     local function entryId(srcId, sub, name) return srcId .. "|" .. sub .. "|" .. name end
@@ -24882,6 +24967,14 @@ addTab("Extra", function(epanel)
             if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
         end
         rows = {}
+        -- v0.82.0: Full Game scope with nothing picked sweeps the game into
+        -- the results picker instead of asking for a tool.
+        local scopeOn = ((Shared.Combat and Shared.Combat.Gun
+            and Shared.Combat.Gun.ScanScope) or "Replicated") == "Full Game"
+        if scopeOn and current.mode == "none" and gameSweep then
+            gameSweep()
+            return
+        end
         local root = resolveRoot()
         if not root then
             srcLabel.Text = current.mode == "none" and "Hold a gun, or pick an instance"
@@ -24956,6 +25049,54 @@ addTab("Extra", function(epanel)
         if #common > 0 then sectionLbl(listBox, "common") emit(common) end
         if #rest > 0 then sectionLbl(listBox, "everything else") emit(rest) end
     end
+    -- v0.82.0: Full Game results picker. Sweeps the whole game (minus UI) for
+    -- catalog-named values, groups hits by parent, and offers the parents in
+    -- a dropdown. Picking one loads its rows like a manual pick. Values only:
+    -- attributes stay manual-pick. Auto-picks the first hit so rows show now.
+    gameSweep = function()
+        srcLabel.Text = "Scanning game..."
+        task.spawn(function()
+            local results = {}
+            if Shared.GunMods and Shared.GunMods.fullScan then
+                local ok, r = pcall(Shared.GunMods.fullScan)
+                if ok and type(r) == "table" then results = r end
+            end
+            if resDD then resDD.destroy(); resDD = nil end
+            resMap = {}
+            if #results == 0 then
+                srcLabel.Text = "Full scan: no tunables found"
+                return
+            end
+            local opts = {}
+            for i, e in ipairs(results) do
+                resMap[i] = e
+                opts[#opts + 1] = e.name .. " (" .. e.count .. ")"
+            end
+            resDD = dropdown(host, "Results", opts, opts[1], function(v)
+                for i, o in ipairs(opts) do
+                    local e = resMap[i]
+                    if o == v and e and e.inst.Parent then
+                        current = { mode = "picked", inst = e.inst, path = e.path or "" }
+                        scan()
+                        break
+                    end
+                end
+            end)
+            if resDD and resDD.frame then resDD.frame.LayoutOrder = 2 end
+            local first = resMap[1]
+            if first and first.inst.Parent then
+                current = { mode = "picked", inst = first.inst, path = first.path or "" }
+                scan()
+            end
+            refreshFullUI()
+        end)
+    end
+    refreshFullUI = function()
+        local on = ((Shared.Combat and Shared.Combat.Gun
+            and Shared.Combat.Gun.ScanScope) or "Replicated") == "Full Game"
+        if resDD and resDD.frame then resDD.frame.Visible = on end
+        if on and (not resMap or #resMap == 0) then gameSweep() end
+    end
     -- header: source buttons + rescan + restore-all.
     local bar = new("Frame", {
         Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
@@ -25009,7 +25150,10 @@ addTab("Extra", function(epanel)
         local dd = dropdown(host, "Scan Scope",
             { "Character", "Replicated", "Full Game" },
             (G and G.ScanScope) or "Replicated",
-            function(v) if G then G.ScanScope = v end end)
+            function(v)
+                if G then G.ScanScope = v end
+                if refreshFullUI then refreshFullUI() end
+            end)
         if dd and dd.frame then dd.frame.LayoutOrder = 0 end
     end
     srcLabel = new("TextLabel", {
@@ -25017,11 +25161,11 @@ addTab("Extra", function(epanel)
         TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14),
         TextXAlignment = Enum.TextXAlignment.Left,
-        LayoutOrder = 2, ZIndex = 34, Parent = host,
+        LayoutOrder = 3, ZIndex = 34, Parent = host,
     })
     listBox = new("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1, LayoutOrder = 3, ZIndex = 34, Parent = host,
+        BackgroundTransparency = 1, LayoutOrder = 4, ZIndex = 34, Parent = host,
     }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
         Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
     new("TextLabel", {
@@ -26036,17 +26180,25 @@ end)()
         if followConn then followConn:Disconnect(); followConn = nil end
         if followBtn then followBtn.Text = "Follow" end
     end
+    -- v0.82.0: models have no UserId, so follow keys are UserId-or-instance.
+    local function followKey(t)
+        if not t then return nil end
+        if t._model then return t.model end
+        return t.UserId
+    end
     -- Follow: constantly walk toward the target (re-issues MoveTo, throttled). Re-click cancels.
     local function toggleFollow()
         if not curPlr then return end
-        if followId == curPlr.UserId then stopFollow(); return end
+        if followId == followKey(curPlr) then stopFollow(); return end
         stopFollow()
         local target = curPlr
-        followId = target.UserId
+        followId = followKey(target)
         if followBtn then followBtn.Text = "Following" end
         local nextAt = 0
         followConn = RunService.Heartbeat:Connect(function()
-            if followId ~= target.UserId or not target.Parent then stopFollow(); return end
+            if followId ~= followKey(target) then stopFollow(); return end
+            local tc = target.Character
+            if not (tc and tc.Parent) then stopFollow(); return end
             local t = os.clock()
             if t < nextAt then return end
             nextAt = t + 0.12
@@ -26055,9 +26207,23 @@ end)()
             if myhum and thrp then myhum:MoveTo(thrp.Position) end
         end)
     end
-    -- Copy Info: player details -> clipboard.
+    -- Copy Info: player details -> clipboard. Models copy name + health.
     local function copyInfo()
         if not curPlr then return end
+        if curPlr._model then
+            local hum = curPlr.Character and curPlr.Character:FindFirstChildOfClass("Humanoid")
+            local txt = string.format("NPC: %s\nHealth: %s",
+                curPlr.Name, hum and tostring(math.floor(hum.Health + 0.5)) or "?")
+            pcall(function()
+                if setclipboard then setclipboard(txt)
+                elseif toclipboard then toclipboard(txt) end
+            end)
+            if infoBtn then
+                infoBtn.Text = "Copied!"
+                task.delay(1.2, function() if infoBtn and infoBtn.Text == "Copied!" then infoBtn.Text = "Copy Info" end end)
+            end
+            return
+        end
         local uid = curPlr.UserId
         local seen, seenStr = PL._joinAt[uid], "unknown"
         if seen then
@@ -26107,23 +26273,35 @@ end)()
     followBtn = actionBtn("Follow",    UDim2.new(0, 0, 0, 60),   half, toggleFollow)
     infoBtn   = actionBtn("Copy Info", UDim2.new(0.5, 3, 0, 60), half, copyInfo)
 
+    -- v0.82.0: selection keys are UserId-or-debugId so models highlight too.
+    local function selKey(p)
+        if not p then return nil end
+        if p._model then return "m" .. (p.model and p.model:GetDebugId() or "?") end
+        return p.UserId
+    end
     function updateDetail(plr)
-        local changed = (plr and plr.UserId) ~= (curPlr and curPlr.UserId)
+        local changed = selKey(plr) ~= selKey(curPlr)
         curPlr = plr
-        if not plr or not plr.Parent then content.Visible = false; placeholder.Visible = true; return end
+        local isModel = plr and plr._model == true
+        local ref = isModel and plr.model or plr
+        if not plr or not ref or not ref.Parent then content.Visible = false; placeholder.Visible = true; return end
         placeholder.Visible = false; content.Visible = true
         local isSelf = (plr == LocalPlayer)
-        dPfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=180&h=180"
+        dPfp.Image = isModel and "" or ("rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=180&h=180")
         dName.Text = plr.DisplayName
-        dUser.Text = "@" .. plr.Name
-        idOdo.set(tostring(plr.UserId))
-        local tt, tc = teamInfo(plr)
-        dTeam.Text = tt; dTeam.TextColor3 = tc
-        if followBtn then followBtn.Text = (followId == plr.UserId) and "Following" or "Follow" end
+        dUser.Text = isModel and "NPC" or ("@" .. plr.Name)
+        idOdo.set(isModel and "-" or tostring(plr.UserId))
+        if isModel then
+            dTeam.Text = "NPC"; dTeam.TextColor3 = Palette.TextMuted
+        else
+            local tt, tc = teamInfo(plr)
+            dTeam.Text = tt; dTeam.TextColor3 = tc
+        end
+        if followBtn then followBtn.Text = (followId == followKey(plr)) and "Following" or "Follow" end
         if infoBtn then infoBtn.Text = "Copy Info" end
-        statusWrap.Visible = not isSelf
+        statusWrap.Visible = not isSelf and not isModel
         actsFrame.Visible = not isSelf
-        tlWrap.Visible = not isSelf
+        tlWrap.Visible = not isSelf and not isModel
         selfNote.Visible = isSelf
         for _, c in ipairs(statusWrap:GetChildren()) do c:Destroy() end
         if not isSelf then
@@ -26149,7 +26327,7 @@ end)()
         end
     end
     function selectPlayer(plr)
-        selectedId = plr and plr.UserId or nil
+        selectedId = selKey(plr)
         WM.raise("players")
         refreshHighlight()
         updateDetail(plr)
@@ -26212,6 +26390,45 @@ end)()
         card.MouseButton1Click:Connect(function() selectPlayer(plr) end)
         return { card = card, dn = dn, pill = pill, stroke = strokeI, plr = plr }
     end
+    -- v0.82.0: model cards for the all-humanoids feed. No avatar/UserId/team:
+    -- name strip + muted NPC pill, same selection/detail path via wrapper.
+    local function makeModelCard(model)
+        local wrap = { _model = true, model = model, Character = model,
+            Name = model.Name, DisplayName = model.Name }
+        local key = "m" .. model:GetDebugId()
+        local card = new("TextButton", { Name = "c" .. key, AutoButtonColor = false, Text = "",
+            BackgroundColor3 = Palette.PanelElevated, BorderSizePixel = 0, Parent = gridScroll },
+            { corner(10), stroke(Palette.Border) })
+        local strokeI = card:FindFirstChildOfClass("UIStroke")
+        local strip = new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0),
+            Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = Palette.Panel, BorderSizePixel = 0,
+            ZIndex = 2, Parent = card }, { corner(10) })
+        new("Frame", { BackgroundColor3 = Palette.Panel, BorderSizePixel = 0, ZIndex = 2,
+            Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 0, 12), Parent = strip })
+        new("Frame", { BackgroundColor3 = Palette.Border, BorderSizePixel = 0, ZIndex = 3,
+            Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 0, 1), Parent = strip })
+        local dn = new("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 4, 0, 3),
+            Size = UDim2.new(1, -8, 0, 11), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3,
+            FontFace = Theme.Fonts.Bold, TextSize = 10, TextColor3 = Palette.Text,
+            TextTruncate = Enum.TextTruncate.AtEnd, Text = model.Name, Parent = strip })
+        new("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 4, 0, 15),
+            Size = UDim2.new(1, -8, 0, 9), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3,
+            FontFace = Theme.Fonts.Bold, TextSize = 8, TextColor3 = Palette.TextFaint,
+            TextTruncate = Enum.TextTruncate.AtEnd, Text = "NPC", Parent = strip })
+        new("TextLabel", {
+            BackgroundColor3 = Palette.Background, BackgroundTransparency = 0.35, ZIndex = 4,
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -5, 0, 5),
+            AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 15),
+            FontFace = Theme.Fonts.Bold, TextSize = 10,
+            TextColor3 = Palette.TextMuted, Text = "NPC", Parent = card },
+            { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+        card.MouseEnter:Connect(function()
+            if selectedId ~= key then tween(dn, Theme.Animation.Fast, { TextColor3 = Palette.Accent }) end end)
+        card.MouseLeave:Connect(function()
+            if selectedId ~= key then tween(dn, Theme.Animation.Fast, { TextColor3 = Palette.Text }) end end)
+        card.MouseButton1Click:Connect(function() selectPlayer(wrap) end)
+        return { card = card, dn = dn, stroke = strokeI, plr = wrap }
+    end
 
     function rebuildGrid()
         for _, rec in pairs(cards) do rec.card:Destroy() end
@@ -26230,8 +26447,21 @@ end)()
                 order = order + 1
             end
         end
+        -- v0.82.0: all-humanoids feed appends model cards after the players.
+        local nModels = 0
+        if KoffeeOptions.IncludeHumanoids and NPC.allHumanoids then
+            for _, model in ipairs(NPC.allHumanoids()) do
+                if model.Parent and (q == ""
+                    or string.find(string.lower(model.Name), q, 1, true) ~= nil) then
+                    local rec = makeModelCard(model)
+                    rec.card.LayoutOrder = order + 1
+                    cards["m" .. model:GetDebugId()] = rec
+                    order, nModels = order + 1, nModels + 1
+                end
+            end
+        end
         refreshHighlight()
-        setTitle(#list)
+        setTitle(#list + nModels)
     end
     -- v0.70.0: lets the suspect scanner re-render badges when a new flag lands.
     Shared._playerListRefresh = function() if root.Visible then rebuildGrid() end end
