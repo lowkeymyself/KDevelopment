@@ -1,7 +1,7 @@
--- koffee v0.77.1
+-- koffee v0.78.0
 
 local Koffee = {}
-Koffee.Version = "0.77.1"
+Koffee.Version = "0.78.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9286,7 +9286,8 @@ local Move = {
     WalkSpeed    = { Speed = 60,  Key = nil, Mode = "Hold"   },
     TeleportWalk = { Speed = 80,  Key = nil, Mode = "Hold"   },
     Fly          = { Speed = 120, Key = nil, Mode = "Toggle", Kind = "Default Fly" },
-    Spin         = { Speed = 600, Key = nil, Mode = "Toggle", BypassCameraLock = false },
+    Spin         = { Speed = 600, Key = nil, Mode = "Toggle", BypassCameraLock = false,
+        Angle = 180, Smoothing = 1, Jitter = false, JitterAmp = 15, JitterSpeed = 8 },
     Noclip       = {              Key = nil, Mode = "Toggle" },
     Float        = { Speed = 50,  Key = nil, Mode = "Hold"   },
     ClickTP      = {              Key = nil, Mode = "Toggle" },
@@ -9540,13 +9541,11 @@ FEAT.fly = {
     end,
 }
 
--- v0.0.97 Spinbot rewrite: single path: HRP rotation at Last+1 priority.
--- Writes run AFTER every game character controller so HRP actually spins in
--- first-person / shift-lock / camera-lock games alike: in first person the
--- camera follows HRP so the view spins with it; in third-person the camera
--- follows the character position but the body rotates underneath.
--- BypassCameraLock flag is now informational (UI label): both modes use the
--- same writer since Last+1 beats any character controller.
+-- v0.78.0 Spinbot: single bind, two modes. Spin = continuous HRP yaw.
+-- Bypass Camera Lock = camera-relative anti-aim: the body holds Angle offset
+-- from the camera look (180 = backwards) with optional sine jitter, so
+-- shiftlock-style controllers aim where you look while the server sees the
+-- offset body. Writes run at Last+1, after every game character controller.
 local function findRootJoint(char)
     if not char then return nil end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -9557,12 +9556,16 @@ local function findRootJoint(char)
     return nil
 end
 FEAT.spinbot = {
-    on = function() st.spin = { a = 0, joint = nil, origC0 = nil, boundRS = false } end,
+    on = function() st.spin = { a = 0, jt = 0, joint = nil, origC0 = nil, boundRS = false } end,
     off = function()
         local s = st.spin
         if not s then return end
         if s.joint and s.origC0 then
             pcall(function() s.joint.C0 = s.origC0 end)
+        end
+        -- AA mode holds AutoRotate off; give it back on disable.
+        if s.aaHum then
+            pcall(function() if s.aaHum.Parent then s.aaHum.AutoRotate = s.aaOrig end end)
         end
         if s.boundRS then
             pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
@@ -9571,12 +9574,8 @@ FEAT.spinbot = {
     end,
     step = function(dt)
         local s = st.spin; if not s then return end
-        -- Nonlinear map: slider 1..1000 -> rad/s via 0.05 * v^1.7, so 1 is a
-        -- near-invisible crawl (~3 deg/s) and 1000 is ~630 rev/s.
-        s.a = s.a + math.rad(0.05 * Move.Spin.Speed ^ 1.7) * dt
-        -- bind HRP writer at Last+1 the first time we run (and on mode flip back
-        -- from the legacy bypass path). Same priority as the aimbot step so the
-        -- render order is predictable.
+        -- bind the HRP writer once; the closure branches on Bypass live, so
+        -- flipping modes never rebinds. Same priority as the aimbot step.
         if not s.boundRS then
             if s.joint and s.origC0 then
                 pcall(function() s.joint.C0 = s.origC0 end)
@@ -9584,10 +9583,55 @@ FEAT.spinbot = {
             end
             pcall(function()
                 RunService:BindToRenderStep("KSpinbot",
-                    Enum.RenderPriority.Last.Value + 1, function()
+                    Enum.RenderPriority.Last.Value + 1, function(rsDt)
                         local sp = st.spin; if not sp then return end
                         local r = rootOf(); if not r then return end
-                        r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
+                        local frameDt = rsDt or 0.016
+                        if Move.Spin.BypassCameraLock then
+                            local cam = workspace.CurrentCamera; if not cam then return end
+                            local look = cam.CFrame.LookVector
+                            local flat = Vector3.new(look.X, 0, look.Z)
+                            if flat.Magnitude < 0.001 then return end
+                            flat = flat.Unit
+                            local ch = r.Parent
+                            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                            if hum and sp.aaHum ~= hum then
+                                if sp.aaHum then
+                                    pcall(function()
+                                        if sp.aaHum.Parent then sp.aaHum.AutoRotate = sp.aaOrig end
+                                    end)
+                                end
+                                sp.aaHum, sp.aaOrig = hum, hum.AutoRotate
+                                pcall(function() hum.AutoRotate = false end)
+                            end
+                            local ang = Move.Spin.Angle or 180
+                            if Move.Spin.Jitter then
+                                sp.jt = (sp.jt or 0) + frameDt
+                                ang = ang + math.sin(sp.jt
+                                    * (Move.Spin.JitterSpeed or 8) * math.pi * 2)
+                                    * (Move.Spin.JitterAmp or 15)
+                            end
+                            local rad = math.rad(ang)
+                            local cs, sn = math.cos(rad), math.sin(rad)
+                            local rot = Vector3.new(
+                                flat.X * cs - flat.Z * sn, 0,
+                                flat.X * sn + flat.Z * cs)
+                            local target = CFrame.lookAt(r.Position, r.Position + rot)
+                            local sm = Move.Spin.Smoothing
+                            if sm == nil or sm >= 1 then r.CFrame = target
+                            else r.CFrame = r.CFrame:Lerp(target, math.clamp(sm, 0.01, 1)) end
+                        else
+                            if sp.aaHum then
+                                pcall(function()
+                                    if sp.aaHum.Parent then sp.aaHum.AutoRotate = sp.aaOrig end
+                                end)
+                                sp.aaHum = nil
+                            end
+                            -- Nonlinear map: slider 1..1000 -> rad/s via 0.05 * v^1.7,
+                            -- so 1 crawls (~3 deg/s) and 1000 hits ~630 rev/s.
+                            sp.a = sp.a + math.rad(0.05 * Move.Spin.Speed ^ 1.7) * frameDt
+                            r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
+                        end
                     end)
             end)
             s.boundRS = true
@@ -10412,6 +10456,13 @@ Koffee._characterTab = function(root)
     feat("Spinbot", "spinbot")
     slider(mv, "Spin Speed", 1, 1000, Move.Spin.Speed, 0, function(v) Move.Spin.Speed = v end)
     configCheckbox(mv, "Bypass Camera Lock", Move.Spin.BypassCameraLock, function(v) Move.Spin.BypassCameraLock = v end)
+    -- v0.78.0: Bypass flips spinbot into camera-relative anti-aim. Angle is
+    -- the body offset from camera look (180 = backwards); smoothing lerps it.
+    slider(mv, "AA Angle", 0, 360, Move.Spin.Angle or 180, 0, function(v) Move.Spin.Angle = v end)
+    slider(mv, "AA Smoothing", 0.01, 1, Move.Spin.Smoothing or 1, 2, function(v) Move.Spin.Smoothing = v end)
+    configCheckbox(mv, "AA Jitter", Move.Spin.Jitter, function(v) Move.Spin.Jitter = v end)
+    slider(mv, "Jitter Amp", 1, 90, Move.Spin.JitterAmp or 15, 0, function(v) Move.Spin.JitterAmp = v end)
+    slider(mv, "Jitter Speed", 1, 30, Move.Spin.JitterSpeed or 8, 0, function(v) Move.Spin.JitterSpeed = v end)
     feat("Noclip", "noclip")
     feat("Float", "float")
     slider(mv, "Float Speed", 0, 200, Move.Float.Speed, 0, function(v) Move.Float.Speed = v end)
