@@ -1,7 +1,7 @@
--- koffee v0.81.2
+-- koffee v0.81.3
 
 local Koffee = {}
-Koffee.Version = "0.81.2"
+Koffee.Version = "0.81.3"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -25002,21 +25002,15 @@ addTab("Extra", function(epanel)
         end
         scan()
     end)
-    -- v0.80.1: catalog scan scope lives here, not Combat Misc. Cycles the
-    -- auto-engine coverage; persists through combat_gun like the toggles.
-    local scopeBtn = hdrBtn("Scope", 5, function()
-        local G = Shared.Combat and Shared.Combat.Gun
-        if not G then return end
-        local cur = G.ScanScope or "Replicated"
-        local nxt = cur == "Replicated" and "Full Game"
-            or cur == "Full Game" and "Character" or "Replicated"
-        G.ScanScope = nxt
-        if scopeBtn then scopeBtn.Text = "Scope: " .. nxt end
-    end)
-    scopeBtn.Size = UDim2.new(0, 128, 0, 22)
+    -- v0.81.3: catalog scan scope as a real dropdown above the header bar
+    -- (the cycling button wrapped the row). Persists through combat_gun.
     do
         local G = Shared.Combat and Shared.Combat.Gun
-        if G and scopeBtn then scopeBtn.Text = "Scope: " .. (G.ScanScope or "Replicated") end
+        local dd = dropdown(host, "Scan Scope",
+            { "Character", "Replicated", "Full Game" },
+            (G and G.ScanScope) or "Replicated",
+            function(v) if G then G.ScanScope = v end end)
+        if dd and dd.frame then dd.frame.LayoutOrder = 0 end
     end
     srcLabel = new("TextLabel", {
         Text = "Hold a gun, or pick an instance", FontFace = Theme.Fonts.Regular,
