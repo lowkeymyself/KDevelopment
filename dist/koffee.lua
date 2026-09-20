@@ -1,7 +1,7 @@
--- koffee v0.79.2
+-- koffee v0.80.0
 
 local Koffee = {}
-Koffee.Version = "0.79.2"
+Koffee.Version = "0.80.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -10687,6 +10687,7 @@ local Combat = {
         RapidFire = false, RapidFireRate = 0.05,
         FastReload = false, InstantEquip = false,
         InfiniteAmmo = false,
+        ScanScope = "Replicated",
         HitboxExpander = false, HitboxSize = 10 },
     -- v0.0.88 HIT / KILL SOUNDS. Detection: universal Humanoid.Health drop watcher
     -- (A) per player. Attribution: "invisible target lock": each frame while LMB
@@ -13634,6 +13635,11 @@ local Combat = {
                 function(v) Combat.Gun.InstantEquip = v end)
             configCheckbox(miscCard, "Infinite Ammo", Combat.Gun.InfiniteAmmo,
                 function(v) Combat.Gun.InfiniteAmmo = v end)
+            -- v0.80.0: sweep coverage. Character = held/worn only, Replicated
+            -- adds ReplicatedStorage, Full Game walks everything but UI.
+            dropdown(miscCard, "Scan Scope", { "Character", "Replicated", "Full Game" },
+                Combat.Gun.ScanScope or "Replicated",
+                function(v) Combat.Gun.ScanScope = v end)
         end
         configCheckbox(miscCard, "Hitbox Expander", Combat.Gun.HitboxExpander,
             function(v) Combat.Gun.HitboxExpander = v end)
@@ -13864,9 +13870,10 @@ end)();
 (function()
     local G = Shared.Combat.Gun
     local RS = game:GetService("ReplicatedStorage")
+    local WS = game:GetService("Workspace")
     local orig = setmetatable({}, { __mode = "k" })
     local watchedC = setmetatable({}, { __mode = "k" })
-    local rsCache, rsAt, nextSweep = nil, 0, 0
+    local rsCache, rsAt, fullCache, fullAt, nextSweep = nil, 0, nil, 0, 0
     local NUM = {
         RapidFire  = { FireRate = true, BFireRate = true },
         FastReload = { ReloadTime = true, EReloadTime = true },
@@ -13938,11 +13945,33 @@ end)();
     end
     local function sweep()
         local now = os.clock()
-        if not rsCache or now >= rsAt then
-            local ok, desc = pcall(function() return RS:GetDescendants() end)
-            rsCache, rsAt = (ok and desc) or {}, now + 12
+        local scope = G.ScanScope or "Replicated"
+        if scope == "Full Game" then
+            -- whole game minus UI, 30s cache (big-map GetDescendants hitches).
+            -- PlayerGui skipped: HUD counters are display copies, pinning them
+            -- fights the HUD with zero effect on the gun.
+            if not fullCache or now >= fullAt then
+                fullCache, fullAt = {}, now + 30
+                local ok, desc = pcall(function() return game:GetDescendants() end)
+                if ok and desc then
+                    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                    for _, d in ipairs(desc) do
+                        if not pg or not d:IsDescendantOf(pg) then
+                            fullCache[#fullCache + 1] = d
+                        end
+                    end
+                end
+            end
+            applyList(fullCache)
+        elseif scope == "Replicated" then
+            if not rsCache or now >= rsAt then
+                local ok, desc = pcall(function() return RS:GetDescendants() end)
+                rsCache, rsAt = (ok and desc) or {}, now + 12
+            end
+            applyList(rsCache)
         end
-        applyList(rsCache)
+        -- live trees always ride along: respawns and pickups land between
+        -- cache refreshes, and Character scope is live-only by definition.
         local ch = LocalPlayer.Character
         if ch then
             local ok, desc = pcall(function() return ch:GetDescendants() end)
@@ -13956,11 +13985,12 @@ end)();
         -- ammo gui cache for the __index read spoof (fail open when absent).
         G._ammoGui = LocalPlayer:FindFirstChild("PlayerGui")
     end
-    local function watch(container)
+    local function watch(container, fullOnly)
         if not container or watchedC[container] then return end
         watchedC[container] = true
         container.ChildAdded:Connect(function(c)
             if Koffee.dead() or not armed() then return end
+            if fullOnly and (G.ScanScope or "Replicated") ~= "Full Game" then return end
             task.defer(function()
                 if c:IsA("NumberValue") or c:IsA("BoolValue") then route(c) end
                 local ok, desc = pcall(function() return c:GetDescendants() end)
@@ -13970,6 +14000,8 @@ end)();
     end
     watch(LocalPlayer.Character)
     watch(LocalPlayer:FindFirstChildOfClass("Backpack"))
+    watch(RS)
+    watch(WS, true)
     LocalPlayer.CharacterAdded:Connect(function(ch)
         task.wait(0.5)
         if Koffee.dead() then return end
