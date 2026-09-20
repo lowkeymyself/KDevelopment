@@ -1,7 +1,7 @@
--- koffee v0.82.2
+-- koffee v0.82.3
 
 local Koffee = {}
-Koffee.Version = "0.82.2"
+Koffee.Version = "0.82.3"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -14030,41 +14030,46 @@ end)();
             end
         end
     end
-    -- v0.82.0 FULL RESULTS: Mods-tab picker over the whole game. Values only
-    -- (attributes stay manual-pick): parents holding 1+ catalog names, capped
-    -- at 200 groups, own 15s cache so the picker never waits on the sweep.
+    -- v0.82.0 FULL RESULTS: Mods-tab picker over the whole game.
+    -- v0.82.3: NO name filter. The catalog is for the auto-engine; the picker
+    -- lists every parent holding tunables (any Number/Int/Bool Value, or any
+    -- attributes on a Model/Tool/Folder), sorted by count. Capped, cached.
     Shared.GunMods = Shared.GunMods or {}
     do
         local gsCache, gsAt = nil, 0
-        local function gsMatch(nm, isBool)
-            if NUM[nm] then return true end
-            if isBool and AUTO[nm] then return true end
-            local lnm = string.lower(nm)
-            if hasFrag(lnm, EQ_A) and hasFrag(lnm, EQ_B) then return true end
-            return false
-        end
         Shared.GunMods.fullScan = function()
             local now = os.clock()
             if gsCache and now - gsAt < 15 then return gsCache end
             local groups, order = {}, {}
+            local function hit(p, n)
+                if not groups[p] then
+                    if #order >= 300 then return end
+                    groups[p] = 0
+                    order[#order + 1] = p
+                end
+                groups[p] = groups[p] + n
+            end
             local ok, desc = pcall(function() return game:GetDescendants() end)
             if ok and desc then
                 local pg = LocalPlayer:FindFirstChild("PlayerGui")
                 for _, d in ipairs(desc) do
-                    if #order >= 200 then break end
-                    if d:IsA("NumberValue") or d:IsA("BoolValue") then
-                        local p = d.Parent
-                        if p and (not pg or not d:IsDescendantOf(pg))
-                            and gsMatch(d.Name, d:IsA("BoolValue")) then
-                            if not groups[p] then
-                                groups[p] = 0
-                                order[#order + 1] = p
+                    if #order >= 300 then break end
+                    if not pg or not d:IsDescendantOf(pg) then
+                        if d:IsA("NumberValue") or d:IsA("IntValue") or d:IsA("BoolValue") then
+                            local p = d.Parent
+                            if p then hit(p, 1) end
+                        elseif d:IsA("Model") or d:IsA("Tool") or d:IsA("Folder") then
+                            local okA, at = pcall(function() return d:GetAttributes() end)
+                            if okA and at and next(at) ~= nil then
+                                local n = 0
+                                for _ in pairs(at) do n = n + 1 end
+                                hit(d, n)
                             end
-                            groups[p] = groups[p] + 1
                         end
                     end
                 end
             end
+            table.sort(order, function(a, b) return (groups[a] or 0) > (groups[b] or 0) end)
             local out = {}
             for _, p in ipairs(order) do
                 local path = ""
