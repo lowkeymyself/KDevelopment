@@ -1,7 +1,7 @@
--- koffee v0.82.0
+-- koffee v0.82.1
 
 local Koffee = {}
-Koffee.Version = "0.82.0"
+Koffee.Version = "0.82.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -24977,7 +24977,7 @@ addTab("Extra", function(epanel)
         end
         local root = resolveRoot()
         if not root then
-            srcLabel.Text = current.mode == "none" and "Hold a gun, or pick an instance"
+            srcLabel.Text = current.mode == "none" and "Hold a gun, pick an instance, or set Scope to Full Game"
                 or "Source gone: rescan"
             return
         end
@@ -25057,9 +25057,13 @@ addTab("Extra", function(epanel)
         srcLabel.Text = "Scanning game..."
         task.spawn(function()
             local results = {}
-            if Shared.GunMods and Shared.GunMods.fullScan then
+            local supported = Shared.GunMods and Shared.GunMods.fullScan
+            if supported then
                 local ok, r = pcall(Shared.GunMods.fullScan)
                 if ok and type(r) == "table" then results = r end
+            else
+                srcLabel.Text = "Re-exec latest Koffee for Full Game scan"
+                return
             end
             if resDD then resDD.destroy(); resDD = nil end
             resMap = {}
@@ -25157,7 +25161,7 @@ addTab("Extra", function(epanel)
         if dd and dd.frame then dd.frame.LayoutOrder = 0 end
     end
     srcLabel = new("TextLabel", {
-        Text = "Hold a gun, or pick an instance", FontFace = Theme.Fonts.Regular,
+        Text = "Hold a gun, pick an instance, or set Scope to Full Game", FontFace = Theme.Fonts.Regular,
         TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14),
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -25176,6 +25180,17 @@ addTab("Extra", function(epanel)
         TextXAlignment = Enum.TextXAlignment.Left,
         LayoutOrder = 4, ZIndex = 34, Parent = host,
     })
+    -- v0.82.1: Full Game needs no starting source, so the sweep fires on its
+    -- own: when this page is shown (and once at build) with Scope on Full and
+    -- nothing picked yet. Opening the tab is all it takes.
+    host:GetPropertyChangedSignal("Visible"):Connect(function()
+        if Koffee.dead() then return end
+        if not host.Visible then return end
+        local on = ((Shared.Combat and Shared.Combat.Gun
+            and Shared.Combat.Gun.ScanScope) or "Replicated") == "Full Game"
+        if on and current.mode == "none" and gameSweep then gameSweep() end
+    end)
+    refreshFullUI()
     -- reassert pins + refresh live values, throttled. Resolves fresh per
     -- tick so round rebuilds re-attach instead of dying on stale refs.
     local lastTick = 0
