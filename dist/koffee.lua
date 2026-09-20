@@ -1,7 +1,7 @@
--- koffee v0.83.0
+-- koffee v0.83.1
 
 local Koffee = {}
-Koffee.Version = "0.83.0"
+Koffee.Version = "0.83.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -26328,9 +26328,14 @@ end)()
         if followBtn then followBtn.Text = "Follow" end
     end
     -- v0.82.0: models have no UserId, so follow keys are UserId-or-instance.
+    -- v0.83.1: NEVER read ._model off a Player directly: unknown members on
+    -- Instances throw (the old _npc crash). typeof gate first, everywhere.
+    local function isModelRef(p)
+        return typeof(p) == "table" and p._model == true
+    end
     local function followKey(t)
         if not t then return nil end
-        if t._model then return t.model end
+        if isModelRef(t) then return t.model end
         return t.UserId
     end
     -- Follow: constantly walk toward the target (re-issues MoveTo, throttled). Re-click cancels.
@@ -26357,7 +26362,7 @@ end)()
     -- Copy Info: player details -> clipboard. Models copy name + health.
     local function copyInfo()
         if not curPlr then return end
-        if curPlr._model then
+        if isModelRef(curPlr) then
             local hum = curPlr.Character and curPlr.Character:FindFirstChildOfClass("Humanoid")
             local txt = string.format("NPC: %s\nHealth: %s",
                 curPlr.Name, hum and tostring(math.floor(hum.Health + 0.5)) or "?")
@@ -26423,13 +26428,14 @@ end)()
     -- v0.82.0: selection keys are UserId-or-debugId so models highlight too.
     local function selKey(p)
         if not p then return nil end
-        if p._model then return "m" .. (p.model and p.model:GetDebugId() or "?") end
+        if isModelRef(p) then return "m" .. (p.model and p.model:GetDebugId() or "?") end
+        if typeof(p) ~= "Instance" then return nil end
         return p.UserId
     end
     function updateDetail(plr)
         local changed = selKey(plr) ~= selKey(curPlr)
         curPlr = plr
-        local isModel = plr and plr._model == true
+        local isModel = isModelRef(plr)
         local ref = isModel and plr.model or plr
         if not plr or not ref or not ref.Parent then content.Visible = false; placeholder.Visible = true; return end
         placeholder.Visible = false; content.Visible = true
@@ -26451,7 +26457,7 @@ end)()
         tlWrap.Visible = not isSelf and not isModel
         selfNote.Visible = isSelf
         for _, c in ipairs(statusWrap:GetChildren()) do c:Destroy() end
-        if not isSelf then
+        if not isSelf and not isModel then
             local cur = PL.statusFor(plr)
             local curName = (cur == "exclude" and "Exclude") or (cur == "prioritize" and "Prioritize") or "None"
             dropdown(statusWrap, "Status", { "None", "Exclude", "Prioritize" }, curName, function(v)
