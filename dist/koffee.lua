@@ -1,7 +1,7 @@
--- koffee v0.80.0
+-- koffee v0.81.0
 
 local Koffee = {}
-Koffee.Version = "0.80.0"
+Koffee.Version = "0.81.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -13873,7 +13873,7 @@ end)();
     local WS = game:GetService("Workspace")
     local orig = setmetatable({}, { __mode = "k" })
     local watchedC = setmetatable({}, { __mode = "k" })
-    local rsCache, rsAt, fullCache, fullAt, nextSweep = nil, 0, nil, 0, 0
+    local rsCache, rsAt, fullCache, fullAt, nextSweep, nextGC = nil, 0, nil, 0, 0, 0
     local NUM = {
         RapidFire  = { FireRate = true, BFireRate = true },
         FastReload = { ReloadTime = true, EReloadTime = true },
@@ -13943,6 +13943,95 @@ end)();
             if d:IsA("NumberValue") or d:IsA("BoolValue") then route(d) end
         end
     end
+    -- v0.81.0 GC TABLE HUNTER: tuning that lives in Lua tables (required
+    -- config modules, upvalue tables) instead of Values. getgc scans for
+    -- tables holding 2+ catalog keys, then pins the fields in place. rawget
+    -- reads never invent keys; restores run per-key on toggle-off and as a
+    -- full flush when everything disarms. Case-insensitive: module keys are
+    -- usually PascalCase, Value names are not.
+    local TNUM, TAUTO = {}, {}
+    for mod, set in pairs(NUM) do
+        for nm in pairs(set) do TNUM[string.lower(nm)] = mod end
+    end
+    for nm in pairs(AUTO) do TAUTO[string.lower(nm)] = true end
+    local OWN = {}
+    local torig = setmetatable({}, { __mode = "k" })
+    local function tsave(t, k)
+        local o = torig[t]
+        if not o then o = {}; torig[t] = o end
+        if o[k] == nil then o[k] = rawget(t, k) end
+    end
+    local function trestore(t, k)
+        local o = torig[t]
+        if o and o[k] ~= nil then
+            local v = o[k]; o[k] = nil
+            pcall(function() t[k] = v end)
+        end
+    end
+    local function tforce(t, k, want)
+        tsave(t, k)
+        pcall(function() if t[k] ~= want then t[k] = want end end)
+    end
+    local function scoreTable(t)
+        local hits, n = 0, 0
+        local seenEq = false
+        local ok = pcall(function()
+            for k in pairs(t) do
+                n = n + 1
+                if n > 60 or hits >= 2 then break end
+                if type(k) == "string" then
+                    local lk = string.lower(k)
+                    if TNUM[lk] or TAUTO[lk] then hits = hits + 1 end
+                    if not seenEq and hasFrag(lk, EQ_A) and hasFrag(lk, EQ_B) then
+                        seenEq = true; hits = hits + 1
+                    end
+                end
+            end
+        end)
+        if not ok then return 0 end
+        return hits
+    end
+    local function routeTable(t)
+        pcall(function()
+            for k in pairs(t) do
+                if type(k) == "string" then
+                    local lk, rv = string.lower(k), rawget(t, k)
+                    if rv ~= nil then
+                        local mod = TNUM[lk]
+                        if mod and type(rv) == "number" then
+                            if G[mod] then
+                                local want = (mod == "RapidFire") and (G.RapidFireRate or 0.05)
+                                    or (mod == "FastReload" and 0.01 or 0)
+                                tforce(t, k, want)
+                            else trestore(t, k) end
+                        elseif TAUTO[lk] and type(rv) == "boolean" then
+                            if G.RapidFire then tforce(t, k, true) else trestore(t, k) end
+                        elseif type(rv) == "number"
+                            and hasFrag(lk, EQ_A) and hasFrag(lk, EQ_B) then
+                            if G.InstantEquip then tforce(t, k, 0.01) else trestore(t, k) end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+    local function hunt()
+        OWN[G] = true
+        if Shared.Combat then
+            local S = Shared.Combat.Silent
+            local A = Shared.Combat.Aim
+            if S and S.Legit then OWN[S.Legit] = true end
+            if A and A.Legit then OWN[A.Legit] = true end
+        end
+        if type(getgc) ~= "function" then return end
+        local ok, all = pcall(getgc, true)
+        if not ok or type(all) ~= "table" then return end
+        for _, v in ipairs(all) do
+            if type(v) == "table" and not OWN[v] and scoreTable(v) >= 2 then
+                routeTable(v)
+            end
+        end
+    end
     local function sweep()
         local now = os.clock()
         local scope = G.ScanScope or "Replicated"
@@ -14010,8 +14099,21 @@ end)();
         if armed() then sweep() end
     end)
     RunService.Heartbeat:Connect(function()
-        if Koffee.dead() or not armed() then return end
+        if Koffee.dead() then return end
         local now = os.clock()
+        -- hunter cadence: 8s while armed (getgc walks are heavy), full
+        -- restore flush once everything disarms.
+        if now >= nextGC then
+            nextGC = now + 8
+            if armed() then hunt()
+            else
+                for t, o in pairs(torig) do
+                    for k, v in pairs(o) do o[k] = nil; pcall(function() t[k] = v end) end
+                    torig[t] = nil
+                end
+            end
+        end
+        if not armed() then return end
         if now < nextSweep then return end
         nextSweep = now + 2
         sweep()
