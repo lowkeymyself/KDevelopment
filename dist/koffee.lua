@@ -1,7 +1,7 @@
--- koffee v0.79.0
+-- koffee v0.79.1
 
 local Koffee = {}
-Koffee.Version = "0.79.0"
+Koffee.Version = "0.79.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -9286,8 +9286,9 @@ local Move = {
     WalkSpeed    = { Speed = 60,  Key = nil, Mode = "Hold"   },
     TeleportWalk = { Speed = 80,  Key = nil, Mode = "Hold"   },
     Fly          = { Speed = 120, Key = nil, Mode = "Toggle", Kind = "Default Fly" },
-    Spin         = { Speed = 600, Key = nil, Mode = "Toggle", BypassCameraLock = false,
-        AASpin = 720, Smoothing = 1, Jitter = false, JitterAmp = 15, JitterSpeed = 8 },
+    Spin         = { Speed = 600, Key = nil, Mode = "Toggle",
+        Smoothing = 1, JitterAmp = 15, JitterSpeed = 8 },
+    AAJitter     = {              Key = nil, Mode = "Toggle" },
     Noclip       = {              Key = nil, Mode = "Toggle" },
     Float        = { Speed = 50,  Key = nil, Mode = "Hold"   },
     ClickTP      = {              Key = nil, Mode = "Toggle" },
@@ -9300,7 +9301,7 @@ local CustomAnimCFG = { Key = nil, Mode = "Toggle", Name = "Orbit 1" }
 local CFG = {
     walkspeed = Move.WalkSpeed, teleportwalk = Move.TeleportWalk, fly = Move.Fly,
     spinbot = Move.Spin, noclip = Move.Noclip, float = Move.Float, clicktp = Move.ClickTP,
-    jitterwalk = Move.Jitter, customanim = CustomAnimCFG,
+    jitterwalk = Move.Jitter, customanim = CustomAnimCFG, aajitter = Move.AAJitter,
 }
 -- v0.0.96: CustomAnim got its own registry slot. Its Key/Mode live here (off
 -- the movement CFG table) and the Name field must survive a config save/load just
@@ -9541,11 +9542,10 @@ FEAT.fly = {
     end,
 }
 
--- v0.79.0 Spinbot: single bind, two modes. Spin = continuous HRP yaw.
--- Bypass Camera Lock = joint anti-aim spin: the Waist (R15) or Root (R6)
--- joint C0 whirls the upper body while legs, HRP, and your camera stay put,
--- so walk anims and movement read natural and shiftlock never notices.
--- Writes run at Last+1, after every game character controller.
+-- v0.79.1 Spinbot + AA Jitter: one Last+1 writer, first-activated wins (ties
+-- go to spinbot). Spin whirls the root; AA rides the camera yaw on the root
+-- (shiftlock cooperates instead of fighting) while the twist joint oscillates.
+-- Legs keep their anims in both modes.
 local function findRootJoint(char)
     if not char then return nil end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -9555,99 +9555,98 @@ local function findRootJoint(char)
     end
     return nil
 end
-FEAT.spinbot = {
-    on = function() st.spin = { a = 0, jt = 0, aaA = 0, joint = nil, origC0 = nil, boundRS = false } end,
-    off = function()
-        local s = st.spin
-        if not s then return end
-        if s.joint and s.origC0 then
-            pcall(function() s.joint.C0 = s.origC0 end)
-        end
-        -- AA mode twists a live joint; give it back straight on disable.
-        if s.aaJoint and s.aaOrigC0 then
-            pcall(function() s.aaJoint.C0 = s.aaOrigC0 end)
-        end
-        if s.boundRS then
-            pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
-        end
-        st.spin = nil
-    end,
-    step = function(dt)
-        local s = st.spin; if not s then return end
-        -- bind the writer once; the closure branches on Bypass live, so
-        -- flipping modes never rebinds. Same priority as the aimbot step.
-        if not s.boundRS then
-            if s.joint and s.origC0 then
-                pcall(function() s.joint.C0 = s.origC0 end)
-                s.joint = nil; s.origC0 = nil
-            end
-            pcall(function()
-                RunService:BindToRenderStep("KSpinbot",
-                    Enum.RenderPriority.Last.Value + 1, function(rsDt)
-                        local sp = st.spin; if not sp then return end
-                        local r = rootOf(); if not r then return end
-                        local frameDt = rsDt or 0.016
-                        if Move.Spin.BypassCameraLock then
-                            -- AA SPIN on the twist joint. Legs keep their anims,
-                            -- HRP keeps its facing, camera never moves with it.
-                            local ch = r.Parent
-                            local j = sp.aaJoint
-                            if not j or not j.Parent or sp.aaChar ~= ch then
-                                if sp.aaJoint and sp.aaOrigC0 then
-                                    pcall(function() sp.aaJoint.C0 = sp.aaOrigC0 end)
-                                end
-                                sp.aaJoint, sp.aaOrigC0, sp.aaChar = nil, nil, ch
-                                if ch then
-                                    local lt = ch:FindFirstChild("LowerTorso")
-                                    local w = lt and lt:FindFirstChild("Waist")
-                                    if w and w:IsA("Motor6D") then
-                                        sp.aaJoint = w
-                                    else
-                                        local rt = r:FindFirstChild("Root")
-                                        if rt and rt:IsA("Motor6D") then sp.aaJoint = rt end
-                                    end
-                                    if sp.aaJoint then
-                                        sp.aaOrigC0 = sp.aaJoint.C0
-                                    end
-                                end
-                                j = sp.aaJoint
-                            end
-                            sp.aaA = (sp.aaA or 0)
-                                + math.rad(Move.Spin.AASpin or 720) * frameDt
-                            local ang = sp.aaA
-                            if Move.Spin.Jitter then
-                                sp.jt = (sp.jt or 0) + frameDt
-                                ang = ang + math.sin(sp.jt
-                                    * (Move.Spin.JitterSpeed or 8) * math.pi * 2)
-                                    * math.rad(Move.Spin.JitterAmp or 15)
-                            end
-                            if j and sp.aaOrigC0 then
-                                local target = sp.aaOrigC0 * CFrame.Angles(0, ang, 0)
-                                local sm = Move.Spin.Smoothing
-                                pcall(function()
-                                    if sm == nil or sm >= 1 then j.C0 = target
-                                    else j.C0 = j.C0:Lerp(target, math.clamp(sm, 0.01, 1)) end
-                                end)
-                            else
-                                -- jointless rig: whirl the root instead of going dead.
-                                sp.a = sp.a + math.rad(Move.Spin.AASpin or 720) * frameDt
-                                r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
-                            end
-                        else
-                            if sp.aaJoint and sp.aaOrigC0 then
-                                pcall(function() sp.aaJoint.C0 = sp.aaOrigC0 end)
-                                sp.aaJoint, sp.aaOrigC0 = nil, nil
-                            end
-                            -- Nonlinear map: slider 1..1000 -> rad/s via 0.05 * v^1.7,
-                            -- so 1 crawls (~3 deg/s) and 1000 hits ~630 rev/s.
-                            sp.a = sp.a + math.rad(0.05 * Move.Spin.Speed ^ 1.7) * frameDt
-                            r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
+-- shared spin writer: bound while either feature runs, released when neither
+-- does. Stamps in on() record activation order for the first-wins rule.
+local function ensureSpinBind()
+    if st.spinBound then return end
+    st.spinBound = true
+    pcall(function()
+        RunService:BindToRenderStep("KSpinbot",
+            Enum.RenderPriority.Last.Value + 1, function(rsDt)
+                local frameDt = rsDt or 0.016
+                local sp, aa = st.spin, st.aa
+                if not (sp or aa) then return end
+                local r = rootOf(); if not r then return end
+                local useSpin
+                if sp and aa then useSpin = (st.spinAt or 0) <= (st.aaAt or 0)
+                elseif sp then useSpin = true
+                else useSpin = false end
+                if useSpin then
+                    if st.aaJoint and st.aaOrigC0 then
+                        pcall(function() st.aaJoint.C0 = st.aaOrigC0 end)
+                        st.aaJoint, st.aaOrigC0, st.aaChar = nil, nil, nil
+                    end
+                    -- Nonlinear map: slider 1..1000 -> rad/s via 0.05 * v^1.7,
+                    -- so 1 crawls (~3 deg/s) and 1000 hits ~630 rev/s.
+                    sp.a = (sp.a or 0) + math.rad(0.05 * Move.Spin.Speed ^ 1.7) * frameDt
+                    r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
+                else
+                    -- AA JITTER: root rides the camera yaw (what shiftlock wants,
+                    -- so nothing fights) while the twist joint oscillates. Legs
+                    -- keep their anims; jointless rigs just ride the camera.
+                    local cam = workspace.CurrentCamera
+                    if cam then
+                        local look = cam.CFrame.LookVector
+                        local flat = Vector3.new(look.X, 0, look.Z)
+                        if flat.Magnitude >= 0.001 then
+                            flat = flat.Unit
+                            r.CFrame = CFrame.new(r.Position, r.Position + flat)
                         end
-                    end)
+                    end
+                    local ch = r.Parent
+                    local j = st.aaJoint
+                    if not j or not j.Parent or st.aaChar ~= ch then
+                        if st.aaJoint and st.aaOrigC0 then
+                            pcall(function() st.aaJoint.C0 = st.aaOrigC0 end)
+                        end
+                        st.aaJoint, st.aaOrigC0, st.aaChar = nil, nil, ch
+                        if ch then
+                            local lt = ch:FindFirstChild("LowerTorso")
+                            local w = lt and lt:FindFirstChild("Waist")
+                            if w and w:IsA("Motor6D") then
+                                st.aaJoint = w
+                            else
+                                local rt = r:FindFirstChild("Root")
+                                if rt and rt:IsA("Motor6D") then st.aaJoint = rt end
+                            end
+                            if st.aaJoint then st.aaOrigC0 = st.aaJoint.C0 end
+                        end
+                        j = st.aaJoint
+                    end
+                    aa.jt = (aa.jt or 0) + frameDt
+                    local ang = math.sin(aa.jt
+                        * (Move.Spin.JitterSpeed or 8) * math.pi * 2)
+                        * math.rad(Move.Spin.JitterAmp or 15)
+                    if j and st.aaOrigC0 then
+                        local target = st.aaOrigC0 * CFrame.Angles(0, ang, 0)
+                        local sm = Move.Spin.Smoothing
+                        pcall(function()
+                            if sm == nil or sm >= 1 then j.C0 = target
+                            else j.C0 = j.C0:Lerp(target, math.clamp(sm, 0.01, 1)) end
+                        end)
+                    end
+                end
             end)
-            s.boundRS = true
-        end
-    end,
+    end)
+end
+local function releaseSpinBind()
+    if st.spin or st.aa then return end
+    if st.aaJoint and st.aaOrigC0 then
+        pcall(function() st.aaJoint.C0 = st.aaOrigC0 end)
+    end
+    st.aaJoint, st.aaOrigC0, st.aaChar = nil, nil, nil
+    if st.spinBound then
+        pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
+    end
+    st.spinBound = nil
+end
+FEAT.spinbot = {
+    on = function() st.spin = { a = 0 }; st.spinAt = os.clock(); ensureSpinBind() end,
+    off = function() st.spin = nil; releaseSpinBind() end,
+}
+FEAT.aajitter = {
+    on = function() st.aa = { jt = 0 }; st.aaAt = os.clock(); ensureSpinBind() end,
+    off = function() st.aa = nil; releaseSpinBind() end,
 }
 
 FEAT.float = {
@@ -9943,7 +9942,7 @@ local function reg(id, name)
 end
 reg("walkspeed", "WalkSpeed"); reg("teleportwalk", "Teleport Walk"); reg("fly", "Fly")
 reg("jitterwalk", "Jitter-Walk")
-reg("spinbot", "Spinbot"); reg("noclip", "Noclip"); reg("float", "Float"); reg("clicktp", "Click TP")
+reg("spinbot", "Spinbot"); reg("aajitter", "AA Jitter"); reg("noclip", "Noclip"); reg("float", "Float"); reg("clicktp", "Click TP")
 reg("customanim", "Custom Anim")
 registerModule("antifling", "Antifling", function() end, function() end)   -- no keybind: on = on
 
@@ -10466,12 +10465,11 @@ Koffee._characterTab = function(root)
     dropdown(mv, "Fly Mode", { "Default Fly", "Vehicle Fly", "CFrame Fly", "Velocity Fly", "Align Fly", "Swim Fly" }, Move.Fly.Kind, function(v) Move.Fly.Kind = v end)
     feat("Spinbot", "spinbot")
     slider(mv, "Spin Speed", 1, 1000, Move.Spin.Speed, 0, function(v) Move.Spin.Speed = v end)
-    configCheckbox(mv, "Bypass Camera Lock", Move.Spin.BypassCameraLock, function(v) Move.Spin.BypassCameraLock = v end)
-    -- v0.78.0: Bypass flips spinbot into joint anti-aim spin. Legs stay on
-    -- their anims while the upper body whirls; smoothing lerps the twist.
-    slider(mv, "AA Spin", 0, 3600, Move.Spin.AASpin or 720, 0, function(v) Move.Spin.AASpin = v end)
+    -- v0.79.1: AA Jitter is its own keybind feature. First-activated wins
+    -- while both run (ties go to spinbot); the root rides the camera yaw so
+    -- shiftlock cooperates, the twist joint oscillates, legs keep anims.
+    feat("AA Jitter", "aajitter")
     slider(mv, "AA Smoothing", 0.01, 1, Move.Spin.Smoothing or 1, 2, function(v) Move.Spin.Smoothing = v end)
-    configCheckbox(mv, "AA Jitter", Move.Spin.Jitter, function(v) Move.Spin.Jitter = v end)
     slider(mv, "Jitter Amp", 1, 90, Move.Spin.JitterAmp or 15, 0, function(v) Move.Spin.JitterAmp = v end)
     slider(mv, "Jitter Speed", 1, 30, Move.Spin.JitterSpeed or 8, 0, function(v) Move.Spin.JitterSpeed = v end)
     feat("Noclip", "noclip")
