@@ -1,7 +1,7 @@
--- koffee v0.81.0
+-- koffee v0.81.1
 
 local Koffee = {}
-Koffee.Version = "0.81.0"
+Koffee.Version = "0.81.1"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -13635,11 +13635,6 @@ local Combat = {
                 function(v) Combat.Gun.InstantEquip = v end)
             configCheckbox(miscCard, "Infinite Ammo", Combat.Gun.InfiniteAmmo,
                 function(v) Combat.Gun.InfiniteAmmo = v end)
-            -- v0.80.0: sweep coverage. Character = held/worn only, Replicated
-            -- adds ReplicatedStorage, Full Game walks everything but UI.
-            dropdown(miscCard, "Scan Scope", { "Character", "Replicated", "Full Game" },
-                Combat.Gun.ScanScope or "Replicated",
-                function(v) Combat.Gun.ScanScope = v end)
         end
         configCheckbox(miscCard, "Hitbox Expander", Combat.Gun.HitboxExpander,
             function(v) Combat.Gun.HitboxExpander = v end)
@@ -24966,6 +24961,22 @@ addTab("Extra", function(epanel)
         end
         scan()
     end)
+    -- v0.80.1: catalog scan scope lives here, not Combat Misc. Cycles the
+    -- auto-engine coverage; persists through combat_gun like the toggles.
+    local scopeBtn = hdrBtn("Scope", 5, function()
+        local G = Shared.Combat and Shared.Combat.Gun
+        if not G then return end
+        local cur = G.ScanScope or "Replicated"
+        local nxt = cur == "Replicated" and "Full Game"
+            or cur == "Full Game" and "Character" or "Replicated"
+        G.ScanScope = nxt
+        scopeBtn.Text = "Scope: " .. nxt
+    end)
+    scopeBtn.Size = UDim2.new(0, 128, 0, 22)
+    do
+        local G = Shared.Combat and Shared.Combat.Gun
+        if G then scopeBtn.Text = "Scope: " .. (G.ScanScope or "Replicated") end
+    end
     srcLabel = new("TextLabel", {
         Text = "Hold a gun, or pick an instance", FontFace = Theme.Fonts.Regular,
         TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
