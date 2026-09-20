@@ -1,7 +1,7 @@
--- koffee v0.82.3
+-- koffee v0.83.0
 
 local Koffee = {}
-Koffee.Version = "0.82.3"
+Koffee.Version = "0.83.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -24748,6 +24748,7 @@ addTab("Extra", function(epanel)
     local function entryId(srcId, sub, name) return srcId .. "|" .. sub .. "|" .. name end
     local function srcId()
         if current.mode == "tool" then return "tool:" .. (current.toolName or "?") end
+        if current.mode == "multi" then return "multi:" .. (current.name or "?") end
         return "path:" .. current.path
     end
     local function resolveRoot()
@@ -24774,14 +24775,32 @@ addTab("Extra", function(epanel)
         end
         return nil
     end
-    local function resolveEntry(e)
-        local root = resolveRoot()
-        if not root then return nil end
+    -- v0.83.0 BULK: multi mode holds a same-named instance set. resolveRoots
+    -- lists the live ones; nodeOf/resolveAll fan a row out across them, so one
+    -- row sets/pins every same-named gun at once. Single modes behave as before.
+    local function resolveRoots()
+        if current.mode == "multi" then
+            local out = {}
+            for _, inst in ipairs(current.roots or {}) do
+                if inst and inst.Parent then out[#out + 1] = inst end
+            end
+            return out
+        end
+        local r = resolveRoot()
+        if r then return { r } end
+        return {}
+    end
+    local function nodeOf(e, root)
         local node = root
         if e.sub ~= "" then
             node = root:FindFirstChild(e.sub)
             if not node then return nil end
         end
+        return node
+    end
+    local function handleOf(e, root)
+        local node = nodeOf(e, root)
+        if not node then return nil end
         if e.isAttr then
             local v = node:GetAttribute(e.name)
             return (v ~= nil) and { attr = true, node = node } or nil
@@ -24791,21 +24810,44 @@ addTab("Extra", function(epanel)
             or v:IsA("BoolValue") or v:IsA("StringValue")) then return v end
         return nil
     end
+    local function resolveEntry(e)
+        for _, root in ipairs(resolveRoots()) do
+            local h = handleOf(e, root)
+            if h then return h end
+        end
+        return nil
+    end
+    local function resolveAll(e)
+        local out = {}
+        for _, root in ipairs(resolveRoots()) do
+            local h = handleOf(e, root)
+            if h then out[#out + 1] = h end
+        end
+        return out
+    end
     local function readEntry(e)
-        local h = resolveEntry(e)
-        if not h then return nil end
-        if e.isAttr then return h.node:GetAttribute(e.name) end
-        return h.Value
+        for _, h in ipairs(resolveAll(e)) do
+            if e.isAttr then
+                local v = h.node:GetAttribute(e.name)
+                if v ~= nil then return v end
+            else
+                return h.Value
+            end
+        end
+        return nil
     end
     local function writeEntry(e, want)
-        local h = resolveEntry(e)
-        if not h then return false end
-        if e.isAttr then
-            local ok = pcall(function() h.node:SetAttribute(e.name, want) end)
-            return ok
+        local wrote = false
+        for _, h in ipairs(resolveAll(e)) do
+            local ok
+            if e.isAttr then
+                ok = pcall(function() h.node:SetAttribute(e.name, want) end)
+            else
+                ok = pcall(function() h.Value = want end)
+            end
+            if ok then wrote = true end
         end
-        local ok = pcall(function() h.Value = want end)
-        return ok
+        return wrote
     end
     local function fmt(v)
         local t = typeof(v)
@@ -24822,33 +24864,61 @@ addTab("Extra", function(epanel)
     -- value every frame (spread bloom): the changed signal wins it back
     -- the same frame. Heartbeat re-hooks after round rebuilds.
     local function unhookPin(pin)
-        if pin.conn then pcall(function() pin.conn:Disconnect() end) end
-        pin.conn, pin.hookInst = nil, nil
+        if pin.conns then
+            for _, c in ipairs(pin.conns) do pcall(function() c:Disconnect() end) end
+        end
+        pin.conns = {}
     end
     local function hookPin(pin, e)
         unhookPin(pin)
-        local h = resolveEntry(e)
-        if not h then return end
-        local inst = e.isAttr and h.node or h
-        local sig = e.isAttr and h.node:GetAttributeChangedSignal(e.name)
-            or h:GetPropertyChangedSignal("Value")
-        if not sig then return end
-        pin.hookInst = inst
-        pin.conn = sig:Connect(function()
-            if not pin.on then return end
-            local cur = readEntry(e)
-            if cur ~= nil and pin.want ~= nil and cur ~= pin.want then
-                writeEntry(e, pin.want)
+        for _, h in ipairs(resolveAll(e)) do
+            local inst = e.isAttr and h.node or h
+            local sig = e.isAttr and h.node:GetAttributeChangedSignal(e.name)
+                or h:GetPropertyChangedSignal("Value")
+            if sig then
+                pin.conns[#pin.conns + 1] = sig:Connect(function()
+                    if not pin.on then return end
+                    local cur = readEntry(e)
+                    if cur ~= nil and pin.want ~= nil and cur ~= pin.want then
+                        writeEntry(e, pin.want)
+                    end
+                end)
             end
-        end)
+        end
         if pin.want ~= nil then writeEntry(e, pin.want) end
+    end
+    -- per-handle originals: same-named guns may hold different values, so each
+    -- handle restores its own. Keyed inline (handle + attr name).
+    local function snapOrig(pin, e)
+        pin.origs = pin.origs or {}
+        for _, h in ipairs(resolveAll(e)) do
+            local hi = e.isAttr and h.node or h
+            local nm = e.isAttr and e.name or nil
+            local found = false
+            for _, r in ipairs(pin.origs) do
+                if r.h == hi and r.nm == nm then found = true; break end
+            end
+            if not found then
+                local v = e.isAttr and hi:GetAttribute(e.name) or hi.Value
+                if v ~= nil then pin.origs[#pin.origs + 1] = { h = hi, nm = nm, v = v } end
+            end
+        end
+    end
+    local function restoreOrigs(pin)
+        for _, r in ipairs(pin.origs or {}) do
+            pcall(function()
+                if r.h.Parent then
+                    if r.nm then r.h:SetAttribute(r.nm, r.v) else r.h.Value = r.v end
+                end
+            end)
+        end
     end
     -- one row: pin toggle | name | live value | editor (box or bool flip).
     -- Enter in the box = set once now. Pin = hold against rewrites.
     local function buildRow(list, e, id, kind)
         local pin = pins[id]
         if not pin then
-            pin = { on = false, want = nil, orig = nil, kind = kind }
+            pin = { on = false, want = nil, origs = nil, conns = {}, kind = kind }
             pins[id] = pin
         end
         local row = new("Frame", {
@@ -24886,20 +24956,14 @@ addTab("Extra", function(epanel)
             pinBtn.Text = pin.on and "On" or "Off"
             pinBtn.TextColor3 = pin.on and Theme.Palette.Accent or Theme.Palette.TextMuted
         end
-        local function snapOrig()
-            if pin.orig == nil then
-                local v = readEntry(e)
-                if v ~= nil then pin.orig = v end
-            end
-        end
         pinBtn.MouseButton1Click:Connect(function()
             pin.on = not pin.on
             if pin.on then
-                snapOrig()
+                snapOrig(pin, e)
                 hookPin(pin, e)
             else
                 unhookPin(pin)
-                if pin.orig ~= nil then writeEntry(e, pin.orig) end
+                restoreOrigs(pin)
             end
             paintPin()
             syncPinSave(id)
@@ -24918,7 +24982,7 @@ addTab("Extra", function(epanel)
                 local v = readEntry(e)
                 pin.want = not (v == true)
                 if pin.want == false and v == false then pin.want = true end
-                snapOrig()
+                snapOrig(pin, e)
                 writeEntry(e, pin.want)
                 flip.Text = tostring(pin.want)
                 syncPinSave(id)
@@ -24938,7 +25002,7 @@ addTab("Extra", function(epanel)
                 local w = kind == "number" and tonumber(box.Text) or box.Text
                 if w == nil or (kind ~= "number" and w == "") then return end
                 pin.want = w
-                snapOrig()
+                snapOrig(pin, e)
                 writeEntry(e, w)
                 syncPinSave(id)
             end)
@@ -24972,25 +25036,37 @@ addTab("Extra", function(epanel)
             if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
         end
         rows = {}
-        -- v0.82.0/v0.82.2: Full Game scope never needs a source. Nothing
-        -- picked, or a dead one, sweeps the game into the results picker.
+        -- v0.82.0/v0.82.2/v0.83.0: Full Game scope never needs a source.
+        -- Nothing picked, or every root dead, sweeps the game into the
+        -- results picker. Multi mode resolves its own root set.
         local scopeOn = ((Shared.Combat and Shared.Combat.Gun
             and Shared.Combat.Gun.ScanScope) or "Replicated") == "Full Game"
-        local root = resolveRoot()
-        if scopeOn and (current.mode == "none" or not root) and gameSweep then
+        local scanRoots = {}
+        if current.mode == "multi" then
+            scanRoots = resolveRoots()
+        else
+            local r = resolveRoot()
+            if r then scanRoots = { r } end
+        end
+        if scopeOn and #scanRoots == 0 and gameSweep then
             current = { mode = "none", inst = nil, path = "" }
             gameSweep()
             return
         end
-        if not root then
+        if #scanRoots == 0 then
             srcLabel.Text = "Source gone: rescan"
             return
         end
-        srcLabel.Text = (current.mode == "tool" and "tool: " or "instance: ") .. root.Name
+        local root = scanRoots[1]
+        if current.mode == "multi" then
+            srcLabel.Text = #scanRoots .. " x " .. (current.name or "?")
+        else
+            srcLabel.Text = (current.mode == "tool" and "tool: " or "instance: ") .. root.Name
+        end
         local sid = srcId()
         local seen = {}
-        local common, rest = {}, {}
-        local function add(sub, v, isAttr, aname)
+        local common, rest = {}
+        local function add(rt, sub, v, isAttr, aname)
             local key = sub .. "|" .. (isAttr and ("@" .. aname) or v.Name)
             if seen[key] then return end
             seen[key] = true
@@ -24999,7 +25075,7 @@ addTab("Extra", function(epanel)
                 kind = v:IsA("BoolValue") and "bool"
                     or ((v:IsA("IntValue") or v:IsA("NumberValue")) and "number" or "string")
             else
-                local av = root:GetAttribute(aname)
+                local av = rt:GetAttribute(aname)
                 local at = typeof(av)
                 kind = (at == "number" and "number") or (at == "boolean" and "bool") or "string"
                 if at ~= "number" and at ~= "boolean" and at ~= "string" then return end
@@ -25008,23 +25084,25 @@ addTab("Extra", function(epanel)
             local bucket = isCommonGun(e.name) and common or rest
             bucket[#bucket + 1] = { e = e, kind = kind }
         end
-        for _, c in ipairs(root:GetChildren()) do
-            if c:IsA("IntValue") or c:IsA("NumberValue")
-                or c:IsA("BoolValue") or c:IsA("StringValue") then
-                add("", c, false)
+        for _, rt in ipairs(scanRoots) do
+            for _, c in ipairs(rt:GetChildren()) do
+                if c:IsA("IntValue") or c:IsA("NumberValue")
+                    or c:IsA("BoolValue") or c:IsA("StringValue") then
+                    add(rt, "", c, false)
+                end
             end
-        end
-        local okA, attrs = pcall(function() return root:GetAttributes() end)
-        if okA and attrs then
-            for aname in pairs(attrs) do add("", nil, true, aname) end
-        end
-        -- one level into Folders (Gunfight-style Variables pattern).
-        for _, c in ipairs(root:GetChildren()) do
-            if c:IsA("Folder") then
-                for _, k in ipairs(c:GetChildren()) do
-                    if k:IsA("IntValue") or k:IsA("NumberValue")
-                        or k:IsA("BoolValue") or k:IsA("StringValue") then
-                        add(c.Name, k, false)
+            local okA, attrs = pcall(function() return rt:GetAttributes() end)
+            if okA and attrs then
+                for aname in pairs(attrs) do add(rt, "", nil, true, aname) end
+            end
+            -- one level into Folders (Gunfight-style Variables pattern).
+            for _, c in ipairs(rt:GetChildren()) do
+                if c:IsA("Folder") then
+                    for _, k in ipairs(c:GetChildren()) do
+                        if k:IsA("IntValue") or k:IsA("NumberValue")
+                            or k:IsA("BoolValue") or k:IsA("StringValue") then
+                            add(rt, c.Name, k, false)
+                        end
                     end
                 end
             end
@@ -25076,26 +25154,51 @@ addTab("Extra", function(epanel)
                 srcLabel.Text = "Full scan: no tunables found"
                 return
             end
+            -- v0.83.0 BULK: merge same-named parents. One pick drives every
+            -- same-named gun at once through multi mode.
+            local groups, order = {}, {}
+            for _, e in ipairs(results) do
+                local g = groups[e.name]
+                if not g then
+                    g = { name = e.name, insts = {}, count = 0 }
+                    groups[e.name] = g
+                    order[#order + 1] = g
+                end
+                g.insts[#g.insts + 1] = e.inst
+                g.count = g.count + (e.count or 0)
+            end
             local opts = {}
-            for i, e in ipairs(results) do
-                resMap[i] = e
-                opts[#opts + 1] = e.name .. " (" .. e.count .. ")"
+            for i, g in ipairs(order) do
+                resMap[i] = g
+                opts[#opts + 1] = g.name .. " (" .. #g.insts .. ")"
             end
             resDD = dropdown(host, "Results", opts, opts[1], function(v)
                 for i, o in ipairs(opts) do
-                    local e = resMap[i]
-                    if o == v and e and e.inst.Parent then
-                        current = { mode = "picked", inst = e.inst, path = e.path or "" }
-                        scan()
+                    local g = resMap[i]
+                    if o == v and g then
+                        local live = {}
+                        for _, inst in ipairs(g.insts) do
+                            if inst.Parent then live[#live + 1] = inst end
+                        end
+                        if #live > 0 then
+                            current = { mode = "multi", name = g.name, roots = live }
+                            scan()
+                        end
                         break
                     end
                 end
             end)
             if resDD and resDD.frame then resDD.frame.LayoutOrder = 2 end
             local first = resMap[1]
-            if first and first.inst.Parent then
-                current = { mode = "picked", inst = first.inst, path = first.path or "" }
-                scan()
+            if first then
+                local live = {}
+                for _, inst in ipairs(first.insts) do
+                    if inst.Parent then live[#live + 1] = inst end
+                end
+                if #live > 0 then
+                    current = { mode = "multi", name = first.name, roots = live }
+                    scan()
+                end
             end
             refreshFullUI()
         end)
@@ -25144,9 +25247,7 @@ addTab("Extra", function(epanel)
     hdrBtn("Restore All", 4, function()
         for id, pin in pairs(pins) do
             unhookPin(pin)
-            if pin.orig ~= nil and rows[id] then
-                writeEntry(rows[id].entry, pin.orig)
-            end
+            if rows[id] then restoreOrigs(pin) end
             pin.on = false
             syncPinSave(id)
         end
@@ -25221,10 +25322,10 @@ addTab("Extra", function(epanel)
                 else
                     r.cur.Text = fmt(v)
                     if pin.on then
-                        -- re-hook after rebuilds (fresh instance, dead signal).
-                        local h = resolveEntry(r.entry)
-                        local inst = h and (r.entry.isAttr and h.node or h)
-                        if pin.conn == nil or pin.hookInst ~= inst then
+                        -- re-hook after rebuilds (fresh instances, dead
+                        -- signals): hook count must match live handles.
+                        local hs = resolveAll(r.entry)
+                        if #(pin.conns or {}) ~= #hs then
                             hookPin(pin, r.entry)
                         elseif pin.want ~= nil and v ~= pin.want then
                             writeEntry(r.entry, pin.want)
@@ -25241,6 +25342,19 @@ addTab("Extra", function(epanel)
         local src, sub, nm = id:match("^(.*)|(.*)|(.*)$")
         if not (src and sub and nm) then return nil end
         return src, sub, nm
+    end
+    -- v0.83.0: multi sources reseed by name off the full-scan cache, so a
+    -- bulk pick survives reloads as long as same-named instances exist.
+    local function resolveMulti(name)
+        if not name or name == "" then return nil end
+        if not (Shared.GunMods and Shared.GunMods.fullScan) then return nil end
+        local ok, r = pcall(Shared.GunMods.fullScan)
+        if not ok or type(r) ~= "table" then return nil end
+        local out = {}
+        for _, e in ipairs(r) do
+            if e.name == name and e.inst.Parent then out[#out + 1] = e.inst end
+        end
+        return #out > 0 and out or nil
     end
     local function resolveSrc(src)
         local tname = src:match("^tool:(.*)$")
@@ -25263,27 +25377,32 @@ addTab("Extra", function(epanel)
     Shared._modsReconcile = function()
         for id, pin in pairs(pins) do
             unhookPin(pin)
-            if pin.orig ~= nil and rows[id] then
-                writeEntry(rows[id].entry, pin.orig)
-            end
+            if rows[id] then restoreOrigs(pin) end
         end
         for k in pairs(pins) do pins[k] = nil end
         local counts = {}
         for id, sp in pairs(ModSave.Pins or {}) do
             if type(sp) == "table" and type(id) == "string" and splitPinId(id) then
                 local src = splitPinId(id)
-                pins[id] = { on = sp.on and true or false, want = sp.want, orig = nil, kind = sp.kind }
+                pins[id] = { on = sp.on and true or false, want = sp.want, origs = nil, conns = {}, kind = sp.kind }
                 counts[src] = (counts[src] or 0) + 1
             end
         end
         local best, bestN = nil, 0
         for src, n in pairs(counts) do
-            if n > bestN and resolveSrc(src) then best, bestN = src, n end
+            local live = false
+            local mname = src:match("^multi:(.*)$")
+            if mname then live = resolveMulti(mname) ~= nil
+            else live = resolveSrc(src) ~= nil end
+            if n > bestN and live then best, bestN = src, n end
         end
         if best then
             local tname = best:match("^tool:(.*)$")
+            local mname = best:match("^multi:(.*)$")
             if tname then
                 current = { mode = "tool", toolName = tname, inst = nil, path = "" }
+            elseif mname then
+                current = { mode = "multi", name = mname, roots = resolveMulti(mname) or {} }
             else
                 current = { mode = "picked", inst = nil, path = best:match("^path:(.*)$") or "" }
             end
