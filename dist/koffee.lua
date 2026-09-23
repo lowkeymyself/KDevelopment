@@ -1,7 +1,7 @@
 -- koffee v0.83.1
 
 local Koffee = {}
-Koffee.Version = "0.83.1"
+Koffee.Version = "0.84.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -286,6 +286,7 @@ do
         "user", "users", "rotate-cw", "refresh-cw", "circle-plus", "sliders-horizontal",
         "maximize-2", "minimize-2", "navigation",   -- v0.56.0: preview + teleport UI
         "folder-tree", "info", "server", "music", "keyboard",  -- v0.62.0: window-switcher bar
+        "mouse-pointer-click", "user-plus", "fingerprint", "file", "package", "rotate-3d",  -- v0.84.0: NPC tab
     }
     local MANIFEST = {
         { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
@@ -23010,170 +23011,243 @@ local function makeViewport(parent, model, opts)
     fillViewport(vp, model, opts)
     return vp
 end
--- v0.56.0: interactive preview window. Drag the title bar to move it, drag inside
--- the viewport to orbit the camera, scroll to zoom, and the maximise button blows
--- it up to a big centred view (toggles back). Lives on popupScreen, above the menu.
+-- v0.84.0: popup-space cursor. GetMouseLocation includes the topbar inset and
+-- popup space does not (same drift the v0.72.3 settings popups fixed).
+local GuiService = game:GetService("GuiService")
+local function cursorXY()
+    local mp = UIS:GetMouseLocation()
+    local inset = GuiService:GetGuiInset()
+    return mp.X - inset.X, mp.Y - inset.Y
+end
+local function screenSize()
+    local cam = Workspace.CurrentCamera
+    return cam and cam.ViewportSize or Vector2.new(1280, 720)
+end
+local function placePopup(frame, x, y, w, h)
+    local s = screenSize()
+    x = math.clamp(x, 4, math.max(4, s.X - w - 4))
+    y = math.clamp(y, 4, math.max(4, s.Y - h - 4))
+    local ox, oy = popupOffsetFor(frame, x, y)
+    frame.Position = UDim2.fromOffset(ox, oy)
+end
+-- recreate an icon under the same parent with a new glyph (lucideIcon has no setter)
+local function swapIcon(ic, name)
+    local n = Koffee.lucideIcon(ic.Parent, name, ic.Size.X.Offset, ic.ImageColor3, ic.ZIndex)
+    n.AnchorPoint, n.Position, n.LayoutOrder = ic.AnchorPoint, ic.Position, ic.LayoutOrder
+    ic:Destroy()
+    return n
+end
+local function instIcon(inst)
+    if inst.Parent == game then return "folder-tree" end
+    if inst:FindFirstChildOfClass("Humanoid") then return "user" end
+    if inst:IsA("Model") then return "package" end
+    if inst:IsA("BasePart") then return "box" end
+    if inst:IsA("Folder") then return "folder" end
+    return "file"
+end
+Shared.npcInstIcon = instIcon
+
+-- world position + size of anything physical; nil for containers with no parts.
+local function posOf(inst)
+    if not (inst and inst.Parent) then return nil end
+    if inst:IsA("BasePart") then return inst.Position, inst.Size end
+    local p = inst:FindFirstChildWhichIsA("BasePart", true)
+    if not p then return nil end
+    if inst:IsA("Model") then
+        local cf, size = boundsOf(inst)
+        return cf.Position, size
+    end
+    return p.Position, p.Size
+end
+
+-- v0.84.0: lands on top of the target's bounds. The old bbox-centre + 3 put you
+-- inside anything over 6 studs tall, and folders sent you to the world origin.
+local function teleportTo(inst)
+    local char = LocalPlayer and LocalPlayer.Character
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char.PrimaryPart)
+    local pos, size = posOf(inst)
+    if not pos then
+        Koffee.notify("Teleport", "Nothing physical to land on", { severity = "error" })
+        return false
+    end
+    if not hrp then return false end
+    pcall(function()
+        hrp.CFrame = CFrame.new(pos + Vector3.new(0, size.Y / 2 + 3, 0)) * hrp.CFrame.Rotation
+        hrp.AssemblyLinearVelocity = Vector3.zero
+    end)
+    return true
+end
+
+-- v0.84.0: View puts the camera on the target (its Humanoid, else an anchor part),
+-- Unview hands it back. The picker loop auto-unviews once the target is gone.
+local viewing = nil
+local function isViewing(inst) return viewing ~= nil and viewing == inst end
+local function unview()
+    viewing = nil
+    local cam = Workspace.CurrentCamera
+    local c = LocalPlayer.Character
+    local h = c and c:FindFirstChildOfClass("Humanoid")
+    if cam and h then pcall(function() cam.CameraSubject = h end) end
+end
+local function view(inst)
+    local subj = (inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid")) or npcAnchor(inst)
+    local cam = Workspace.CurrentCamera
+    if not (subj and cam) then
+        Koffee.notify("View", "Nothing physical to look at", { severity = "error" })
+        return false
+    end
+    viewing = inst
+    pcall(function() cam.CameraSubject = subj end)
+    return true
+end
+local function toggleView(inst)
+    if isViewing(inst) then unview() else view(inst) end
+    if NPC._onViewChanged then NPC._onViewChanged() end
+end
+NPC.viewTick = function() if viewing and not viewing.Parent then unview() end end
+
+-- v0.56.0: interactive preview window. v0.84.0: drags follow the global mouse so
+-- fast moves never drop, wheel zoom works (MouseWheel arrives on InputChanged, it
+-- never fired from InputBegan), spawn is inset-correct, and the title bar gained
+-- Teleport + View. One window per instance: re-opening moves it to the cursor.
+local previews = {}
 local function openPreview(model)
-    local SMALL = Vector2.new(260, 300)
+    local SMALL = Vector2.new(280, 320)
+    local existing = previews[model]
+    if existing and existing.Parent then
+        local cx, cy = cursorXY()
+        placePopup(existing, cx + 12, cy + 12, existing.AbsoluteSize.X, existing.AbsoluteSize.Y)
+        return
+    end
     local holder = new("Frame", {
         Size = UDim2.fromOffset(SMALL.X, SMALL.Y), BackgroundColor3 = Theme.Palette.Panel,
-        BorderSizePixel = 0, ZIndex = 250, Parent = popupScreen, Active = true,
+        ZIndex = 250, Parent = popupScreen, Active = true,
     }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
-    local function vpSize() return workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720) end
-    local scr = vpSize()
-    holder.Position = UDim2.fromOffset(
-        math.clamp(UIS:GetMouseLocation().X, 8, math.max(8, scr.X - SMALL.X - 8)),
-        math.clamp(UIS:GetMouseLocation().Y, 8, math.max(8, scr.Y - SMALL.Y - 8)))
+    previews[model] = holder
+    local cx, cy = cursorXY()
+    placePopup(holder, cx + 12, cy + 12, SMALL.X, SMALL.Y)
 
-    local title = new("TextLabel", {
+    local bar = new("Frame", {
+        BackgroundTransparency = 1, Active = true, Size = UDim2.new(1, -118, 0, 34), ZIndex = 251, Parent = holder,
+    })
+    local tIc = Koffee.lucideIcon(bar, instIcon(model), 13, Theme.Palette.TextMuted, 252)
+    tIc.AnchorPoint = Vector2.new(0, 0.5); tIc.Position = UDim2.new(0, 12, 0, 17)
+    new("TextLabel", {
         Text = model.Name, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd,
-        Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -74, 0, 16), ZIndex = 252, Parent = holder,
+        Position = UDim2.new(0, 32, 0, 9), Size = UDim2.new(1, -36, 0, 16), ZIndex = 252, Parent = bar,
     })
-    local function chip(x, icon)
+    local function chip(x, icon, onClick)
         local b = new("TextButton", {
             Text = "", BackgroundColor3 = Theme.Palette.Pill, Size = UDim2.fromOffset(22, 22),
             Position = UDim2.new(1, x, 0, 6), ZIndex = 252, Parent = holder, AutoButtonColor = true,
         }, { corner(6) })
-        Koffee.lucideIcon(b, icon, 13, Theme.Palette.TextMuted)
-        return b
+        local rec = { btn = b, ic = Koffee.lucideIcon(b, icon, 13, Theme.Palette.TextMuted, 253) }
+        b.MouseButton1Click:Connect(function() onClick(rec) end)
+        return rec
     end
-    local fsBtn    = chip(-54, "maximize-2")
-    local closeBtn = chip(-28, "x")
     local vp = new("ViewportFrame", {
         BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.2,
-        Position = UDim2.fromOffset(10, 34), Size = UDim2.new(1, -20, 1, -44),
+        Position = UDim2.fromOffset(10, 34), Size = UDim2.new(1, -20, 1, -64),
         ZIndex = 251, Parent = holder, Active = true,
     }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
-    local _cam, orbit = nil, nil
+    new("TextLabel", {
+        Text = "Drag to orbit, scroll to zoom", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 1, -26), Size = UDim2.new(1, -24, 0, 20), ZIndex = 252, Parent = holder,
+    })
+    local orbit = nil
     if previewable(model) then
-        _cam, orbit = fillViewport(vp, model, { z = 251, interactive = true })
+        local _
+        _, orbit = fillViewport(vp, model, { z = 251, interactive = true })
     else
         new("TextLabel", {
-            Text = "no preview", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            Text = "No preview", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
             ZIndex = 252, Parent = vp,
         })
     end
 
-    -- orbit: drag inside the viewport spins the camera; wheel zooms
-    local dragging, lastPos = false, nil
-    vp.InputBegan:Connect(function(io)
-        if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then
-            dragging = true; lastPos = io.Position
-        elseif io.UserInputType == Enum.UserInputType.MouseWheel and orbit then
+    local conns, mode, last = {}, nil, nil
+    local function isPress(io)
+        return io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch
+    end
+    vp.InputBegan:Connect(function(io) if isPress(io) then mode, last = "orbit", io.Position end end)
+    bar.InputBegan:Connect(function(io) if isPress(io) then mode, last = "move", io.Position end end)
+    vp.InputChanged:Connect(function(io)
+        if io.UserInputType == Enum.UserInputType.MouseWheel and orbit then
             orbit.zoom(io.Position.Z > 0 and 0.88 or 1.14)
         end
     end)
-    vp.InputChanged:Connect(function(io)
-        if dragging and orbit and (io.UserInputType == Enum.UserInputType.MouseMovement or io.UserInputType == Enum.UserInputType.Touch) then
-            local d = io.Position - lastPos; lastPos = io.Position
-            orbit.rotate(d.X * 0.01, d.Y * 0.01)
-        end
-    end)
-    vp.InputEnded:Connect(function(io)
-        if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then dragging = false end
-    end)
-
-    -- drag the whole window by its title bar
-    local moving, moveLast = false, nil
-    title.Active = true
-    title.InputBegan:Connect(function(io)
-        if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then
-            moving = true; moveLast = io.Position
-        end
-    end)
-    title.InputChanged:Connect(function(io)
-        if moving and (io.UserInputType == Enum.UserInputType.MouseMovement or io.UserInputType == Enum.UserInputType.Touch) then
-            local d = io.Position - moveLast; moveLast = io.Position
+    conns[#conns + 1] = UIS.InputChanged:Connect(function(io)
+        if not mode or Koffee.dead() then return end
+        local t = io.UserInputType
+        if t ~= Enum.UserInputType.MouseMovement and t ~= Enum.UserInputType.Touch then return end
+        local d = io.Position - last; last = io.Position
+        if mode == "orbit" then
+            if orbit then orbit.rotate(d.X * 0.01, d.Y * 0.01) end
+        else
             holder.Position = holder.Position + UDim2.fromOffset(d.X, d.Y)
         end
     end)
-    title.InputEnded:Connect(function(io)
-        if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then moving = false end
+    conns[#conns + 1] = UIS.InputEnded:Connect(function(io) if isPress(io) then mode = nil end end)
+    holder.Destroying:Connect(function()
+        for _, c in ipairs(conns) do c:Disconnect() end
+        if previews[model] == holder then previews[model] = nil end
     end)
 
-    -- maximise: blow the window up to a big centred view, toggle back
+    chip(-106, "navigation", function() teleportTo(model) end)
+    chip(-80, isViewing(model) and "eye-off" or "eye", function(rec)
+        toggleView(model)
+        rec.ic = swapIcon(rec.ic, isViewing(model) and "eye-off" or "eye")
+    end)
     local full = false
-    fsBtn.MouseButton1Click:Connect(function()
+    chip(-54, "maximize-2", function(rec)
         full = not full
-        local s = vpSize()
+        local s = screenSize()
         if full then
             local w, h = math.floor(s.X * 0.72), math.floor(s.Y * 0.78)
-            holder.Position = UDim2.fromOffset(math.floor((s.X - w) / 2), math.floor((s.Y - h) / 2))
+            placePopup(holder, math.floor((s.X - w) / 2), math.floor((s.Y - h) / 2), w, h)
             tween(holder, Theme.Animation.Fast, { Size = UDim2.fromOffset(w, h) })
         else
-            holder.Position = UDim2.fromOffset(
-                math.clamp(holder.AbsolutePosition.X, 8, math.max(8, s.X - SMALL.X - 8)),
-                math.clamp(holder.AbsolutePosition.Y, 8, math.max(8, s.Y - SMALL.Y - 8)))
+            local a = holder.AbsolutePosition
+            placePopup(holder, a.X, a.Y, SMALL.X, SMALL.Y)
             tween(holder, Theme.Animation.Fast, { Size = UDim2.fromOffset(SMALL.X, SMALL.Y) })
         end
-        Koffee.lucideIcon(fsBtn, full and "minimize-2" or "maximize-2", 13, Theme.Palette.TextMuted)
+        -- v0.84.0: swap, not stack. The old toggle added a second glyph each click.
+        rec.ic = swapIcon(rec.ic, full and "minimize-2" or "maximize-2")
     end)
-    closeBtn.MouseButton1Click:Connect(function() holder:Destroy() end)
+    chip(-28, "x", function() holder:Destroy() end)
 end
 
--- v0.56.0: teleport the local character to an instance's position (part center or
--- model bounding-box center), lifted a little so we do not spawn inside the floor.
-local function teleportTo(inst)
-    local char = LocalPlayer and LocalPlayer.Character
-    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char.PrimaryPart)
-    if not hrp then return false end
-    local cf = boundsOf(inst)
-    pcall(function() hrp.CFrame = CFrame.new(cf.Position + Vector3.new(0, 3, 0)) end)
-    return true
-end
-
--- v0.56.0 (grown v0.57.0): right-click context menu. A tiny floating card at the
--- cursor: Preview, Teleport To, plus the two exclusion actions that feed the
--- Username scan (session selection, or a persistent learned-signature exclusion).
--- Auto-dismisses on any click elsewhere (a full-screen catcher behind it).
+-- v0.56.0 (grown v0.57.0, v0.84.0): right-click menu at the cursor. Select (when
+-- the caller can), Preview, Teleport To, View / Unview, Learn as NPC, and the two
+-- Username-scan exclusions. Any click outside (either button) dismisses it.
 local ctxMenu = nil
-local function openContextMenu(inst)
+local function closeContextMenu()
     if ctxMenu then ctxMenu:Destroy(); ctxMenu = nil end
-    local scr = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
-    local W, rowH, N = 170, 28, 4
-    local catcher = new("TextButton", {
-        Text = "", BackgroundTransparency = 1, Active = true, AutoButtonColor = false,
-        Size = UDim2.new(1, 0, 1, 0), ZIndex = 258, Parent = popupScreen,
-    })
-    ctxMenu = catcher
-    local cardH = rowH * N + (N - 1) * 4 + 10
-    local card = new("Frame", {
-        BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0,
-        Size = UDim2.fromOffset(W, cardH), ZIndex = 259, Parent = catcher,
-        Position = UDim2.fromOffset(
-            math.clamp(UIS:GetMouseLocation().X, 4, math.max(4, scr.X - W - 4)),
-            math.clamp(UIS:GetMouseLocation().Y, 4, math.max(4, scr.Y - cardH - 4))),
-    }, { corner(8), stroke(Theme.Palette.BorderSubtle),
-        new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5),
-            PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
-        new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
-    local function close() if ctxMenu then ctxMenu:Destroy(); ctxMenu = nil end end
-    catcher.MouseButton1Click:Connect(close)
-    local function item(icon, label, cb, order)
-        local b = new("TextButton", {
-            Text = "", BackgroundColor3 = Theme.Palette.Pill, BackgroundTransparency = 0.25,
-            AutoButtonColor = true, Size = UDim2.new(1, 0, 0, rowH), LayoutOrder = order, ZIndex = 260, Parent = card,
-        }, { corner(6) })
-        local ic = Koffee.lucideIcon(b, icon, 14, Theme.Palette.TextMuted, 261)
-        ic.AnchorPoint = Vector2.new(0, 0.5); ic.Position = UDim2.new(0, 10, 0.5, 0)
-        new("TextLabel", {
-            Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-            Position = UDim2.new(0, 32, 0, 0), Size = UDim2.new(1, -38, 1, 0), ZIndex = 261, Parent = b,
-        })
-        b.MouseButton1Click:Connect(function() close(); cb() end)
-        return b
+end
+local function openContextMenu(inst, extra)
+    closeContextMenu()
+    if not (inst and inst.Parent) then return end
+    local items = {}
+    if extra and extra.onSelect then items[#items + 1] = { "mouse-pointer-click", "Select", extra.onSelect } end
+    items[#items + 1] = { "rotate-3d", "Preview", function() openPreview(inst) end }
+    items[#items + 1] = { "navigation", "Teleport To", function() teleportTo(inst) end }
+    if isViewing(inst) then
+        items[#items + 1] = { "eye-off", "Unview", function() toggleView(inst) end }
+    else
+        items[#items + 1] = { "eye", "View", function() toggleView(inst) end }
     end
-    item("eye", "Preview", function() openPreview(inst) end, 1)
-    item("navigation", "Teleport To", function() teleportTo(inst) end, 2)
-    item("ban", "Exclude (session)", function()
+    items[#items + 1] = { "user-plus", "Learn as NPC", function()
+        if NPC._learnInst then NPC._learnInst(inst, "model") end
+    end }
+    items[#items + 1] = { "ban", "Exclude (session)", function()
         NPC._excludeSel[inst] = true
         if NPC._refreshExcl then NPC._refreshExcl() end
-    end, 3)
-    item("eye-off", "Exclude (learn)", function()
+    end }
+    items[#items + 1] = { "fingerprint", "Exclude (learn)", function()
         local sig = signature(inst)
         if sig ~= "" then
             local dup = false
@@ -23181,8 +23255,42 @@ local function openContextMenu(inst)
             if not dup then NPC.ExcludeSigs[#NPC.ExcludeSigs + 1] = sig end
         end
         if NPC._refreshExcl then NPC._refreshExcl() end
-    end, 4)
+    end }
+
+    local W, rowH, N = 184, 28, #items
+    local catcher = new("TextButton", {
+        Text = "", BackgroundTransparency = 1, Active = true, AutoButtonColor = false,
+        Size = UDim2.fromScale(1, 1), ZIndex = 258, Parent = popupScreen,
+    })
+    ctxMenu = catcher
+    catcher.MouseButton1Click:Connect(closeContextMenu)
+    catcher.MouseButton2Click:Connect(closeContextMenu)
+    local cardH = rowH * N + (N - 1) * 4 + 10
+    local card = new("Frame", {
+        BackgroundColor3 = Theme.Palette.Panel, Size = UDim2.fromOffset(W, cardH), ZIndex = 259, Parent = catcher,
+    }, { corner(8), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5),
+            PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
+        new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local cx, cy = cursorXY()
+    placePopup(card, cx, cy, W, cardH)
+    for i, it in ipairs(items) do
+        local b = new("TextButton", {
+            Text = "", BackgroundColor3 = Theme.Palette.Pill, BackgroundTransparency = 0.25,
+            AutoButtonColor = true, Size = UDim2.new(1, 0, 0, rowH), LayoutOrder = i, ZIndex = 260, Parent = card,
+        }, { corner(6) })
+        local ic = Koffee.lucideIcon(b, it[1], 14, Theme.Palette.TextMuted, 261)
+        ic.AnchorPoint = Vector2.new(0, 0.5); ic.Position = UDim2.new(0, 10, 0.5, 0)
+        new("TextLabel", {
+            Text = it[2], FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Position = UDim2.new(0, 32, 0, 0), Size = UDim2.new(1, -38, 1, 0), ZIndex = 261, Parent = b,
+        })
+        local cb = it[3]
+        b.MouseButton1Click:Connect(function() closeContextMenu(); cb() end)
+    end
 end
+NPC.openContextMenu = openContextMenu
 
 -- :: entry / folder mutation ::
 local function addEntry(inst, kind, method)
@@ -23278,132 +23386,464 @@ local function hrow(parent, height, order)
         VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
 end
 
--- :: PICKER sub-tab :: an inline instance browser (left) + actions (right), the
--- Manager two-column shape. Any instance can be added; the tree only expands a
--- node when its arrow is clicked, not on select.
+local function iconTextBtn(parent, icon, label, cb, order, size)
+    local b = new("TextButton", {
+        Text = "", BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+        Size = size or UDim2.new(0, 0, 0, 26),
+        AutomaticSize = size and Enum.AutomaticSize.None or Enum.AutomaticSize.X,
+        LayoutOrder = order or 0, Parent = parent,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }),
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+            HorizontalAlignment = Enum.HorizontalAlignment.Center,
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local ic = Koffee.lucideIcon(b, icon, 13, Theme.Palette.TextMuted)
+    ic.AnchorPoint = Vector2.new(0, 0); ic.LayoutOrder = 0   -- layout child: top-left anchor
+    local lbl = new("TextLabel", {
+        Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+        AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0), LayoutOrder = 1, Parent = b,
+    })
+    b.MouseButton1Click:Connect(cb)
+    return { btn = b, ic = ic, lbl = lbl }
+end
+
+local function learnedEntry(inst, kind)
+    for _, e in ipairs(NPC.Entries) do
+        if e._inst == inst and (not kind or e.kind == kind) then return e end
+    end
+    return nil
+end
+
+-- :: mouse select (v0.84.0) ::
+-- Arm it in the Picker, close the menu, click anything in the world: it becomes
+-- the Picker selection (tree revealed on reopen) with an accent outline. State is
+-- chunk-level so a config rebuild of the tab keeps the selection. Session-only.
+local PICK = { On = false, Level = "Smart", Outline = true, sel = nil, hover = nil, bound = false }
+NPC._pick = PICK
+local CAS = game:GetService("ContextActionService")
+local PICK_ACT = KID.name("npcpick")
+local function hlGet(key, color, fillT)
+    local h = PICK[key]
+    if not (h and h.Parent) then
+        if h then pcall(function() h:Destroy() end) end
+        h = Instance.new("Highlight")
+        h.Name = KID.name("npchl")
+        h.FillColor, h.OutlineColor = color, color
+        h.FillTransparency, h.OutlineTransparency = fillT, 0
+        pcall(function() h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop end)
+        h.Enabled = false
+        KID.track(h)
+        PICK[key] = h
+    end
+    local cam = Workspace.CurrentCamera
+    if cam and h.Parent ~= cam then h.Parent = cam end
+    return h
+end
+local function outlineable(inst)
+    return inst and inst.Parent and inst ~= Workspace and inst.Parent ~= game
+        and (inst:IsA("Model") or inst:IsA("BasePart"))
+end
+local function syncOutline()
+    local s = PICK.sel
+    local on = PICK.Outline and outlineable(s)
+    if not on and not PICK.selHL then return end
+    local h = hlGet("selHL", Theme.Palette.Accent, 1)
+    h.Adornee = on and s or nil
+    h.Enabled = on and true or false
+end
+-- CAS sinks MouseButton1 only while picking, so the selecting click never fires a
+-- gun, and right-drag camera look stays free (same as the instance-picker modal).
+local function pickBind(on)
+    if PICK.bound == on then return end
+    PICK.bound = on
+    if on then
+        CAS:BindActionAtPriority(PICK_ACT, function(_, state)
+            if state == Enum.UserInputState.Begin and PICK.hover and PICK.onPick then PICK.onPick(PICK.hover) end
+            return Enum.ContextActionResult.Sink
+        end, false, Enum.ContextActionPriority.High.Value + 1000, Enum.UserInputType.MouseButton1)
+    else
+        pcall(function() CAS:UnbindAction(PICK_ACT) end)
+    end
+end
+-- Smart: the nearest Humanoid rig, else the nearest Model, else the part.
+local function resolvePick(part)
+    if not part then return nil end
+    if PICK.Level == "Part" then return part end
+    local a, top = part.Parent, nil
+    while a and a ~= Workspace and a ~= game do
+        if a:IsA("Model") then
+            if PICK.Level ~= "Top Model" and a:FindFirstChildOfClass("Humanoid") then return a end
+            top = a
+        end
+        a = a.Parent
+    end
+    if PICK.Level == "Top Model" then return top or part end
+    return part:FindFirstAncestorOfClass("Model") or part
+end
+local function pickHint()
+    if PICK.hint and PICK.hint.Parent then return PICK.hint end
+    local f = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 12),
+        Size = UDim2.fromOffset(0, 30), AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.12,
+        ZIndex = 240, Visible = false, Parent = popupScreen,
+    }, { corner(8), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }),
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local ic = Koffee.lucideIcon(f, "mouse-pointer-click", 14, Theme.Palette.Accent, 241)
+    ic.AnchorPoint = Vector2.new(0, 0); ic.LayoutOrder = 0
+    PICK.hintText = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+        BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0),
+        LayoutOrder = 1, ZIndex = 241, Parent = f,
+    })
+    PICK.hint = f
+    return f
+end
+local function clipName(s) return #s > 40 and (s:sub(1, 38) .. "..") or s end
+local function richEsc(s) return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")) end
+
+-- :: PICKER sub-tab :: search + an inline instance browser (left), selection +
+-- actions + Mouse Select (right). The tree only expands on the arrow, not on select.
+-- v0.84.0: right-click now forwards from every button covering a row. The row
+-- frame's own InputBegan never saw it: the name button sat on top and sank it.
 local function buildPicker(host, onChange)
     local cols = new("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = host,
     }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 10),
         SortOrder = Enum.SortOrder.LayoutOrder }) })
-    local left = vlist(cols, 4, 1, UDim2.new(0.6, -5, 0, 0))
+    local left = vlist(cols, 6, 1, UDim2.new(0.6, -5, 0, 0))
     local right = vlist(cols, 6, 2, UDim2.new(0.4, -5, 0, 0))
-    local tree = new("ScrollingFrame", {
-        Size = UDim2.new(1, 0, 0, 320), BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.35,
-        BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.TextFaint,
-        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 1, Parent = left,
-    }, { corner(6), new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4) }),
-        new("UIListLayout", { Padding = UDim.new(0, 1), SortOrder = Enum.SortOrder.LayoutOrder }) })
 
-    local selected
-    local rebuildTree, updateRight
-    local expanded = {}
+    -- search row: box with a magnifier, clear button, refresh
+    local sRow = new("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, LayoutOrder = 0, Parent = left })
+    local sBox = new("TextBox", {
+        Text = "", PlaceholderText = "Search models and parts", ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+        PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
+        BackgroundTransparency = 0.15, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+        Size = UDim2.new(1, -34, 1, 0), ZIndex = 1, Parent = sRow,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 28), PaddingRight = UDim.new(0, 26) }) })
+    local sIc = Koffee.lucideIcon(sRow, "search", 13, Theme.Palette.TextMuted, 2)
+    sIc.Position = UDim2.new(0, 15, 0.5, 0)
+    local clearQ = new("TextButton", {
+        Text = "", BackgroundTransparency = 1, AutoButtonColor = false, Visible = false,
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -47, 0.5, 0),
+        Size = UDim2.fromOffset(20, 20), ZIndex = 2, Parent = sRow,
+    })
+    Koffee.lucideIcon(clearQ, "x", 12, Theme.Palette.TextMuted, 3)
+    local refreshBtn = new("TextButton", {
+        Text = "", BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.fromOffset(28, 28), Parent = sRow,
+    }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+    Koffee.lucideIcon(refreshBtn, "refresh-cw", 13, Theme.Palette.TextMuted)
 
+    local function scroller(order)
+        return new("ScrollingFrame", {
+            Size = UDim2.new(1, 0, 0, 320), BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.35,
+            ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.TextFaint,
+            CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = order, Parent = left,
+        }, { corner(6), new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4) }),
+            new("UIListLayout", { Padding = UDim.new(0, 1), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    end
+    local tree = scroller(1)
+    local results = scroller(2)
+    results.Visible = false
+    local status = hintRow(left, "", 3)
+    status.Visible = false
+
+    local rebuildTree, updateRight, choose, runSearch
+    local expanded, rowIndex, pendingFocus, wantScrollY = {}, 0, nil, nil
     local ROOTS = {}
     for _, svc in ipairs({ "Workspace", "ReplicatedStorage", "Lighting", "Players", "StarterPack" }) do
         local ok, s = pcall(function() return game:GetService(svc) end)
         if ok and s then ROOTS[#ROOTS + 1] = s end
     end
-
-    local function iconFor(inst)
-        if inst:FindFirstChildOfClass("Humanoid") then return "user" end
-        if inst:IsA("Model") then return "box" end
-        if inst:IsA("Folder") then return "folder" end
-        if inst:IsA("BasePart") then return "box" end
-        return "list"
+    local function ctxFor(inst)
+        openContextMenu(inst, { onSelect = function() choose(inst, true) end })
     end
-    local function nodeRow(inst, depth)
-        local expandable = #inst:GetChildren() > 0
-        local row = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = Theme.Palette.PanelElevated,
-            BackgroundTransparency = (selected == inst) and 0.2 or 1, BorderSizePixel = 0, Parent = tree,
-        }, { corner(4), new("UIPadding", { PaddingLeft = UDim.new(0, 6 + depth * 14), PaddingRight = UDim.new(0, 6) }),
-            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
-                VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
-        if expandable then
-            local arrow = iconBtn(row, expanded[inst] and "chevron-down" or "chevron-right", "", function()
-                expanded[inst] = not expanded[inst]; rebuildTree()
-            end, 0)
-            arrow.BackgroundTransparency = 1; arrow.Size = UDim2.fromOffset(16, 16)
-        else
-            new("Frame", { Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, LayoutOrder = 0, Parent = row })
-        end
-        local ic = Koffee.lucideIcon(row, iconFor(inst), 13, Theme.Palette.TextMuted)
-        ic.AnchorPoint = Vector2.new(0, 0); ic.LayoutOrder = 1   -- layout child: top-left anchor
-        local nameBtn = new("TextButton", {
-            Text = inst.Name, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, AutoButtonColor = false,
-            TextTruncate = Enum.TextTruncate.AtEnd, TextXAlignment = Enum.TextXAlignment.Left,
-            Size = UDim2.new(1, -24, 1, 0), LayoutOrder = 2, Parent = row,
-        })
-        nameBtn.MouseButton1Click:Connect(function() selected = inst; updateRight(); rebuildTree() end)
-        row.InputBegan:Connect(function(io)
-            if io.UserInputType == Enum.UserInputType.MouseButton2 then openContextMenu(inst) end
-        end)
-    end
-    rebuildTree = function()
-        for _, c in ipairs(tree:GetChildren()) do
+    local function clearList(f)
+        for _, c in ipairs(f:GetChildren()) do
             if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then c:Destroy() end
         end
+    end
+    -- depth >= 0: tree row. depth -1: flat search result with its parent path.
+    local function nodeRow(parent, inst, depth)
+        rowIndex = rowIndex + 1
+        local isSel = PICK.sel == inst
+        local d = math.max(depth, 0)
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = isSel and 0.2 or 1, LayoutOrder = rowIndex, Parent = parent,
+        }, { corner(4), new("UIPadding", { PaddingLeft = UDim.new(0, 6 + d * 14), PaddingRight = UDim.new(0, 6) }),
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
+                VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        if depth >= 0 then
+            if #inst:GetChildren() > 0 then
+                local arrow = iconBtn(row, expanded[inst] and "chevron-down" or "chevron-right", "", function()
+                    expanded[inst] = not expanded[inst]; rebuildTree()
+                end, 0)
+                arrow.BackgroundTransparency = 1; arrow.Size = UDim2.fromOffset(16, 16)
+                local st = arrow:FindFirstChildOfClass("UIStroke"); if st then st.Enabled = false end
+                arrow.MouseButton2Click:Connect(function() ctxFor(inst) end)
+            else
+                new("Frame", { Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, LayoutOrder = 0, Parent = row })
+            end
+        end
+        local ic = Koffee.lucideIcon(row, instIcon(inst), 13, isSel and Theme.Palette.Accent or Theme.Palette.TextMuted)
+        ic.AnchorPoint = Vector2.new(0, 0); ic.LayoutOrder = 1   -- layout child: top-left anchor
+        local text = richEsc(inst.Name)
+        if depth < 0 and inst.Parent then
+            text = text .. '  <font color="#8E8174">' .. richEsc(inst.Parent:GetFullName()) .. "</font>"
+        end
+        local nameBtn = new("TextButton", {
+            Text = text, RichText = true, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = isSel and Theme.Palette.Accent or Theme.Palette.Text, BackgroundTransparency = 1,
+            AutoButtonColor = false, TextTruncate = Enum.TextTruncate.AtEnd, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, -(46 + d * 14), 1, 0), LayoutOrder = 2, Parent = row,
+        })
+        nameBtn.MouseButton1Click:Connect(function() choose(inst, false) end)
+        nameBtn.MouseButton2Click:Connect(function() ctxFor(inst) end)
+        row.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton2 then ctxFor(inst) end
+        end)
+        return rowIndex
+    end
+    -- rows are 24px + 1px list padding + 4px top pad, so a row's y is known without
+    -- reading AbsolutePosition (which is stale while the window is hidden).
+    local function applyScroll()
+        if not wantScrollY then return end
+        local y = wantScrollY
+        task.defer(function() tree.CanvasPosition = Vector2.new(0, y) end)
+        task.delay(0.1, function() if tree.Parent then tree.CanvasPosition = Vector2.new(0, y) end end)
+    end
+    rebuildTree = function()
+        clearList(tree)
+        rowIndex = 0
+        local chain = {}   -- the selection's ancestors: shown even past the 300 cap
+        local a = PICK.sel
+        while a do chain[a] = true; a = a.Parent end
+        local focusIdx
         local function walk(inst, depth)
-            nodeRow(inst, depth)
+            local idx = nodeRow(tree, inst, depth)
+            if inst == pendingFocus then focusIdx = idx end
             if expanded[inst] then
                 local n = 0
                 for _, ch in ipairs(inst:GetChildren()) do
-                    walk(ch, depth + 1)
                     n = n + 1
-                    if n >= 300 then break end   -- guard pathological containers
+                    if n <= 300 or chain[ch] then walk(ch, depth + 1) end
                 end
             end
         end
         for _, r in ipairs(ROOTS) do walk(r, 0) end
+        if focusIdx then
+            pendingFocus = nil
+            wantScrollY = math.max(0, 4 + (focusIdx - 1) * 25 - 120)
+            applyScroll()
+        end
     end
 
-    -- right column: what is selected + learn actions
-    hintRow(right, "Click a name to select, the arrow to expand. Right-click for Preview / Teleport / Exclude.", 0)
+    runSearch = function()
+        clearList(results)
+        local q = sBox.Text:lower():gsub("^%s+", ""):gsub("%s+$", "")
+        if q == "" then
+            results.Visible, status.Visible, tree.Visible = false, false, true
+            return
+        end
+        tree.Visible, results.Visible, status.Visible = false, true, true
+        local CAP = 150
+        local models, parts = {}, {}
+        local function scan(list)
+            for _, d in ipairs(list) do
+                if #models >= CAP then return end
+                local isM = d:IsA("Model")
+                if (isM or (#parts < CAP and d:IsA("BasePart"))) and d.Name:lower():find(q, 1, true) then
+                    if isM then models[#models + 1] = d else parts[#parts + 1] = d end
+                end
+            end
+        end
+        scan(wsDescendants())
+        local ok, rs = pcall(function() return game:GetService("ReplicatedStorage"):GetDescendants() end)
+        if ok then scan(rs) end
+        rowIndex = 0
+        local shown = 0
+        for _, m in ipairs(models) do nodeRow(results, m, -1); shown = shown + 1 end
+        for _, p in ipairs(parts) do
+            if shown >= CAP then break end
+            nodeRow(results, p, -1); shown = shown + 1
+        end
+        if shown == 0 then
+            status.Text = "No models or parts match \"" .. q .. "\"."
+        else
+            status.Text = shown .. (shown == 1 and " result" or " results")
+                .. (shown >= CAP and " (first " .. CAP .. ", refine the search)" or "")
+                .. ". Models first. Right-click for Preview, Teleport and View."
+        end
+    end
+    local searchTok = 0
+    sBox:GetPropertyChangedSignal("Text"):Connect(function()
+        clearQ.Visible = sBox.Text ~= ""
+        searchTok = searchTok + 1
+        local my = searchTok
+        task.delay(0.2, function()
+            if my == searchTok and not Koffee.dead() and sBox.Parent then runSearch() end
+        end)
+    end)
+    clearQ.MouseButton1Click:Connect(function() sBox.Text = "" end)
+    refreshBtn.MouseButton1Click:Connect(function()
+        _wsSnap = nil
+        if results.Visible then runSearch() else rebuildTree() end
+    end)
+
+    -- right column: selection, preview, actions, learn, Mouse Select
+    hintRow(right, "Click a name to select, the arrow to expand. Right-click anything for Preview, Teleport, View and more.", 0)
+    local head = hrow(right, 20, 1)
     local selLabel = new("TextLabel", {
         Text = "Nothing selected", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
-        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextWrapped = true,
-        TextXAlignment = Enum.TextXAlignment.Left, AutomaticSize = Enum.AutomaticSize.Y,
-        Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 1, Parent = right,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -28, 1, 0), LayoutOrder = 0, Parent = head,
     })
+    local clearSel = iconBtn(head, "x", "", function() choose(nil) end, 1)
     local previewHolder = new("Frame", {
         Size = UDim2.new(1, 0, 0, 90), BackgroundTransparency = 1, LayoutOrder = 2, Parent = right,
     })
-    -- v0.57.0: choose how this target is re-found before learning it. Signature is
-    -- name-independent (survives directory obfuscation); Path is exact + fastest;
-    -- Name matches by the learned name anywhere in the workspace.
+    local actRow = hrow(right, 26, 3)
+    local third = UDim2.new(1 / 3, -4, 0, 26)
+    iconTextBtn(actRow, "rotate-3d", "Preview", function() if PICK.sel then openPreview(PICK.sel) end end, 0, third)
+    iconTextBtn(actRow, "navigation", "Teleport", function() if PICK.sel then teleportTo(PICK.sel) end end, 1, third)
+    local viewBtn = iconTextBtn(actRow, "eye", "View", function() if PICK.sel then toggleView(PICK.sel) end end, 2, third)
+    viewBtn._icon = "eye"
+    local function refreshViewBtn()
+        local on = PICK.sel and isViewing(PICK.sel)
+        local want = on and "eye-off" or "eye"
+        viewBtn.lbl.Text = on and "Unview" or "View"
+        if viewBtn._icon ~= want then viewBtn._icon = want; viewBtn.ic = swapIcon(viewBtn.ic, want) end
+    end
+    NPC._onViewChanged = refreshViewBtn
+    -- v0.57.0: how this target is re-found. Signature is name-independent (survives
+    -- directory obfuscation); Path is exact + fastest; Name matches anywhere.
     local learnMethod = "Signature"
     local methodHolder = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, LayoutOrder = 3, Parent = right,
+        Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, LayoutOrder = 4, Parent = right,
     })
     dropdown(methodHolder, "Learn method", { "Signature", "Path", "Name" }, learnMethod, function(v) learnMethod = v end)
-    local addRow = hrow(right, 28, 4)
-    local addBtn = textBtn(addRow, "Learn as NPC", function()
-        if not selected then return end
-        addEntry(selected, "model", learnMethod); if onChange then onChange() end
-        selLabel.Text = "Learned: " .. selected.Name .. " (" .. learnMethod .. ")"
-    end, 0)
-    local addDirBtn = textBtn(addRow, "Learn as Directory", function()
-        if not selected then return end
-        addEntry(selected, "dir", learnMethod); if onChange then onChange() end
-        selLabel.Text = "Learned directory: " .. selected.Name
-    end, 1)
-    addBtn.Visible = false; addDirBtn.Visible = false
-    updateRight = function()
-        for _, c in ipairs(previewHolder:GetChildren()) do c:Destroy() end
-        if not selected then
-            selLabel.Text = "Nothing selected"
-            addBtn.Visible = false; addDirBtn.Visible = false
+    local function learnInst(inst, kind)
+        if not (inst and inst.Parent) then return end
+        if learnedEntry(inst, kind) then
+            Koffee.notify("Already learned", inst.Name, { duration = 2 })
             return
         end
-        selLabel.Text = selected.ClassName .. ": " .. selected.Name
-        addBtn.Visible = true
-        addDirBtn.Visible = #selected:GetChildren() > 0
-        makeViewport(previewHolder, selected, { size = UDim2.new(1, 0, 1, 0), top = true })
+        addEntry(inst, kind, learnMethod)
+        if onChange then onChange() end
+        Koffee.notify("Learned", inst.Name .. " (" .. learnMethod .. ")", { severity = "success", duration = 2 })
+        updateRight()
+    end
+    NPC._learnInst = learnInst
+    local addRow = hrow(right, 26, 5)
+    local addBtn = iconTextBtn(addRow, "user-plus", "Learn as NPC", function() learnInst(PICK.sel, "model") end, 0)
+    local addDirBtn = iconTextBtn(addRow, "folder-plus", "Learn as Directory", function() learnInst(PICK.sel, "dir") end, 1)
+
+    new("TextLabel", {
+        Text = "Mouse Select", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+        Size = UDim2.new(1, 0, 0, 22), LayoutOrder = 6, Parent = right,
+    })
+    local msCb = configCheckbox(right, "Mouse Select", PICK.On, function(v)
+        PICK.On = v
+        if v then Koffee.notify("Mouse Select on", "Close the menu and click anything in the world.", { duration = 3 }) end
+    end)
+    msCb.row.LayoutOrder = 7
+    hintRow(right, "Close the menu, then click anything. It is selected here when you reopen. Right-drag still looks around.", 8)
+    local lvlHolder = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, LayoutOrder = 9, Parent = right,
+    })
+    dropdown(lvlHolder, "Select as", { "Smart", "Part", "Top Model" }, PICK.Level, function(v) PICK.Level = v end)
+    local olCb = configCheckbox(right, "Outline selection", PICK.Outline, function(v) PICK.Outline = v; syncOutline() end)
+    olCb.row.LayoutOrder = 10
+
+    updateRight = function()
+        for _, c in ipairs(previewHolder:GetChildren()) do c:Destroy() end
+        local s = PICK.sel
+        if s and not s.Parent then PICK.sel = nil; s = nil end
+        local has = s ~= nil
+        clearSel.Visible, previewHolder.Visible, actRow.Visible, addRow.Visible = has, has, has, has
+        syncOutline()
+        if not has then selLabel.Text = "Nothing selected"; return end
+        selLabel.Text = s.ClassName .. ": " .. s.Name
+        addBtn.lbl.Text = learnedEntry(s, "model") and "Learned" or "Learn as NPC"
+        addDirBtn.btn.Visible = #s:GetChildren() > 0
+        makeViewport(previewHolder, s, { size = UDim2.new(1, 0, 1, 0), top = true })
+        refreshViewBtn()
+    end
+    choose = function(inst, reveal)
+        PICK.sel = inst
+        if reveal and inst then
+            local a = inst.Parent
+            while a and a ~= game do expanded[a] = true; a = a.Parent end
+            pendingFocus = inst
+        end
+        updateRight(); rebuildTree()
+        if results.Visible then runSearch() end
+    end
+    PICK.onPick = function(inst)
+        choose(inst, true)
+        Koffee.notify("Selected", clipName(inst.Name) .. " (" .. inst.ClassName .. ")", { severity = "success", duration = 2 })
     end
 
-    rebuildTree()
+    -- one loop per built picker; a config rebuild hands ownership to the new one.
+    local token = {}
+    PICK.owner = token
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    local wasOpen, tickAt, lastHint = true, 0, nil
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        if Koffee.dead() or PICK.owner ~= token or not tree.Parent then
+            conn:Disconnect()
+            if PICK.owner == token then pickBind(false); if PICK.hint then PICK.hint.Visible = false end end
+            return
+        end
+        local now = os.clock()
+        if now >= tickAt then
+            tickAt = now + 0.5
+            NPC.viewTick()
+            if PICK.sel and not PICK.sel.Parent then updateRight() end
+        end
+        local W = Koffee.Windows
+        local open = not (W and W.primaryOpen) or W.primaryOpen()
+        if open and not wasOpen then applyScroll() end
+        wasOpen = open
+        local active = PICK.On and not open
+        pickBind(active)
+        if not active then
+            if PICK.hover then PICK.hover = nil end
+            if PICK.hoverHL and PICK.hoverHL.Enabled then PICK.hoverHL.Enabled = false; PICK.hoverHL.Adornee = nil end
+            if PICK.hint and PICK.hint.Visible then PICK.hint.Visible = false end
+            return
+        end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        local mp = UIS:GetMouseLocation()
+        local ray = cam:ViewportPointToRay(mp.X, mp.Y)
+        rp.FilterDescendantsInstances = { cam, LocalPlayer.Character }
+        local ok, hit = pcall(function() return Workspace:Raycast(ray.Origin, ray.Direction * 5000, rp) end)
+        local inst = (ok and hit) and resolvePick(hit.Instance) or nil
+        PICK.hover = inst
+        local h = hlGet("hoverHL", Theme.Palette.Snow, 0.85)
+        local adorn = (inst and inst ~= PICK.sel) and inst or nil   -- the selection keeps its accent outline
+        if h.Adornee ~= adorn then h.Adornee = adorn end
+        h.Enabled = adorn ~= nil
+        pickHint().Visible = true
+        local txt = inst and ("Click to select " .. clipName(inst.Name) .. " (" .. inst.ClassName .. ")")
+            or "Mouse Select: point at something and click"
+        if txt ~= lastHint then lastHint = txt; PICK.hintText.Text = txt end
+    end)
+
+    updateRight()
+    if PICK.sel then choose(PICK.sel, true) else rebuildTree() end
 end
 
 -- :: MANAGER sub-tab ::
@@ -23426,13 +23866,24 @@ local function buildManager(host)
         }, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, indent or 8), PaddingRight = UDim.new(0, 6) }),
             new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
                 VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
-        local eIc = Koffee.lucideIcon(row, entry.kind == "dir" and "folder-open" or "user", 14, Theme.Palette.TextMuted)
+        -- v0.84.0: icon follows what the entry is; a name dims while it is not in
+        -- the game; right-click opens the same menu as the Picker.
+        local live = entry._inst and entry._inst.Parent and entry._inst or nil
+        local eIc = Koffee.lucideIcon(row, entry.kind == "dir" and "folder-open" or (live and instIcon(live) or "user"),
+            14, Theme.Palette.TextMuted)
         eIc.AnchorPoint = Vector2.new(0, 0); eIc.LayoutOrder = 0   -- layout child: top-left anchor
         new("TextLabel", {
             Text = entry.name, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextTruncate = Enum.TextTruncate.AtEnd,
+            TextColor3 = live and Theme.Palette.Text or Theme.Palette.TextFaint, BackgroundTransparency = 1,
+            TextTruncate = Enum.TextTruncate.AtEnd,
             TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -150, 1, 0), LayoutOrder = 1, Parent = row,
         })
+        row.InputBegan:Connect(function(io)
+            if io.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
+            local inst = resolveInstance(entry)
+            if inst then openContextMenu(inst)
+            else Koffee.notify("Not found", entry.name .. " is not in the game right now", { duration = 2 }) end
+        end)
         -- v0.57.0: method pill (cycles Path -> Signature -> Name) + a Re-Learn button
         -- that recaptures the fingerprint from the live instance.
         local METHODS = { "Path", "Signature", "Name" }
@@ -23514,7 +23965,7 @@ local function buildManager(host)
 
     rebuild = function()
         clearKids(left)
-        textBtn(left, "New Folder", function() local f = addFolder(); expanded[f.id] = true; rebuild() end, 0)
+        iconTextBtn(left, "folder-plus", "New Folder", function() local f = addFolder(); expanded[f.id] = true; rebuild() end, 0)
         listBox = vlist(left, 4, 1)
         for _, folder in ipairs(NPC.Folders) do
             folderHeader(listBox, folder)
@@ -23649,10 +24100,10 @@ local function buildManager(host)
                 ti.Size = UDim2.new(1, -102, 0, 26)
             end
         end
-        textBtn(addRow, "+ Name Rule", function()
+        iconTextBtn(addRow, "plus", "Name Rule", function()
             st.Rules[#st.Rules + 1] = { kind = "Name", src = "child", key = "" }; drawRules()
         end, 0)
-        textBtn(addRow, "+ Health Rule", function()
+        iconTextBtn(addRow, "plus", "Health Rule", function()
             st.Rules[#st.Rules + 1] = { kind = "Health", src = "child", key = "" }; drawRules()
         end, 1)
         drawRules()
@@ -24009,6 +24460,9 @@ end
 -- there. Every shot picks a fresh random point on its SHELL around the anchor
 -- (never a step from where you stand, which ratchets upward). Radius is
 -- BlinkDist in every direction: height, width, and length alike.
+-- v0.84.0: declared before fireBlink. Declared below it, this read resolved to
+-- nil globals, so every shot re-centred on you and the v0.69.2 anchor never held.
+local anchorCF, anchorChar = nil, nil
 local function fireBlink()
     local r = myRoot()
     if not r then return end
@@ -24263,7 +24717,7 @@ end
 -- (or unlatch, or disarm) snaps you back to it. Cleared on respawn so death
 -- never slingshots a fresh body back into the fight that killed it. Spam TP
 -- keeps its own anchor pair under the same Return toggle.
-local anchorCF, anchorChar, wasBlinkActive = nil, nil, false
+local wasBlinkActive = false
 local spamAnchorCF, spamAnchorChar, wasSpamActive = nil, nil, false
 local lastDrawLock = false
 LocalPlayer.CharacterAdded:Connect(function()
