@@ -17465,8 +17465,8 @@ Koffee.SelfFX = {
 }
 registerConfig("self_fx", Koffee.SelfFX)
 
--- v0.85.0 one shared "Effects Gradient" (ESP tab) drives every new visual when on;
--- off, each visual keeps its own colour. Phase fans parts of one effect across it.
+-- v0.85.0 one shared "Effects Color-mode" (ESP tab) drives every new visual when on;
+-- off, each visual is static in its own Effects-tab colour. Phase fans parts across it.
 Koffee.FXGradient = { Enabled = false, Mode = "Gradient", Color = Color3.fromRGB(120, 180, 255),
     Color2 = Color3.fromRGB(255, 120, 200), Speed = 0.5 }
 registerConfig("fx_gradient", Koffee.FXGradient)
@@ -18253,9 +18253,9 @@ addTab("Visuals", function(root)
     task.defer(function()
         local G = Koffee.FXGradient
         local gp = panel(espSub, "Effects Color")
-        local gr = configCheckbox(gp, "Effects Gradient", G.Enabled, function(v) G.Enabled = v end)
+        local gr = configCheckbox(gp, "Effects Color-mode", G.Enabled, function(v) G.Enabled = v end)
         attachDualSwatch(gr.row, G.Color, G.Color2, function(c) G.Color = c end, function(c) G.Color2 = c end)
-        rightClickSettings(gr.row, "Effects Gradient", function(popup)
+        rightClickSettings(gr.row, "Effects Color-mode", function(popup)
             popup:dropdown("Mode", { "Gradient", "Rainbow", "Pulse" }, G.Mode, function(v) G.Mode = v end)
             popup:slider("Speed", 0.05, 4, G.Speed, 2, function(v) G.Speed = v end)
         end)
