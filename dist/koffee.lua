@@ -17882,7 +17882,9 @@ end
     -- one reflection. Straight stretches grow a single pane; a new one only starts
     -- where the path bends, at the old one's end. Height is fixed (measured standing).
     local glass = (function()
-        local G = { panes = {}, height = nil, tip = nil }
+        -- one mirror plane per trail (set by its first pane, facing your camera); every
+        -- pane is a window into that one mirrored world, so bends never break it up
+        local G = { panes = {}, height = nil, tip = nil, RP = nil, RN = nil }
         local PPS = 32
         local function rv(v, n) return v - 2 * v:Dot(n) * n end
         -- a reflection is left-handed; flipping X keeps a valid CFrame
@@ -17919,11 +17921,36 @@ end
             local m = cloneOf(c)
             for _, d in ipairs(marks) do pcall(function() d.Archivable = false end) end
             if not m then return nil, {} end
-            local src, dst = c:GetDescendants(), m:GetDescendants()
+            -- pair parts by name path (with a sibling index for repeats like every
+            -- accessory's "Handle"): descendant order doesn't survive a character clone,
+            -- and an unpaired copy stays frozen where the pane was made
+            local function keyOf(inst, root)
+                local parts = {}
+                local x = inst
+                while x and x ~= root do
+                    local k, par = 0, x.Parent
+                    if par then
+                        for _, sib in ipairs(par:GetChildren()) do
+                            if sib.Name == x.Name and sib.ClassName == x.ClassName then
+                                k += 1
+                                if sib == x then break end
+                            end
+                        end
+                    end
+                    table.insert(parts, 1, x.Name .. "#" .. k)
+                    x = par
+                end
+                return table.concat(parts, "/")
+            end
+            local byKey = {}
+            for _, d in ipairs(m:GetDescendants()) do
+                if d:IsA("BasePart") then byKey[keyOf(d, m)] = d end
+            end
             local map = {}
-            if #src == #dst then
-                for i, s in ipairs(src) do
-                    if s:IsA("BasePart") and dst[i]:IsA("BasePart") and s.Name ~= "HumanoidRootPart" then map[s] = dst[i] end
+            for _, sp in ipairs(c:GetDescendants()) do
+                if sp:IsA("BasePart") and sp.Name ~= "HumanoidRootPart" then
+                    local cl = byKey[keyOf(sp, c)]
+                    if cl then map[sp] = cl end
                 end
             end
             for _, d in ipairs(m:GetDescendants()) do
@@ -18015,21 +18042,31 @@ end
                 a = a, b = b, dir = dir, n = dir:Cross(Vector3.yAxis), baseY = baseY, h = G.height,
                 tA = t0, tB = now }
             place(pn)
+            if #G.panes == 0 or not G.RN then
+                local toEye = Vector3.new(eye.X - pn.P.X, 0, eye.Z - pn.P.Z)
+                G.RN = toEye.Magnitude > 0.1 and toEye.Unit or pn.n
+                G.RP = pn.P
+            end
+            local RP, RN = G.RP, G.RN
             -- the world near the pane and near your camera (a mirror facing you shows
             -- what's behind you), mirrored once; the plane never changes after this
             local model = Instance.new("Model")
             model.Parent = vp
             ov.FilterDescendantsInstances = { c, Workspace.CurrentCamera }
+            -- only what's on your side of the mirror gets reflected, like a real one
             local seen, list = {}, {}
-            for _, org in ipairs({ pn.P, eye }) do
-                for _, pt in ipairs(Workspace:GetPartBoundsInRadius(org, 60, ov)) do
-                    if not seen[pt] then seen[pt] = true; list[#list + 1] = pt end
+            for _, q in ipairs({ { pn.P, 60 }, { eye, 160 } }) do
+                for _, pt in ipairs(Workspace:GetPartBoundsInRadius(q[1], q[2], ov)) do
+                    if not seen[pt] and (pt.Position - RP):Dot(RN) > -pt.Size.Magnitude * 0.5 then
+                        seen[pt] = true
+                        list[#list + 1] = pt
+                    end
                 end
             end
             table.sort(list, function(x, y) return x.Size.Magnitude > y.Size.Magnitude end)
-            local added = 0
+            local added, world = 0, {}
             for _, src in ipairs(list) do
-                if added >= 90 then break end
+                if added >= 140 then break end
                 if src.Transparency < 0.95 and not src:IsA("Terrain") and not src:FindFirstAncestorOfClass("Tool") then
                     local cl = cloneOf(src)
                     if cl then
@@ -18037,8 +18074,9 @@ end
                             if not (d:IsA("DataModelMesh") or d:IsA("SurfaceAppearance") or d:IsA("Decal") or d:IsA("Texture")) then d:Destroy() end
                         end
                         cl.Anchored = true
-                        cl.CFrame = reflectCF(src.CFrame, pn.P, pn.n)
+                        cl.CFrame = reflectCF(src.CFrame, RP, RN)
                         cl.Parent = model
+                        world[#world + 1] = { cl, cl.Transparency }
                         added += 1
                     end
                 end
@@ -18050,7 +18088,9 @@ end
             floor.Parent = model
             local me, map = cloneChar(c)
             if me then me.Parent = model end
-            pn.map = map
+            pn.map, pn.RP, pn.RN, pn.world = map, RP, RN, world
+            pn.mapT = {}
+            for _, cl in pairs(map) do pn.mapT[cl] = cl.Transparency end
             G.panes[#G.panes + 1] = pn
             if #G.panes > 40 then dropPane(table.remove(G.panes, 1)) end
             return pn
@@ -18079,7 +18119,7 @@ end
                     -- keep growing the newest pane while you stay on its line
                     local rel = flat - last.a
                     local t = rel:Dot(last.dir)
-                    if t > (last.b - last.a).Magnitude and (rel - last.dir * t).Magnitude < 0.2 and t < 40 then
+                    if t > (last.b - last.a).Magnitude and (rel - last.dir * t).Magnitude < 0.4 and t < 40 then
                         last.b, last.tB = last.a + last.dir * t, now
                         place(last)
                         grown = true
@@ -18098,6 +18138,7 @@ end
                 if now - pn.tB >= life then
                     dropPane(pn)
                     table.remove(G.panes, i)
+                    if #G.panes == 0 then G.RP, G.RN = nil, nil end
                 else
                     -- the face toward the eye carries the image
                     local nz = pn.p.CFrame.ZVector
@@ -18107,9 +18148,9 @@ end
                     pn.sg.Face = front and Enum.NormalId.Back or Enum.NormalId.Front
                     local dist = math.max(toEye:Dot(ne), 0.05)
                     local look = -ne
-                    -- a surface canvas runs its x opposite to the camera's right on these
-                    -- faces (found live: the unflipped mapping repeated you in every pane)
-                    local cr = -look:Cross(Vector3.yAxis).Unit
+                    -- canvas +x is the camera's right on the face you're looking at (checked
+                    -- live: a copy of a cube behind a test pane lands exactly on the cube)
+                    local cr = look:Cross(Vector3.yAxis).Unit
                     local origin = pn.P - cr * (pn.len / 2) + Vector3.yAxis * (pn.h / 2)
                     local foot = eye - ne * dist
                     local fx = (foot - origin):Dot(cr) * PPS
@@ -18118,21 +18159,32 @@ end
                     local hw = math.max(math.abs(fx), math.abs(W - fx)) + 2
                     local hh = math.max(math.abs(fy), math.abs(H - fy)) + 2
                     local fov = math.deg(2 * math.atan((hh / PPS) / dist))
-                    if fov > 119 then
-                        fov = 119
-                        hh = math.tan(math.rad(59.5)) * dist * PPS
-                    end
+                    -- a camera tops out at 120 degrees vertical; a pane whose plane passes
+                    -- that close to your eye (nearly edge-on) can't be projected exactly,
+                    -- and a clamped one shows a magnified, wrong image, so it goes clear
+                    local exact = fov <= 119
+                    pn.vp.Visible, pn.sky.Visible = exact, exact
+                    fov = math.min(fov, 119)
                     pn.vp.Position = UDim2.fromOffset(fx, fy)
                     pn.vp.Size = UDim2.fromOffset(hw * 2, hh * 2)
                     pn.cam.FieldOfView = fov
                     pn.cam.CFrame = CFrame.lookAt(eye, eye + look, Vector3.yAxis)
-                    pn.vp.LightDirection = rv(sun, pn.n)
+                    pn.vp.LightDirection = rv(sun, pn.RN)
+                    -- the mirrored world must stay behind this pane: anything that lands
+                    -- between your eye and the glass would draw huge in front of it
                     for src, cl in pairs(pn.map) do
-                        if src.Parent then cl.CFrame = reflectCF(src.CFrame, pn.P, pn.n) end
+                        if src.Parent then
+                            cl.CFrame = reflectCF(src.CFrame, pn.RP, pn.RN)
+                            cl.Transparency = (cl.Position - pn.P):Dot(ne) > 0 and 1 or pn.mapT[cl]
+                        end
+                    end
+                    for _, w in ipairs(pn.world) do
+                        local cl = w[1]
+                        cl.Transparency = (cl.Position - pn.P):Dot(ne) > 0 and 1 or w[2]
                     end
                     -- fade along the trail: each end takes the age of the path under it
-                    local aA = math.clamp((now - pn.tA) / life, 0, 1) ^ 2
-                    local aB = math.clamp((now - pn.tB) / life, 0, 1) ^ 2
+                    local function fadeAt(t) return math.clamp(((now - t) / life - 0.6) / 0.4, 0, 1) ^ 1.5 end
+                    local aA, aB = fadeAt(pn.tA), fadeAt(pn.tB)
                     local xA = (Vector3.new(pn.a.X, pn.P.Y, pn.a.Z) - origin):Dot(cr) * PPS
                     local xB = (Vector3.new(pn.b.X, pn.P.Y, pn.b.Z) - origin):Dot(cr) * PPS
                     pn.sfade.Transparency = fadeSeq(xA / W, aA, xB / W, aB)
@@ -18144,7 +18196,7 @@ end
         end
         function G.clear()
             for _, pn in ipairs(G.panes) do dropPane(pn) end
-            G.panes, G.tip = {}, nil
+            G.panes, G.tip, G.RP, G.RN = {}, nil, nil, nil
         end
         return G
     end)()
