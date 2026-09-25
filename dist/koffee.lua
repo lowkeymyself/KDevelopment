@@ -4873,6 +4873,10 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
             popFx(b)
             return b
         end
+        -- v0.90.0: redraw the popup (e.g. a style pick that changes which settings apply)
+        function api:rebuild()
+            task.defer(function() if body and body.Parent then buildBody() end end)
+        end
         buildFn(api)
     end
 
@@ -17671,7 +17675,13 @@ Koffee.SelfFX = {
     Jump   = { Style = "Rune", Color = Color3.fromRGB(217, 150, 95), Size = 4, Duration = 1.1, Land = "Bubble" },
     Trail  = { Style = "Ribbon", Color = Color3.fromRGB(217, 150, 95), Color2 = Color3.fromRGB(255, 236, 200),
                Life = 0.45, Width = 1.1, Sparkles = true, OffX = 0, OffY = 0,
-               ShapesGround = false, ShapesFeet = false },
+               ShapesGround = false, ShapesFeet = false,
+               -- v0.90.0 afterimage settings (only shown while Afterimage is picked)
+               AIType = "Ghost", AIDelay = 0.07, AIFade = 0.45, AIAlpha = 0.25, AIRise = 0, AIShrink = false,
+               AIFadeTo = false, AIAccessories = false, AIItem = false, AIMoving = true },
+    -- v0.90.0 motion smear: glowing copies left between frames by your held item and body
+    Smear  = { Color = Color3.fromRGB(170, 255, 205), Color2 = Color3.fromRGB(70, 150, 120), Target = "Item + Body",
+               Type = "Neon", Fade = 0.25, Alpha = 0.82, Density = 3, MinMove = 0.08 },
     Hat    = { Color = Color3.fromRGB(217, 150, 95), Radius = 1.7, Height = 0.8, Alpha = 0.35, Rim = true,
                Roughness = 0 },
     Marker = { Style = "Orbit", Color = Color3.fromRGB(255, 120, 200), Size = 1, Speed = 1,
@@ -17831,41 +17841,133 @@ end
         if trail.head and h then h.drop(trail.head) end
         trail = {}
     end
-    -- afterimage: anchored copies of your visible parts, fading out in place
-    local function ghost(cfg, char)
-        local h = H()
-        local pieces = {}
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" and p.Transparency < 0.95
-                and not p:FindFirstAncestorOfClass("Accessory") and not p:FindFirstAncestorOfClass("Tool") and #pieces < 18 then
-                local c
-                pcall(function()
-                    local was = p.Archivable
-                    p.Archivable = true
-                    c = p:Clone()
-                    p.Archivable = was
-                end)
-                if c then
-                    for _, ch in ipairs(c:GetChildren()) do
-                        if not ch:IsA("DataModelMesh") then ch:Destroy() end
-                    end
-                    c.Anchored = true; c.CanCollide = false; c.CastShadow = false
-                    pcall(function() c.CanQuery = false; c.CanTouch = false; c.TextureID = "" end)
-                    c.Material = Enum.Material.ForceField
-                    c.Color = col(cfg, 0)
-                    c.Transparency = 0.25
-                    c.CFrame = p.CFrame
-                    c.Name = KID.name("ai")
-                    c.Parent = Workspace.CurrentCamera
-                    pieces[#pieces + 1] = c
+    -- v0.90.0 ECHOES: faded anchored copies of parts, shared by the Afterimage trail and
+    -- Motion Smear. Own fade loop, not the hit-FX timeline (that caps at 64 entries),
+    -- so a dense smear never starves the other effects.
+    local echo = (function()
+        local E = { live = {}, cap = 420 }
+        local MAT = { Ghost = Enum.Material.ForceField, Solid = Enum.Material.SmoothPlastic, Neon = Enum.Material.Neon,
+            Glass = Enum.Material.Glass, Silhouette = Enum.Material.SmoothPlastic, Hologram = Enum.Material.Neon }
+        function E.copy(p, cf, o)
+            if #E.live >= E.cap then return end
+            local c
+            pcall(function()
+                local was = p.Archivable
+                p.Archivable = true
+                c = p:Clone()
+                p.Archivable = was
+            end)
+            if not c then return end
+            local keep = o.type == "Original"
+            for _, ch in ipairs(c:GetChildren()) do
+                if not (ch:IsA("DataModelMesh") or (keep and (ch:IsA("Decal") or ch:IsA("SurfaceAppearance")))) then
+                    ch:Destroy()
+                end
+            end
+            c.Anchored = true; c.CanCollide = false; c.CastShadow = false
+            pcall(function() c.CanQuery = false; c.CanTouch = false; c.Massless = true end)
+            if not keep then
+                pcall(function() c.TextureID = "" end)
+                local sm = c:FindFirstChildWhichIsA("SpecialMesh")
+                if sm then sm.TextureId = "" end
+                c.Material = MAT[o.type] or Enum.Material.ForceField
+                c.Color = o.type == "Silhouette" and Color3.fromRGB(14, 14, 18) or o.color
+            end
+            c.CFrame = cf
+            c.Transparency = o.alpha
+            c.Name = KID.name("ai")
+            c.Parent = Workspace.CurrentCamera
+            E.live[#E.live + 1] = { p = c, t0 = os.clock(), life = math.max(o.life or 0.3, 0.03), a0 = o.alpha, cf = cf,
+                size = c.Size, rise = o.rise or 0, shrink = o.shrink, c0 = o.color, c1 = o.color2,
+                holo = o.type == "Hologram", keep = keep or o.type == "Silhouette" }
+        end
+        function E.step()
+            local now = os.clock()
+            local i = 1
+            while i <= #E.live do
+                local e = E.live[i]
+                local k = (now - e.t0) / e.life
+                if k >= 1 or not e.p.Parent then
+                    pcall(function() e.p:Destroy() end)
+                    E.live[i] = E.live[#E.live]
+                    E.live[#E.live] = nil
+                else
+                    local a = e.a0 + (1 - e.a0) * k
+                    if e.holo and math.random() < 0.15 then a = math.min(1, a + 0.35) end
+                    e.p.Transparency = a
+                    if e.rise ~= 0 then e.p.CFrame = e.cf + Vector3.new(0, e.rise * k, 0) end
+                    if e.shrink then e.p.Size = e.size * (1 - 0.6 * k) end
+                    if e.c1 and not e.keep then e.p.Color = e.c0:Lerp(e.c1, k) end
+                    i += 1
                 end
             end
         end
-        local life = math.max(cfg.Life or 0.45, 0.1)
-        h.anim(life, function(k)
-            for _, g in ipairs(pieces) do g.Transparency = 0.25 + 0.75 * k end
-        end, pieces)
+        function E.clear()
+            for _, e in ipairs(E.live) do pcall(function() e.p:Destroy() end) end
+            E.live = {}
+        end
+        return E
+    end)()
+    -- afterimage: a copy of your visible parts every Delay seconds, styled by its settings
+    local function ghost(cfg, char)
+        local o = { type = cfg.AIType or "Ghost", color = col(cfg, 0), color2 = cfg.AIFadeTo and (cfg.Color2 or cfg.Color) or nil,
+            alpha = cfg.AIAlpha or 0.25, life = math.max(cfg.AIFade or cfg.Life or 0.45, 0.05), rise = cfg.AIRise or 0,
+            shrink = cfg.AIShrink == true }
+        local n = 0
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" and p.Transparency < 0.95 and n < 60 then
+                local acc = p:FindFirstAncestorOfClass("Accessory")
+                local tool = p:FindFirstAncestorOfClass("Tool")
+                if (not acc or cfg.AIAccessories) and (not tool or cfg.AIItem) then
+                    n += 1
+                    echo.copy(p, p.CFrame, o)
+                end
+            end
+        end
     end
+    -- motion smear: every part that moved since its last copy leaves copies along the
+    -- way (interpolated, so fast swings streak instead of stuttering)
+    local smear = { last = {} }
+    local function smearStep()
+        local c = myChar()
+        if not c then return end
+        local cfg = FX.Smear
+        local want = cfg.Target or "Item + Body"
+        local o = { type = cfg.Type or "Neon", alpha = cfg.Alpha or 0.82, life = cfg.Fade or 0.25,
+            color = col(cfg, 0), color2 = cfg.Color2 }
+        local seen = {}
+        for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") and p.Transparency < 0.95 and p.Name ~= "HumanoidRootPart" then
+                local tool = p:FindFirstAncestorOfClass("Tool")
+                local use
+                if tool then
+                    use = want ~= "Body"
+                else
+                    -- body parts hidden by first person stay hidden in the smear too
+                    use = want ~= "Item" and p.LocalTransparencyModifier < 0.5 and not p:FindFirstAncestorOfClass("Accessory")
+                end
+                if use then
+                    seen[p] = true
+                    local cf, last = p.CFrame, smear.last[p]
+                    if last then
+                        local d = (cf.Position - last.Position).Magnitude
+                        local ang = math.acos(math.clamp(cf.LookVector:Dot(last.LookVector), -1, 1))
+                        local sweep = d + ang * p.Size.Magnitude * 0.5
+                        if sweep > (cfg.MinMove or 0.08) then
+                            local steps = math.clamp(math.ceil(sweep / math.max(p.Size.Magnitude * 0.3, 0.1)), 1,
+                                math.max(math.floor(cfg.Density or 3), 1))
+                            for k = 1, steps do echo.copy(p, last:Lerp(cf, k / steps), o) end
+                            smear.last[p] = cf
+                        end
+                    else
+                        smear.last[p] = cf
+                    end
+                end
+            end
+        end
+        for p in pairs(smear.last) do if not seen[p] then smear.last[p] = nil end end
+    end
+    registerModule("selffx_smear", "Motion Smear", function() end, function() smear.last = {} end)
     -- v0.89.0 GLASS trail: clear glass along your path that only reflects. A pane is
     -- an exact planar mirror: the nearby world (and you, clothes and all) is mirrored
     -- across it, and a camera at your eye looks straight into the plane with its
@@ -18342,7 +18444,7 @@ end
         else
             trail.headImg.ImageTransparency = 1
         end
-        if style == "Afterimage" and moving and now - trail.ghostAt > 0.07 then
+        if style == "Afterimage" and (moving or cfg.AIMoving == false) and now - trail.ghostAt > (cfg.AIDelay or 0.07) then
             trail.ghostAt = now
             ghost(cfg, c)
         end
@@ -18707,12 +18809,14 @@ end
         if Koffee.dead() then
             if not torn then
                 torn = true
-                pcall(hatDrop); pcall(trailDrop); pcall(markerDrop); pcall(hudDrop)
+                pcall(hatDrop); pcall(trailDrop); pcall(markerDrop); pcall(hudDrop); pcall(echo.clear)
                 if jumpConn then jumpConn:Disconnect(); jumpConn = nil end
             end
             return
         end
         if Modules.selffx_trail.Enabled then pcall(trailStep) end
+        if Modules.selffx_smear.Enabled then pcall(smearStep) end
+        pcall(echo.step)
         if Modules.selffx_hat.Enabled then pcall(hatStep) end
         if Modules.tgt_marker.Enabled then pcall(markerStep) end
         if Modules.tgt_hud.Enabled then pcall(hudStep, dt) end
@@ -19882,18 +19986,53 @@ addTab("Visuals", function(root)
         local tr = moduleCheckbox(selfPanel, "Trail", "selffx_trail")
         attachDualSwatch(tr.row, F.Trail.Color, F.Trail.Color2,
             function(c) F.Trail.Color = c end, function(c) F.Trail.Color2 = c end)
+        -- v0.90.0: the popup rebuilds on a style pick, so each style shows only its own settings
         rightClickSettings(tr.row, "Trail", function(popup)
+            local T = F.Trail
+            local st = T.Style or "Ribbon"
             popup:dropdown("Style", { "Ribbon", "Helix", "Comet", "Afterimage", "Sparkles", "Stars", "Hearts",
-                "Glass", "Shapes" },
-                F.Trail.Style, function(v) F.Trail.Style = v end)
-            popup:slider("Lifetime", 0.1, 2, F.Trail.Life, 2, function(v) F.Trail.Life = v end)
-            popup:slider("Width", 0.2, 4, F.Trail.Width, 1, function(v) F.Trail.Width = v end)
-            popup:toggle("Sparkles On Ribbons", F.Trail.Sparkles, function(v) F.Trail.Sparkles = v end)
-            popup:slider("Offset X", -4, 4, F.Trail.OffX or 0, 2, function(v) F.Trail.OffX = v end)
-            popup:slider("Offset Y", -4, 4, F.Trail.OffY or 0, 2, function(v) F.Trail.OffY = v end)
-            -- Shapes style only
-            popup:toggle("Shapes: Ground Only", F.Trail.ShapesGround == true, function(v) F.Trail.ShapesGround = v end)
-            popup:toggle("Shapes: Follow Feet In Air", F.Trail.ShapesFeet == true, function(v) F.Trail.ShapesFeet = v end)
+                "Glass", "Shapes" }, st, function(v) T.Style = v; popup:rebuild() end)
+            if st == "Afterimage" then
+                popup:dropdown("Type", { "Ghost", "Solid", "Neon", "Glass", "Hologram", "Silhouette", "Original" },
+                    T.AIType or "Ghost", function(v) T.AIType = v end)
+                popup:slider("Delay", 0.02, 0.5, T.AIDelay or 0.07, 2, function(v) T.AIDelay = v end)
+                popup:slider("Fade Time", 0.1, 3, T.AIFade or 0.45, 2, function(v) T.AIFade = v end)
+                popup:slider("Start Transparency", 0, 0.9, T.AIAlpha or 0.25, 2, function(v) T.AIAlpha = v end)
+                popup:slider("Drift Up", -2, 4, T.AIRise or 0, 1, function(v) T.AIRise = v end)
+                popup:toggle("Shrink While Fading", T.AIShrink == true, function(v) T.AIShrink = v end)
+                popup:toggle("Fade To Second Colour", T.AIFadeTo == true, function(v) T.AIFadeTo = v end)
+                popup:toggle("Include Accessories", T.AIAccessories == true, function(v) T.AIAccessories = v end)
+                popup:toggle("Include Held Item", T.AIItem == true, function(v) T.AIItem = v end)
+                popup:toggle("Only While Moving", T.AIMoving ~= false, function(v) T.AIMoving = v end)
+            elseif st == "Shapes" then
+                popup:slider("Lifetime", 0.1, 2, T.Life, 2, function(v) T.Life = v end)
+                popup:slider("Size", 0.2, 4, T.Width, 1, function(v) T.Width = v end)
+                popup:toggle("Ground Only", T.ShapesGround == true, function(v) T.ShapesGround = v end)
+                popup:toggle("Follow Feet In Air", T.ShapesFeet == true, function(v) T.ShapesFeet = v end)
+            elseif st == "Glass" then
+                popup:slider("Lifetime", 0.1, 2, T.Life, 2, function(v) T.Life = v end)
+            else
+                popup:slider("Lifetime", 0.1, 2, T.Life, 2, function(v) T.Life = v end)
+                popup:slider("Width", 0.2, 4, T.Width, 1, function(v) T.Width = v end)
+                if st == "Ribbon" or st == "Helix" or st == "Comet" then
+                    popup:toggle("Sparkles On Ribbons", T.Sparkles, function(v) T.Sparkles = v end)
+                end
+                popup:slider("Offset X", -4, 4, T.OffX or 0, 2, function(v) T.OffX = v end)
+                popup:slider("Offset Y", -4, 4, T.OffY or 0, 2, function(v) T.OffY = v end)
+            end
+        end, nil, true)
+        local sm = moduleCheckbox(selfPanel, "Motion Smear", "selffx_smear")
+        attachDualSwatch(sm.row, F.Smear.Color, F.Smear.Color2,
+            function(c) F.Smear.Color = c end, function(c) F.Smear.Color2 = c end)
+        rightClickSettings(sm.row, "Motion Smear", function(popup)
+            local M = F.Smear
+            popup:dropdown("Target", { "Item + Body", "Item", "Body" }, M.Target, function(v) M.Target = v end)
+            popup:dropdown("Type", { "Neon", "Ghost", "Glass", "Solid", "Hologram", "Original" }, M.Type,
+                function(v) M.Type = v end)
+            popup:slider("Fade Time", 0.05, 1.5, M.Fade, 2, function(v) M.Fade = v end)
+            popup:slider("Start Transparency", 0, 0.95, M.Alpha, 2, function(v) M.Alpha = v end)
+            popup:slider("Density", 1, 8, M.Density, 0, function(v) M.Density = math.floor(v) end)
+            popup:slider("Min Movement", 0.01, 1, M.MinMove, 2, function(v) M.MinMove = v end)
         end)
         local hr = moduleCheckbox(selfPanel, "China Hat", "selffx_hat")
         attachSingleSwatch(hr.row, F.Hat.Color, function(c) F.Hat.Color = c end)
@@ -28327,7 +28466,9 @@ end
 local function resolveEntry(entry)
     local inst = resolveInstance(entry)
     if not inst then return {} end
-    if entry.kind == "dir" then
+    -- v0.90.0: a single entry that points at a Folder (or any non-model container)
+    -- is really a directory of NPCs; drawing the container itself errored every frame
+    if entry.kind == "dir" or not (inst:IsA("Model") or inst:IsA("BasePart")) then
         -- v0.53.0: any child with a usable anchor part counts (Model or BasePart),
         -- no Humanoid required, so a folder of props / mobs / parts all work.
         local out = {}
@@ -28449,7 +28590,7 @@ function NPC.entities()
     -- one entity from a resolved model, applying a settings bundle's name/health
     -- rules and display-name override. `holder` owns the wrapper cache.
     local function emit(holder, model, st)
-        if seen[model] or not npcAnchor(model) then return end
+        if seen[model] or not (model:IsA("Model") or model:IsA("BasePart")) or not npcAnchor(model) then return end
         seen[model] = true
         local hum = model:FindFirstChildOfClass("Humanoid")
         local nm = st.DisplayName ~= "" and st.DisplayName or model.Name
