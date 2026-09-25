@@ -1,7 +1,7 @@
--- koffee v0.86.0
+-- koffee v0.87.0
 
 local Koffee = {}
-Koffee.Version = "0.86.0"
+Koffee.Version = "0.87.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -4735,6 +4735,17 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
             tween(valueStroke, Theme.Animation.Fast, { Transparency = 1 })
         end
     end)
+    -- v0.87.0: push a value in without firing onChange, so a slider can mirror live data
+    return { row = row, set = function(v)
+        if dragging or valueBox:IsFocused() then return end
+        v = round(math.clamp(tonumber(v) or min, min, max))
+        if v == current then return end
+        current = v
+        local pct = (current - min) / (max - min)
+        fill.Size = UDim2.new(pct, 0, 1, 0)
+        knob.Position = UDim2.new(pct, 0, 0.5, 0)
+        valueBox.Text = (opts.infinite and current >= max) and "Infinite" or tostring(current)
+    end }
 end
 
 -- RIGHT-CLICK SETTINGS POPUP (v0.0.25)
@@ -19212,6 +19223,17 @@ registerConfig("item_skins", Koffee.ItemSkins)
         return { kind = kind, obj = obj, parts = parts, root = root, name = name,
             sig = kind .. ":" .. name }
     end
+    -- v0.87.0: effect points are attachments holding emitters, beams or lights, or
+    -- named like a muzzle (the game reads those for tracer origins too)
+    local FXC = { ParticleEmitter = true, Beam = true, Trail = true, PointLight = true, SpotLight = true,
+        SurfaceLight = true, Fire = true, Smoke = true, Sparkles = true }
+    -- strong names only: "barrel" alone also matches assembly attachments that joints use
+    local MUZZ = { "muzzle", "flash", "firepoint", "fire_point", "shootpoint", "nozzle", "bulletorigin" }
+    local function muzzleish(n)
+        n = string.lower(n)
+        for _, k in ipairs(MUZZ) do if n:find(k, 1, true) then return true end end
+        return false
+    end
 
     -- :: detection ::
     local function findTool(char)
@@ -19324,6 +19346,12 @@ registerConfig("item_skins", Koffee.ItemSkins)
         if not root then return nil end
         local out = { v = 1, name = inst.Name, parts = {} }
         if inst:IsA("Tool") then out.grip = { inst.Grip:GetComponents() } end
+        for _, d in ipairs(inst:GetDescendants()) do
+            if d:IsA("Attachment") and muzzleish(d.Name) then
+                out.mz = num3(root.CFrame:ToObjectSpace(d.WorldCFrame).Position)
+                break
+            end
+        end
         for _, p in ipairs(parts) do
             local rel = root.CFrame:ToObjectSpace(p.CFrame)
             local e = { s = num3(p.Size), cf = { rel:GetComponents() }, c = { p.Color.R, p.Color.G, p.Color.B },
@@ -19384,6 +19412,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
         local m = Instance.new("Model")
         m.Name = t.name or "item"
         if type(t.grip) == "table" then m:SetAttribute("_grip", CFrame.new(table.unpack(t.grip))) end
+        if type(t.mz) == "table" then m:SetAttribute("_mz", Vector3.new(t.mz[1], t.mz[2], t.mz[3])) end
         for _, e in ipairs(t.parts) do
             local p = Instance.new("Part")
             p.Anchored = true; p.CanCollide = false; p.CastShadow = false
@@ -19428,48 +19457,322 @@ registerConfig("item_skins", Koffee.ItemSkins)
     end
 
     -- :: skin lifecycle ::
+    local fxRestoreRef
     local function unhide()
         for p in pairs(IS_RT.hidden) do
             if p.Parent then pcall(function() p.LocalTransparencyModifier = 0 end) end
         end
         table.clear(IS_RT.hidden)
+        if fxRestoreRef then fxRestoreRef() end
     end
     local function dropModel()
         if IS_RT.model then pcall(function() IS_RT.model:Destroy() end) end
         IS_RT.model, IS_RT.modelKey, IS_RT.rel, IS_RT.grip = nil, nil, nil, nil
-        IS_RT.root, IS_RT.weld, IS_RT.weldAnchor = nil, nil, nil
+        IS_RT.root, IS_RT.weld, IS_RT.weldAnchor, IS_RT.b = nil, nil, nil, nil
     end
     local function skinKey(s) return table.concat({ s.src or "", tostring(s.asset or ""), s.data and #s.data or 0,
         s.data and s.data:sub(-24) or "", tostring(s.scale or 1) }, "|") end
-    local function build(s)
+    -- one unparented skin: the live one and the editor's preview both come from here
+    local function makeTemplate(s)
         local tpl
         if s.src == "asset" and s.asset then
             local obj = loadAsset(s.asset)
             tpl = obj and templateFromInst(obj)
         elseif s.data then
             local live = IS_RT.live[s.data]
-            tpl = (live and live.Parent and templateFromInst(live)) or (decode(s.data) and templateFromData(decode(s.data)))
+            local t = decode(s.data)
+            tpl = (live and live.Parent and templateFromInst(live)) or (t and templateFromData(t))
         end
-        if not tpl then return false end
+        if not tpl then return nil end
         local g = tpl:GetAttribute("_grip")
         if typeof(g) ~= "CFrame" then
             local inner = tpl:FindFirstChildWhichIsA("Tool")
             g = inner and inner.Grip or (tpl:IsA("Tool") and tpl.Grip) or nil
         end
-        IS_RT.grip = g
         local parts = partsOf(tpl)
         local root = anchorOf(tpl, parts)
-        if not root then tpl:Destroy(); return false end
+        if not root then tpl:Destroy(); return nil end
         local sc = math.max(tonumber(s.scale) or 1, 0.01)
         if sc ~= 1 then pcall(function() tpl:ScaleTo(sc) end) end
+        -- the source's own muzzle: KIM1 "mz" (scaled with the model) or a muzzle attachment
+        local mz = tpl:GetAttribute("_mz")
+        if typeof(mz) == "Vector3" then
+            mz = mz * sc
+        else
+            mz = nil
+            for _, d in ipairs(tpl:GetDescendants()) do
+                if d:IsA("Attachment") and muzzleish(d.Name) then
+                    mz = root.CFrame:ToObjectSpace(d.WorldCFrame).Position
+                    break
+                end
+            end
+        end
         local rel = {}
         for _, p in ipairs(parts) do rel[p] = root.CFrame:ToObjectSpace(p.CFrame) end
         tpl.Name = KID.name("ism")
         ours[tpl] = true
         for _, p in ipairs(parts) do ours[p] = true end
-        tpl.Parent = Workspace.CurrentCamera
-        IS_RT.model, IS_RT.rel, IS_RT.root = tpl, rel, root
+        return { model = tpl, root = root, rel = rel, grip = g, mz = mz, scale = sc }
+    end
+    local function build(s)
+        local b = makeTemplate(s)
+        if not b then return false end
+        b.model.Parent = Workspace.CurrentCamera
+        IS_RT.b, IS_RT.grip = b, b.grip
+        IS_RT.model, IS_RT.rel, IS_RT.root = b.model, b.rel, b.root
         return true
+    end
+    local function offOf(s)
+        return CFrame.new(s.ox or 0, s.oy or 0, s.oz or 0)
+            * CFrame.Angles(math.rad(s.rx or 0), math.rad(s.ry or 0), math.rad(s.rz or 0))
+    end
+    -- Tool to Tool: seat the new handle the way the engine's grip weld would
+    local function seatFor(h, grip)
+        if h.kind == "Tool" and grip and h.obj:IsA("Tool") then return h.obj.Grip * grip:Inverse() end
+        return CFrame.identity
+    end
+
+    -- :: effects :: the game's own effect points move onto the skin, so its flashes and
+    -- tracers leave the new barrel. Originals are kept and restored with the skin.
+    local FXS = { obj = nil, at = 0, list = {}, orig = setmetatable({}, { __mode = "k" }),
+        hid = setmetatable({}, { __mode = "k" }), sized = setmetatable({}, { __mode = "k" }),
+        clones = setmetatable({}, { __mode = "k" }) }
+    -- effects that sit straight on a part emit from its whole volume (a gun's idle
+    -- lightning, say): those get copied onto the skin instead of moved
+    local PARTFX = { ParticleEmitter = true, Fire = true, Smoke = true, Sparkles = true,
+        PointLight = true, SpotLight = true, SurfaceLight = true }
+    local function pathOf(inst, top)
+        local names, x = {}, inst
+        while x and x ~= top do table.insert(names, 1, x.Name); x = x.Parent end
+        return table.concat(names, ".")
+    end
+    local function fxList(h)
+        local now = os.clock()
+        if FXS.obj == h.obj and now - FXS.at < 1.5 then return FXS.list end
+        FXS.obj, FXS.at = h.obj, now
+        local list, used = {}, {}
+        for _, d in ipairs(h.obj:GetDescendants()) do
+            if d:IsA("Attachment") and d.Parent and d.Parent:IsA("BasePart") and not ours[d.Parent] then
+                local has = false
+                for _, c in ipairs(d:GetChildren()) do if FXC[c.ClassName] then has = true; break end end
+                if has or muzzleish(d.Name) then
+                    local key = pathOf(d, h.obj)
+                    used[key] = (used[key] or 0) + 1
+                    if used[key] > 1 then key = key .. "#" .. used[key] end
+                    list[#list + 1] = { att = d, key = key, name = d.Name, auto = muzzleish(d.Name) }
+                end
+            elseif PARTFX[d.ClassName] and d.Parent and d.Parent:IsA("BasePart") and not ours[d.Parent] then
+                local key = pathOf(d, h.obj)
+                used[key] = (used[key] or 0) + 1
+                if used[key] > 1 then key = key .. "#" .. used[key] end
+                list[#list + 1] = { em = d, host = d.Parent, key = key, name = d.Name, auto = true, part = true }
+            end
+        end
+        FXS.list = list
+        return list
+    end
+    local function origOf(att)
+        local o = FXS.orig[att]
+        if not o then o = att.CFrame; FXS.orig[att] = o end
+        return o
+    end
+    -- where the game keeps the attachment, in item-root space
+    local function restRel(h, att)
+        return h.root.CFrame:ToObjectSpace(att.Parent.CFrame * origOf(att))
+    end
+    -- no muzzle given: the skin part reaching furthest along the original barrel
+    -- (original centre to its muzzle), tip of that part, centred on it
+    local function guessMuzzle(h, rel, skinItem)
+        local ref
+        for _, c in ipairs(fxList(h)) do
+            if c.auto and not c.part and c.att.Parent then ref = restRel(h, c.att).Position; break end
+        end
+        if not ref then return nil end
+        local sum, n = Vector3.zero, 0
+        for _, p in ipairs(h.parts) do
+            if p.Parent then sum += h.root.CFrame:PointToObjectSpace(p.Position); n += 1 end
+        end
+        local dirItem = ref - (n > 0 and sum / n or Vector3.zero)
+        if dirItem.Magnitude < 1e-3 then return nil end
+        local dir = skinItem:VectorToObjectSpace(dirItem.Unit)
+        local bestP, best = nil, -math.huge
+        for p, cf in pairs(rel) do
+            if p.Transparency < 1 then
+                local hs = p.Size / 2
+                local reach = cf.Position:Dot(dir) + math.abs(cf.XVector:Dot(dir)) * hs.X
+                    + math.abs(cf.YVector:Dot(dir)) * hs.Y + math.abs(cf.ZVector:Dot(dir)) * hs.Z
+                if reach > best then best, bestP = reach, cf.Position end
+            end
+        end
+        if not bestP then return nil end
+        return bestP + dir * (best - bestP:Dot(dir))
+    end
+    -- skin-space muzzle: your pick, then the source's own, then the guess
+    local function muzzleSkin(h, s, b, skinItem)
+        if type(s.fx) == "table" and type(s.fx.muzzle) == "table" then
+            return Vector3.new(s.fx.muzzle[1] or 0, s.fx.muzzle[2] or 0, s.fx.muzzle[3] or 0), "custom"
+        end
+        if b.mz then return b.mz, "model" end
+        local k = tostring(skinItem)
+        if b.mzKey ~= k then b.mzKey, b.mzGuess = k, guessMuzzle(h, b.rel, skinItem) end
+        return b.mzGuess, "guess"
+    end
+    local function fxEntry(s, c)
+        local e = type(s.fx) == "table" and type(s.fx.items) == "table" and s.fx.items[c.key] or nil
+        local mode = (e and e.mode) or (c.auto and "Auto" or "Leave")
+        if c.part and mode == "Manual" then mode = "Auto" end
+        return e, mode
+    end
+    -- item-space target for one effect point, nil = leave it where the game has it
+    local function fxTarget(h, s, b, c, skinItem, rest)
+        local e, mode = fxEntry(s, c)
+        if c.part then return nil, mode, e end
+        if mode == "Manual" and e and type(e.cf) == "table" then
+            return skinItem * CFrame.new(table.unpack(e.cf)), mode, e
+        elseif mode == "Auto" then
+            local mz = muzzleSkin(h, s, b, skinItem)
+            if mz then return CFrame.new(skinItem * mz) * (rest or restRel(h, c.att)).Rotation, mode, e end
+        end
+        return nil, mode, e
+    end
+    local function scaleSeq(seq, k)
+        local kp = {}
+        for i, p in ipairs(seq.Keypoints) do kp[i] = NumberSequenceKeypoint.new(p.Time, p.Value * k, p.Envelope * k) end
+        return NumberSequence.new(kp)
+    end
+    -- hidden = invisible, never disabled, so the game can keep toggling the real one
+    -- (Fire/Smoke/Sparkles have no transparency and are the exception)
+    local function unhideVal(d, v)
+        if d:IsA("Light") then d.Brightness = v elseif type(v) == "boolean" then d.Enabled = v else d.Transparency = v end
+    end
+    local function hideOne(d, on)
+        local st = FXS.hid[d]
+        if on and st == nil then
+            if d:IsA("ParticleEmitter") or d:IsA("Beam") or d:IsA("Trail") then
+                FXS.hid[d] = d.Transparency; d.Transparency = NumberSequence.new(1)
+            elseif d:IsA("Light") then
+                FXS.hid[d] = d.Brightness; d.Brightness = 0
+            elseif d:IsA("Fire") or d:IsA("Smoke") or d:IsA("Sparkles") then
+                FXS.hid[d] = d.Enabled; d.Enabled = false
+            end
+        elseif not on and st ~= nil then
+            unhideVal(d, st)
+            FXS.hid[d] = nil
+        end
+    end
+    local function fxHide(att, on)
+        for _, d in ipairs(att:GetDescendants()) do hideOne(d, on) end
+    end
+    local function sizeOne(d, k)
+        local st = FXS.sized[d]
+        if (st and st.k or 1) == k then return end
+        if not st then
+            st = { k = 1 }
+            if d:IsA("ParticleEmitter") then st.v = d.Size
+            elseif d:IsA("Beam") then st.v = { d.Width0, d.Width1 }
+            elseif d:IsA("Light") then st.v = d.Range end
+            FXS.sized[d] = st
+        end
+        if st.v ~= nil then
+            if d:IsA("ParticleEmitter") then d.Size = scaleSeq(st.v, k)
+            elseif d:IsA("Beam") then d.Width0, d.Width1 = st.v[1] * k, st.v[2] * k
+            elseif d:IsA("Light") then d.Range = math.min(st.v * k, 60) end
+        end
+        st.k = k
+    end
+    local function fxSize(att, k)
+        for _, d in ipairs(att:GetDescendants()) do sizeOne(d, k) end
+    end
+    -- the skin part a surface effect moves to: its biggest visible one
+    local function hostOf(b)
+        if b.host and b.host.Parent then return b.host end
+        local best, bv = nil, -1
+        for p in pairs(b.rel) do
+            if p.Transparency < 1 then
+                local v = p.Size.X * p.Size.Y * p.Size.Z
+                if v > bv then best, bv = p, v end
+            end
+        end
+        b.host = best
+        return best
+    end
+    -- a clean copy of a game effect (undoing any hide or resize of ours on the source)
+    local function cleanClone(d)
+        local c
+        pcall(function() d.Archivable = true; c = d:Clone() end)
+        if not c then return nil end
+        local st = FXS.hid[d]
+        if st ~= nil then pcall(unhideVal, c, st) end
+        local sz = FXS.sized[d]
+        if sz and sz.v ~= nil then
+            pcall(function()
+                if c:IsA("ParticleEmitter") then c.Size = sz.v
+                elseif c:IsA("Beam") then c.Width0, c.Width1 = sz.v[1], sz.v[2]
+                elseif c:IsA("Light") then c.Range = sz.v end
+            end)
+        end
+        return c
+    end
+    local function dropClone(d)
+        local c = FXS.clones[d]
+        if c then pcall(c.Destroy, c); FXS.clones[d] = nil end
+    end
+    local function fxApply(h, s, b, skinItem)
+        for _, c in ipairs(fxList(h)) do
+            local att = c.att
+            if c.part then
+                local d = c.em
+                if d.Parent then
+                    local e, mode = fxEntry(s, c)
+                    local host = mode == "Auto" and b and hostOf(b)
+                    if host then
+                        local cl = FXS.clones[d]
+                        if not (cl and cl.Parent == host) then
+                            dropClone(d)
+                            cl = cleanClone(d)
+                            if cl then cl.Parent = host; FXS.clones[d] = cl end
+                        end
+                        hideOne(d, true)
+                        if cl then
+                            -- follow the game switching the real one on and off
+                            local was = FXS.hid[d]
+                            local on = (type(was) == "boolean") and was or d.Enabled
+                            if cl.Enabled ~= on then cl.Enabled = on end
+                            sizeOne(cl, (e and tonumber(e.size)) or 1)
+                        end
+                    else
+                        dropClone(d)
+                        hideOne(d, mode == "Hide")
+                    end
+                end
+            elseif att.Parent then
+                local T, mode, e = fxTarget(h, s, b, c, skinItem)
+                if T then
+                    att.WorldCFrame = h.root.CFrame * T
+                elseif FXS.orig[att] then
+                    att.CFrame = FXS.orig[att]
+                end
+                fxHide(att, mode == "Hide")
+                fxSize(att, (e and tonumber(e.size)) or 1)
+            end
+        end
+    end
+    local function fxRestore()
+        if not (next(FXS.orig) or next(FXS.hid) or next(FXS.sized) or next(FXS.clones)) then return end
+        for att, cf in pairs(FXS.orig) do pcall(function() att.CFrame = cf end) end
+        table.clear(FXS.orig)
+        for d, v in pairs(FXS.hid) do pcall(unhideVal, d, v) end
+        table.clear(FXS.hid)
+        for _, c in pairs(FXS.clones) do pcall(c.Destroy, c) end
+        table.clear(FXS.clones)
+        for d, st in pairs(FXS.sized) do
+            pcall(function()
+                if d:IsA("ParticleEmitter") then d.Size = st.v
+                elseif d:IsA("Beam") then d.Width0, d.Width1 = st.v[1], st.v[2]
+                elseif d:IsA("Light") then d.Range = st.v end
+            end)
+        end
+        table.clear(FXS.sized)
     end
     local function step()
         local m = Modules.itemskins
@@ -19478,6 +19781,8 @@ registerConfig("item_skins", Koffee.ItemSkins)
             unhide()
             return
         end
+        -- the editor owns the scene while it's open
+        if IS_RT.editing then return end
         local h = IS.current()
         local s = h and IS.Skins[h.sig]
         if not s then
@@ -19493,13 +19798,8 @@ registerConfig("item_skins", Koffee.ItemSkins)
             IS_RT.modelKey = key
         end
         -- follow the real part every frame, after animations have posed it
-        local off = CFrame.new(s.ox or 0, s.oy or 0, s.oz or 0)
-            * CFrame.Angles(math.rad(s.rx or 0), math.rad(s.ry or 0), math.rad(s.rz or 0))
-        local seat = CFrame.identity
-        -- Tool to Tool: seat the new handle the way the engine's grip weld would
-        if h.kind == "Tool" and IS_RT.grip and h.obj:IsA("Tool") then
-            seat = h.obj.Grip * IS_RT.grip:Inverse()
-        end
+        local off = offOf(s)
+        local seat = seatFor(h, IS_RT.grip)
         if h.kind == "Viewmodel" then
             -- viewmodels get welded: the engine then moves the skin with the viewmodel's
             -- own assembly, so script order can never leave it a frame behind
@@ -19525,6 +19825,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
             local base = h.root.CFrame * seat * off
             for p, rel in pairs(IS_RT.rel) do p.CFrame = base * rel end
         end
+        fxApply(h, s, IS_RT.b, seat * off)
         if IS.HideOriginal ~= false then
             for _, p in ipairs(h.parts) do
                 if p.Parent then
@@ -19573,6 +19874,11 @@ registerConfig("item_skins", Koffee.ItemSkins)
         local h = IS.current()
         return h and IS.Skins[h.sig], h
     end
+    fxRestoreRef = fxRestore
+    IS._ed = { makeTemplate = makeTemplate, templateFromInst = templateFromInst, partsOf = partsOf, fxList = fxList,
+        fxTarget = fxTarget, fxEntry = fxEntry, restRel = restRel, muzzleSkin = muzzleSkin, offOf = offOf,
+        seatFor = seatFor, fxRestore = fxRestore, scaleSeq = scaleSeq, FXC = FXC, rt = IS_RT, ours = ours,
+        hideOne = hideOne, hostOf = hostOf, cleanClone = cleanClone }
     registerModule("itemskins", "Item Models", function() end, function() dropModel(); unhide() end)
     IS._probe = function() return pcall(step) end   -- test hook: one step, error returned
 
@@ -19647,22 +19953,31 @@ registerConfig("item_skins", Koffee.ItemSkins)
             if h then IS.copyInst(h.obj) else note("Item Models", "Hold an item first") end
         end)
         actBtn("Clear Skin", function() IS.clear() end)
+        actBtn("Edit in 3D", function() if IS.openEditor then IS.openEditor() end end)
         -- sliders edit the skin of whatever is held right now
         local function sk(k, v)
             local s = IS.skinFor()
             if s then s[k] = v end
         end
-        slider(card, "Offset X", -5, 5, 0, 2, function(v) sk("ox", v) end)
-        slider(card, "Offset Y", -5, 5, 0, 2, function(v) sk("oy", v) end)
-        slider(card, "Offset Z", -5, 5, 0, 2, function(v) sk("oz", v) end)
-        slider(card, "Rotate X", -180, 180, 0, 0, function(v) sk("rx", v) end)
-        slider(card, "Rotate Y", -180, 180, 0, 0, function(v) sk("ry", v) end)
-        slider(card, "Rotate Z", -180, 180, 0, 0, function(v) sk("rz", v) end)
-        slider(card, "Scale", 0.1, 5, 1, 2, function(v) sk("scale", v) end)
+        local sl = {
+            ox = slider(card, "Offset X", -5, 5, 0, 2, function(v) sk("ox", v) end),
+            oy = slider(card, "Offset Y", -5, 5, 0, 2, function(v) sk("oy", v) end),
+            oz = slider(card, "Offset Z", -5, 5, 0, 2, function(v) sk("oz", v) end),
+            rx = slider(card, "Rotate X", -180, 180, 0, 0, function(v) sk("rx", v) end),
+            ry = slider(card, "Rotate Y", -180, 180, 0, 0, function(v) sk("ry", v) end),
+            rz = slider(card, "Rotate Z", -180, 180, 0, 0, function(v) sk("rz", v) end),
+            scale = slider(card, "Scale", 0.1, 5, 1, 2, function(v) sk("scale", v) end),
+        }
         task.spawn(function()
             while card.Parent and not Koffee.dead() do
                 local h = IS.current()
                 local s = h and IS.Skins[h.sig]
+                -- mirror the held item's saved values (the editor writes them too)
+                if s then
+                    for k, h2 in pairs(sl) do
+                        if type(h2) == "table" then h2.set(tonumber(s[k]) or (k == "scale" and 1 or 0)) end
+                    end
+                end
                 status.Text = h and ("Holding: " .. h.name .. "  (" .. h.kind .. (s and ", skinned" or "") .. ")")
                     or "Holding: nothing"
                 task.wait(0.25)
@@ -19670,6 +19985,1285 @@ registerConfig("item_skins", Koffee.ItemSkins)
         end)
     end
     Shared.ItemSkins = IS
+end)()
+
+-- v0.87.0 ITEM EDITOR: a small 3D workspace for the held item. The skin, a ghost of the
+-- original and the game's effect points sit on a private stage above the map, with
+-- move/rotate/scale gizmos, an orbit camera and an effect timeline.
+;(function()
+    local IS = Shared.ItemSkins
+    local X = IS and IS._ed
+    if not X then return end
+    local CAS = game:GetService("ContextActionService")
+    local ED = { open = false, tool = "Move", space = "Local", snap = false, ghostOn = true }
+    local AXC = { Color3.fromRGB(235, 82, 82), Color3.fromRGB(122, 212, 92), Color3.fromRGB(82, 142, 245) }
+    local HOT = Color3.fromRGB(255, 214, 90)
+    local GHOST = Color3.fromRGB(140, 180, 255)
+    local MODES = { "Auto", "Manual", "Hide", "Leave" }
+    local MODE_COL = { Auto = Color3.fromRGB(96, 200, 232), Manual = Color3.fromRGB(217, 150, 95),
+        Hide = Color3.fromRGB(110, 100, 92), Leave = Color3.fromRGB(235, 228, 218) }
+    local HELP = {
+        Auto = "rides the skin's muzzle. drag it or use the sliders to pin it by hand",
+        Manual = "pinned to the skin at this exact spot",
+        Hide = "the game's effect is hidden",
+        Leave = "stays where the original item had it",
+    }
+    local PART_HELP = {
+        Auto = "copied onto the skin's main part, so it wraps the new model",
+        Hide = "the game's effect is hidden",
+        Leave = "stays on the original item (which you can't see)",
+    }
+    local KIND = { ParticleEmitter = "particle", Beam = "beam", Trail = "trail", PointLight = "light",
+        SpotLight = "light", SurfaceLight = "light", Fire = "fire", Smoke = "smoke", Sparkles = "sparkles" }
+    local FXC = X.FXC
+    local function note(m) if Koffee.notify then pcall(Koffee.notify, "Item Editor", m) end end
+    local function r3(v) return math.floor(v * 1000 + 0.5) / 1000 end
+    local function r2(v) return math.floor(v * 100 + 0.5) / 100 end
+
+    -- :: math ::
+    local function basis(n)
+        local up = math.abs(n.Y) > 0.95 and Vector3.xAxis or Vector3.yAxis
+        local u1 = up:Cross(n).Unit
+        return u1, n:Cross(u1)
+    end
+    -- a CFrame at p whose Z axis runs along d (cylinders and cones grow along Z)
+    local function zAlong(p, d)
+        local u1, u2 = basis(d)
+        return CFrame.fromMatrix(p, u1, u2, d)
+    end
+    local function toScreen(p)
+        local v = ED.cam:WorldToViewportPoint(p)
+        return Vector2.new(v.X, v.Y), v.Z > 0
+    end
+    local function segDist(m, a, b)
+        local ab = b - a
+        local t = math.clamp((m - a):Dot(ab) / math.max(ab:Dot(ab), 1e-6), 0, 1)
+        return (a + ab * t - m).Magnitude
+    end
+    local function mouseRay()
+        local m = UserInputService:GetMouseLocation()
+        local r = ED.cam:ViewportPointToRay(m.X, m.Y)
+        return r.Origin, r.Direction
+    end
+    -- where the mouse ray passes closest to the line O + d*t
+    local function axisParam(O, d)
+        local P, r = mouseRay()
+        local w0 = O - P
+        local b = d:Dot(r)
+        local den = 1 - b * b
+        if den < 1e-4 then return nil end
+        return (b * r:Dot(w0) - d:Dot(w0)) / den
+    end
+    -- mouse angle around n on the plane through O; nil when the plane is edge-on
+    local function ringAngle(O, n)
+        local P, r = mouseRay()
+        local den = r:Dot(n)
+        if math.abs(den) < 0.06 then return nil end
+        local v = P + r * ((O - P):Dot(n) / den) - O
+        local u1, u2 = basis(n)
+        return math.atan2(v:Dot(u2), v:Dot(u1))
+    end
+
+    -- :: data ::
+    local function skinItem() return X.seatFor(ED.h, ED.b.grip) * X.offOf(ED.s) end
+    local function fxItems()
+        local s = ED.s
+        if type(s.fx) ~= "table" then s.fx = {} end
+        if type(s.fx.items) ~= "table" then s.fx.items = {} end
+        return s.fx.items
+    end
+    local function recItem(rec, si)
+        local T, mode, e = X.fxTarget(ED.h, ED.s, ED.b, rec.c, si, rec.rest)
+        return T or rec.rest, mode, e
+    end
+    local function copy(t)
+        if type(t) ~= "table" then return t end
+        local o = {}
+        for k, v in pairs(t) do o[k] = copy(v) end
+        return o
+    end
+    local SNAP_KEYS = { "ox", "oy", "oz", "rx", "ry", "rz", "scale", "fx" }
+    local function pushUndo()
+        local o = {}
+        for _, k in ipairs(SNAP_KEYS) do o[k] = copy(ED.s[k]) end
+        ED.undo[#ED.undo + 1] = o
+        if #ED.undo > 80 then table.remove(ED.undo, 1) end
+    end
+    -- slider edits arrive every frame; one undo step per burst
+    local function edit()
+        if os.clock() - (ED.lastEdit or 0) > 0.6 then pushUndo() end
+        ED.lastEdit = os.clock()
+    end
+    local function undo()
+        local o = table.remove(ED.undo)
+        if not o then note("Nothing to undo"); return end
+        for _, k in ipairs(SNAP_KEYS) do ED.s[k] = o[k] end
+        ED.b.mzKey = nil
+    end
+    local function selWorld()
+        if ED.sel == "model" then return ED.S * skinItem() end
+        -- surface effects have no single point to drag
+        if type(ED.sel) == "table" and ED.sel.part then return nil end
+        if type(ED.sel) == "table" then return ED.S * (recItem(ED.sel, skinItem())) end
+        return nil
+    end
+    local function writeOff(off)
+        local s = ED.s
+        local p = off.Position
+        local rx, ry, rz = off:ToEulerAnglesXYZ()
+        s.ox, s.oy, s.oz = r3(p.X), r3(p.Y), r3(p.Z)
+        s.rx, s.ry, s.rz = r2(math.deg(rx)), r2(math.deg(ry)), r2(math.deg(rz))
+    end
+    local function setSelWorld(W)
+        if ED.sel == "model" then
+            writeOff(X.seatFor(ED.h, ED.b.grip):Inverse() * ED.S:Inverse() * W)
+        elseif type(ED.sel) == "table" then
+            local items = fxItems()
+            local key = ED.sel.c.key
+            local old = items[key]
+            local rel = skinItem():Inverse() * ED.S:Inverse() * W
+            items[key] = { mode = "Manual", cf = { rel:GetComponents() }, size = old and old.size or nil }
+        end
+    end
+    local function selScale()
+        if ED.sel == "model" then return tonumber(ED.s.scale) or 1 end
+        local e = fxItems()[ED.sel.c.key]
+        return e and tonumber(e.size) or 1
+    end
+    local function setSelScale(v)
+        v = math.clamp(r2(v), 0.05, 20)
+        if ED.sel == "model" then ED.s.scale = v; return end
+        local items = fxItems()
+        local e = items[ED.sel.c.key]
+        if not e then
+            local _, mode = X.fxEntry(ED.s, ED.sel.c)
+            e = { mode = mode }
+            items[ED.sel.c.key] = e
+        end
+        e.size = v
+    end
+    local function setMode(rec, mode)
+        if rec.part and mode == "Manual" then return end
+        local items = fxItems()
+        local e = items[rec.c.key] or {}
+        if mode == "Manual" and type(e.cf) ~= "table" then
+            local si = skinItem()
+            e.cf = { (si:Inverse() * (recItem(rec, si))):GetComponents() }
+        end
+        e.mode = mode
+        items[rec.c.key] = e
+    end
+    -- effect values in skin space, the way the inspector shows them
+    local function fxVals(rec)
+        if rec.part then
+            local e = fxItems()[rec.c.key]
+            return { x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, size = e and tonumber(e.size) or 1 }
+        end
+        local si = skinItem()
+        local rel = si:Inverse() * (recItem(rec, si))
+        local rx, ry, rz = rel:ToEulerAnglesXYZ()
+        local e = fxItems()[rec.c.key]
+        return { x = rel.X, y = rel.Y, z = rel.Z, rx = math.deg(rx), ry = math.deg(ry), rz = math.deg(rz),
+            size = e and tonumber(e.size) or 1 }
+    end
+    local function fxSet(k, v)
+        local rec = ED.sel
+        if type(rec) ~= "table" then return end
+        edit()
+        if k == "size" then setSelScale(v); return end
+        local c = fxVals(rec)
+        c[k] = v
+        local rel = CFrame.new(c.x, c.y, c.z) * CFrame.Angles(math.rad(c.rx), math.rad(c.ry), math.rad(c.rz))
+        setSelWorld(ED.S * skinItem() * rel)
+    end
+
+    -- :: stage ::
+    local function adorn(class, props)
+        local a = Instance.new(class)
+        a.Adornee = ED.anchor
+        a.AlwaysOnTop = true
+        a.ZIndex = 5
+        for k, v in pairs(props) do a[k] = v end
+        a.Parent = ED.anchor
+        return a
+    end
+    local function measure()
+        local sum, n = Vector3.zero, 0
+        for p, cf in pairs(ED.b.rel) do
+            if p.Transparency < 1 then sum += cf.Position; n += 1 end
+        end
+        ED.center = n > 0 and sum / n or Vector3.zero
+        local far = 0.3
+        for p, cf in pairs(ED.b.rel) do
+            if p.Transparency < 1 then far = math.max(far, (cf.Position - ED.center).Magnitude + p.Size.Magnitude / 2) end
+        end
+        ED.radius = far
+    end
+    local function rescale()
+        local b = ED.b
+        local want = math.max(tonumber(ED.s.scale) or 1, 0.01)
+        pcall(function() b.model:ScaleTo(want) end)
+        for p in pairs(b.rel) do b.rel[p] = b.root.CFrame:ToObjectSpace(p.CFrame) end
+        if b.mz then b.mz = b.mz * (want / (b.scale or 1)) end
+        b.scale, b.mzKey = want, nil
+        measure()
+    end
+    local function kindsOf(att)
+        local n = {}
+        for _, d in ipairs(att:GetDescendants()) do
+            local k = KIND[d.ClassName]
+            if k then n[k] = (n[k] or 0) + 1 end
+        end
+        local out = {}
+        for k, v in pairs(n) do out[#out + 1] = v .. " " .. k .. (v > 1 and "s" or "") end
+        table.sort(out)
+        return #out > 0 and table.concat(out, ", ") or "no effects, tracer origin"
+    end
+    local function buildStage()
+        local h = ED.h
+        local stage = Instance.new("Model")
+        stage.Name = KID.name("ied")
+        X.ours[stage] = true
+        local anchor = Instance.new("Part")
+        anchor.Name = "a"
+        anchor.Anchored, anchor.CanCollide, anchor.Transparency, anchor.CastShadow = true, false, 1, false
+        anchor.Size = Vector3.one * 0.05
+        pcall(function() anchor.CanQuery = false; anchor.CanTouch = false end)
+        anchor.CFrame = ED.S
+        anchor.Parent = stage
+        ED.stage, ED.anchor = stage, anchor
+        local b = X.makeTemplate(ED.s)
+        if not b then stage:Destroy(); return false end
+        for p in pairs(b.rel) do pcall(function() p.CanQuery = true end) end
+        b.model.Parent = stage
+        ED.b = b
+        measure()
+        -- the original, as a ghost, to line the skin up against
+        local ghost = X.templateFromInst(h.obj)
+        if ghost then
+            local src, dst = X.partsOf(h.obj), X.partsOf(ghost)
+            if #src == #dst then
+                for _, d in ipairs(ghost:GetDescendants()) do
+                    if FXC[d.ClassName] or d:IsA("SurfaceAppearance") or d:IsA("Decal") then pcall(d.Destroy, d) end
+                end
+                ED.ghostMap = {}
+                for i, p in ipairs(dst) do
+                    ED.ghostMap[src[i]] = p
+                    p.CFrame = ED.S * h.root.CFrame:ToObjectSpace(src[i].CFrame)
+                    p.Material = Enum.Material.ForceField
+                    p.Color = GHOST
+                    p.Transparency = src[i].Transparency >= 1 and 1 or 0.55
+                end
+                ghost.Parent = stage
+                ED.ghost = ghost
+                ED.ghostR = ghost:GetExtentsSize().Magnitude / 2
+            else
+                ghost:Destroy()
+            end
+        end
+        local c = ED.S * skinItem() * ED.center
+        local floor = Instance.new("Part")
+        floor.Shape = Enum.PartType.Cylinder
+        floor.Anchored, floor.CanCollide, floor.CastShadow = true, false, false
+        pcall(function() floor.CanQuery = false; floor.CanTouch = false end)
+        floor.Size = Vector3.new(0.04, ED.radius * 6, ED.radius * 6)
+        floor.CFrame = CFrame.new(c - Vector3.new(0, ED.radius * 1.4, 0)) * CFrame.Angles(0, 0, math.pi / 2)
+        floor.Color, floor.Material, floor.Transparency = Theme.Palette.Background, Enum.Material.SmoothPlastic, 0.3
+        floor.Parent = stage
+        -- studio backdrop: six shadowless walls so the map never clutters the view
+        ED.walls = {}
+        local R = 60
+        for _, d in ipairs({ Vector3.xAxis, -Vector3.xAxis, Vector3.yAxis, -Vector3.yAxis, Vector3.zAxis, -Vector3.zAxis }) do
+            local w = Instance.new("Part")
+            w.Anchored, w.CanCollide, w.CastShadow = true, false, false
+            pcall(function() w.CanQuery = false; w.CanTouch = false end)
+            w.Size = Vector3.new(R * 2, R * 2, 1)
+            w.CFrame = zAlong(c + d * R, -d)
+            w.Color, w.Material = Color3.fromRGB(33, 29, 27), Enum.Material.SmoothPlastic
+            w.Parent = stage
+            ED.walls[#ED.walls + 1] = w
+        end
+        -- effect points: a silent copy of each for previews, a marker, and a ghost dot
+        -- where the game had it
+        ED.fx = {}
+        for _, fc in ipairs(X.fxList(h)) do
+            if fc.part then
+                if fc.em.Parent then
+                    local rec = { c = fc, part = true, orig = {}, mode = "Auto",
+                        rest = h.root.CFrame:ToObjectSpace(fc.host.CFrame),
+                        kinds = (KIND[fc.em.ClassName] or "effect") .. " on the surface" }
+                    rec.pv = X.cleanClone(fc.em)
+                    if rec.pv then rec.pv.Enabled = false end
+                    rec.mk = adorn("SphereHandleAdornment", { Radius = 0.03 })
+                    rec.rmk = adorn("SphereHandleAdornment", { Radius = 0.02, Transparency = 0.45, Color3 = GHOST })
+                    ED.fx[#ED.fx + 1] = rec
+                end
+            elseif fc.att.Parent then
+                local rec = { c = fc, rest = X.restRel(h, fc.att), orig = {}, mode = "Leave", kinds = kindsOf(fc.att) }
+                pcall(function()
+                    fc.att.Archivable = true
+                    for _, d in ipairs(fc.att:GetDescendants()) do d.Archivable = true end
+                    local pv = fc.att:Clone()
+                    for _, d in ipairs(pv:GetDescendants()) do
+                        if FXC[d.ClassName] then d.Enabled = false end
+                        if d:IsA("Sound") or d:IsA("LuaSourceContainer") then d:Destroy() end
+                    end
+                    pv.Parent = anchor
+                    rec.pv = pv
+                end)
+                rec.mk = adorn("SphereHandleAdornment", { Radius = 0.03 })
+                rec.rmk = adorn("SphereHandleAdornment", { Radius = 0.02, Transparency = 0.45, Color3 = GHOST })
+                ED.fx[#ED.fx + 1] = rec
+            end
+        end
+        ED.mzMk = adorn("SphereHandleAdornment", { Radius = 0.02, Transparency = 0.25, Color3 = MODE_COL.Auto })
+        -- gizmo parts, repositioned every frame
+        local G = { shaft = {}, tip = {}, ring = {}, box = {} }
+        for i = 1, 3 do
+            G.shaft[i] = adorn("CylinderHandleAdornment", { Color3 = AXC[i], Visible = false })
+            G.tip[i] = adorn("ConeHandleAdornment", { Color3 = AXC[i], Visible = false })
+            G.ring[i] = adorn("CylinderHandleAdornment", { Color3 = AXC[i], Visible = false })
+            G.box[i] = adorn("BoxHandleAdornment", { Color3 = AXC[i], Visible = false })
+        end
+        G.center = adorn("SphereHandleAdornment", { Color3 = Color3.new(1, 1, 1), Visible = false })
+        local sb = Instance.new("SelectionBox")
+        sb.Color3, sb.LineThickness, sb.SurfaceTransparency, sb.Visible = Theme.Palette.Accent, 0.006, 1, false
+        sb.Parent = stage
+        G.sel = sb
+        ED.G = G
+        stage.Parent = Workspace.CurrentCamera
+        return true
+    end
+    local function setBack(on)
+        ED.backOn = on
+        for _, w in ipairs(ED.walls or {}) do w.LocalTransparencyModifier = on and 0 or 1 end
+    end
+    local function setGhost(on)
+        ED.ghostOn = on
+        if ED.ghost then
+            for _, p in ipairs(X.partsOf(ED.ghost)) do p.LocalTransparencyModifier = on and 0 or 1 end
+        end
+    end
+
+    -- :: gizmo ::
+    local function drawGizmo()
+        local G = ED.G
+        for i = 1, 3 do
+            G.shaft[i].Visible, G.tip[i].Visible, G.ring[i].Visible, G.box[i].Visible = false, false, false, false
+        end
+        G.center.Visible, G.sel.Visible = false, false
+        local W = selWorld()
+        if not W then ED.gz = nil; return end
+        local O = W.Position
+        local R = ED.space == "Local" and W.Rotation or CFrame.identity
+        local g = (ED.cam.CFrame.Position - O).Magnitude * 0.16
+        local ds = { R.XVector, R.YVector, R.ZVector }
+        local tool = ED.tool
+        ED.gz = { O = O, d = ds, g = g, tool = tool, W = W }
+        local A = ED.anchor.CFrame
+        local hot = ED.drag and ED.drag.h or ED.hover
+        for i = 1, 3 do
+            local d = ds[i]
+            local col = (hot and hot.i == i) and HOT or AXC[i]
+            if tool == "Rotate" then
+                local r = G.ring[i]
+                r.Visible, r.Color3 = true, col
+                r.CFrame = A:ToObjectSpace(zAlong(O, d))
+                r.Radius, r.InnerRadius, r.Height = g * 0.8, g * 0.765, g * 0.004
+            else
+                local len = tool == "Move" and 0.9 or 0.8
+                local sh = G.shaft[i]
+                sh.Visible, sh.Color3 = true, col
+                sh.CFrame = A:ToObjectSpace(zAlong(O + d * g * len / 2, d))
+                sh.Height, sh.Radius = g * len, g * 0.012
+                if tool == "Move" then
+                    local tp = G.tip[i]
+                    tp.Visible, tp.Color3 = true, col
+                    tp.CFrame = A:ToObjectSpace(zAlong(O + d * g * len, d))
+                    tp.Height, tp.Radius = g * 0.22, g * 0.055
+                else
+                    local bx = G.box[i]
+                    bx.Visible, bx.Color3 = true, col
+                    bx.CFrame = A:ToObjectSpace(zAlong(O + d * g * len, d))
+                    bx.Size = Vector3.one * g * 0.09
+                end
+            end
+        end
+        if tool == "Scale" then
+            G.center.Visible = true
+            G.center.Color3 = (hot and hot.kind == "uni") and HOT or Color3.new(1, 1, 1)
+            G.center.CFrame = A:ToObjectSpace(CFrame.new(O))
+            G.center.Radius = g * 0.075
+        end
+        if ED.sel == "model" then G.sel.Adornee, G.sel.Visible = ED.b.model, true end
+    end
+    local function pickHandle(m)
+        local gz = ED.gz
+        if not gz then return nil end
+        if gz.tool == "Scale" then
+            local o, vis = toScreen(gz.O)
+            if vis and (o - m).Magnitude < 14 then return { kind = "uni" } end
+        end
+        local best, bd = nil, 10
+        for i = 1, 3 do
+            local d = gz.d[i]
+            if gz.tool == "Rotate" then
+                local u1, u2 = basis(d)
+                local r = gz.g * 0.78
+                local prev
+                for k = 0, 48 do
+                    local a = k / 48 * math.pi * 2
+                    local p, vis = toScreen(gz.O + (u1 * math.cos(a) + u2 * math.sin(a)) * r)
+                    if prev and vis then
+                        local dd = segDist(m, prev, p)
+                        if dd < bd then best, bd = { kind = "rot", i = i }, dd end
+                    end
+                    prev = vis and p or nil
+                end
+            else
+                local a, va = toScreen(gz.O + d * gz.g * 0.15)
+                local b, vb = toScreen(gz.O + d * gz.g * (gz.tool == "Move" and 1.12 or 0.93))
+                if va and vb then
+                    local dd = segDist(m, a, b)
+                    if dd < bd then best, bd = { kind = gz.tool == "Move" and "move" or "scale", i = i }, dd end
+                end
+            end
+        end
+        return best
+    end
+    local function pickMarker(m)
+        local best, bd = nil, 14
+        for _, rec in ipairs(ED.fx) do
+            if rec.world and not rec.part then
+                local p, vis = toScreen(rec.world.Position)
+                local dd = (p - m).Magnitude
+                if vis and dd < bd then best, bd = rec, dd end
+            end
+        end
+        return best
+    end
+    local function pickModel()
+        local P, r = mouseRay()
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Include
+        rp.FilterDescendantsInstances = { ED.b.model }
+        return Workspace:Raycast(P, r * 1000, rp) ~= nil
+    end
+    local function beginDrag(hh, m)
+        local gz = ED.gz
+        local D = { h = hh, W0 = gz.W, m0 = m, O = gz.O, d = gz.d[hh.i or 1] }
+        if hh.kind == "move" then
+            D.t0 = axisParam(D.O, D.d)
+            if not D.t0 then return end
+        elseif hh.kind == "rot" then
+            D.last = ringAngle(D.O, D.d)
+            D.flat, D.acc = D.last == nil, 0
+        else
+            D.s0 = selScale()
+        end
+        pushUndo()
+        ED.drag = D
+    end
+    local function moveDrag(m)
+        local D = ED.drag
+        if D.h.kind == "move" then
+            local t = axisParam(D.O, D.d)
+            if not t then return end
+            local dt = t - D.t0
+            if ED.snap then dt = math.floor(dt / 0.05 + 0.5) * 0.05 end
+            setSelWorld(D.W0 + D.d * dt)
+        elseif D.h.kind == "rot" then
+            if D.flat then
+                -- ring seen edge-on: horizontal mouse travel turns it instead
+                D.acc = (m.X - D.m0.X) * 0.012
+            else
+                local a = ringAngle(D.O, D.d)
+                if a then
+                    local da = a - D.last
+                    if da > math.pi then da -= 2 * math.pi elseif da < -math.pi then da += 2 * math.pi end
+                    D.acc += da
+                    D.last = a
+                end
+            end
+            local total = D.acc
+            if ED.snap then total = math.floor(total / math.rad(15) + 0.5) * math.rad(15) end
+            setSelWorld(CFrame.new(D.W0.Position) * CFrame.fromAxisAngle(D.d, total) * D.W0.Rotation)
+        else
+            local k = 1 + ((m.X - D.m0.X) - (m.Y - D.m0.Y)) * 0.006
+            local v = D.s0 * math.max(k, 0.05)
+            if ED.snap then v = math.floor(v / 0.05 + 0.5) * 0.05 end
+            setSelScale(v)
+        end
+    end
+
+    -- :: timeline :: particle emitters have no seek, so a scrub replays from the start
+    -- at full speed and freezes (TimeScale 0) once it reaches the playhead
+    local TL = { token = 0, speed = 1, loop = false, playing = false, t = 0, t0 = 0, dur = 0.2 }
+    ED.tl = TL
+    local function tlTargets()
+        if type(ED.sel) == "table" then return { ED.sel } end
+        return ED.fx
+    end
+    local function tlDur()
+        local d = 0.05
+        for _, rec in ipairs(tlTargets()) do
+            if rec.pv and not rec.part then
+                for _, e in ipairs(rec.pv:GetDescendants()) do
+                    if e:IsA("ParticleEmitter") then d = math.max(d, (tonumber(e:GetAttribute("EmitDelay")) or 0) + e.Lifetime.Max) end
+                end
+            end
+        end
+        return d
+    end
+    local function lights(on, only)
+        for _, rec in ipairs(only or ED.fx) do
+            if rec.pv then
+                for _, e in ipairs(rec.pv:GetDescendants()) do
+                    if e:IsA("Light") or e:IsA("Beam") or e:IsA("Trail") then e.Enabled = on and rec.mode ~= "Hide" end
+                end
+            end
+        end
+    end
+    local function tlStart(t, freeze)
+        TL.token += 1
+        local tok = TL.token
+        for _, rec in ipairs(ED.fx) do
+            if rec.pv and not rec.part then
+                for _, e in ipairs(rec.pv:GetDescendants()) do
+                    if e:IsA("ParticleEmitter") then e:Clear(); e.TimeScale = 1 end
+                end
+            end
+        end
+        lights(false)
+        local targets = tlTargets()
+        for _, rec in ipairs(targets) do
+            if rec.pv and not rec.part and rec.mode ~= "Hide" then
+                for _, e in ipairs(rec.pv:GetDescendants()) do
+                    if e:IsA("ParticleEmitter") then
+                        local delay = tonumber(e:GetAttribute("EmitDelay")) or 0
+                        local count = tonumber(e:GetAttribute("EmitCount")) or 1
+                        if freeze then
+                            if t >= delay then
+                                e:Emit(count)
+                                task.delay(t - delay, function() if TL.token == tok then e.TimeScale = 0 end end)
+                            end
+                        else
+                            e.TimeScale = TL.speed
+                            task.delay(delay / TL.speed, function() if TL.token == tok then e:Emit(count) end end)
+                        end
+                    end
+                end
+            end
+        end
+        if not freeze or t <= TL.dur then lights(true, targets) end
+    end
+    local function tlPlay()
+        TL.dur = tlDur()
+        TL.playing, TL.t0, TL.t = true, os.clock(), 0
+        tlStart(0, false)
+    end
+    local function tlToggle()
+        if TL.playing then
+            TL.playing = false
+            TL.token += 1
+            for _, rec in ipairs(ED.fx) do
+                if rec.pv then
+                    for _, e in ipairs(rec.pv:GetDescendants()) do if e:IsA("ParticleEmitter") then e.TimeScale = 0 end end
+                end
+            end
+        else
+            tlPlay()
+        end
+    end
+    local function tlScrub(f)
+        TL.dur = tlDur()
+        TL.playing = false
+        TL.t = f * TL.dur
+        tlStart(TL.t, true)
+    end
+    local function tlTick()
+        if TL.playing then
+            TL.t = (os.clock() - TL.t0) * TL.speed
+            if TL.t >= TL.dur then
+                if TL.loop then tlPlay() else TL.playing, TL.t = false, TL.dur; lights(false) end
+            end
+        end
+        local f = math.clamp(TL.t / math.max(TL.dur, 1e-3), 0, 1)
+        ED.tlFill.Size = UDim2.new(f, 0, 1, 0)
+        ED.tlKnob.Position = UDim2.new(f, 0, 0.5, 0)
+        ED.tlTime.Text = string.format("%.3f / %.3fs", TL.t, TL.dur)
+    end
+
+    -- :: ui ::
+    local function lit(b, on)
+        b.BackgroundColor3 = on and Theme.Palette.Accent or Theme.Palette.Pill
+        b.TextColor3 = on and Theme.Palette.Background or Theme.Palette.Text
+    end
+    local function mkPanel(props)
+        local f = new("Frame", {
+            BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.06, Active = true, ZIndex = 5,
+            Parent = ED.gui,
+        }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
+        for k, v in pairs(props) do f[k] = v end
+        ED.panels[#ED.panels + 1] = f
+        return f
+    end
+    local function pad(f, a, b)
+        new("UIPadding", { PaddingTop = UDim.new(0, a), PaddingBottom = UDim.new(0, a),
+            PaddingLeft = UDim.new(0, b), PaddingRight = UDim.new(0, b), Parent = f })
+    end
+    local function list(f, dir, gap)
+        return new("UIListLayout", { FillDirection = dir or Enum.FillDirection.Vertical, Padding = UDim.new(0, gap or 4),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            VerticalAlignment = dir == Enum.FillDirection.Horizontal and Enum.VerticalAlignment.Center or Enum.VerticalAlignment.Top,
+            Parent = f })
+    end
+    local function text(parent, str, size, col, font, order, wrap)
+        return new("TextLabel", {
+            Text = str, TextSize = size or Theme.Text.Small, TextColor3 = col or Theme.Palette.Text,
+            FontFace = font or Theme.Fonts.Medium, BackgroundTransparency = 1, LayoutOrder = order or 0, ZIndex = 6,
+            TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = wrap == true,
+            AutomaticSize = wrap and Enum.AutomaticSize.Y or Enum.AutomaticSize.XY,
+            Size = wrap and UDim2.new(1, 0, 0, 0) or UDim2.new(0, 0, 0, 0), Parent = parent,
+        })
+    end
+    local function button(parent, str, order, onClick, w)
+        local b = new("TextButton", {
+            Text = str, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true, LayoutOrder = order or 0, ZIndex = 6,
+            AutomaticSize = w and Enum.AutomaticSize.None or Enum.AutomaticSize.X, Size = UDim2.new(0, w or 0, 0, 26),
+            Parent = parent,
+        }, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
+        b.MouseButton1Click:Connect(onClick)
+        return b
+    end
+    local function group(parent, order)
+        local g = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = order, ZIndex = 6, Parent = parent })
+        list(g, nil, 6)
+        return g
+    end
+    local function overPanel(m)
+        local o = ED.canvas.AbsolutePosition
+        for _, f in ipairs(ED.panels) do
+            if f.Visible then
+                local p, s = f.AbsolutePosition - o, f.AbsoluteSize
+                if m.X >= p.X and m.X <= p.X + s.X and m.Y >= p.Y and m.Y <= p.Y + s.Y then return true end
+            end
+        end
+        return false
+    end
+    local refreshUi
+    local function selectTarget(target)
+        ED.sel = target
+        TL.dur = tlDur()
+        if refreshUi then refreshUi() end
+    end
+    local function setTool(t) ED.tool = t; refreshUi() end
+    local function focusSel()
+        local v = ED.view
+        local W = selWorld()
+        if ED.sel == "model" or not W then
+            v.focus = ED.S * skinItem() * ED.center
+            v.dist = math.max(ED.radius * 2.6, 0.8)
+        else
+            v.focus = W.Position
+            v.dist = math.max(ED.radius * 1.2, 0.6)
+        end
+    end
+    local close
+    local function buildGui()
+        local gui = KID.track(new("ScreenGui", {
+            Name = KID.name("ied"), ResetOnSpawn = false, IgnoreGuiInset = true,
+            ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = screen.DisplayOrder, Parent = guiParent(),
+        }))
+        protectGuiSafe(gui)
+        ED.gui, ED.panels = gui, {}
+        -- swallows clicks so the game never sees them (they arrive gameProcessed)
+        ED.canvas = new("TextButton", { Text = "", AutoButtonColor = false, Active = true, Modal = true,
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), ZIndex = 1, Parent = gui })
+
+        local top = mkPanel({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 14),
+            AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 42) })
+        pad(top, 8, 12)
+        list(top, Enum.FillDirection.Horizontal, 6)
+        text(top, "Item Editor", Theme.Text.Body, Theme.Palette.Accent, Theme.Fonts.Bold, 1)
+        text(top, ED.h.name, Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 2)
+        new("Frame", { Size = UDim2.new(0, 1, 0, 20), BackgroundColor3 = Theme.Palette.Border, LayoutOrder = 3, ZIndex = 6, Parent = top })
+        ED.toolBtn = {}
+        for i, t in ipairs({ "Move", "Rotate", "Scale" }) do
+            ED.toolBtn[t] = button(top, i .. "  " .. t, 10 + i, function() setTool(t) end)
+        end
+        ED.spaceBtn = button(top, "Local", 20, function()
+            ED.space = ED.space == "Local" and "World" or "Local"; refreshUi()
+        end, 64)
+        ED.snapBtn = button(top, "Snap", 21, function() ED.snap = not ED.snap; refreshUi() end)
+        ED.ghostBtn = button(top, "Original", 22, function() setGhost(not ED.ghostOn); refreshUi() end)
+        ED.backBtn = button(top, "Backdrop", 22, function() setBack(not ED.backOn); refreshUi() end)
+        button(top, "Focus", 23, focusSel)
+        button(top, "Undo", 24, undo)
+        new("Frame", { Size = UDim2.new(0, 1, 0, 20), BackgroundColor3 = Theme.Palette.Border, LayoutOrder = 29, ZIndex = 6, Parent = top })
+        local done = button(top, "Done", 30, function() close() end)
+        lit(done, true)
+
+        -- outliner
+        local out = mkPanel({ Position = UDim2.new(0, 14, 0, 70), Size = UDim2.new(0, 230, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y })
+        pad(out, 10, 10)
+        list(out, nil, 3)
+        text(out, "SCENE", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 0)
+        ED.rows = {}
+        local function row(label, sub, order, target)
+            local b = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Theme.Palette.Pill,
+                BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = order, ZIndex = 6, Parent = out },
+                { corner(6) })
+            local dot = new("Frame", { Size = UDim2.fromOffset(8, 8), Position = UDim2.new(0, 9, 0.5, -4),
+                BackgroundColor3 = Theme.Palette.Accent, ZIndex = 7, Parent = b }, { pillCorner() })
+            new("TextLabel", { Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, Position = UDim2.fromOffset(26, 3),
+                Size = UDim2.new(1, -32, 0, 15), TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7, Parent = b })
+            local t2 = new("TextLabel", { Text = sub, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small - 2,
+                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, Position = UDim2.fromOffset(26, 18),
+                Size = UDim2.new(1, -32, 0, 12), TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7, Parent = b })
+            b.MouseButton1Click:Connect(function() selectTarget(target) end)
+            ED.rows[#ED.rows + 1] = { b = b, dot = dot, sub = t2, target = target }
+        end
+        row("Skin", ED.s.src == "asset" and ("asset " .. tostring(ED.s.asset)) or "item model", 1, "model")
+        for i, rec in ipairs(ED.fx) do row(rec.c.name, rec.kinds, 1 + i, rec) end
+        if #ED.fx == 0 then
+            text(out, "no effect points on this item", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 99, true)
+        end
+
+        -- inspector
+        local insp = new("ScrollingFrame", {
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 70), Size = UDim2.new(0, 290, 0, 200),
+            BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.06, ScrollBarThickness = 3,
+            ScrollBarImageColor3 = Theme.Palette.Border, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, Active = true, ZIndex = 5, Parent = gui,
+        }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
+        ED.panels[#ED.panels + 1] = insp
+        pad(insp, 12, 14)
+        local lay = list(insp, nil, 6)
+        local function fit()
+            insp.Size = UDim2.new(0, 290, 0, math.min(lay.AbsoluteContentSize.Y + 26, viewport().Y - 190))
+        end
+        lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fit)
+
+        local gm = group(insp, 1)
+        text(gm, "Skin transform", Theme.Text.Body, Theme.Palette.Text, Theme.Fonts.Bold, 1)
+        text(gm, "relative to the original item. drag the gizmo or type values", Theme.Text.Small,
+            Theme.Palette.TextMuted, Theme.Fonts.Regular, 2, true)
+        ED.sm = {}
+        local SM = { { "ox", "Position X", -5, 5, 3 }, { "oy", "Position Y", -5, 5, 3 }, { "oz", "Position Z", -5, 5, 3 },
+            { "rx", "Rotation X", -180, 180, 1 }, { "ry", "Rotation Y", -180, 180, 1 }, { "rz", "Rotation Z", -180, 180, 1 },
+            { "scale", "Scale", 0.1, 5, 2 } }
+        for i, d in ipairs(SM) do
+            local k = d[1]
+            ED.sm[k] = slider(gm, d[2], d[3], d[4], tonumber(ED.s[k]) or (k == "scale" and 1 or 0), d[5], function(v)
+                edit(); ED.s[k] = v
+            end)
+            ED.sm[k].row.LayoutOrder = 10 + i
+        end
+        local gmb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 20, ZIndex = 6, Parent = gm })
+        list(gmb, Enum.FillDirection.Horizontal, 6)
+        button(gmb, "Reset transform", 1, function()
+            pushUndo()
+            for _, k in ipairs({ "ox", "oy", "oz", "rx", "ry", "rz" }) do ED.s[k] = nil end
+            ED.s.scale = 1
+        end)
+        ED.gModel = gm
+
+        local gf = group(insp, 2)
+        ED.fxTitle = text(gf, "", Theme.Text.Body, Theme.Palette.Text, Theme.Fonts.Bold, 1)
+        ED.fxSub = text(gf, "", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 2, true)
+        local seg = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 3, ZIndex = 6, Parent = gf })
+        list(seg, Enum.FillDirection.Horizontal, 4)
+        ED.modeBtn = {}
+        for i, m in ipairs(MODES) do
+            ED.modeBtn[m] = button(seg, m, i, function()
+                if type(ED.sel) == "table" then pushUndo(); setMode(ED.sel, m) end
+            end, 62)
+        end
+        ED.modeHelp = text(gf, "", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 4, true)
+        ED.sf = {}
+        local SF = { { "x", "Position X", -5, 5, 3 }, { "y", "Position Y", -5, 5, 3 }, { "z", "Position Z", -5, 5, 3 },
+            { "rx", "Rotation X", -180, 180, 1 }, { "ry", "Rotation Y", -180, 180, 1 }, { "rz", "Rotation Z", -180, 180, 1 },
+            { "size", "Effect Size", 0.1, 5, 2 } }
+        for i, d in ipairs(SF) do
+            local k = d[1]
+            ED.sf[k] = slider(gf, d[2], d[3], d[4], k == "size" and 1 or 0, d[5], function(v) fxSet(k, v) end)
+            ED.sf[k].row.LayoutOrder = 10 + i
+        end
+        local gfb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 30, ZIndex = 6, Parent = gf })
+        list(gfb, Enum.FillDirection.Horizontal, 6)
+        button(gfb, "Back to Auto", 1, function()
+            if type(ED.sel) ~= "table" then return end
+            pushUndo()
+            local items = fxItems()
+            local e = items[ED.sel.c.key]
+            items[ED.sel.c.key] = { mode = "Auto", size = e and e.size or nil }
+        end)
+        ED.muzBtn = button(gfb, "Use as Muzzle", 2, function()
+            if type(ED.sel) ~= "table" then return end
+            pushUndo()
+            local v = fxVals(ED.sel)
+            fxItems()
+            ED.s.fx.muzzle = { r3(v.x), r3(v.y), r3(v.z) }
+            setMode(ED.sel, "Auto")
+            note("Every Auto effect now rides this point")
+        end)
+        ED.gFx = gf
+
+        local gn = group(insp, 3)
+        text(gn, "Nothing selected", Theme.Text.Body, Theme.Palette.Text, Theme.Fonts.Bold, 1)
+        text(gn, "click the skin or an effect point (the dots). with nothing picked, the timeline plays every effect.",
+            Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 2, true)
+        ED.muzText = text(gn, "", Theme.Text.Small, Theme.Palette.Text, Theme.Fonts.Regular, 3, true)
+        local gnb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 4, ZIndex = 6, Parent = gn })
+        list(gnb, Enum.FillDirection.Horizontal, 6)
+        button(gnb, "Reset muzzle", 1, function()
+            pushUndo()
+            if type(ED.s.fx) == "table" then ED.s.fx.muzzle = nil end
+            ED.b.mzKey = nil
+        end)
+        button(gnb, "Reset all effects", 2, function() pushUndo(); ED.s.fx = nil; ED.b.mzKey = nil end)
+        ED.gNone = gn
+
+        -- timeline
+        local tl = mkPanel({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
+            Size = UDim2.new(0, 640, 0, 68) })
+        pad(tl, 8, 12)
+        local ctr = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), ZIndex = 6, Parent = tl })
+        list(ctr, Enum.FillDirection.Horizontal, 6)
+        ED.playBtn = button(ctr, "Play", 1, tlToggle, 70)
+        ED.loopBtn = button(ctr, "Loop", 2, function() TL.loop = not TL.loop; refreshUi() end)
+        ED.speedBtn = {}
+        for i, sp in ipairs({ 0.1, 0.25, 0.5, 1 }) do
+            ED.speedBtn[sp] = button(ctr, sp .. "x", 2 + i, function()
+                TL.speed = sp
+                if TL.playing then tlPlay() end
+                refreshUi()
+            end)
+        end
+        ED.tlName = text(ctr, "all effects", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 10)
+        ED.tlTime = text(ctr, "", Theme.Text.Small, Theme.Palette.Text, Theme.Fonts.Mono, 11)
+        local track = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 0, 0, 32), Size = UDim2.new(1, 0, 0, 18), ZIndex = 6, Parent = tl })
+        local bar = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+            Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = Theme.Palette.PanelElevated, ZIndex = 6, Parent = track },
+            { pillCorner() })
+        ED.tlFill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Theme.Palette.Accent, ZIndex = 7, Parent = bar },
+            { pillCorner() })
+        ED.tlKnob = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+            Size = UDim2.fromOffset(12, 12), BackgroundColor3 = Theme.Palette.Accent, ZIndex = 8, Parent = bar },
+            { pillCorner(), stroke(Theme.Palette.Border, 1) })
+        local function scrubAt(x)
+            local w = bar.AbsoluteSize.X
+            if w > 0 then tlScrub(math.clamp((x - bar.AbsolutePosition.X) / w, 0, 1)) end
+        end
+        track.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 then ED.scrub = true; scrubAt(io.Position.X) end
+        end)
+        ED.scrubAt = scrubAt
+
+        text(gui, "RMB orbit    MMB pan    wheel zoom    RMB + WASD/QE fly    1 2 3 tools    F focus    Space play    Ctrl+Z undo",
+            Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 0).Position = UDim2.new(0, 16, 1, -24)
+        -- marker labels follow their dots
+        for _, rec in ipairs(ED.fx) do
+            rec.lbl = new("TextLabel", { Text = rec.c.name, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small - 1,
+                TextColor3 = Theme.Palette.Text, TextStrokeTransparency = 0.4, BackgroundTransparency = 1,
+                AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.new(), ZIndex = 3, Parent = gui })
+        end
+        fit()
+    end
+    refreshUi = function()
+        if not ED.gui then return end
+        for t, b in pairs(ED.toolBtn) do lit(b, ED.tool == t) end
+        ED.spaceBtn.Text = ED.space
+        lit(ED.snapBtn, ED.snap)
+        lit(ED.ghostBtn, ED.ghostOn)
+        lit(ED.backBtn, ED.backOn)
+        lit(ED.loopBtn, TL.loop)
+        for sp, b in pairs(ED.speedBtn) do lit(b, TL.speed == sp) end
+        ED.playBtn.Text = TL.playing and "Pause" or "Play"
+        for _, r in ipairs(ED.rows) do
+            r.b.BackgroundTransparency = ED.sel == r.target and 0 or 1
+            if type(r.target) == "table" then
+                local m = r.target.mode or "Leave"
+                r.dot.BackgroundColor3 = MODE_COL[m]
+                r.sub.Text = r.target.kinds .. "  /  " .. string.lower(m)
+            end
+        end
+        local sel = ED.sel
+        ED.gModel.Visible = sel == "model"
+        ED.gFx.Visible = type(sel) == "table"
+        ED.gNone.Visible = sel == nil
+        if sel == "model" then
+            for k, sl in pairs(ED.sm) do sl.set(tonumber(ED.s[k]) or (k == "scale" and 1 or 0)) end
+        elseif type(sel) == "table" then
+            local v = fxVals(sel)
+            for k, sl in pairs(ED.sf) do
+                sl.set(v[k])
+                sl.row.Visible = k == "size" or not sel.part
+            end
+            ED.fxTitle.Text = sel.c.name
+            ED.fxSub.Text = sel.kinds .. "\n" .. sel.c.key
+            for m, b in pairs(ED.modeBtn) do
+                lit(b, sel.mode == m)
+                b.Visible = not (sel.part and m == "Manual")
+            end
+            ED.muzBtn.Visible = not sel.part
+            ED.modeHelp.Text = sel.part and PART_HELP[sel.mode] or HELP[sel.mode] or ""
+        else
+            local _, src = X.muzzleSkin(ED.h, ED.s, ED.b, skinItem())
+            ED.muzText.Text = "Muzzle: " .. (src == "custom" and "set by you (Use as Muzzle)"
+                or src == "model" and "from the skin's own muzzle point" or "auto-detected from the skin's shape")
+        end
+        ED.tlName.Text = type(sel) == "table" and sel.c.name or "all effects"
+    end
+
+    -- :: frame ::
+    local function camCF()
+        local v = ED.view
+        return CFrame.new(v.focus) * CFrame.Angles(0, v.yaw, 0) * CFrame.Angles(v.pitch, 0, 0) * CFrame.new(0, 0, v.dist)
+    end
+    local function drawMarkers(si)
+        local camPos = ED.cam.CFrame.Position
+        local A = ED.anchor.CFrame
+        for _, rec in ipairs(ED.fx) do
+            local p = rec.world.Position
+            local g = (camPos - p).Magnitude * 0.16
+            local sel = ED.sel == rec
+            local col = (sel or ED.hoverRec == rec) and HOT or MODE_COL[rec.mode] or Color3.new(1, 1, 1)
+            rec.mk.CFrame = A:ToObjectSpace(CFrame.new(p))
+            rec.mk.Radius = g * (sel and 0.1 or 0.07)
+            rec.mk.Color3 = col
+            local rp = (ED.S * rec.rest).Position
+            rec.rmk.Visible = ED.ghostOn and (rp - p).Magnitude > 0.01
+            rec.rmk.CFrame = A:ToObjectSpace(CFrame.new(rp))
+            rec.rmk.Radius = g * 0.028
+            local sp, vis = toScreen(p)
+            rec.lbl.Visible = vis
+            rec.lbl.Position = UDim2.fromOffset(sp.X + 10, sp.Y - 8)
+            rec.lbl.TextColor3 = col
+            -- surface effects cover a whole part: picked from the list, no dot on the skin
+            if rec.part then
+                rec.mk.Visible, rec.rmk.Visible, rec.lbl.Visible = false, false, false
+            end
+        end
+        local mz = X.muzzleSkin(ED.h, ED.s, ED.b, si)
+        ED.mzMk.Visible = mz ~= nil
+        if mz then
+            local p = ED.S * si * mz
+            ED.mzMk.CFrame = A:ToObjectSpace(CFrame.new(p))
+            ED.mzMk.Radius = (camPos - p).Magnitude * 0.16 * 0.025
+        end
+    end
+    local function frame(dt)
+        local h = ED.h
+        if not (h.root and h.root.Parent) or IS.Skins[h.sig] ~= ED.s then
+            close()
+            note("The item changed, editor closed")
+            return
+        end
+        local cam = Workspace.CurrentCamera
+        ED.cam = cam
+        if cam.CameraType ~= Enum.CameraType.Scriptable then cam.CameraType = Enum.CameraType.Scriptable end
+        if ED.rmb then
+            local cf = camCF()
+            local mv = Vector3.zero
+            local K = Enum.KeyCode
+            if UserInputService:IsKeyDown(K.W) then mv += cf.LookVector end
+            if UserInputService:IsKeyDown(K.S) then mv -= cf.LookVector end
+            if UserInputService:IsKeyDown(K.D) then mv += cf.RightVector end
+            if UserInputService:IsKeyDown(K.A) then mv -= cf.RightVector end
+            if UserInputService:IsKeyDown(K.E) then mv += Vector3.yAxis end
+            if UserInputService:IsKeyDown(K.Q) then mv -= Vector3.yAxis end
+            if mv.Magnitude > 0 then
+                local sp = math.max(ED.view.dist, 0.5) * (UserInputService:IsKeyDown(K.LeftShift) and 3 or 1.2)
+                ED.view.focus += mv.Unit * sp * dt
+            end
+        end
+        cam.CFrame = camCF()
+        cam.Focus = CFrame.new(ED.view.focus)
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        UserInputService.MouseIconEnabled = true
+        for _, p in ipairs(ED.hidden) do
+            if p.Parent and p.LocalTransparencyModifier ~= 1 then p.LocalTransparencyModifier = 1 end
+        end
+        if ED.b.scale ~= math.max(tonumber(ED.s.scale) or 1, 0.01) then rescale() end
+        local si = skinItem()
+        local W = ED.S * si
+        for p, rel in pairs(ED.b.rel) do p.CFrame = W * rel end
+        for _, rec in ipairs(ED.fx) do
+            local T, mode, e
+            if rec.part then
+                e, mode = X.fxEntry(ED.s, rec.c)
+                local host = (mode == "Auto" and X.hostOf(ED.b))
+                    or (mode == "Leave" and ED.ghostMap and ED.ghostMap[rec.c.host]) or nil
+                if rec.pv then
+                    if rec.pv.Parent ~= host then rec.pv.Parent = host end
+                    rec.pv.Enabled = host ~= nil
+                end
+                rec.mode, rec.world = mode, host and host.CFrame or ED.S * rec.rest
+            else
+                T, mode, e = recItem(rec, si)
+                rec.mode, rec.world = mode, ED.S * T
+                if rec.pv then rec.pv.WorldCFrame = rec.world end
+            end
+            if rec.pv then
+                local k = (e and tonumber(e.size)) or 1
+                if rec.k ~= k then
+                    rec.k = k
+                    local all = rec.part and { rec.pv } or rec.pv:GetDescendants()
+                    for _, d in ipairs(all) do
+                        local o = rec.orig[d]
+                        if o == nil then
+                            if d:IsA("ParticleEmitter") then o = d.Size
+                            elseif d:IsA("Beam") then o = { d.Width0, d.Width1 }
+                            elseif d:IsA("Light") then o = d.Range end
+                            rec.orig[d] = o
+                        end
+                        if o ~= nil then
+                            if d:IsA("ParticleEmitter") then d.Size = X.scaleSeq(o, k)
+                            elseif d:IsA("Beam") then d.Width0, d.Width1 = o[1] * k, o[2] * k
+                            elseif d:IsA("Light") then d.Range = math.min(o * k, 60) end
+                        end
+                    end
+                end
+            end
+        end
+        if not ED.drag then
+            local m = UserInputService:GetMouseLocation()
+            if overPanel(m) then
+                ED.hover, ED.hoverRec = nil, nil
+            else
+                ED.hover = pickHandle(m)
+                ED.hoverRec = (not ED.hover) and pickMarker(m) or nil
+            end
+        end
+        drawGizmo()
+        drawMarkers(si)
+        tlTick()
+        ED.tick = (ED.tick or 0) + dt
+        if ED.tick > 0.1 then ED.tick = 0; refreshUi() end
+    end
+
+    -- :: input ::
+    local SINK = {}
+    for _, n in ipairs({ "W", "A", "S", "D", "Q", "E", "R", "F", "G", "T", "V", "X", "Z", "C", "B", "L", "Space",
+        "LeftShift", "LeftControl", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero" }) do
+        SINK[#SINK + 1] = Enum.KeyCode[n]
+    end
+    local function onDown(m)
+        if overPanel(m) then return end
+        local hh = ED.gz and pickHandle(m)
+        if hh then beginDrag(hh, m); return end
+        local rec = pickMarker(m)
+        if rec then selectTarget(rec); return end
+        if pickModel() then selectTarget("model"); return end
+        selectTarget(nil)
+    end
+    local function onKey(k)
+        local K = Enum.KeyCode
+        local ctrl = UserInputService:IsKeyDown(K.LeftControl) or UserInputService:IsKeyDown(K.RightControl)
+        if k == K.Escape then
+            if ED.drag then ED.drag = nil elseif ED.sel then selectTarget(nil) end
+        elseif ctrl and k == K.Z then
+            undo()
+        elseif ED.rmb then
+            return
+        elseif k == K.One then setTool("Move")
+        elseif k == K.Two then setTool("Rotate")
+        elseif k == K.Three then setTool("Scale")
+        elseif k == K.F then focusSel()
+        elseif k == K.Space then tlToggle()
+        end
+    end
+    local function wire()
+        local cs = {}
+        cs[#cs + 1] = UserInputService.InputBegan:Connect(function(io)
+            if not ED.open then return end
+            local t = io.UserInputType
+            local m = UserInputService:GetMouseLocation()
+            if t == Enum.UserInputType.MouseButton1 then
+                if not UserInputService:GetFocusedTextBox() then onDown(m) end
+            elseif t == Enum.UserInputType.MouseButton2 or t == Enum.UserInputType.MouseButton3 then
+                if overPanel(m) then return end
+                if t == Enum.UserInputType.MouseButton2 then ED.rmb = true else ED.mmb = true end
+                ED.last = m
+            elseif t == Enum.UserInputType.Keyboard then
+                if not UserInputService:GetFocusedTextBox() then onKey(io.KeyCode) end
+            end
+        end)
+        cs[#cs + 1] = UserInputService.InputChanged:Connect(function(io)
+            if not ED.open then return end
+            if io.UserInputType == Enum.UserInputType.MouseMovement then
+                local m = UserInputService:GetMouseLocation()
+                if ED.scrub then
+                    ED.scrubAt(io.Position.X)
+                elseif ED.drag then
+                    moveDrag(m)
+                elseif ED.rmb or ED.mmb then
+                    local d = m - (ED.last or m)
+                    ED.last = m
+                    local v = ED.view
+                    if ED.rmb then
+                        v.yaw -= d.X * 0.006
+                        v.pitch = math.clamp(v.pitch - d.Y * 0.006, -1.45, 1.45)
+                    else
+                        local cf = camCF()
+                        v.focus += (-cf.RightVector * d.X + cf.UpVector * d.Y) * v.dist * 0.0014
+                    end
+                end
+            elseif io.UserInputType == Enum.UserInputType.MouseWheel then
+                if overPanel(UserInputService:GetMouseLocation()) then return end
+                local v = ED.view
+                v.dist = math.clamp(v.dist * (io.Position.Z > 0 and 0.88 or 1.14), 0.15, 80)
+            end
+        end)
+        cs[#cs + 1] = UserInputService.InputEnded:Connect(function(io)
+            local t = io.UserInputType
+            if t == Enum.UserInputType.MouseButton1 then ED.drag, ED.scrub = nil, false
+            elseif t == Enum.UserInputType.MouseButton2 then ED.rmb = false
+            elseif t == Enum.UserInputType.MouseButton3 then ED.mmb = false end
+        end)
+        ED.conns = cs
+        ED.casName = KID.name("iedk")
+        pcall(function()
+            CAS:BindActionAtPriority(ED.casName, function() return Enum.ContextActionResult.Sink end, false,
+                Enum.ContextActionPriority.High.Value + 100, table.unpack(SINK))
+        end)
+    end
+
+    -- :: open / close ::
+    local function liveParts()
+        local h = ED.h
+        local top = h.obj
+        if h.kind == "Viewmodel" then
+            while top.Parent and top.Parent ~= Workspace and top.Parent ~= Workspace.CurrentCamera do top = top.Parent end
+        end
+        local out = X.partsOf(top)
+        if X.rt.model then for _, p in ipairs(X.partsOf(X.rt.model)) do out[#out + 1] = p end end
+        return out
+    end
+    close = function()
+        if not ED.open then return end
+        ED.open = false
+        pcall(function() RunService:UnbindFromRenderStep(ED.bind) end)
+        pcall(function() CAS:UnbindAction(ED.casName) end)
+        for _, c in ipairs(ED.conns or {}) do pcall(function() c:Disconnect() end) end
+        ED.conns = {}
+        TL.token += 1
+        TL.playing = false
+        if ED.gui then pcall(function() ED.gui:Destroy() end) end
+        if ED.stage then pcall(function() ED.stage:Destroy() end) end
+        local keep = {}
+        if IS.HideOriginal ~= false and ED.h then for _, p in ipairs(ED.h.parts) do keep[p] = true end end
+        for _, p in ipairs(ED.hidden or {}) do
+            if p.Parent and not keep[p] then pcall(function() p.LocalTransparencyModifier = 0 end) end
+        end
+        for _, g in ipairs(ED.gameGuis or {}) do pcall(function() g.Enabled = true end) end
+        ED.gameGuis = {}
+        local cam = Workspace.CurrentCamera
+        if cam then
+            pcall(function()
+                cam.CameraType = ED.prevType or Enum.CameraType.Custom
+                if ED.prevType == Enum.CameraType.Scriptable and ED.prevCF then cam.CFrame = ED.prevCF end
+            end)
+        end
+        ED.gui, ED.stage, ED.G, ED.ghost, ED.sel, ED.drag, ED.rmb, ED.mmb = nil, nil, nil, nil, nil, nil, false, false
+        -- the live skin rebuilds from the edited values on its next step
+        X.rt.modelKey = nil
+        X.rt.editing = false
+    end
+    local function open()
+        if ED.open then return end
+        local h = IS.current()
+        if not h then note("Hold an item first"); return end
+        local s = IS.Skins[h.sig]
+        if not s then note("Apply a skin to this item first"); return end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        X.rt.editing = true
+        X.fxRestore()
+        ED.h, ED.s, ED.cam = h, s, cam
+        ED.undo, ED.lastEdit, ED.sel = {}, 0, nil
+        ED.S = CFrame.new(cam.CFrame.Position + Vector3.new(0, 400, 0))
+        local ok, built = pcall(buildStage)
+        if not (ok and built) then
+            if ED.stage then pcall(function() ED.stage:Destroy() end) end
+            X.rt.editing = false
+            note("Couldn't build the stage" .. (ok and "" or (": " .. tostring(built))))
+            return
+        end
+        ED.prevType, ED.prevCF = cam.CameraType, cam.CFrame
+        ED.hidden = liveParts()
+        local top = h.obj
+        if h.kind == "Viewmodel" then
+            while top.Parent and top.Parent ~= Workspace and top.Parent ~= Workspace.CurrentCamera do top = top.Parent end
+        end
+        for _, d in ipairs(top:GetDescendants()) do
+            if FXC[d.ClassName] then pcall(X.hideOne, d, true) end
+        end
+        -- the game's HUD would sit on top of the editor; put back on close
+        ED.gameGuis = {}
+        local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if pg then
+            for _, g in ipairs(pg:GetChildren()) do
+                if g:IsA("ScreenGui") and g.Enabled then g.Enabled = false; ED.gameGuis[#ED.gameGuis + 1] = g end
+            end
+        end
+        -- start beside your first-person eye (a 3/4 turn off it), far enough to fit both
+        -- the skin and the ghost of the original
+        local c0 = ED.S * h.root.CFrame:ToObjectSpace(cam.CFrame)
+        local focus = ED.S * skinItem() * ED.center
+        local off = c0.Position - focus
+        local u = off.Magnitude > 1e-3 and off.Unit or Vector3.new(0, 0.3, 1).Unit
+        ED.view = { focus = focus, yaw = math.atan2(u.X, u.Z) + math.rad(55),
+            pitch = math.clamp(math.asin(-u.Y), -0.6, 0.6),
+            dist = math.clamp(math.max(ED.radius * 3, (ED.ghostR or 0) * 1.7), 1, 40) }
+        local ok2, err = pcall(buildGui)
+        if not ok2 then
+            ED.open = true
+            close()
+            note("Editor UI failed: " .. tostring(err))
+            return
+        end
+        ED.open = true
+        local ok3, err3 = pcall(function()
+            setGhost(ED.ghostOn)
+            setBack(ED.backOn ~= false)
+            TL.dur = tlDur()
+            wire()
+            refreshUi()
+        end)
+        if not ok3 then
+            close()
+            note("Editor failed to start: " .. tostring(err3))
+            return
+        end
+        if Shared.setWindowOpen then Shared.setWindowOpen(false) end
+        ED.bind = KID.name("iedr")
+        local fails = 0
+        RunService:BindToRenderStep(ED.bind, Enum.RenderPriority.Last.Value + 10, function(dt)
+            if Koffee.dead() then close(); return end
+            local okf, e = pcall(frame, dt)
+            if okf then
+                fails = 0
+            else
+                fails += 1
+                ED.lastErr = e
+                -- a frame that keeps failing must never leave you stuck in the editor camera
+                if fails > 20 then close(); note("Editor error: " .. tostring(e)) end
+            end
+        end)
+    end
+    IS.openEditor = open
+    IS.closeEditor = function() close() end
+    IS._editor = ED
 end)()
 
 addTab("Character", function(root)
