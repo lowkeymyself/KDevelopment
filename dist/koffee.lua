@@ -32833,7 +32833,27 @@ end)()
         ESP.BoxLayer = saved
         if ok and rig then
             rig.preview = true
-            if rig.fill3D then pcall(function() rig.fill3D:Destroy() end); rig.fill3D = nil end
+            -- adornments don't render in a ViewportFrame, so the 3D Cube fill drives a
+            -- real part in the viewport through a stand-in with the adornment's fields
+            if rig.fill3D then pcall(function() rig.fill3D:Destroy() end) end
+            local box = new("Part", { Name = "fill3d", Anchored = true, CanCollide = false, CastShadow = false,
+                Material = Enum.Material.SmoothPlastic, Transparency = 1, Size = Vector3.one, Parent = world })
+            local st = { Visible = false, Transparency = 0.72, CFrame = CFrame.identity }
+            local function sync()
+                local torso = rig.torso
+                if torso and torso.Parent then box.CFrame = torso.CFrame * st.CFrame end
+                box.Transparency = st.Visible and st.Transparency or 1
+            end
+            rig.fill3D = setmetatable({}, {
+                __index = function(_, k) return st[k] end,
+                __newindex = function(_, k, v)
+                    st[k] = v
+                    if k == "Size" then box.Size = v
+                    elseif k == "Color3" then box.Color = v end
+                    sync()
+                end,
+            })
+            rig._fillSync = sync
             entry.rig = rig
         end
     end
@@ -33034,6 +33054,7 @@ end)()
             ESP._cam, ESP._vp = fcam, Vector2.new(STAGE_W, STAGE_H)
             local ok, err = pcall(Shared.espDrawRig, LocalPlayer, entry, fcam, cam.CFrame.Position, false)
             ESP._cam, ESP._vp = nil, nil
+            if entry.rig._fillSync then entry.rig._fillSync() end
             if saved then Shared.espRestore(saved) end
             Shared._pvErr = (not ok) and err or nil
         end
@@ -33564,11 +33585,12 @@ registerConfig("media", Koffee.Media)
             PaddingRight = UDim.new(0, 8) }) })
 
     -- info popup (the tiny "i"): how to import music and lyrics
-    -- lives under the header (outside the card's list layout) and overlays the card
-    header.ZIndex = 5
+    -- its own frame on the screen, pinned under the card header each frame, so the
+    -- card's clip can never cut it off however short the card is
+    local probe = new("Frame", { BackgroundTransparency = 1, Size = UDim2.fromOffset(0, 0), Parent = screen })
     local info = new("Frame", { BackgroundColor3 = Palette.PanelElevated, BorderSizePixel = 0, Visible = false,
-        Position = UDim2.new(0, 10, 1, 2), Size = UDim2.new(1, -20, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-        ZIndex = 45, Parent = header }, { corner(8), stroke(Palette.Border),
+        Size = UDim2.fromOffset(W - 20, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        ZIndex = 45, Parent = screen }, { corner(8), stroke(Palette.Border),
         new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 12),
             PaddingRight = UDim.new(0, 12) }),
         new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }) })
@@ -33782,7 +33804,13 @@ registerConfig("media", Koffee.Media)
         if Koffee.dead() then pcall(function() sound:Stop() end); return end
         sound.Volume = MC.Volume * 1
         vfill.Size = UDim2.fromScale(MC.Volume, 1)
-        if not root.Visible then return end
+        if not root.Visible then info.Visible = false; return end
+        if info.Visible then
+            local o = root.AbsolutePosition - probe.AbsolutePosition
+            info.Position = UDim2.fromOffset(o.X + 10, o.Y + 34)
+            info.Size = UDim2.fromOffset(root.AbsoluteSize.X - 20, 0)
+            info.ZIndex = root.ZIndex + 1
+        end
         local len, pos = sound.TimeLength, sound.TimePosition
         local f = len > 0 and math.clamp(pos / len, 0, 1) or 0
         fill.Size = UDim2.fromScale(f, 1)
@@ -33861,6 +33889,7 @@ registerConfig("media", Koffee.Media)
         tween(root, Theme.Animation.Menu, { GroupTransparency = 0 })
     end
     local function animHide()
+        info.Visible = false
         tween(root, Theme.Animation.Menu, { GroupTransparency = 1 })
         task.delay(Koffee.Anim.wait(0.22), function()
             if not WM.shouldShow("media") then root.Visible = false end
