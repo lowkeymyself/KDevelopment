@@ -2082,6 +2082,138 @@ end)
     end)
 end)()
 
+-- v0.85.0 DETAILS WIDGET: drag the details bar out of the strip (menu open) and it
+-- pops into a larger floating card that stays up with the menu closed. Dragging it
+-- near its old slot lights the slot; dropping there docks it back. State persists.
+Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.85.0 configs below
+;(function()
+    local D = Koffee.Details
+    local W = statsWidget
+    local home = W.Parent
+    local homeOrder = W.LayoutOrder
+    local SCALE, NEAR = 1.3, 70
+    local A = Theme.Palette.Accent
+    local ui = new("UIScale", { Scale = 1, Parent = W })
+    local cr = W:FindFirstChildOfClass("UICorner")
+    local st = W:FindFirstChildOfClass("UIStroke")
+    local pad = W:FindFirstChildOfClass("UIPadding")
+    W.Active = true
+    -- probe at the ScreenGui origin: converts between AbsolutePosition space and
+    -- Position offsets without trusting the inset (the popupOffsetFor trap).
+    local probe = new("Frame", { BackgroundTransparency = 1, Size = UDim2.fromOffset(0, 0), Parent = screen })
+    local float = new("Frame", {
+        Name = KID.name("dw"), BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.XY,
+        Size = UDim2.fromOffset(0, 0), Visible = false, ZIndex = 32, Parent = screen,   -- above the menu (30)
+    })
+    local slot = new("Frame", {
+        Name = KID.name("ds"), BackgroundColor3 = A, BackgroundTransparency = 1, Size = UDim2.fromOffset(200, 22),
+        LayoutOrder = homeOrder, Visible = false, ZIndex = 22, Parent = home,
+    }, {
+        new("UICorner", { CornerRadius = UDim.new(0, Theme.Radius.Small) }),
+        new("UIStroke", { Color = A, Thickness = 1, Transparency = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
+    })
+    local slotStroke = slot:FindFirstChildOfClass("UIStroke")
+    local docked = true
+    local function style(isFloat)
+        W.BackgroundColor3 = isFloat and Theme.Palette.PanelElevated or Theme.Palette.Panel
+        W.BackgroundTransparency = isFloat and 0.04 or 0.1
+        if cr then cr.CornerRadius = UDim.new(0, isFloat and 8 or Theme.Radius.Small) end
+        if st then st.Color = isFloat and Theme.Palette.Border or Theme.Palette.BorderSubtle end
+        if pad then
+            pad.PaddingLeft = UDim.new(0, isFloat and 12 or 10)
+            pad.PaddingRight = UDim.new(0, isFloat and 12 or 10)
+        end
+        W.Size = UDim2.new(0, 0, 0, isFloat and 26 or 22)
+    end
+    local function toOffset(abs) return abs - probe.AbsolutePosition end
+    local function popOut(absPos)
+        slot.Size = UDim2.fromOffset(W.AbsoluteSize.X, W.AbsoluteSize.Y)
+        docked = false
+        D.Docked = false
+        local o = toOffset(absPos)
+        float.Position = UDim2.fromOffset(o.X, o.Y)
+        float.Visible = true
+        W.LayoutOrder = 0
+        W.Parent = float
+        style(true)
+        ui.Scale = 1
+        TweenService:Create(ui, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = SCALE }):Play()
+    end
+    local function dockNow()
+        docked = true
+        D.Docked = true
+        slot.Visible = false
+        float.Visible = false
+        W.Parent = home
+        W.LayoutOrder = homeOrder
+        style(false)
+        ui.Scale = 1
+    end
+    local function dockAnimated()
+        local target = toOffset(slot.AbsolutePosition)
+        TweenService:Create(ui, TweenInfo.new(0.18, Enum.EasingStyle.Quad), { Scale = 1 }):Play()
+        local tw = TweenService:Create(float, TweenInfo.new(0.18, Enum.EasingStyle.Quad),
+            { Position = UDim2.fromOffset(target.X, target.Y) })
+        tw:Play()
+        tw.Completed:Once(function() if not Koffee.dead() then dockNow() end end)
+    end
+    local function nearSlot()
+        if not slot.Visible then return false end
+        return (float.AbsolutePosition - slot.AbsolutePosition).Magnitude < NEAR
+    end
+
+    local press, grabFrom, dragging = nil, nil, false
+    W.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 or Koffee.dead() then return end
+        local WM = Koffee.Windows
+        if WM and WM.primaryOpen and not WM.primaryOpen() then return end
+        press = UserInputService:GetMouseLocation()
+        grabFrom = W.AbsolutePosition
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not press or input.UserInputType ~= Enum.UserInputType.MouseMovement or Koffee.dead() then return end
+        local m = UserInputService:GetMouseLocation()
+        if not dragging then
+            if (m - press).Magnitude < 5 then return end
+            dragging = true
+            if docked then popOut(grabFrom) end
+            slot.Visible = true
+            grabFrom = float.AbsolutePosition
+            press = m
+        end
+        -- move by the mouse delta since the grab, so any mouse/GUI inset offset cancels
+        local o = toOffset(grabFrom + (m - press))
+        float.Position = UDim2.fromOffset(o.X, o.Y)
+        local near = nearSlot()
+        slot.BackgroundTransparency = near and 0.8 or 1
+        slotStroke.Transparency = near and 0 or 0.65
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        local was = dragging
+        press, dragging = nil, false
+        if not was or Koffee.dead() then return end
+        if nearSlot() then
+            dockAnimated()
+        else
+            slot.Visible = false
+            D.X, D.Y = float.Position.X.Offset, float.Position.Y.Offset
+        end
+    end)
+    -- config loads refill D in place; follow it when nothing is being dragged
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() or dragging then return end
+        if D.Docked and not docked then
+            dockNow()
+        elseif not D.Docked and docked then
+            popOut(probe.AbsolutePosition + Vector2.new(D.X, D.Y))
+        elseif not docked then
+            local p = float.Position
+            if p.X.Offset ~= D.X or p.Y.Offset ~= D.Y then float.Position = UDim2.fromOffset(D.X, D.Y) end
+        end
+    end)
+end)()
+
 -- MODULE SYSTEM + ACTIVE-MODULES TYPEWRITER ARRAY
 -- markdown-blockquote-style module list:
 --   |  ESP
@@ -17706,6 +17838,7 @@ World.Post = { Bloom = true, BloomIntensity = 0.7, BloomSize = 26, BloomThreshol
 World.Ambience = { Preset = "Off" }
 registerConfig("world_post", World.Post)
 registerConfig("world_ambience", World.Ambience)
+registerConfig("details_dock", Koffee.Details)
 ;(function()
     local P = World.Post
     local fx = {}
