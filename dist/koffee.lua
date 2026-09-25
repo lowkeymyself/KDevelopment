@@ -33509,7 +33509,7 @@ registerConfig("media", Koffee.Media)
     local infoBtn = iconBtn(header, "info", 10, UDim2.new(0, 90, 0.5, 0), Palette.TextFaint)
     local listBtn, listIc = iconBtn(header, "list", 14, UDim2.new(1, -20, 0.5, 0))
     local lyrBtn, lyrIc = iconBtn(header, "mic-vocal", 14, UDim2.new(1, -46, 0.5, 0))
-    local refBtn = iconBtn(header, "refresh-cw", 13, UDim2.new(1, -72, 0.5, 0))
+    local refBtn, refIc = iconBtn(header, "refresh-cw", 13, UDim2.new(1, -72, 0.5, 0))
 
     -- now playing
     local np = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 40), LayoutOrder = 2, Parent = root },
@@ -33588,8 +33588,8 @@ registerConfig("media", Koffee.Media)
     -- its own frame on the screen, pinned under the card header each frame, so the
     -- card's clip can never cut it off however short the card is
     local probe = new("Frame", { BackgroundTransparency = 1, Size = UDim2.fromOffset(0, 0), Parent = screen })
-    local info = new("Frame", { BackgroundColor3 = Palette.PanelElevated, BorderSizePixel = 0, Visible = false,
-        Size = UDim2.fromOffset(W - 20, 0), AutomaticSize = Enum.AutomaticSize.Y,
+    local info = new("CanvasGroup", { BackgroundColor3 = Palette.PanelElevated, BorderSizePixel = 0, Visible = false,
+        GroupTransparency = 1, Size = UDim2.fromOffset(W - 20, 0), AutomaticSize = Enum.AutomaticSize.Y,
         ZIndex = 45, Parent = screen }, { corner(8), stroke(Palette.Border),
         new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 12),
             PaddingRight = UDim.new(0, 12) }),
@@ -33729,15 +33729,40 @@ registerConfig("media", Koffee.Media)
         if sound.IsPlaying then sound:Pause() else sound:Resume() end
         paintState()
     end
-    local function refresh()
+    local function showSelected()
+        local sel = M.tracks[M.idx]
+        if sel and sound.SoundId == "" then
+            titleLbl.Text = sel.title
+            artistLbl.Text = sel.artist ~= "" and sel.artist or "Unknown artist"
+            noLyr.Text = "Press play"
+        elseif M.idx == 0 then
+            titleLbl.Text = "Nothing playing"
+            artistLbl.Text = "Drop music in " .. DIR
+            noLyr.Text = "Drop music in " .. DIR .. "\npress the tiny i for help"
+        end
+    end
+    local function refresh(quiet)
         local cur = M.tracks[M.idx]
         scan()
         M.idx = 0
         if cur then
             for i, t in ipairs(M.tracks) do if t.path == cur.path then M.idx = i end end
         end
+        -- nothing loaded yet: line up the first song so play is one click away
+        if M.idx == 0 and sound.SoundId == "" and #M.tracks > 0 then M.idx = 1 end
+        showSelected()
         paintList()
+        if not quiet then
+            refIc.Rotation = 0
+            tween(refIc, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Rotation = 360 })
+            if Koffee.notify then
+                local n = #M.tracks
+                Koffee.notify("Media", n == 0 and ("No songs in " .. DIR) or (n .. (n == 1 and " song" or " songs") .. " found"),
+                    { severity = n == 0 and "error" or "success", duration = 2.5 })
+            end
+        end
     end
+    M.refresh = refresh
 
     sound.Ended:Connect(function()
         if Koffee.dead() then return end
@@ -33762,10 +33787,15 @@ registerConfig("media", Koffee.Media)
     end)
     lyrBtn.MouseButton1Click:Connect(function() MC.Lyrics = not lyricsShown(); paintState() end)
     listBtn.MouseButton1Click:Connect(function() MC.List = not MC.List; paintState() end)
-    refBtn.MouseButton1Click:Connect(refresh)
-    infoBtn.MouseButton1Click:Connect(function() info.Visible = not info.Visible end)
+    refBtn.MouseButton1Click:Connect(function() refresh(false) end)
+    local infoOpen, infoY = false, -24
+    local function setInfo(v)
+        infoOpen = v
+        if v then info.Visible = true end
+    end
+    infoBtn.MouseButton1Click:Connect(function() setInfo(not infoOpen) end)
     info.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then info.Visible = false end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then setInfo(false) end
     end)
     local lastVol = MC.Volume > 0 and MC.Volume or 0.5
     volBtn.MouseButton1Click:Connect(function()
@@ -33804,10 +33834,16 @@ registerConfig("media", Koffee.Media)
         if Koffee.dead() then pcall(function() sound:Stop() end); return end
         sound.Volume = MC.Volume * 1
         vfill.Size = UDim2.fromScale(MC.Volume, 1)
-        if not root.Visible then info.Visible = false; return end
+        if not root.Visible then infoOpen, infoY = false, -24; info.Visible = false; return end
         if info.Visible then
+            local k = math.min(dt * 11, 1)
+            infoY += ((infoOpen and 0 or -24) - infoY) * k
+            local a = info.GroupTransparency
+            a += ((infoOpen and 0 or 1) - a) * k
+            info.GroupTransparency = a
+            if not infoOpen and a > 0.98 then info.Visible = false; infoY = -24 end
             local o = root.AbsolutePosition - probe.AbsolutePosition
-            info.Position = UDim2.fromOffset(o.X + 10, o.Y + 34)
+            info.Position = UDim2.fromOffset(o.X + 10, o.Y + 34 + infoY)
             info.Size = UDim2.fromOffset(root.AbsoluteSize.X - 20, 0)
             info.ZIndex = root.ZIndex + 1
         end
@@ -33867,8 +33903,24 @@ registerConfig("media", Koffee.Media)
         end
     end)
 
+    task.spawn(function()
+        local lastSig = nil
+        while not Koffee.dead() do
+            task.wait(2)
+            if root.Visible and fsOk() then
+                local ok, files = pcall(listfiles, DIR)
+                if ok and type(files) == "table" then
+                    table.sort(files)
+                    local sig = table.concat(files, "|")
+                    if lastSig and sig ~= lastSig then pcall(refresh, true) end
+                    lastSig = sig
+                end
+            end
+        end
+    end)
     local function animShow()
         root.Visible = true
+        infoOpen = false
         info.Visible = false
         if #M.tracks == 0 then
             scan()
@@ -33878,18 +33930,13 @@ registerConfig("media", Koffee.Media)
         end
         paintList()
         paintState()
-        local sel = M.tracks[M.idx]
-        if sel and sound.SoundId == "" then
-            titleLbl.Text = sel.title
-            artistLbl.Text = sel.artist ~= "" and sel.artist or "Unknown artist"
-            noLyr.Text = "Press play"
-        end
-        if M.idx == 0 then noLyr.Text = #M.tracks > 0 and "Press play" or ("Drop music in " .. DIR .. "\npress the tiny i for help") end
+        if M.idx == 0 and sound.SoundId == "" and #M.tracks > 0 then M.idx = 1 end
+        showSelected()
         root.GroupTransparency = 1
         tween(root, Theme.Animation.Menu, { GroupTransparency = 0 })
     end
     local function animHide()
-        info.Visible = false
+        infoOpen = false
         tween(root, Theme.Animation.Menu, { GroupTransparency = 1 })
         task.delay(Koffee.Anim.wait(0.22), function()
             if not WM.shouldShow("media") then root.Visible = false end
