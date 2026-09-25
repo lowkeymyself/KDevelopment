@@ -14797,11 +14797,20 @@ end
             x = x + dx; y = y + dy
             local pos = UDim2.new(0.5, x, 0.5, y)
             local rot = math.deg(theta) + P.curve
+            -- v0.86.0: axis-aligned arms draw unrotated on whole pixels. A 180 degree
+            -- rotation about a half-pixel centre rasterised mirrored arms 1px apart.
+            local w, h = P.thickness, segLen + 1
+            local q = rot / 90
+            if P.curvier == 0 and math.abs(q - math.floor(q + 0.5)) < 0.001 then
+                if math.floor(q + 0.5) % 2 == 1 then w, h = h, w end
+                rot = 0
+                pos = UDim2.new(0.5, math.floor(x + 0.5), 0.5, math.floor(y + 0.5))
+            end
             local f = a.fills[i]
             f.Visible = true
             f.Position = pos
             -- +1px overlap kills seams between segments
-            f.Size = UDim2.new(0, P.thickness, 0, segLen + 1)
+            f.Size = UDim2.new(0, w, 0, h)
             f.Rotation = rot
             f.BackgroundColor3 = P.grad and P.grad(dist + segLen * 0.5) or P.color
             f.BackgroundTransparency = 0
@@ -14811,7 +14820,11 @@ end
             o.Visible = drawOutline
             if drawOutline then
                 o.Position = pos
-                o.Size = UDim2.new(0, ow, 0, ol)
+                if rot == 0 and w ~= P.thickness then
+                    o.Size = UDim2.new(0, ol, 0, ow)
+                else
+                    o.Size = UDim2.new(0, ow, 0, ol)
+                end
                 o.Rotation = rot
                 o.BackgroundColor3 = P.ocol
                 local oc = o:FindFirstChildOfClass("UICorner")
@@ -14974,9 +14987,10 @@ end
         -- margin budget so a fat outlined arm at a big sweep isn't clipped.
         local reach = (cfg.Length + cfg.Gap) * 2
             + cfg.Thickness * 2 + cfg.OutlineThickness * 4 + 32
-        local baseSize = math.max(reach * 1.42, 24)
+        -- even integer size + whole-pixel position keeps the canvas centre on a pixel
+        local baseSize = math.floor(math.max(reach * 1.42, 24) / 2 + 0.5) * 2
         g.canvas.Size = UDim2.new(0, baseSize, 0, baseSize)
-        g.canvas.Position = UDim2.new(0, cx, 0, cy)
+        g.canvas.Position = UDim2.new(0, math.floor(cx + 0.5), 0, math.floor(cy + 0.5))
         g.canvas.GroupTransparency = 1 - math.clamp(cfg.Opacity, 0, 1)
 
         local spinDeg = 0
@@ -19188,12 +19202,15 @@ registerConfig("item_skins", Koffee.ItemSkins)
         end
         return best
     end
-    local function held(kind, obj, parts)
+    local function held(kind, obj, parts, label)
         if not obj or #parts == 0 then return nil end
         local root = anchorOf(obj, parts)
         if not root then return nil end
-        return { kind = kind, obj = obj, parts = parts, root = root, name = obj.Name,
-            sig = kind .. ":" .. obj.Name .. ":" .. #parts }
+        local name = label or obj.Name
+        -- no part count in the signature: games add and drop parts (shells, flashes)
+        -- mid-use, and a changing signature made the skin blink out and back
+        return { kind = kind, obj = obj, parts = parts, root = root, name = name,
+            sig = kind .. ":" .. name }
     end
 
     -- :: detection ::
@@ -19241,9 +19258,16 @@ registerConfig("item_skins", Koffee.ItemSkins)
         local cam = Workspace.CurrentCamera
         local cands = {}
         if cam then for _, c in ipairs(cam:GetChildren()) do if c:IsA("Model") and not ours[c] then cands[#cands + 1] = c end end end
-        for _, n in ipairs({ "ViewModel", "Viewmodel", "viewmodel", "FPSArms", "Arms" }) do
-            local c = Workspace:FindFirstChild(n)
-            if c and c:IsA("Model") and not ours[c] then cands[#cands + 1] = c end
+        -- some games park the viewmodel in Workspace: any top-level non-character model
+        -- with arm parts, sitting right at the camera, counts
+        local camPos = cam and cam.CFrame.Position
+        for _, c in ipairs(Workspace:GetChildren()) do
+            if c:IsA("Model") and not ours[c] and camPos and not Players:GetPlayerFromCharacter(c)
+                and (c:FindFirstChild("RightArm") or c:FindFirstChild("Right Arm") or c:FindFirstChild("Arms")
+                    or c.Name:lower():find("view")) then
+                local ok, pv = pcall(c.GetPivot, c)
+                if ok and (pv.Position - camPos).Magnitude < 6 then cands[#cands + 1] = c end
+            end
         end
         local vm, vc = nil, 1
         for _, c in ipairs(cands) do
@@ -19258,7 +19282,8 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 if n > bc then best, bc = c, n end
             end
         end
-        if best then return held("Viewmodel", best, partsOf(best)) end
+        -- generic item names ("Main") would share one skin, so label with the container
+        if best then return held("Viewmodel", best, partsOf(best), vm.Name .. "/" .. best.Name) end
         local parts = {}
         for _, p in ipairs(partsOf(vm)) do if not armish(p.Name) then parts[#parts + 1] = p end end
         return held("Viewmodel", vm, parts)
@@ -19412,6 +19437,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
     local function dropModel()
         if IS_RT.model then pcall(function() IS_RT.model:Destroy() end) end
         IS_RT.model, IS_RT.modelKey, IS_RT.rel, IS_RT.grip = nil, nil, nil, nil
+        IS_RT.root, IS_RT.weld, IS_RT.weldAnchor = nil, nil, nil
     end
     local function skinKey(s) return table.concat({ s.src or "", tostring(s.asset or ""), s.data and #s.data or 0,
         s.data and s.data:sub(-24) or "", tostring(s.scale or 1) }, "|") end
@@ -19442,7 +19468,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
         ours[tpl] = true
         for _, p in ipairs(parts) do ours[p] = true end
         tpl.Parent = Workspace.CurrentCamera
-        IS_RT.model, IS_RT.rel = tpl, rel
+        IS_RT.model, IS_RT.rel, IS_RT.root = tpl, rel, root
         return true
     end
     local function step()
@@ -19469,13 +19495,36 @@ registerConfig("item_skins", Koffee.ItemSkins)
         -- follow the real part every frame, after animations have posed it
         local off = CFrame.new(s.ox or 0, s.oy or 0, s.oz or 0)
             * CFrame.Angles(math.rad(s.rx or 0), math.rad(s.ry or 0), math.rad(s.rz or 0))
-        local base = h.root.CFrame
+        local seat = CFrame.identity
         -- Tool to Tool: seat the new handle the way the engine's grip weld would
         if h.kind == "Tool" and IS_RT.grip and h.obj:IsA("Tool") then
-            base = base * h.obj.Grip * IS_RT.grip:Inverse()
+            seat = h.obj.Grip * IS_RT.grip:Inverse()
         end
-        base = base * off
-        for p, rel in pairs(IS_RT.rel) do p.CFrame = base * rel end
+        if h.kind == "Viewmodel" then
+            -- viewmodels get welded: the engine then moves the skin with the viewmodel's
+            -- own assembly, so script order can never leave it a frame behind
+            if IS_RT.weldAnchor ~= h.root then
+                if IS_RT.weld then
+                    for _, c in ipairs(IS_RT.model:GetChildren()) do if c:IsA("Weld") then c:Destroy() end end
+                end
+                for p in pairs(IS_RT.rel) do p.Anchored = false; p.Massless = true end
+                for p, rel in pairs(IS_RT.rel) do
+                    if p ~= IS_RT.root then
+                        local w = Instance.new("Weld")
+                        w.Part0, w.Part1, w.C0 = IS_RT.root, p, rel
+                        w.Parent = IS_RT.model
+                    end
+                end
+                local w = Instance.new("Weld")
+                w.Part0, w.Part1 = h.root, IS_RT.root
+                w.Parent = IS_RT.model
+                IS_RT.weld, IS_RT.weldAnchor = w, h.root
+            end
+            IS_RT.weld.C0 = seat * off
+        else
+            local base = h.root.CFrame * seat * off
+            for p, rel in pairs(IS_RT.rel) do p.CFrame = base * rel end
+        end
         if IS.HideOriginal ~= false then
             for _, p in ipairs(h.parts) do
                 if p.Parent then
@@ -19525,6 +19574,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
         return h and IS.Skins[h.sig], h
     end
     registerModule("itemskins", "Item Models", function() end, function() dropModel(); unhide() end)
+    IS._probe = function() return pcall(step) end   -- test hook: one step, error returned
 
     local bindName = KID.name("isk")
     RunService:BindToRenderStep(bindName, Enum.RenderPriority.Last.Value + 5, function()
@@ -30151,7 +30201,7 @@ end)()
 if getgenv and getgenv().KoffeeDev == true then
     getgenv().KoffeeDev = { Koffee = Koffee, Shared = Shared, KID = KID, Combat = Shared.Combat,
         ESP = ESP, World = World, Modules = Modules, Options = KoffeeOptions, Theme = Theme,
-        toggle = toggleModule }
+        toggle = toggleModule, Crosshair = Crosshair }
 end
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
