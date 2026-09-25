@@ -17993,6 +17993,11 @@ end
             pn.P = Vector3.new(mid.X, pn.baseY + pn.h / 2, mid.Z)
             pn.p.Size = Vector3.new(len, pn.h, 0.05)
             pn.p.CFrame = CFrame.fromMatrix(pn.P, pn.dir, Vector3.yAxis)
+            -- each pane mirrors across its own surface (a real mirror does); when it
+            -- re-aims while growing, its mirrored world is re-reflected to match
+            pn.n = pn.dir:Cross(Vector3.yAxis)
+            pn.RP, pn.RN = pn.P, pn.n
+            for _, w in ipairs(pn.world or {}) do w[1].CFrame = reflectCF(w[3], pn.RP, pn.RN) end
         end
         local function fadeSeq(u0, a0, u1, a1)
             if u0 > u1 then u0, a0, u1, a1 = u1, a1, u0, a0 end
@@ -18044,12 +18049,9 @@ end
                 a = a, b = b, dir = dir, n = dir:Cross(Vector3.yAxis), baseY = baseY, h = G.height,
                 tA = t0, tB = now, pts = { b } }
             place(pn)
-            if #G.panes == 0 or not G.RN then
-                local toEye = Vector3.new(eye.X - pn.P.X, 0, eye.Z - pn.P.Z)
-                G.RN = toEye.Magnitude > 0.1 and toEye.Unit or pn.n
-                G.RP = pn.P
-            end
-            local RP, RN = G.RP, G.RN
+            local RP, RN = pn.RP, pn.RN
+            -- keep what's on the camera's side of this pane
+            if (eye - RP):Dot(RN) < 0 then RN = -RN end
             -- the world near the pane and near your camera (a mirror facing you shows
             -- what's behind you), mirrored once; the plane never changes after this
             local model = Instance.new("Model")
@@ -18078,7 +18080,7 @@ end
                         cl.Anchored = true
                         cl.CFrame = reflectCF(src.CFrame, RP, RN)
                         cl.Parent = model
-                        world[#world + 1] = { cl, cl.Transparency }
+                        world[#world + 1] = { cl, cl.Transparency, src.CFrame }
                         added += 1
                     end
                 end
@@ -18090,7 +18092,7 @@ end
             floor.Parent = model
             local me, map = cloneChar(c)
             if me then me.Parent = model end
-            pn.map, pn.RP, pn.RN, pn.world = map, RP, RN, world
+            pn.map, pn.world = map, world
             pn.mapT = {}
             for _, cl in pairs(map) do pn.mapT[cl] = cl.Transparency end
             G.panes[#G.panes + 1] = pn
