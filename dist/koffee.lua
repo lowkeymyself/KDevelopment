@@ -17680,7 +17680,8 @@ end)()
 Koffee.SelfFX = {
     Jump   = { Style = "Rune", Color = Color3.fromRGB(217, 150, 95), Size = 4, Duration = 1.1, Land = "Bubble" },
     Trail  = { Style = "Ribbon", Color = Color3.fromRGB(217, 150, 95), Color2 = Color3.fromRGB(255, 236, 200),
-               Life = 0.45, Width = 1.1, Sparkles = true, OffX = 0, OffY = 0 },
+               Life = 0.45, Width = 1.1, Sparkles = true, OffX = 0, OffY = 0,
+               ShapesGround = false, ShapesFeet = false },
     Hat    = { Color = Color3.fromRGB(217, 150, 95), Radius = 1.7, Height = 0.8, Alpha = 0.35, Rim = true,
                Roughness = 0 },
     Marker = { Style = "Orbit", Color = Color3.fromRGB(255, 120, 200), Size = 1, Speed = 1,
@@ -18252,12 +18253,26 @@ end
             local w = math.max(cfg.Width or 1, 0.1)
             local life = math.max(cfg.Life or 0.45, 0.05)
             local g = h.groundUnder(c, r.Position)
+            local hum = c:FindFirstChildOfClass("Humanoid")
+            local airborne = hum and hum.FloorMaterial == Enum.Material.Air
+            -- Ground Only: nothing while airborne. Follow Feet: in the air, spill from
+            -- your feet instead of the floor under you
+            if airborne and cfg.ShapesFeet and not cfg.ShapesGround then
+                local lo = math.huge
+                for _, p in ipairs(c:GetChildren()) do
+                    if p:IsA("BasePart") and (p.Name:find("Foot") or p.Name:find("Leg")) then
+                        lo = math.min(lo, p.Position.Y - p.Size.Y / 2)
+                    end
+                end
+                if lo < math.huge then g = Vector3.new(r.Position.X, lo, r.Position.Z) end
+            end
             S.host.Size = Vector3.new(1.6 * w, 0.3, 1.6 * w)
             S.host.CFrame = CFrame.new(g + Vector3.new(0, 0.2, 0)) * CFrame.fromOrientation(0, select(2, r.CFrame:ToOrientation()), 0)
             local speed = Vector3.new(r.AssemblyLinearVelocity.X, 0, r.AssemblyLinearVelocity.Z).Magnitude
             S.acc = (S.acc or 0) + dt * math.clamp(speed / 16, 0, 1.5) * 60
             local n = math.floor(S.acc)
             S.acc -= n
+            if airborne and cfg.ShapesGround then n = 0 end
             for i, em in ipairs(S.ems) do
                 em.Color = ColorSequence.new(Shared.fxColor(cfg, i * 0.15), Shared.fxColor({ Color = cfg.Color2 or cfg.Color }, i * 0.15 + 0.3))
                 em.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.1, 0.55 * w, 0.2 * w),
@@ -19885,6 +19900,9 @@ addTab("Visuals", function(root)
             popup:toggle("Sparkles On Ribbons", F.Trail.Sparkles, function(v) F.Trail.Sparkles = v end)
             popup:slider("Offset X", -4, 4, F.Trail.OffX or 0, 2, function(v) F.Trail.OffX = v end)
             popup:slider("Offset Y", -4, 4, F.Trail.OffY or 0, 2, function(v) F.Trail.OffY = v end)
+            -- Shapes style only
+            popup:toggle("Shapes: Ground Only", F.Trail.ShapesGround == true, function(v) F.Trail.ShapesGround = v end)
+            popup:toggle("Shapes: Follow Feet In Air", F.Trail.ShapesFeet == true, function(v) F.Trail.ShapesFeet = v end)
         end)
         local hr = moduleCheckbox(selfPanel, "China Hat", "selffx_hat")
         attachSingleSwatch(hr.row, F.Hat.Color, function(c) F.Hat.Color = c end)
