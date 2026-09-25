@@ -17913,31 +17913,6 @@ end
             mk.ring2, mk.img2 = h.flat("fx_ring", cfg.Color)
             mk.parts = { mk.ring1, mk.ring2 }
             for _, g in ipairs({ mk.ring1, mk.ring2 }) do g:FindFirstChildOfClass("SurfaceGui").AlwaysOnTop = cfg.ThroughWalls end
-        elseif style == "Brackets" then
-            -- v0.88.0: four corner brackets in a billboard, crisp fixed-pixel bars
-            local p, il, bb = h.bill("fx_glow", cfg.Color)
-            il.ImageTransparency = 1
-            bb.AlwaysOnTop = cfg.ThroughWalls
-            local box = Instance.new("Frame")
-            box.BackgroundTransparency = 1
-            box.AnchorPoint, box.Position, box.Size = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), UDim2.fromScale(1, 1)
-            box.Parent = bb
-            mk.bars = {}
-            for cx = 0, 1 do
-                for cy = 0, 1 do
-                    for axis = 0, 1 do
-                        local f = Instance.new("Frame")
-                        f.BorderSizePixel = 0
-                        f.BackgroundColor3 = cfg.Color
-                        f.AnchorPoint, f.Position = Vector2.new(cx, cy), UDim2.fromScale(cx, cy)
-                        f.Size = axis == 0 and UDim2.new(0.3, 0, 0, 3) or UDim2.new(0, 3, 0.3, 0)
-                        f.Parent = box
-                        mk.bars[#mk.bars + 1] = f
-                    end
-                end
-            end
-            mk.bp, mk.bbb, mk.box = p, bb, box
-            mk.parts = { p }
         else
             for i = 1, 4 do
                 local p, il, bb = h.bill(i % 2 == 0 and "fx_twinkle" or "fx_glow", cfg.Color)
@@ -17970,14 +17945,6 @@ end
             mk.ring2.CFrame = CFrame.new(g + Vector3.new(0, 0.01, 0)) * CFrame.Angles(0, -now * 1.6 * spd, 0)
             mk.img1.ImageColor3, mk.img2.ImageColor3 = col(cfg, 0), col(cfg, 0.5):Lerp(WHITE, 0.4)
             mk.img1.ImageTransparency, mk.img2.ImageTransparency = 0.05, 0.2
-        elseif mk.style == "Brackets" then
-            if not root then mk.box.Visible = false; return end
-            mk.box.Visible = true
-            local pulse = 1 + math.sin(now * 4 * spd) * 0.06
-            mk.bp.CFrame = CFrame.new(root.Position + Vector3.new(0, 0.3, 0))
-            mk.bbb.Size = UDim2.fromScale(4.6 * sz * pulse, 5.6 * sz * pulse)
-            mk.box.Rotation = math.sin(now * 1.2 * spd) * 6
-            for i, f in ipairs(mk.bars) do f.BackgroundColor3 = col(cfg, (i - 1) / 8) end
         else
             for i, sp in ipairs(mk.sprites or {}) do
                 if not root then
@@ -18778,7 +18745,7 @@ end)()
 -- (projected part edges). Split By Visibility swaps style when a target is behind a wall.
 Koffee.Chams = { Style = "Pattern", Pattern = "Hex", Color = Color3.fromRGB(255, 120, 200),
     Color2 = Color3.fromRGB(120, 180, 255), Alpha = 0.3, Scroll = 1, Split = false, HiddenStyle = "Wireframe",
-    Glow = true, NPCs = true, TeamCheck = true, MaxDistance = 1500 }
+    Glow = true, NPCs = true, CustomColors = false }
 registerConfig("chams", Koffee.Chams)
 ;(function()
     local CH = Koffee.Chams
@@ -19068,36 +19035,52 @@ registerConfig("chams", Koffee.Chams)
         vis[char] = { at = now, hidden = hidden }
         return hidden
     end
-    local function colorFor(plr, _char, hum, hidden, dist)
-        if Shared.dyeColor and ESP.Config.ColorMode and ESP.Config.ColorMode ~= "Static" then
-            local c = Shared.dyeColor({ hidden = hidden, same = false,
+    -- colours come from the ESP colour engine (Gradient, Rainbow, Health...) and fall
+    -- back to ESP's own visible / hidden colours in Static; Custom Colors opts out
+    local function colorFor(plr, hum, hidden, dist, same)
+        if CH.CustomColors then return (hidden and CH.Split) and CH.Color2 or CH.Color end
+        if Shared.dyeColor then
+            local c = Shared.dyeColor({ hidden = hidden, same = same,
                 health = hum and hum.MaxHealth > 0 and hum.Health / hum.MaxHealth or 1, dist = dist,
                 phase = Shared.dyePhase and Shared.dyePhase(plr) or 0 })
             if c then return c end
         end
-        return (hidden and CH.Split) and CH.Color2 or CH.Color
+        return hidden and ESP.Colors.Hidden or ESP.Colors.Visible
     end
+    -- same gates as the ESP rig renderer: team check, ignore friends, exclude marks,
+    -- render distance (NPCs use the NPC ESP bundle for distance and colours)
     local function gather(cam)
         local out = {}
         local camPos = cam.CFrame.Position
-        local maxD = CH.MaxDistance or 1500
-        local function add(plr, char, hum)
+        local function add(plr, char, hum, maxD, same)
             local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
             if not root or (hum and hum.Health <= 0) then return end
             local dist = (root.Position - camPos).Magnitude
-            if dist > maxD then return end
+            if dist > (maxD or math.huge) then return end
             local hidden = hiddenFrom(cam, char)
             local style = (CH.Split and hidden) and (CH.HiddenStyle or "Wireframe") or (CH.Style or "Pattern")
-            out[#out + 1] = { char = char, style = style, color = colorFor(plr, char, hum, hidden, dist) }
+            out[#out + 1] = { char = char, style = style, color = colorFor(plr, hum, hidden, dist, same) }
         end
         for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LocalPlayer and plr.Character and not (CH.TeamCheck and plr.Team and plr.Team == LocalPlayer.Team) then
-                add(plr, plr.Character, plr.Character:FindFirstChildOfClass("Humanoid"))
+            local ch = plr.Character
+            if plr ~= LocalPlayer and ch then
+                local same = isTeammate(plr)
+                local skip = (same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr))
+                    or (Shared.targetMark and Shared.targetMark(plr) == "exclude")
+                if not skip then add(plr, ch, ch:FindFirstChildOfClass("Humanoid"), ESP.Config.RenderDistance, same) end
             end
         end
-        if CH.NPCs and Shared.NPC and Shared.NPC.targetEntities then
+        if CH.NPCs and Shared.NPC and Shared.NPC.targetEntities and Shared.NPCESP then
             local ok, ents = pcall(Shared.NPC.targetEntities, "ESP")
-            if ok then for _, e in ipairs(ents) do if e.char and e.char.Parent then add(e.wrapper, e.char, e.hum) end end end
+            if ok and #ents > 0 then
+                local saved = Shared.espSwap(Shared.NPCESP)
+                pcall(function()
+                    for _, e in ipairs(ents) do
+                        if e.char and e.char.Parent then add(e.wrapper, e.char, e.hum, ESP.Config.RenderDistance, false) end
+                    end
+                end)
+                Shared.espRestore(saved)
+            end
         end
         return out
     end
@@ -19411,7 +19394,7 @@ addTab("Visuals", function(root)
         local mr = moduleCheckbox(tgtPanel, "Target Marker", "tgt_marker")
         attachSingleSwatch(mr.row, F.Marker.Color, function(c) F.Marker.Color = c end)
         rightClickSettings(mr.row, "Target Marker", function(popup)
-            popup:dropdown("Style", { "Orbit", "Rings", "Brackets" }, F.Marker.Style, function(v) F.Marker.Style = v end)
+            popup:dropdown("Style", { "Orbit", "Rings" }, F.Marker.Style, function(v) F.Marker.Style = v end)
             popup:slider("Size", 0.3, 3, F.Marker.Size, 2, function(v) F.Marker.Size = v end)
             popup:slider("Speed", 0.2, 4, F.Marker.Speed, 2, function(v) F.Marker.Speed = v end)
             popup:dropdown("Show For", { "Locked", "Best" }, F.Marker.Source, function(v) F.Marker.Source = v end)
@@ -19439,26 +19422,6 @@ addTab("Visuals", function(root)
         end)
     end)(Lsub["Effects"])
     task.defer(function()
-        -- v0.88.0 chams: after Effects Color so it lands at the end of the ESP column
-        task.defer(function()
-            local CH = Koffee.Chams
-            local cp = panel(espSub, "Chams")
-            local row = moduleCheckbox(cp, "Chams", "chams")
-            attachDualSwatch(row.row, CH.Color, CH.Color2, function(c) CH.Color = c end, function(c) CH.Color2 = c end)
-            rightClickSettings(row.row, "Chams", function(p)
-                p:dropdown("Style", { "Pattern", "Lit", "Wireframe" }, CH.Style, function(v) CH.Style = v end)
-                p:dropdown("Pattern", { "Hex", "Stripes", "Dots", "Circuit" }, CH.Pattern, function(v) CH.Pattern = v end)
-                p:slider("Scroll Speed", 0, 4, CH.Scroll, 2, function(v) CH.Scroll = v end)
-                p:slider("Transparency", 0, 0.95, CH.Alpha, 2, function(v) CH.Alpha = v end)
-                p:toggle("Split By Visibility", CH.Split, function(v) CH.Split = v end)
-                p:dropdown("Behind Walls Style", { "Pattern", "Lit", "Wireframe" }, CH.HiddenStyle,
-                    function(v) CH.HiddenStyle = v end)
-                p:toggle("Wire Glow", CH.Glow, function(v) CH.Glow = v end)
-                p:toggle("Include NPCs", CH.NPCs, function(v) CH.NPCs = v end)
-                p:toggle("Team Check", CH.TeamCheck, function(v) CH.TeamCheck = v end)
-                p:slider("Max Distance", 50, 3000, CH.MaxDistance, 0, function(v) CH.MaxDistance = v end)
-            end)
-        end)
         local G = Koffee.FXGradient
         local gp = panel(espSub, "Effects Color")
         local gr = configCheckbox(gp, "Effects Color-mode", G.Enabled, function(v) G.Enabled = v end)
@@ -19707,6 +19670,26 @@ addTab("Visuals", function(root)
     -- player, this one draws where somebody's shot actually went. The panel title
     -- carries the detector state (scanning / watching n / locked on <remote>) so a
     -- game whose shots we can't read is obvious instead of silent.
+    -- :: Chams :: v0.88.0. Colours, team check, friends and distance follow the ESP
+    -- settings (the NPC ESP bundle for NPCs) unless Custom Colors is on.
+    ;(function()
+        local CH = Koffee.Chams
+        local cp = panel(rightCol, "Chams")
+        local row = moduleCheckbox(cp, "Enabled", "chams")
+        keybindPill(row.row, "chams", nil, "Chams")
+        dropdown(cp, "Style", { "Pattern", "Lit", "Wireframe" }, CH.Style, function(v) CH.Style = v end)
+        dropdown(cp, "Pattern", { "Hex", "Stripes", "Dots", "Circuit" }, CH.Pattern, function(v) CH.Pattern = v end)
+        slider(cp, "Scroll Speed", 0, 4, CH.Scroll, 2, function(v) CH.Scroll = v end)
+        slider(cp, "Transparency", 0, 0.95, CH.Alpha, 2, function(v) CH.Alpha = v end)
+        configCheckbox(cp, "Split By Visibility", CH.Split, function(v) CH.Split = v end)
+        dropdown(cp, "Behind Walls Style", { "Pattern", "Lit", "Wireframe" }, CH.HiddenStyle,
+            function(v) CH.HiddenStyle = v end)
+        configCheckbox(cp, "Wire Glow", CH.Glow, function(v) CH.Glow = v end)
+        configCheckbox(cp, "Include NPCs", CH.NPCs, function(v) CH.NPCs = v end)
+        local cc = configCheckbox(cp, "Custom Colors", CH.CustomColors, function(v) CH.CustomColors = v end)
+        attachDualSwatch(cc.row, CH.Color, CH.Color2, function(c) CH.Color = c end, function(c) CH.Color2 = c end)
+    end)()
+
     local btPanel = panel(rightCol, "Bullet Tracers")
     local btTitle = btPanel:FindFirstChildOfClass("TextLabel")
     Shared._bulletSetStatus = function(s)
