@@ -1,7 +1,7 @@
--- koffee v0.85.0
+-- koffee v0.86.0
 
 local Koffee = {}
-Koffee.Version = "0.85.0"
+Koffee.Version = "0.86.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -19143,9 +19143,489 @@ function Deco.buildPanel(root)
 end
 end)()
 
+-- v0.86.0 ITEM MODELS: local-only replacement models for whatever you hold. Finds the
+-- held item without Tools (viewmodel under the camera, or a model jointed to a hand),
+-- with Tools as the alternative path. The original only goes invisible locally.
+Koffee.ItemSkins = { Bind = "Auto", HideOriginal = true, Skins = {} }
+registerConfig("item_skins", Koffee.ItemSkins)
+;(function()
+    local IS = Koffee.ItemSkins
+    local Http = game:GetService("HttpService")
+    local IS_RT = { held = nil, heldAt = 0, model = nil, modelKey = nil, rel = nil, hidden = {}, live = {}, assets = {} }
+    local ours = setmetatable({}, { __mode = "k" })
+
+    local RIG = {}
+    for _, n in ipairs({ "Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart", "Left Arm", "Right Arm",
+        "Left Leg", "Right Leg", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm",
+        "RightHand", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot" }) do
+        RIG[n] = true
+    end
+    local HANDS = { "RightHand", "LeftHand", "Right Arm", "Left Arm", "RightLowerArm", "LeftLowerArm" }
+    local function armish(name)
+        local l = string.lower(name)
+        return l:find("arm") ~= nil or l:find("hand") ~= nil or l:find("sleeve") ~= nil or l:find("glove") ~= nil
+    end
+    local function partsOf(obj)
+        if obj:IsA("BasePart") then return { obj } end
+        local out = {}
+        for _, d in ipairs(obj:GetDescendants()) do
+            if d:IsA("BasePart") then out[#out + 1] = d end
+        end
+        return out
+    end
+    -- the part a skin rides: a named grip if there is one, else the biggest part
+    local function anchorOf(obj, parts)
+        if obj:IsA("BasePart") then return obj end
+        for _, n in ipairs({ "Handle", "Main", "Body", "Base", "Receiver", "Root" }) do
+            local p = obj:FindFirstChild(n, true)
+            if p and p:IsA("BasePart") then return p end
+        end
+        if obj:IsA("Model") and obj.PrimaryPart then return obj.PrimaryPart end
+        local best, bv = nil, -1
+        for _, p in ipairs(parts) do
+            local v = p.Size.X * p.Size.Y * p.Size.Z
+            if v > bv then best, bv = p, v end
+        end
+        return best
+    end
+    local function held(kind, obj, parts)
+        if not obj or #parts == 0 then return nil end
+        local root = anchorOf(obj, parts)
+        if not root then return nil end
+        return { kind = kind, obj = obj, parts = parts, root = root, name = obj.Name,
+            sig = kind .. ":" .. obj.Name .. ":" .. #parts }
+    end
+
+    -- :: detection ::
+    local function findTool(char)
+        local tool = char:FindFirstChildOfClass("Tool")
+        local h = tool and tool:FindFirstChild("Handle")
+        if h and h:IsA("BasePart") then return held("Tool", tool, partsOf(tool)) end
+        return nil
+    end
+    -- hand joints catch welds stored anywhere (many games keep the weld in the item)
+    local function findHeldModel(char)
+        for _, hn in ipairs(HANDS) do
+            local hand = char:FindFirstChild(hn)
+            if hand and hand:IsA("BasePart") then
+                for _, j in ipairs(hand:GetJoints()) do
+                    -- welds carry Part0/1; constraints (RigidConstraint holds items too,
+                    -- the wrist BallSocket is rig) carry their parts through attachments
+                    local a, b
+                    if j:IsA("JointInstance") or j:IsA("WeldConstraint") then
+                        a, b = j.Part0, j.Part1
+                    elseif j:IsA("RigidConstraint") then
+                        a = j.Attachment0 and j.Attachment0.Parent
+                        b = j.Attachment1 and j.Attachment1.Parent
+                    end
+                    local other = (a == hand) and b or a
+                    if other and other ~= hand and not RIG[other.Name] and not other:FindFirstAncestorOfClass("Accessory")
+                        and not other:FindFirstAncestorOfClass("Tool") and not ours[other] then
+                        local obj = other
+                        local m = other:FindFirstAncestorWhichIsA("Model")
+                        while m and m ~= char and m ~= Workspace do
+                            obj = m
+                            local up = m.Parent
+                            m = (up and up:IsA("Model")) and up or nil
+                        end
+                        return held("Held", obj, partsOf(obj))
+                    end
+                end
+            end
+        end
+        return nil
+    end
+    -- first-person viewmodels: a Model under the camera (or a ViewModel in workspace);
+    -- the item is its biggest non-arm child model, else its non-arm parts
+    local function findViewmodel()
+        local cam = Workspace.CurrentCamera
+        local cands = {}
+        if cam then for _, c in ipairs(cam:GetChildren()) do if c:IsA("Model") and not ours[c] then cands[#cands + 1] = c end end end
+        for _, n in ipairs({ "ViewModel", "Viewmodel", "viewmodel", "FPSArms", "Arms" }) do
+            local c = Workspace:FindFirstChild(n)
+            if c and c:IsA("Model") and not ours[c] then cands[#cands + 1] = c end
+        end
+        local vm, vc = nil, 1
+        for _, c in ipairs(cands) do
+            local n = #partsOf(c)
+            if n > vc then vm, vc = c, n end
+        end
+        if not vm then return nil end
+        local best, bc = nil, 0
+        for _, c in ipairs(vm:GetChildren()) do
+            if c:IsA("Model") and not armish(c.Name) then
+                local n = #partsOf(c)
+                if n > bc then best, bc = c, n end
+            end
+        end
+        if best then return held("Viewmodel", best, partsOf(best)) end
+        local parts = {}
+        for _, p in ipairs(partsOf(vm)) do if not armish(p.Name) then parts[#parts + 1] = p end end
+        return held("Viewmodel", vm, parts)
+    end
+    local function detect()
+        local char = LocalPlayer.Character
+        local mode = IS.Bind or "Auto"
+        if mode == "Viewmodel" then return findViewmodel() end
+        if not char then return nil end
+        if mode == "Tool" then return findTool(char) end
+        if mode == "Held Model" then return findHeldModel(char) end
+        -- each strategy isolated: one throwing must never freeze detection
+        for _, f in ipairs({ findViewmodel, findTool, findHeldModel }) do
+            local ok, r = pcall(f, char)
+            if ok and r then return r end
+        end
+        return nil
+    end
+    IS.detect = detect
+    IS.current = function()
+        local now = os.clock()
+        local h = IS_RT.held
+        if now - IS_RT.heldAt > 0.25 or (h and not (h.root and h.root.Parent)) then
+            IS_RT.heldAt = now
+            local ok, r = pcall(detect)
+            IS_RT.held = ok and r or nil
+        end
+        return IS_RT.held
+    end
+
+    -- :: serialization :: KIM1 strings carry parts, meshes, colours, materials and
+    -- CFrames relative to the root. MeshPart ids can't be set at runtime, so meshes
+    -- come back as SpecialMesh FileMesh; same-session copies keep the real instance.
+    local function num3(v) return { math.floor(v.X * 1000) / 1000, math.floor(v.Y * 1000) / 1000, math.floor(v.Z * 1000) / 1000 } end
+    local function encodeInst(inst)
+        local parts = partsOf(inst)
+        local root = anchorOf(inst, parts)
+        if not root then return nil end
+        local out = { v = 1, name = inst.Name, parts = {} }
+        if inst:IsA("Tool") then out.grip = { inst.Grip:GetComponents() } end
+        for _, p in ipairs(parts) do
+            local rel = root.CFrame:ToObjectSpace(p.CFrame)
+            local e = { s = num3(p.Size), cf = { rel:GetComponents() }, c = { p.Color.R, p.Color.G, p.Color.B },
+                m = p.Material.Name, t = p.Transparency, r = p.Reflectance, root = (p == root) or nil }
+            if p:IsA("MeshPart") then
+                local ms
+                pcall(function() ms = p.MeshSize end)
+                if not ms and gethiddenproperty then pcall(function() ms = gethiddenproperty(p, "InitialSize") end) end
+                local sc = (typeof(ms) == "Vector3" and ms.Magnitude > 0) and (p.Size / ms) or Vector3.one
+                e.mesh = { t = "FileMesh", id = p.MeshId, tex = p.TextureID, sc = num3(sc), off = { 0, 0, 0 } }
+            else
+                local sm = p:FindFirstChildWhichIsA("DataModelMesh")
+                if sm and sm:IsA("SpecialMesh") then
+                    e.mesh = { t = sm.MeshType.Name, id = sm.MeshId, tex = sm.TextureId, sc = num3(sm.Scale), off = num3(sm.Offset) }
+                end
+                if p:IsA("Part") then e.sh = p.Shape.Name end
+            end
+            out.parts[#out.parts + 1] = e
+        end
+        return "KIM1:" .. Http:JSONEncode(out)
+    end
+    local function decode(str)
+        if type(str) ~= "string" or str:sub(1, 5) ~= "KIM1:" then return nil end
+        local ok, t = pcall(Http.JSONDecode, Http, str:sub(6))
+        return (ok and type(t) == "table" and type(t.parts) == "table") and t or nil
+    end
+    -- the template: a model plus each part's CFrame relative to the root
+    local function strip(m)
+        for _, d in ipairs(m:GetDescendants()) do
+            if d:IsA("LuaSourceContainer") or d:IsA("JointInstance") or d:IsA("WeldConstraint")
+                or d:IsA("Constraint") or d:IsA("Sound") or d:IsA("TouchTransmitter") then
+                d:Destroy()
+            elseif d:IsA("BasePart") then
+                d.Anchored = true; d.CanCollide = false; d.CastShadow = false
+                pcall(function() d.CanQuery = false; d.CanTouch = false; d.Massless = true end)
+            end
+        end
+    end
+    local function templateFromInst(inst)
+        local c
+        pcall(function()
+            local was = inst.Archivable
+            inst.Archivable = true
+            for _, d in ipairs(inst:GetDescendants()) do pcall(function() d.Archivable = true end) end
+            c = inst:Clone()
+            inst.Archivable = was
+        end)
+        if not c then return nil end
+        local m = c
+        if not c:IsA("Model") then
+            m = Instance.new("Model")
+            c.Parent = m
+        end
+        strip(m)
+        return m
+    end
+    local function templateFromData(t)
+        local m = Instance.new("Model")
+        m.Name = t.name or "item"
+        if type(t.grip) == "table" then m:SetAttribute("_grip", CFrame.new(table.unpack(t.grip))) end
+        for _, e in ipairs(t.parts) do
+            local p = Instance.new("Part")
+            p.Anchored = true; p.CanCollide = false; p.CastShadow = false
+            pcall(function() p.CanQuery = false; p.CanTouch = false end)
+            p.Size = Vector3.new(e.s[1], e.s[2], e.s[3])
+            p.Color = Color3.new(e.c[1], e.c[2], e.c[3])
+            pcall(function() p.Material = Enum.Material[e.m] end)
+            p.Transparency, p.Reflectance = e.t or 0, e.r or 0
+            if e.sh then pcall(function() p.Shape = Enum.PartType[e.sh] end) end
+            p.CFrame = CFrame.new(table.unpack(e.cf))
+            if e.mesh then
+                local sm = Instance.new("SpecialMesh")
+                pcall(function() sm.MeshType = Enum.MeshType[e.mesh.t] end)
+                sm.MeshId, sm.TextureId = e.mesh.id or "", e.mesh.tex or ""
+                sm.Scale = Vector3.new(table.unpack(e.mesh.sc or { 1, 1, 1 }))
+                sm.Offset = Vector3.new(table.unpack(e.mesh.off or { 0, 0, 0 }))
+                sm.Parent = p
+            end
+            p.Parent = m
+            if e.root then m.PrimaryPart = p end
+        end
+        return m
+    end
+    -- GetObjects yields, and the render-step callback can't, so assets load on their own
+    -- thread: nil = not started, false = loading, "fail" = gave up, else the object
+    local function loadAsset(id)
+        local st = IS_RT.assets[id]
+        if st ~= nil then return (st ~= false and st ~= "fail") and st or nil end
+        IS_RT.assets[id] = false
+        task.spawn(function()
+            local obj
+            pcall(function() obj = game:GetObjects("rbxassetid://" .. id)[1] end)
+            if not obj then
+                pcall(function() obj = game:GetService("InsertService"):LoadAsset(id):GetChildren()[1] end)
+            end
+            if obj and obj:IsA("Accessory") then obj = obj:FindFirstChild("Handle") or obj end
+            if obj and obj:IsA("Tool") then obj:SetAttribute("_grip", obj.Grip) end
+            IS_RT.assets[id] = obj or "fail"
+            if not obj and Koffee.notify then pcall(Koffee.notify, "Item Models", "Couldn't load asset " .. id) end
+        end)
+        return nil
+    end
+
+    -- :: skin lifecycle ::
+    local function unhide()
+        for p in pairs(IS_RT.hidden) do
+            if p.Parent then pcall(function() p.LocalTransparencyModifier = 0 end) end
+        end
+        table.clear(IS_RT.hidden)
+    end
+    local function dropModel()
+        if IS_RT.model then pcall(function() IS_RT.model:Destroy() end) end
+        IS_RT.model, IS_RT.modelKey, IS_RT.rel, IS_RT.grip = nil, nil, nil, nil
+    end
+    local function skinKey(s) return table.concat({ s.src or "", tostring(s.asset or ""), s.data and #s.data or 0,
+        s.data and s.data:sub(-24) or "", tostring(s.scale or 1) }, "|") end
+    local function build(s)
+        local tpl
+        if s.src == "asset" and s.asset then
+            local obj = loadAsset(s.asset)
+            tpl = obj and templateFromInst(obj)
+        elseif s.data then
+            local live = IS_RT.live[s.data]
+            tpl = (live and live.Parent and templateFromInst(live)) or (decode(s.data) and templateFromData(decode(s.data)))
+        end
+        if not tpl then return false end
+        local g = tpl:GetAttribute("_grip")
+        if typeof(g) ~= "CFrame" then
+            local inner = tpl:FindFirstChildWhichIsA("Tool")
+            g = inner and inner.Grip or (tpl:IsA("Tool") and tpl.Grip) or nil
+        end
+        IS_RT.grip = g
+        local parts = partsOf(tpl)
+        local root = anchorOf(tpl, parts)
+        if not root then tpl:Destroy(); return false end
+        local sc = math.max(tonumber(s.scale) or 1, 0.01)
+        if sc ~= 1 then pcall(function() tpl:ScaleTo(sc) end) end
+        local rel = {}
+        for _, p in ipairs(parts) do rel[p] = root.CFrame:ToObjectSpace(p.CFrame) end
+        tpl.Name = KID.name("ism")
+        ours[tpl] = true
+        for _, p in ipairs(parts) do ours[p] = true end
+        tpl.Parent = Workspace.CurrentCamera
+        IS_RT.model, IS_RT.rel = tpl, rel
+        return true
+    end
+    local function step()
+        local m = Modules.itemskins
+        if not (m and m.Enabled) then
+            if IS_RT.model then dropModel() end
+            unhide()
+            return
+        end
+        local h = IS.current()
+        local s = h and IS.Skins[h.sig]
+        if not s then
+            if IS_RT.model then dropModel() end
+            unhide()
+            return
+        end
+        local key = h.sig .. "#" .. skinKey(s)
+        if IS_RT.modelKey ~= key then
+            dropModel()
+            unhide()
+            if not build(s) then return end
+            IS_RT.modelKey = key
+        end
+        -- follow the real part every frame, after animations have posed it
+        local off = CFrame.new(s.ox or 0, s.oy or 0, s.oz or 0)
+            * CFrame.Angles(math.rad(s.rx or 0), math.rad(s.ry or 0), math.rad(s.rz or 0))
+        local base = h.root.CFrame
+        -- Tool to Tool: seat the new handle the way the engine's grip weld would
+        if h.kind == "Tool" and IS_RT.grip and h.obj:IsA("Tool") then
+            base = base * h.obj.Grip * IS_RT.grip:Inverse()
+        end
+        base = base * off
+        for p, rel in pairs(IS_RT.rel) do p.CFrame = base * rel end
+        if IS.HideOriginal ~= false then
+            for _, p in ipairs(h.parts) do
+                if p.Parent then
+                    IS_RT.hidden[p] = true
+                    p.LocalTransparencyModifier = 1
+                end
+            end
+        elseif next(IS_RT.hidden) then
+            unhide()
+        end
+    end
+
+    -- :: public API (UI + NPC picker) ::
+    local function note(title, msg) if Koffee.notify then pcall(Koffee.notify, title, msg) end end
+    IS.encodeInst = encodeInst
+    IS.copyInst = function(inst)
+        local str = inst and encodeInst(inst)
+        if not str then note("Item Models", "Nothing to copy"); return nil end
+        IS_RT.live[str] = inst
+        if setclipboard then pcall(setclipboard, str) end
+        note("Item Models", "Copied " .. inst.Name .. " (" .. #str .. " chars)")
+        return str
+    end
+    IS.applyTo = function(skin)
+        local h = IS.current()
+        if not h then note("Item Models", "Hold an item first"); return false end
+        local old = IS.Skins[h.sig]
+        if old then
+            for _, k in ipairs({ "ox", "oy", "oz", "rx", "ry", "rz", "scale" }) do
+                if skin[k] == nil then skin[k] = old[k] end
+            end
+        end
+        IS.Skins[h.sig] = skin
+        note("Item Models", "Applied to " .. h.name)
+        return true
+    end
+    IS.useInst = function(inst)
+        local str = IS.copyInst(inst)
+        if str then IS.applyTo({ src = "data", data = str }) end
+    end
+    IS.clear = function()
+        local h = IS.current()
+        if h and IS.Skins[h.sig] then IS.Skins[h.sig] = nil; note("Item Models", "Cleared " .. h.name) end
+    end
+    IS.skinFor = function()
+        local h = IS.current()
+        return h and IS.Skins[h.sig], h
+    end
+    registerModule("itemskins", "Item Models", function() end, function() dropModel(); unhide() end)
+
+    local bindName = KID.name("isk")
+    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Last.Value + 5, function()
+        if Koffee.dead() then
+            pcall(function() RunService:UnbindFromRenderStep(bindName) end)
+            dropModel(); unhide()
+            return
+        end
+        local ok, err = pcall(step)
+        if not ok and getgenv and getgenv().KoffeeFxDebug then warn("[items]", err) end
+    end)
+
+    -- :: panel (Character tab) ::
+    function IS.buildPanel(root)
+        local card = panel(root, "Item Models")
+        local mr = moduleCheckbox(card, "Item Models", "itemskins")
+        rightClickSettings(mr.row, "Item Models", function(popup)
+            popup:dropdown("Bind Method", { "Auto", "Viewmodel", "Held Model", "Tool" }, IS.Bind,
+                function(v) IS.Bind = v; IS_RT.heldAt = 0 end)
+            popup:toggle("Hide Original", IS.HideOriginal ~= false, function(v) IS.HideOriginal = v end)
+        end)
+        local status = new("TextLabel", {
+            Text = "Holding: nothing", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, 0, 0, 16), Parent = card,
+        })
+        local function inputRow(placeholder, btnText, onGo)
+            local row = new("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, Parent = card },
+                { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+                    VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+            local box = new("TextBox", {
+                Text = "", PlaceholderText = placeholder, ClearTextOnFocus = false, TextTruncate = Enum.TextTruncate.AtEnd,
+                FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+                PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
+                BackgroundTransparency = 0.15, Size = UDim2.new(1, -76, 0, 26), TextXAlignment = Enum.TextXAlignment.Left,
+                LayoutOrder = 0, Parent = row,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+                new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+            local btn = new("TextButton", {
+                Text = btnText, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Background, BackgroundColor3 = Theme.Palette.Accent, AutoButtonColor = true,
+                Size = UDim2.fromOffset(70, 26), LayoutOrder = 1, Parent = row,
+            }, { corner(6) })
+            btn.MouseButton1Click:Connect(function() onGo(box) end)
+        end
+        inputRow("asset id (accessory, model, gear)", "Load", function(box)
+            local id = tonumber((box.Text or ""):match("%d+"))
+            if not id then return end
+            if IS.applyTo({ src = "asset", asset = id }) then box.Text = "" end
+        end)
+        inputRow("paste a KIM1 item string", "Paste", function(box)
+            local str = box.Text or ""
+            if not decode(str) then note("Item Models", "Not a KIM1 string"); return end
+            if IS.applyTo({ src = "data", data = str }) then box.Text = "" end
+        end)
+        local actions = new("Frame", { Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, Parent = card },
+            { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local function actBtn(text, fn)
+            local b = new("TextButton", {
+                Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+                BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true, AutomaticSize = Enum.AutomaticSize.X,
+                Size = UDim2.new(0, 0, 0, 26), Parent = actions,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+                new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }) })
+            b.MouseButton1Click:Connect(fn)
+        end
+        actBtn("Copy Held", function()
+            local h = IS.current()
+            if h then IS.copyInst(h.obj) else note("Item Models", "Hold an item first") end
+        end)
+        actBtn("Clear Skin", function() IS.clear() end)
+        -- sliders edit the skin of whatever is held right now
+        local function sk(k, v)
+            local s = IS.skinFor()
+            if s then s[k] = v end
+        end
+        slider(card, "Offset X", -5, 5, 0, 2, function(v) sk("ox", v) end)
+        slider(card, "Offset Y", -5, 5, 0, 2, function(v) sk("oy", v) end)
+        slider(card, "Offset Z", -5, 5, 0, 2, function(v) sk("oz", v) end)
+        slider(card, "Rotate X", -180, 180, 0, 0, function(v) sk("rx", v) end)
+        slider(card, "Rotate Y", -180, 180, 0, 0, function(v) sk("ry", v) end)
+        slider(card, "Rotate Z", -180, 180, 0, 0, function(v) sk("rz", v) end)
+        slider(card, "Scale", 0.1, 5, 1, 2, function(v) sk("scale", v) end)
+        task.spawn(function()
+            while card.Parent and not Koffee.dead() do
+                local h = IS.current()
+                local s = h and IS.Skins[h.sig]
+                status.Text = h and ("Holding: " .. h.name .. "  (" .. h.kind .. (s and ", skinned" or "") .. ")")
+                    or "Holding: nothing"
+                task.wait(0.25)
+            end
+        end)
+    end
+    Shared.ItemSkins = IS
+end)()
+
 addTab("Character", function(root)
     Koffee._characterTab(root)
     if Shared.Deco then Shared.Deco.buildPanel(root) end
+    if Shared.ItemSkins then Shared.ItemSkins.buildPanel(root) end
 end)
 
 -- v0.0.96: options state (arraylist preferences) rides the config system too.
@@ -24972,6 +25452,13 @@ local function openContextMenu(inst, extra)
     items[#items + 1] = { "ban", "Exclude (session)", function()
         NPC._excludeSel[inst] = true
         if NPC._refreshExcl then NPC._refreshExcl() end
+    end }
+    -- v0.86.0: item models from anything in the world
+    items[#items + 1] = { "package", "Copy as Item Model", function()
+        if Shared.ItemSkins then Shared.ItemSkins.copyInst(inst) end
+    end }
+    items[#items + 1] = { "box", "Use as Item Model", function()
+        if Shared.ItemSkins then Shared.ItemSkins.useInst(inst) end
     end }
     items[#items + 1] = { "fingerprint", "Exclude (learn)", function()
         local sig = signature(inst)
