@@ -17681,7 +17681,7 @@ Koffee.SelfFX = {
                AIFadeTo = false, AIAccessories = false, AIItem = false, AIMoving = true },
     -- v0.90.0 motion smear: glowing copies left between frames by your held item and body
     Smear  = { Color = Color3.fromRGB(170, 255, 205), Color2 = Color3.fromRGB(70, 150, 120), Target = "Item + Body",
-               Type = "Neon", Fade = 0.25, Alpha = 0.82, Density = 3, MinMove = 0.08 },
+               Type = "Neon", Fade = 0.25, Alpha = 0.82, Density = 3, MinMove = 0.08, IdleDrift = true, IdleRise = 1 },
     Hat    = { Color = Color3.fromRGB(217, 150, 95), Radius = 1.7, Height = 0.8, Alpha = 0.35, Rim = true,
                Roughness = 0 },
     Marker = { Style = "Orbit", Color = Color3.fromRGB(255, 120, 200), Size = 1, Speed = 1,
@@ -17927,7 +17927,7 @@ end
     end
     -- motion smear: every part that moved since its last copy leaves copies along the
     -- way (interpolated, so fast swings streak instead of stuttering)
-    local smear = { last = {} }
+    local smear = { last = {}, still = 0, idleAt = 0, t = os.clock() }
     local function smearStep()
         local c = myChar()
         if not c then return end
@@ -17935,7 +17935,12 @@ end
         local want = cfg.Target or "Item + Body"
         local o = { type = cfg.Type or "Neon", alpha = cfg.Alpha or 0.82, life = cfg.Fade or 0.25,
             color = col(cfg, 0), color2 = cfg.Color2 }
-        local seen = {}
+        -- motion is judged by speed (Min Movement = studs per 1/60 s), so the slow sway
+        -- of an idle animation never counts as moving
+        local now = os.clock()
+        local dt = math.max(now - smear.t, 1 / 240)
+        smear.t = now
+        local seen, moved = {}, false
         for _, p in ipairs(c:GetDescendants()) do
             if p:IsA("BasePart") and p.Transparency < 0.95 and p.Name ~= "HumanoidRootPart" then
                 local tool = p:FindFirstAncestorOfClass("Tool")
@@ -17953,19 +17958,27 @@ end
                         local d = (cf.Position - last.Position).Magnitude
                         local ang = math.acos(math.clamp(cf.LookVector:Dot(last.LookVector), -1, 1))
                         local sweep = d + ang * p.Size.Magnitude * 0.5
-                        if sweep > (cfg.MinMove or 0.08) then
+                        if sweep / dt > (cfg.MinMove or 0.08) * 60 then
                             local steps = math.clamp(math.ceil(sweep / math.max(p.Size.Magnitude * 0.3, 0.1)), 1,
                                 math.max(math.floor(cfg.Density or 3), 1))
                             for k = 1, steps do echo.copy(p, last:Lerp(cf, k / steps), o) end
-                            smear.last[p] = cf
+                            moved = true
                         end
-                    else
-                        smear.last[p] = cf
                     end
+                    smear.last[p] = cf
                 end
             end
         end
         for p in pairs(smear.last) do if not seen[p] then smear.last[p] = nil end end
+        -- still: a very faint copy now and then drifts up off you, so the smear
+        -- never fully switches off
+        smear.still = moved and 0 or smear.still + dt
+        if cfg.IdleDrift ~= false and smear.still > 0.3 and now - smear.idleAt > 0.24 then
+            smear.idleAt = now
+            local io = { type = o.type, alpha = math.max(0.96, o.alpha), life = 0.9, rise = 0.6 * (cfg.IdleRise or 1),
+                color = o.color, color2 = o.color2 }
+            for p in pairs(seen) do echo.copy(p, p.CFrame, io) end
+        end
     end
     registerModule("selffx_smear", "Motion Smear", function() end, function() smear.last = {} end)
     -- v0.89.0 GLASS trail: clear glass along your path that only reflects. A pane is
@@ -20033,6 +20046,8 @@ addTab("Visuals", function(root)
             popup:slider("Start Transparency", 0, 0.95, M.Alpha, 2, function(v) M.Alpha = v end)
             popup:slider("Density", 1, 8, M.Density, 0, function(v) M.Density = math.floor(v) end)
             popup:slider("Min Movement", 0.01, 1, M.MinMove, 2, function(v) M.MinMove = v end)
+            popup:toggle("Drift Up When Still", M.IdleDrift ~= false, function(v) M.IdleDrift = v end)
+            popup:slider("Still Drift Height", 0.2, 3, M.IdleRise or 1, 1, function(v) M.IdleRise = v end)
         end)
         local hr = moduleCheckbox(selfPanel, "China Hat", "selffx_hat")
         attachSingleSwatch(hr.row, F.Hat.Color, function(c) F.Hat.Color = c end)
@@ -28349,6 +28364,7 @@ local function newFolderSettings()
         Exclude = { ESP = false, Aimbot = false, Silent = false },
         Rules = {},
         AutoUsername = false,   -- v0.57.0: scan the workspace for player usernames
+        AutoRules = {},         -- v0.90.0: auto-add anything whose name matches a rule
     }
 end
 local DEFAULTS = newFolderSettings()
@@ -28552,6 +28568,91 @@ local function allHumanoids()
 end
 NPC.allHumanoids = allHumanoids
 
+-- v0.90.0 AUTO-ADD RULES: a folder's rules pull matching workspace instances in on
+-- their own. A rule matches by name (contains / is / starts with / ends with /
+-- pattern), optionally only inside an ancestor whose name contains `inside`, and
+-- takes the match itself, its children, or Auto (models / parts are NPCs, anything
+-- else hands over its children). Stored on NPC (not locals) for the register budget.
+-- a label-less dropdown still reserves its label row above the button; flatten it
+-- so it sits in a single 26px row beside a text box
+function NPC._flatDD(d)
+    for _, c in ipairs(d.frame:GetChildren()) do
+        if c:IsA("TextLabel") then c.Visible = false
+        elseif c:IsA("TextButton") then c.Position = UDim2.new(0, 0, 0, 0) end
+    end
+end
+function NPC._nameMatch(rule, name)
+    local v = rule.value or ""
+    if v == "" then return false end
+    local m = rule.match or "contains"
+    if m == "pattern" then
+        local ok, r = pcall(string.find, name, v)
+        return ok and r ~= nil
+    end
+    local n, lv = name:lower(), v:lower()
+    if m == "is" then return n == lv end
+    if m == "starts with" then return n:sub(1, #lv) == lv end
+    if m == "ends with" then return n:sub(-#lv) == lv end
+    return n:find(lv, 1, true) ~= nil
+end
+function NPC.ruleMatches(rule)
+    local out = {}
+    if rule.on == false or (rule.value or "") == "" then return out end
+    local inside = (rule.inside or ""):lower()
+    local take = rule.take or "Auto"
+    local myChar = LocalPlayer.Character
+    local function ok(inst)
+        if not eligible(inst) or isExcludedInst(inst) then return false end
+        if rule.humanoid and not (inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid")) then return false end
+        if inst == myChar or Players:GetPlayerFromCharacter(inst) then return false end
+        return true
+    end
+    for _, inst in ipairs(wsDescendants()) do
+        if NPC._nameMatch(rule, inst.Name) then
+            local within = inside == ""
+            if not within then
+                local a = inst.Parent
+                while a and a ~= game do
+                    if a.Name:lower():find(inside, 1, true) then within = true; break end
+                    a = a.Parent
+                end
+            end
+            if within then
+                local self = take == "Itself" or (take == "Auto" and (inst:IsA("Model") or inst:IsA("BasePart")))
+                if self then
+                    if ok(inst) then out[#out + 1] = inst end
+                else
+                    for _, ch in ipairs(inst:GetChildren()) do
+                        if ok(ch) then out[#out + 1] = ch end
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+-- every rule of a folder, cached ~1.2s and invalidated the moment a rule changes
+function NPC.folderRuleMatches(f)
+    local rules = f.settings and f.settings.AutoRules
+    if not rules or #rules == 0 then return {} end
+    local parts = {}
+    for _, r in ipairs(rules) do
+        parts[#parts + 1] = table.concat({ tostring(r.on), r.match or "", r.value or "", r.take or "",
+            r.inside or "", tostring(r.humanoid) }, "\1")
+    end
+    local key = table.concat(parts, "\2")
+    local now = os.clock()
+    if f._rScan and f._rKey == key and (now - (f._rAt or 0)) < 1.2 then return f._rScan end
+    local out, seen = {}, {}
+    for _, r in ipairs(rules) do
+        for _, inst in ipairs(NPC.ruleMatches(r)) do
+            if not seen[inst] then seen[inst] = true; out[#out + 1] = inst end
+        end
+    end
+    f._rScan, f._rKey, f._rAt = out, key, now
+    return out
+end
+
 -- read a value off a model for a Name or Health rule (child value, attribute,
 -- or a direct property). Missing reads return nil so the default is kept.
 local function readByRule(model, rule)
@@ -28623,6 +28724,14 @@ function NPC.entities()
         if f.settings and f.settings.AutoUsername then
             f._uHolder = f._uHolder or { _wrappers = setmetatable({}, { __mode = "k" }) }
             for _, model in ipairs(usernameMatches()) do emit(f._uHolder, model, f.settings) end
+        end
+    end
+    -- v0.90.0: auto-add rules, attributed to their folder like the username scan
+    for _, f in ipairs(NPC.Folders) do
+        local rules = f.settings and f.settings.AutoRules
+        if rules and #rules > 0 then
+            f._rHolder = f._rHolder or { _wrappers = setmetatable({}, { __mode = "k" }) }
+            for _, model in ipairs(NPC.folderRuleMatches(f)) do emit(f._rHolder, model, f.settings) end
         end
     end
     -- v0.82.0: Include all Humanoids (Options, off default). Manual entries
@@ -29719,7 +29828,10 @@ local function buildManager(host)
                 for _, e in ipairs(NPC.Entries) do
                     if e.folderId == folder.id then entryRow(listBox, e, 20); any = true end
                 end
-                if not any then hintRow(listBox, "  (empty, assign NPCs from Ungrouped)", 0) end
+                -- v0.90.0: NPCs pulled in by this folder's auto-add rules
+                local auto = #NPC.folderRuleMatches(folder)
+                if auto > 0 then hintRow(listBox, "  + " .. auto .. " added by rules", 0) end
+                if not any and auto == 0 then hintRow(listBox, "  (empty, assign NPCs from Ungrouped)", 0) end
             end
         end
         -- ungrouped
@@ -29733,7 +29845,9 @@ local function buildManager(host)
             })
             for _, e in ipairs(ung) do entryRow(listBox, e, 8) end
         end
-        if #NPC.Entries == 0 then hintRow(listBox, "No NPCs yet. Add some in the Picker tab.", 0) end
+        if #NPC.Entries == 0 and #NPC.Folders == 0 then
+            hintRow(listBox, "No NPCs yet. Add some in the Picker tab, or make a folder with auto-add rules.", 0)
+        end
     end
 
     -- v0.57.0: global Username-scan exclusion editor, shown when no folder is
@@ -29744,7 +29858,8 @@ local function buildManager(host)
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
             Size = UDim2.new(1, 0, 0, 16), Parent = right,
         })
-        hintRow(right, "Filters what the folder Username scan picks up. Right-click a tree row (Picker) to add a session or learned exclusion.", 0)
+        hintRow(right, "Filters what the folder Username scan and auto-add rules pick up. Right-click a tree row (Picker) to add a session or learned exclusion.", 0)
+        hintRow(right, "Select a folder to give it auto-add rules (add NPCs by name, no picking needed).", 0)
         -- names (persist): text + add, then a removable list
         local nameAdd = hrow(right, 26, 0)
         local nameTB = textInput(nameAdd, "exclude name (contains)", "", 0, function() end)
@@ -29811,6 +29926,67 @@ local function buildManager(host)
         -- whose name contains a live player's username (respects the exclusions
         -- shown when no folder is selected).
         configCheckbox(right, "Auto: Usernames (scan workspace)", st.AutoUsername, function(v) st.AutoUsername = v end)
+        -- v0.90.0: auto-add rules. Anything matching joins this folder on its own
+        st.AutoRules = st.AutoRules or {}
+        new("TextLabel", {
+            Text = "Auto-Add Rules", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 0, Parent = right,
+        })
+        hintRow(right, "Anything in the workspace whose name matches is added to this folder automatically, and new ones join as they spawn.", 0)
+        local autoBox = vlist(right, 4, 0)
+        local autoAdd = hrow(right, 26, 0)
+        local function drawAuto()
+            clearKids(autoBox)
+            for _, rule in ipairs(st.AutoRules) do
+                local card = vlist(autoBox, 4, 0)
+                card.BackgroundColor3 = Theme.Palette.PanelElevated
+                card.BackgroundTransparency = 0.5
+                new("UICorner", { CornerRadius = UDim.new(0, 6), Parent = card })
+                new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5),
+                    PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6), Parent = card })
+                local head = hrow(card, 20, 0)
+                local count = new("TextLabel", {
+                    Text = "", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                    TextColor3 = Theme.Palette.Accent, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                    Size = UDim2.new(1, -26, 1, 0), LayoutOrder = 0, Parent = head,
+                })
+                local function recount()
+                    local n = #NPC.ruleMatches(rule)
+                    count.Text = (rule.on == false and "Rule (off)  " or "Rule  ") .. n .. (n == 1 and " match" or " matches")
+                end
+                iconBtn(head, "trash-2", "remove rule", function()
+                    for i, x in ipairs(st.AutoRules) do if x == rule then table.remove(st.AutoRules, i) break end end
+                    drawAuto()
+                end, 1)
+                local r1 = hrow(card, 26, 1)
+                local dm = dropdown(r1, "", { "contains", "is", "starts with", "ends with", "pattern" }, rule.match or "contains",
+                    function(v) rule.match = v; recount() end)
+                dm.frame.Size = UDim2.fromOffset(96, 26)
+                dm.frame.LayoutOrder = 0
+                NPC._flatDD(dm)
+                local tv = textInput(r1, "name", rule.value, 1, function(t) rule.value = t; recount() end)
+                tv.Size = UDim2.new(1, -102, 0, 26)
+                local r2 = hrow(card, 26, 2)
+                local dt = dropdown(r2, "", { "Auto", "Itself", "Children" }, rule.take or "Auto",
+                    function(v) rule.take = v; recount() end)
+                dt.frame.Size = UDim2.fromOffset(96, 26)
+                dt.frame.LayoutOrder = 0
+                NPC._flatDD(dt)
+                local ti = textInput(r2, "inside (optional)", rule.inside, 1, function(t) rule.inside = t; recount() end)
+                ti.Size = UDim2.new(1, -102, 0, 26)
+                local r3 = vlist(card, 2, 3)
+                configCheckbox(r3, "Needs a Humanoid", rule.humanoid == true, function(v) rule.humanoid = v; recount() end)
+                configCheckbox(r3, "Enabled", rule.on ~= false, function(v) rule.on = v; recount() end)
+                recount()
+            end
+            if #st.AutoRules == 0 then hintRow(autoBox, "No auto-add rules yet.", 0) end
+        end
+        iconTextBtn(autoAdd, "plus", "Auto-Add Rule", function()
+            st.AutoRules[#st.AutoRules + 1] = { match = "contains", value = "", take = "Auto", inside = "", humanoid = false, on = true }
+            drawAuto()
+        end, 0)
+        drawAuto()
         hintRow(right, "Rules read a value off each model (child .Value, attribute, or property):", 0)
         local ruleBox = vlist(right, 4, 0)
         local addRow = hrow(right, 26, 0)
@@ -29841,6 +30017,7 @@ local function buildManager(host)
                     function(v) rule.src = v end)
                 dd.frame.Size = UDim2.fromOffset(96, 26)
                 dd.frame.LayoutOrder = 0
+                NPC._flatDD(dd)
                 local ti = textInput(body, "key / name", rule.key, 1, function(t) rule.key = t end)
                 ti.Size = UDim2.new(1, -102, 0, 26)
             end
