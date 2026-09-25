@@ -33258,7 +33258,7 @@ end)()
 -- v0.90.0 MEDIA window (the dock's music slot): a mini-player for local music. Audio
 -- files dropped in the executor workspace folder "Koffee-music" play through a local
 -- Sound; a same-named .lrc beside a track shows synced lyrics (word tags = karaoke).
-Koffee.Media = { Volume = 0.5, Repeat = "All", Shuffle = false, Last = "", Lyrics = true, List = false }
+Koffee.Media = { Level = 0.2, Repeat = "All", Shuffle = false, Last = "", Lyrics = true, List = false }
 registerConfig("media", Koffee.Media)
 ;(function()
     local WM = Koffee.Windows
@@ -33465,7 +33465,17 @@ registerConfig("media", Koffee.Media)
         return list
     end
 
-    local sound = KID.track(new("Sound", { Name = KID.name("media"), Volume = MC.Volume, Parent = game:GetService("SoundService") }))
+    local group = KID.track(new("SoundGroup", { Name = KID.name("mediag"), Volume = 1, Parent = game:GetService("SoundService") }))
+    local sound = KID.track(new("Sound", { Name = KID.name("media"), Volume = 0.5, SoundGroup = group,
+        Parent = game:GetService("SoundService") }))
+    -- the slider runs on a cube so the low end is fine-grained and the top end goes
+    -- far past normal: 0.2 is about 0.8, the max is 100 (sound 10 x group 10)
+    local function gainOf(x) return 100 * math.clamp(x or 0, 0, 1) ^ 3 end
+    local function applyGain()
+        local g = gainOf(MC.Level)
+        sound.Volume = math.min(g, 10)
+        group.Volume = g > 10 and g / 10 or 1
+    end
     M.sound = sound
 
     -- :: window ::
@@ -33556,7 +33566,11 @@ registerConfig("media", Koffee.Media)
         BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 42, 0.5, 0),
         Size = UDim2.new(1, -60, 0, 4), Parent = vol }, { pillCorner() })
     local vfill = new("Frame", { BackgroundColor3 = Palette.TextMuted, BorderSizePixel = 0,
-        Size = UDim2.fromScale(MC.Volume, 1), Parent = vtrack }, { pillCorner() })
+        Size = UDim2.fromScale(MC.Level, 1), Parent = vtrack }, { pillCorner() })
+    vtrack.Size = UDim2.new(1, -96, 0, 4)
+    local volLbl = new("TextLabel", { BackgroundTransparency = 1, Text = "", FontFace = Theme.Fonts.Mono, TextSize = 11,
+        TextColor3 = Palette.TextFaint, TextXAlignment = Enum.TextXAlignment.Right, AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -14, 0.5, 0), Size = UDim2.fromOffset(36, 14), Parent = vol })
 
     -- lyrics: every line is its own label in a strip that glides so the sung line
     -- stays centred; the sung line fills word by word when the .lrc has word tags
@@ -33624,10 +33638,10 @@ registerConfig("media", Koffee.Media)
         noLyr.Text = ""
         for i, l in ipairs(lines) do
             local lbl = new("TextLabel", { BackgroundTransparency = 1, Text = l.text ~= "" and l.text or "...",
-                FontFace = Theme.Fonts.Bold, TextSize = 15, TextColor3 = Palette.Text, TextTransparency = 0.6,
+                FontFace = Theme.Fonts.Bold, TextScaled = true, TextWrapped = false, TextColor3 = Palette.Text, TextTransparency = 0.6,
                 AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, (i - 1) * LINE_H),
-                AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, LINE_H), Parent = strip },
-                { new("UIScale", {}), new("UIGradient", { Enabled = false }) })
+                Size = UDim2.new(1, -20, 0, LINE_H - 4), Parent = strip },
+                { new("UITextSizeConstraint", { MaxTextSize = 15, MinTextSize = 9 }), new("UIGradient", { Enabled = false }) })
             M.lineLbls[i] = lbl
         end
         strip.Size = UDim2.new(1, 0, 0, #lines * LINE_H)
@@ -33669,7 +33683,7 @@ registerConfig("media", Koffee.Media)
         shufIc.ImageColor3 = MC.Shuffle and Palette.Accent or Palette.TextMuted
         setIcon(repIc, MC.Repeat == "One" and "repeat-1" or "repeat")
         repIc.ImageColor3 = MC.Repeat == "Off" and Palette.TextMuted or Palette.Accent
-        setIcon(volIc, MC.Volume <= 0.001 and "volume-x" or "volume-2")
+        setIcon(volIc, MC.Level <= 0.001 and "volume-x" or "volume-2")
         lyrIc.ImageColor3 = lyricsShown() and Palette.Text or Palette.TextMuted
         listIc.ImageColor3 = MC.List and Palette.Text or Palette.TextMuted
         lyrWrap.Visible = lyricsShown()
@@ -33797,9 +33811,9 @@ registerConfig("media", Koffee.Media)
     info.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then setInfo(false) end
     end)
-    local lastVol = MC.Volume > 0 and MC.Volume or 0.5
+    local lastVol = MC.Level > 0 and MC.Level or 0.2
     volBtn.MouseButton1Click:Connect(function()
-        if MC.Volume > 0.001 then lastVol = MC.Volume; MC.Volume = 0 else MC.Volume = lastVol end
+        if MC.Level > 0.001 then lastVol = MC.Level; MC.Level = 0 else MC.Level = lastVol end
         paintState()
     end)
 
@@ -33813,7 +33827,7 @@ registerConfig("media", Koffee.Media)
         if dragging == track then
             if sound.TimeLength > 0 then sound.TimePosition = fracOn(track) * sound.TimeLength end
         elseif dragging == vtrack then
-            MC.Volume = fracOn(vtrack)
+            MC.Level = fracOn(vtrack)
         end
     end
     track.MouseButton1Down:Connect(function() dragging = track; applyDrag() end)
@@ -33829,11 +33843,15 @@ registerConfig("media", Koffee.Media)
     end)
 
     -- per frame: progress, volume, lyric scroll + karaoke fill
-    local HI, LO = Palette.Text, Color3.fromRGB(110, 110, 120)
+    local LO = Color3.fromRGB(110, 110, 120)
     RunService.RenderStepped:Connect(function(dt)
         if Koffee.dead() then pcall(function() sound:Stop() end); return end
-        sound.Volume = MC.Volume * 1
-        vfill.Size = UDim2.fromScale(MC.Volume, 1)
+        applyGain()
+        vfill.Size = UDim2.fromScale(MC.Level, 1)
+        -- red past 10x as a warning that it is getting very loud
+        local g = gainOf(MC.Level)
+        vfill.BackgroundColor3 = g > 10 and Palette.Danger or (g > 2 and Palette.Accent or Palette.TextMuted)
+        volLbl.Text = g >= 10 and string.format("%dx", math.floor(g + 0.5)) or string.format("%.1fx", g)
         if not root.Visible then infoOpen, infoY = false, -24; info.Visible = false; return end
         if info.Visible then
             local k = math.min(dt * 11, 1)
@@ -33870,15 +33888,15 @@ registerConfig("media", Koffee.Media)
         local target = LYR_H / 2 - LINE_H / 2 - (math.max(cur, 1) - 1) * LINE_H
         local y = strip.Position.Y.Offset
         strip.Position = UDim2.fromOffset(0, y + (target - y) * math.min(dt * 10, 1))
-        local maxW = lyr.AbsoluteSize.X - 20
         for i, lbl in ipairs(M.lineLbls) do
             local d = math.abs(i - cur)
             local lit = i == cur and not gap and not M.unsynced
-            local sc = lbl:FindFirstChildOfClass("UIScale")
-            local tb = lbl.TextBounds.X
-            local fit = (tb > 0 and maxW > 0) and math.min(1, maxW / tb) or 1
-            sc.Scale = fit * (lit and 1.06 or 1)
-            lbl.TextTransparency = lit and 0 or math.clamp(0.45 + math.max(d, 1) * 0.15, 0, 0.9)
+            -- only touch a line when its look changes; rewriting every line every
+            -- frame is what made the lyrics shimmer
+            local tt = lit and 0 or math.clamp(0.45 + math.max(d, 1) * 0.15, 0, 0.9)
+            -- untimed lyrics: the line the song is roughly at still reads clearly
+            if M.unsynced and i == cur then tt = 0.15 end
+            if lbl.TextTransparency ~= tt then lbl.TextTransparency = tt end
             local g = lbl:FindFirstChildOfClass("UIGradient")
             local l = lines[i]
             if lit and l.words and #l.words > 0 then
@@ -33892,13 +33910,17 @@ registerConfig("media", Koffee.Media)
                     if pos >= wEnd then done += n
                     elseif pos > wd.t then done += n * math.clamp((pos - wd.t) / math.max(wEnd - wd.t, 0.05), 0, 1) end
                 end
-                local p = total > 0 and math.clamp(done / total, 0.001, 0.998) or 0.001
+                -- the gradient spans the label box; map the sung share onto the
+                -- centred text itself
+                local bw, tb = lbl.AbsoluteSize.X, lbl.TextBounds.X
+                local frac = total > 0 and done / total or 0
+                if bw > 0 and tb > 0 then frac = ((bw - tb) / 2 + frac * tb) / bw end
+                local p = math.clamp(frac, 0.001, 0.998)
                 g.Enabled = true
                 g.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Palette.Accent), ColorSequenceKeypoint.new(p, Palette.Accent),
                     ColorSequenceKeypoint.new(math.min(p + 0.001, 0.999), LO), ColorSequenceKeypoint.new(1, LO) })
-            else
+            elseif g.Enabled then
                 g.Enabled = false
-                lbl.TextColor3 = HI
             end
         end
     end)
