@@ -2085,13 +2085,14 @@ end)()
 -- v0.85.0 DETAILS WIDGET: drag the details bar out of the strip (menu open) and it
 -- pops into a larger floating card that stays up with the menu closed. Dragging it
 -- near its old slot lights the slot; dropping there docks it back. State persists.
-Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.85.0 configs below
+Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3 }   -- registered with the v0.85.0 configs below
 ;(function()
     local D = Koffee.Details
     local W = statsWidget
     local home = W.Parent
     local homeOrder = W.LayoutOrder
-    local SCALE, NEAR = 1.3, 70
+    local GS = game:GetService("GuiService")
+    local function scaleOf() return math.max(tonumber(D.Scale) or 1.3, 0.4) end
     local A = Theme.Palette.Accent
     local ui = new("UIScale", { Scale = 1, Parent = W })
     local cr = W:FindFirstChildOfClass("UICorner")
@@ -2137,7 +2138,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
         W.Parent = float
         style(true)
         ui.Scale = 1
-        TweenService:Create(ui, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = SCALE }):Play()
+        TweenService:Create(ui, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = scaleOf() }):Play()
     end
     local function dockNow()
         docked = true
@@ -2163,22 +2164,63 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
         end)
     end
     local goal = Vector2.new(D.X, D.Y)
+    local lastMouse = Vector2.zero
+    -- mouse space to AbsolutePosition space (the documented inset offset)
+    local function mouseAbs() return lastMouse - GS:GetGuiInset() end
+    -- docking reads the cursor against the highlighted slot itself (plus a little slack)
     local function nearSlot()
         if not slot.Visible then return false end
-        return ((probe.AbsolutePosition + goal) - slot.AbsolutePosition).Magnitude < NEAR
+        local m, a, z = mouseAbs(), slot.AbsolutePosition, slot.AbsoluteSize
+        return m.X >= a.X - 10 and m.X <= a.X + z.X + 10 and m.Y >= a.Y - 10 and m.Y <= a.Y + z.Y + 10
     end
+    -- resize grip: bottom-right corner of the floating card, no upper limit
+    local grip = new("Frame", {
+        AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -3, 1, -3), Size = UDim2.fromOffset(10, 10),
+        BackgroundTransparency = 1, ZIndex = 26, Parent = float,
+    })
+    for i = 1, 2 do
+        new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5 + i * 0.12, 0, 0.5 + i * 0.12, 0),
+            Size = UDim2.fromOffset(i * 6, 1.5), Rotation = -45, BackgroundColor3 = Theme.Palette.Text,
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 27, Parent = grip,
+        })
+    end
+    local function gripShown(a)
+        for _, l in ipairs(grip:GetChildren()) do l.BackgroundTransparency = a end
+    end
+    local function overGrip()
+        if docked then return false end
+        local m = mouseAbs()
+        local br = W.AbsolutePosition + W.AbsoluteSize
+        return m.X >= br.X - 16 and m.X <= br.X + 4 and m.Y >= br.Y - 16 and m.Y <= br.Y + 4
+    end
+    local resizing, rsFrom, rsScale, rsSize = false, nil, 1, nil
 
     local press, grabFrom, dragging = nil, nil, false
     W.InputBegan:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseButton1 or Koffee.dead() then return end
         local WM = Koffee.Windows
         if WM and WM.primaryOpen and not WM.primaryOpen() then return end
+        lastMouse = UserInputService:GetMouseLocation()
+        if overGrip() then
+            resizing, rsFrom, rsScale, rsSize = true, lastMouse, ui.Scale, W.AbsoluteSize
+            return
+        end
         press = UserInputService:GetMouseLocation()
         grabFrom = W.AbsolutePosition
     end)
     UserInputService.InputChanged:Connect(function(input)
-        if not press or input.UserInputType ~= Enum.UserInputType.MouseMovement or Koffee.dead() then return end
-        local m = UserInputService:GetMouseLocation()
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement or Koffee.dead() then return end
+        lastMouse = UserInputService:GetMouseLocation()
+        if resizing then
+            local d = lastMouse - rsFrom
+            local f = 1 + (d.X / math.max(rsSize.X, 1) + d.Y / math.max(rsSize.Y, 1)) / 2
+            local sc = math.max(rsScale * f, 0.4)
+            ui.Scale, D.Scale = sc, sc
+            return
+        end
+        if not press then return end
+        local m = lastMouse
         if not dragging then
             if (m - press).Magnitude < 5 then return end
             dragging = true
@@ -2186,7 +2228,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
             slot.Visible = true
             grabFrom = float.AbsolutePosition
             press = m
-            TweenService:Create(ui, TweenInfo.new(0.15, Enum.EasingStyle.Quad), { Scale = SCALE * 1.04 }):Play()
+            TweenService:Create(ui, TweenInfo.new(0.15, Enum.EasingStyle.Quad), { Scale = scaleOf() * 1.04 }):Play()
         end
         -- mouse delta since the grab (inset cancels); the follow loop eases toward it
         goal = toOffset(grabFrom + (m - press))
@@ -2196,6 +2238,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
     end)
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        resizing = false
         local was = dragging
         press, dragging = nil, false
         if not was or Koffee.dead() then return end
@@ -2204,7 +2247,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
         else
             slot.Visible = false
             D.X, D.Y = math.floor(goal.X + 0.5), math.floor(goal.Y + 0.5)
-            TweenService:Create(ui, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = SCALE }):Play()
+            TweenService:Create(ui, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = scaleOf() }):Play()
         end
     end)
     -- one follow loop for dragging, settling and config loads: eases toward the goal
@@ -2223,6 +2266,10 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
             goal = Vector2.new(D.X, D.Y)
         end
         if docked then return end
+        -- grip fades in while the cursor is near the corner (or mid-resize)
+        local WM = Koffee.Windows
+        local open = not (WM and WM.primaryOpen) or WM.primaryOpen()
+        gripShown((open and (resizing or overGrip())) and 0.1 or 1)
         local p = float.Position
         local cur = Vector2.new(p.X.Offset, p.Y.Offset)
         local d = goal - cur
@@ -13964,6 +14011,12 @@ local Combat = {
                 function(v) Combat.HitEffects.Hit.Attach = v end)
             popup:toggle("Flash Target", Combat.HitEffects.Hit.Flash ~= false,
                 function(v) Combat.HitEffects.Hit.Flash = v end)
+            popup:dropdown("Color Mode", Shared.FX_COLOR_MODES, Combat.HitEffects.Hit.ColorMode or "Static",
+                function(v) Combat.HitEffects.Hit.ColorMode = v end)
+            popup:swatch("Color 2", Combat.HitEffects.Hit.Color2 or Combat.HitEffects.Hit.Color,
+                function(c) Combat.HitEffects.Hit.Color2 = c end)
+            popup:slider("Color Speed", 0.05, 4, Combat.HitEffects.Hit.ColorSpeed or 0.5, 2,
+                function(v) Combat.HitEffects.Hit.ColorSpeed = v end)
         end)
         local heKillRow = configCheckbox(soundCard, "Kill Effect", Combat.HitEffects.Kill.Enabled,
             function(v) Combat.HitEffects.Kill.Enabled = v end)
@@ -13978,6 +14031,12 @@ local Combat = {
                 function(v) Combat.HitEffects.Kill.Attach = v end)
             popup:toggle("Flash Target", Combat.HitEffects.Kill.Flash ~= false,
                 function(v) Combat.HitEffects.Kill.Flash = v end)
+            popup:dropdown("Color Mode", Shared.FX_COLOR_MODES, Combat.HitEffects.Kill.ColorMode or "Static",
+                function(v) Combat.HitEffects.Kill.ColorMode = v end)
+            popup:swatch("Color 2", Combat.HitEffects.Kill.Color2 or Combat.HitEffects.Kill.Color,
+                function(c) Combat.HitEffects.Kill.Color2 = c end)
+            popup:slider("Color Speed", 0.05, 4, Combat.HitEffects.Kill.ColorSpeed or 0.5, 2,
+                function(v) Combat.HitEffects.Kill.ColorSpeed = v end)
         end)
 
         -- :: RIGHT COLUMN ::
@@ -17348,11 +17407,14 @@ end)()
             or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
         if not (victim and victim:IsA("BasePart")) then return end
         local kill = Shared.Combat and cfg == Shared.Combat.HitEffects.Kill
-        local color = cfg.Color or WHITE
+        local color = Shared.fxColor and Shared.fxColor(cfg, 0) or cfg.Color or WHITE
+        local mode = cfg.ColorMode or "Static"
         local fx = {
             char = char, victim = victim, pos = victim.Position,
             ground = groundUnder(char, (char:FindFirstChild("HumanoidRootPart") or victim).Position),
-            color = color, accent = color:Lerp(WHITE, 0.45),
+            color = color,
+            accent = (mode == "Gradient" and cfg.Color2) or (mode ~= "Static" and Shared.fxColor(cfg, 0.35))
+                or color:Lerp(WHITE, 0.45),
             s = math.max(cfg.Scale or 1, 0.05), dur = math.max(cfg.Duration or 0.35, 0.05), kill = kill,
         }
         if cfg.Flash ~= false then flash(char, color, math.clamp(fx.dur * (kill and 1.2 or 1), 0.2, 1.2)) end
@@ -17414,6 +17476,35 @@ Koffee.SelfFX = {
     HUD    = { Source = "Locked", Anchor = "Target" },
 }
 registerConfig("self_fx", Koffee.SelfFX)
+
+-- v0.85.0 colour modes for the new visuals. Any cfg with Color / Color2 /
+-- ColorMode / ColorSpeed works; phase fans parts of one effect across the ramp.
+Shared.FX_COLOR_MODES = { "Static", "Gradient", "Rainbow", "Pulse" }
+function Shared.fxColor(cfg, phase)
+    local m, c1 = cfg.ColorMode or "Static", cfg.Color or Color3.new(1, 1, 1)
+    local sp, ph = cfg.ColorSpeed or 0.5, phase or 0
+    if m == "Rainbow" then
+        return Color3.fromHSV((os.clock() * sp * 0.5 + ph) % 1, 0.7, 1)
+    elseif m == "Gradient" then
+        local t = (os.clock() * sp * 0.5 + ph) % 1
+        local f = t < 0.5 and t * 2 or (1 - t) * 2
+        return c1:Lerp(cfg.Color2 or c1, f)
+    elseif m == "Pulse" then
+        return c1:Lerp(Color3.new(1, 1, 1), (math.sin(os.clock() * sp * 6 + ph * 6.28) + 1) * 0.3)
+    end
+    return c1
+end
+-- a ramp for things that take a ColorSequence (trails): samples the mode at spread phases
+function Shared.fxSequence(cfg)
+    local m = cfg.ColorMode or "Static"
+    if m == "Static" then
+        return ColorSequence.new(cfg.Color, cfg.Color2 or cfg.Color)
+    end
+    local k = {}
+    for i = 0, 4 do k[#k + 1] = ColorSequenceKeypoint.new(i / 4, Shared.fxColor(cfg, i * 0.12)) end
+    return ColorSequence.new(k)
+end
+
 ;(function()
     local FX = Koffee.SelfFX
     local WHITE = Color3.new(1, 1, 1)
@@ -17423,6 +17514,7 @@ registerConfig("self_fx", Koffee.SelfFX)
         local c = myChar()
         return c and c:FindFirstChild("HumanoidRootPart")
     end
+    local col = Shared.fxColor
 
     -- :: jump circles + landing ::
     local JUMP_TEX = { Rune = "fx_rune", Ring = "fx_ring", Wave = "fx_wave" }
@@ -17433,20 +17525,20 @@ registerConfig("self_fx", Koffee.SelfFX)
         local g = h.groundUnder(c, r.Position)
         local sz = math.max(cfg.Size or 4, 0.5)
         local dur = math.max(cfg.Duration or 1.1, 0.2)
-        h.groundRing(g, JUMP_TEX[cfg.Style] or "fx_rune", cfg.Color, 0.25 * sz, sz, dur, 1.5, 0, 0.3)
-        h.groundRing(g, "fx_glow", cfg.Color, 0.2 * sz, 0.55 * sz, dur * 0.6, 0, 0, 0.4)
+        h.groundRing(g, JUMP_TEX[cfg.Style] or "fx_rune", col(cfg, 0), 0.25 * sz, sz, dur, 1.5, 0, 0.3)
+        h.groundRing(g, "fx_glow", col(cfg, 0.35), 0.2 * sz, 0.55 * sz, dur * 0.6, 0, 0, 0.4)
     end
     local function landFx(air)
         local h, c, r = H(), myChar(), myRoot()
-        local mode = FX.Jump.Land
-        if not (h and c and r) or mode == "Off" then return end
+        local cfg = FX.Jump
+        if not (h and c and r) or cfg.Land == "Off" then return end
         local g = h.groundUnder(c, r.Position)
         local s = math.clamp(0.7 + air * 0.6, 0.7, 2)
-        if mode == "Bubble" then
+        if cfg.Land == "Bubble" then
             local anchor = { Parent = true, Position = g + Vector3.new(0, 1.4 * s, 0) }
-            h.popRing(anchor, "fx_wave", FX.Jump.Color:Lerp(WHITE, 0.4), 0.4 * s, 2.3 * s, 0.5)
+            h.popRing(anchor, "fx_wave", col(cfg, 0.2):Lerp(WHITE, 0.4), 0.4 * s, 2.3 * s, 0.5)
         end
-        h.groundRing(g, "fx_wave", FX.Jump.Color, 0.3 * s, 3.2 * s, 0.55, 0, 0, 0.8)
+        h.groundRing(g, "fx_wave", col(cfg, 0.5), 0.3 * s, 3.2 * s, 0.55, 0, 0, 0.8)
     end
     local jumpConn
     local function bindJump(char)
@@ -17475,59 +17567,144 @@ registerConfig("self_fx", Koffee.SelfFX)
         if Modules.selffx_jump.Enabled and not Koffee.dead() then bindJump(c) end
     end)
 
-    -- :: trail :: a camera-hosted part follows the root; the Trail rides its two
-    -- attachments, so nothing is parented into the character.
+    -- :: trail :: camera-hosted parts follow the root, so nothing is parented into
+    -- the character. Styles: Ribbon, Helix (two ribbons spiralling), Comet (glowing
+    -- head + long taper), Afterimage (fading body copies), Sparkles, Stars, Hearts.
     local trail = {}
-    local function trailBuild()
-        local h = H()
-        if not h or trail.host then return end
-        local p = h.part()
-        p.Transparency = 1; p.Size = Vector3.new(0.2, 0.2, 0.2)
-        local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
-        a0.Parent, a1.Parent = p, p
+    local PARTICLE = { Sparkles = "fx_twinkle", Stars = "fx_star", Hearts = "fx_heart" }
+    local function mkTrail(p, a0, a1)
         local t = Instance.new("Trail")
         t.Attachment0, t.Attachment1 = a0, a1
         t.FaceCamera = true
         t.LightEmission = 1
         t.LightInfluence = 0
-        -- solid ribbon: a stretched glow texture left it nearly invisible
-        t.WidthScale = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0.15) })
         t.Parent = p
+        return t
+    end
+    local function trailBuild()
+        local h = H()
+        if not h or trail.host then return end
+        local p = h.part()
+        p.Transparency = 1; p.Size = Vector3.new(0.2, 0.2, 0.2)
+        local a = {}
+        for i = 1, 4 do a[i] = Instance.new("Attachment"); a[i].Parent = p end
+        local t1, t2 = mkTrail(p, a[1], a[2]), mkTrail(p, a[3], a[4])
         local em = Instance.new("ParticleEmitter")
-        em.Texture = h.tex("fx_twinkle")
         em.LightEmission = 1; em.LightInfluence = 0; em.LockedToPart = false
-        em.Speed = NumberRange.new(0.3, 1.2); em.SpreadAngle = Vector2.new(180, 180)
-        em.Rotation = NumberRange.new(0, 360); em.RotSpeed = NumberRange.new(-60, 60)
+        em.SpreadAngle = Vector2.new(180, 180)
+        em.Rotation = NumberRange.new(0, 360)
         em.Parent = p
-        trail = { host = p, a0 = a0, a1 = a1, t = t, em = em, sig = nil }
+        local head, headImg, headBb = h.bill("fx_glow", WHITE)
+        trail = { host = p, a = a, t1 = t1, t2 = t2, em = em, head = head, headImg = headImg, headBb = headBb,
+                  sig = nil, ghostAt = 0 }
     end
     local function trailDrop()
-        if trail.host then H().drop(trail.host) end
+        local h = H()
+        if trail.host and h then h.drop(trail.host) end
+        if trail.head and h then h.drop(trail.head) end
         trail = {}
     end
+    -- afterimage: anchored copies of your visible parts, fading out in place
+    local function ghost(cfg, char)
+        local h = H()
+        local pieces = {}
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" and p.Transparency < 0.95
+                and not p:FindFirstAncestorOfClass("Accessory") and not p:FindFirstAncestorOfClass("Tool") and #pieces < 18 then
+                local c
+                pcall(function()
+                    local was = p.Archivable
+                    p.Archivable = true
+                    c = p:Clone()
+                    p.Archivable = was
+                end)
+                if c then
+                    for _, ch in ipairs(c:GetChildren()) do
+                        if not ch:IsA("DataModelMesh") then ch:Destroy() end
+                    end
+                    c.Anchored = true; c.CanCollide = false; c.CastShadow = false
+                    pcall(function() c.CanQuery = false; c.CanTouch = false; c.TextureID = "" end)
+                    c.Material = Enum.Material.ForceField
+                    c.Color = col(cfg, 0)
+                    c.Transparency = 0.25
+                    c.CFrame = p.CFrame
+                    c.Name = KID.name("ai")
+                    c.Parent = Workspace.CurrentCamera
+                    pieces[#pieces + 1] = c
+                end
+            end
+        end
+        local life = math.max(cfg.Life or 0.45, 0.1)
+        h.anim(life, function(k)
+            for _, g in ipairs(pieces) do g.Transparency = 0.25 + 0.75 * k end
+        end, pieces)
+    end
     local function trailStep()
-        local r = myRoot()
+        local r, c = myRoot(), myChar()
         if not trail.host then trailBuild() end
-        if not (trail.host and r) then return end
+        if not (trail.host and r and c) then return end
         local cfg = FX.Trail
-        local sig = table.concat({ cfg.Style, tostring(cfg.Color), tostring(cfg.Color2), cfg.Life, cfg.Width, tostring(cfg.Sparkles) }, "|")
+        local style = cfg.Style or "Ribbon"
+        local w = math.max(cfg.Width or 1, 0.1)
+        local life = math.max(cfg.Life or 0.45, 0.05)
+        local sig = table.concat({ style, cfg.Life, w, tostring(cfg.Sparkles), tostring(cfg.ColorMode) }, "|")
         if sig ~= trail.sig then
             trail.sig = sig
-            local w = math.max(cfg.Width or 1, 0.1)
-            trail.a0.Position = Vector3.new(0, w / 2, 0)
-            trail.a1.Position = Vector3.new(0, -w / 2, 0)
-            trail.t.Lifetime = math.max(cfg.Life or 0.45, 0.05)
-            trail.t.Color = ColorSequence.new(cfg.Color, cfg.Color2 or cfg.Color)
-            trail.t.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.25),
-                NumberSequenceKeypoint.new(0.6, 0.6), NumberSequenceKeypoint.new(1, 1) })
-            trail.t.Enabled = cfg.Style ~= "Sparkles"
-            trail.em.Enabled = cfg.Sparkles or cfg.Style == "Sparkles"
-            trail.em.Rate = cfg.Style == "Sparkles" and 40 or 16
-            trail.em.Lifetime = NumberRange.new(0.4, 0.9)
-            trail.em.Color = ColorSequence.new(cfg.Color2 or cfg.Color)
-            trail.em.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.5 * w), NumberSequenceKeypoint.new(1, 0) })
+            local ribbon = style == "Ribbon" or style == "Helix" or style == "Comet"
+            trail.t1.Enabled = ribbon
+            trail.t2.Enabled = style == "Helix"
+            for _, t in ipairs({ trail.t1, trail.t2 }) do
+                t.Lifetime = style == "Comet" and life * 1.6 or life
+                t.WidthScale = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1),
+                    NumberSequenceKeypoint.new(1, style == "Comet" and 0 or 0.15) })
+                t.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, style == "Comet" and 0.05 or 0.25),
+                    NumberSequenceKeypoint.new(0.6, 0.6), NumberSequenceKeypoint.new(1, 1) })
+            end
+            local tex = PARTICLE[style] or (cfg.Sparkles and ribbon and "fx_twinkle")
+            trail.em.Enabled = tex ~= nil and tex ~= false
+            if trail.em.Enabled then
+                trail.em.Texture = H().tex(tex)
+                local big = style == "Hearts" or style == "Stars"
+                trail.em.Rate = (PARTICLE[style] and 34) or 16
+                trail.em.Lifetime = NumberRange.new(life * 1.2, life * 2.2)
+                trail.em.Speed = NumberRange.new(big and 1 or 0.3, big and 2.5 or 1.2)
+                trail.em.Acceleration = Vector3.new(0, style == "Hearts" and 2.5 or 0, 0)
+                trail.em.RotSpeed = NumberRange.new(-60, 60)
+                trail.em.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, (big and 0.7 or 0.5) * w),
+                    NumberSequenceKeypoint.new(1, 0) })
+            end
+        end
+        -- per-frame: colours (animated modes) and attachment geometry
+        trail.t1.Color = Shared.fxSequence(cfg)
+        trail.t2.Color = Shared.fxSequence({ Color = cfg.Color2 or cfg.Color, Color2 = cfg.Color,
+            ColorMode = cfg.ColorMode, ColorSpeed = cfg.ColorSpeed })
+        if trail.em.Enabled then trail.em.Color = ColorSequence.new(col(cfg, 0.25), col(cfg, 0.6)) end
+        local now = os.clock()
+        if style == "Helix" then
+            local ang = now * 9
+            local rr, th = w * 0.55, Vector3.new(0, w * 0.16, 0)   -- strand radius and thickness
+            local o1 = Vector3.new(math.cos(ang) * rr, math.sin(ang) * rr, 0)
+            trail.a[1].Position, trail.a[2].Position = o1 + th, o1 - th
+            trail.a[3].Position, trail.a[4].Position = -o1 + th, -o1 - th
+        else
+            local ww = style == "Comet" and w * 1.4 or w
+            trail.a[1].Position, trail.a[2].Position = Vector3.new(0, ww / 2, 0), Vector3.new(0, -ww / 2, 0)
         end
         trail.host.CFrame = r.CFrame * CFrame.new(0, -0.4, 0.6)
+        -- comet head: a soft glow riding the host, only while moving
+        local moving = r.AssemblyLinearVelocity.Magnitude > 2
+        if style == "Comet" then
+            trail.head.CFrame = trail.host.CFrame
+            trail.headBb.Size = UDim2.fromScale(w * 2.4, w * 2.4)
+            trail.headImg.ImageColor3 = col(cfg, 0):Lerp(WHITE, 0.4)
+            trail.headImg.ImageTransparency = moving and 0.1 or 0.6
+        else
+            trail.headImg.ImageTransparency = 1
+        end
+        if style == "Afterimage" and moving and now - trail.ghostAt > 0.07 then
+            trail.ghostAt = now
+            ghost(cfg, c)
+        end
     end
     registerModule("selffx_trail", "Trail", function() end, function() trailDrop() end)
 
@@ -17586,10 +17763,12 @@ registerConfig("self_fx", Koffee.SelfFX)
         local base = CFrame.new(top.Position) * CFrame.fromOrientation(0, select(2, top:ToOrientation()), 0)
         local rad, ht = math.max(cfg.Radius or 1.7, 0.3), math.max(cfg.Height or 0.8, 0.1)
         local rough = math.clamp(math.floor(cfg.Roughness or 0), 0, 8)
+        local alpha = firstPerson and 1 or (cfg.Alpha or 0.35)
         hat.cone.Radius = rad
         hat.cone.Height = ht
-        hat.cone.Color3 = cfg.Color
-        hat.cone.Transparency = (firstPerson or rough > 0) and 1 or (cfg.Alpha or 0.35)
+        hat.cone.Color3 = col(cfg, 0)
+        hat.cone.Transparency = (firstPerson or rough > 0) and 1 or alpha
+        hat.cone.CFrame = base * CFrame.Angles(math.pi / 2, 0, 0)   -- origin is the base, apex runs +Z: +90 on X points it up (tested)
         -- roughness N: a low-poly cone of 2 + 2N flat facets, alternately shaded
         if rough == 0 then
             if hat.facets then facetsDrop() end
@@ -17606,22 +17785,21 @@ registerConfig("self_fx", Koffee.SelfFX)
             end
             local apex = (base * CFrame.new(0, ht, 0)).Position
             local spin = select(2, base:ToOrientation())
-            local alpha = firstPerson and 1 or (cfg.Alpha or 0.35)
             for i, f in ipairs(hat.facets) do
                 local a0 = spin + (i - 1) / sides * math.pi * 2
                 local a1 = spin + i / sides * math.pi * 2
                 local p0 = base.Position + Vector3.new(math.cos(a0) * rad, 0, math.sin(a0) * rad)
                 local p1 = base.Position + Vector3.new(math.cos(a1) * rad, 0, math.sin(a1) * rad)
                 tri(apex, p0, p1, f[1], f[2])
-                local shade = (i % 2 == 0) and cfg.Color or cfg.Color:Lerp(Color3.new(0, 0, 0), 0.22)
+                local fc = col(cfg, (i - 1) / sides)
+                local shade = (i % 2 == 0) and fc or fc:Lerp(Color3.new(0, 0, 0), 0.22)
                 f[1].Color, f[2].Color = shade, shade
                 f[1].Transparency, f[2].Transparency = alpha, alpha
             end
         end
-        hat.cone.CFrame = base * CFrame.Angles(math.pi / 2, 0, 0)   -- origin is the base, apex runs +Z: +90 on X points it up (tested)
         hat.rim.Size = Vector3.new(rad * 2.1, 0.05, rad * 2.1)
         hat.rim.CFrame = base * CFrame.new(0, 0.02, 0)
-        hat.rimImg.ImageColor3 = cfg.Color:Lerp(WHITE, 0.35)
+        hat.rimImg.ImageColor3 = col(cfg, 0.5):Lerp(WHITE, 0.35)
         hat.rimImg.ImageTransparency = (firstPerson or not cfg.Rim) and 1 or 0.1
     end
     registerModule("selffx_hat", "China Hat", function() end, function() hatDrop() end)
@@ -17697,7 +17875,7 @@ registerConfig("self_fx", Koffee.SelfFX)
             mk.ring1.CFrame = CFrame.new(g) * CFrame.Angles(0, now * 0.9 * spd, 0)
             mk.ring2.Size = Vector3.new(3.2 * sz, 0.05, 3.2 * sz)
             mk.ring2.CFrame = CFrame.new(g + Vector3.new(0, 0.01, 0)) * CFrame.Angles(0, -now * 1.6 * spd, 0)
-            mk.img1.ImageColor3, mk.img2.ImageColor3 = cfg.Color, cfg.Color:Lerp(WHITE, 0.4)
+            mk.img1.ImageColor3, mk.img2.ImageColor3 = col(cfg, 0), col(cfg, 0.5):Lerp(WHITE, 0.4)
             mk.img1.ImageTransparency, mk.img2.ImageTransparency = 0.05, 0.2
         else
             for i, sp in ipairs(mk.sprites or {}) do
@@ -17710,7 +17888,8 @@ registerConfig("self_fx", Koffee.SelfFX)
                     sp.p.CFrame = CFrame.new(root.Position + off)
                     local d = (i % 2 == 0) and 0.9 or 1.3
                     sp.bb.Size = UDim2.fromScale(d * sz, d * sz)
-                    sp.il.ImageColor3 = (i % 2 == 0) and cfg.Color:Lerp(WHITE, 0.5) or cfg.Color
+                    local cc = col(cfg, (i - 1) / 4)
+                    sp.il.ImageColor3 = (i % 2 == 0) and cc:Lerp(WHITE, 0.5) or cc
                     sp.il.ImageTransparency = (i % 2 == 0) and 0 or 0.15
                 end
             end
@@ -18016,6 +18195,11 @@ addTab("Visuals", function(root)
     -- v0.85.0 Effects: self + target visuals. Own function scope for registers.
     ;(function(fxSub)
         local F = Koffee.SelfFX
+        local function colorOpts(popup, c)
+            popup:dropdown("Color Mode", Shared.FX_COLOR_MODES, c.ColorMode or "Static", function(v) c.ColorMode = v end)
+            popup:swatch("Color 2", c.Color2 or c.Color, function(v) c.Color2 = v end)
+            popup:slider("Color Speed", 0.05, 4, c.ColorSpeed or 0.5, 2, function(v) c.ColorSpeed = v end)
+        end
         local selfPanel = panel(fxSub, "Self")
         local jr = moduleCheckbox(selfPanel, "Jump Circles", "selffx_jump")
         attachSingleSwatch(jr.row, F.Jump.Color, function(c) F.Jump.Color = c end)
@@ -18024,15 +18208,19 @@ addTab("Visuals", function(root)
             popup:slider("Size", 1, 12, F.Jump.Size, 1, function(v) F.Jump.Size = v end)
             popup:slider("Duration", 0.2, 3, F.Jump.Duration, 2, function(v) F.Jump.Duration = v end)
             popup:dropdown("Landing", { "Bubble", "Ring", "Off" }, F.Jump.Land, function(v) F.Jump.Land = v end)
+            colorOpts(popup, F.Jump)
         end)
         local tr = moduleCheckbox(selfPanel, "Trail", "selffx_trail")
         attachDualSwatch(tr.row, F.Trail.Color, F.Trail.Color2,
             function(c) F.Trail.Color = c end, function(c) F.Trail.Color2 = c end)
         rightClickSettings(tr.row, "Trail", function(popup)
-            popup:dropdown("Style", { "Ribbon", "Sparkles" }, F.Trail.Style, function(v) F.Trail.Style = v end)
+            popup:dropdown("Style", { "Ribbon", "Helix", "Comet", "Afterimage", "Sparkles", "Stars", "Hearts" },
+                F.Trail.Style, function(v) F.Trail.Style = v end)
             popup:slider("Lifetime", 0.1, 2, F.Trail.Life, 2, function(v) F.Trail.Life = v end)
             popup:slider("Width", 0.2, 4, F.Trail.Width, 1, function(v) F.Trail.Width = v end)
-            popup:toggle("Sparkles", F.Trail.Sparkles, function(v) F.Trail.Sparkles = v end)
+            popup:toggle("Sparkles On Ribbons", F.Trail.Sparkles, function(v) F.Trail.Sparkles = v end)
+            popup:dropdown("Color Mode", Shared.FX_COLOR_MODES, F.Trail.ColorMode or "Static", function(v) F.Trail.ColorMode = v end)
+            popup:slider("Color Speed", 0.05, 4, F.Trail.ColorSpeed or 0.5, 2, function(v) F.Trail.ColorSpeed = v end)
         end)
         local hr = moduleCheckbox(selfPanel, "China Hat", "selffx_hat")
         attachSingleSwatch(hr.row, F.Hat.Color, function(c) F.Hat.Color = c end)
@@ -18042,6 +18230,7 @@ addTab("Visuals", function(root)
             popup:slider("Transparency", 0, 0.95, F.Hat.Alpha, 2, function(v) F.Hat.Alpha = v end)
             popup:toggle("Glow Rim", F.Hat.Rim, function(v) F.Hat.Rim = v end)
             popup:slider("Roughness", 0, 8, F.Hat.Roughness or 0, 0, function(v) F.Hat.Roughness = math.floor(v) end)
+            colorOpts(popup, F.Hat)
         end)
 
         local tgtPanel = panel(fxSub, "Target")
@@ -18053,6 +18242,7 @@ addTab("Visuals", function(root)
             popup:slider("Speed", 0.2, 4, F.Marker.Speed, 2, function(v) F.Marker.Speed = v end)
             popup:dropdown("Show For", { "Locked", "Best" }, F.Marker.Source, function(v) F.Marker.Source = v end)
             popup:toggle("Through Walls", F.Marker.ThroughWalls, function(v) F.Marker.ThroughWalls = v end)
+            colorOpts(popup, F.Marker)
         end)
         local hu = moduleCheckbox(tgtPanel, "Target HUD", "tgt_hud")
         rightClickSettings(hu.row, "Target HUD", function(popup)
