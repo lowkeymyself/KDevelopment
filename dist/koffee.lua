@@ -14011,12 +14011,6 @@ local Combat = {
                 function(v) Combat.HitEffects.Hit.Attach = v end)
             popup:toggle("Flash Target", Combat.HitEffects.Hit.Flash ~= false,
                 function(v) Combat.HitEffects.Hit.Flash = v end)
-            popup:dropdown("Color Mode", Shared.FX_COLOR_MODES, Combat.HitEffects.Hit.ColorMode or "Static",
-                function(v) Combat.HitEffects.Hit.ColorMode = v end)
-            popup:swatch("Color 2", Combat.HitEffects.Hit.Color2 or Combat.HitEffects.Hit.Color,
-                function(c) Combat.HitEffects.Hit.Color2 = c end)
-            popup:slider("Color Speed", 0.05, 4, Combat.HitEffects.Hit.ColorSpeed or 0.5, 2,
-                function(v) Combat.HitEffects.Hit.ColorSpeed = v end)
         end)
         local heKillRow = configCheckbox(soundCard, "Kill Effect", Combat.HitEffects.Kill.Enabled,
             function(v) Combat.HitEffects.Kill.Enabled = v end)
@@ -14031,12 +14025,6 @@ local Combat = {
                 function(v) Combat.HitEffects.Kill.Attach = v end)
             popup:toggle("Flash Target", Combat.HitEffects.Kill.Flash ~= false,
                 function(v) Combat.HitEffects.Kill.Flash = v end)
-            popup:dropdown("Color Mode", Shared.FX_COLOR_MODES, Combat.HitEffects.Kill.ColorMode or "Static",
-                function(v) Combat.HitEffects.Kill.ColorMode = v end)
-            popup:swatch("Color 2", Combat.HitEffects.Kill.Color2 or Combat.HitEffects.Kill.Color,
-                function(c) Combat.HitEffects.Kill.Color2 = c end)
-            popup:slider("Color Speed", 0.05, 4, Combat.HitEffects.Kill.ColorSpeed or 0.5, 2,
-                function(v) Combat.HitEffects.Kill.ColorSpeed = v end)
         end)
 
         -- :: RIGHT COLUMN ::
@@ -17408,12 +17396,12 @@ end)()
         if not (victim and victim:IsA("BasePart")) then return end
         local kill = Shared.Combat and cfg == Shared.Combat.HitEffects.Kill
         local color = Shared.fxColor and Shared.fxColor(cfg, 0) or cfg.Color or WHITE
-        local mode = cfg.ColorMode or "Static"
+        local G = Koffee.FXGradient
         local fx = {
             char = char, victim = victim, pos = victim.Position,
             ground = groundUnder(char, (char:FindFirstChild("HumanoidRootPart") or victim).Position),
             color = color,
-            accent = (mode == "Gradient" and cfg.Color2) or (mode ~= "Static" and Shared.fxColor(cfg, 0.35))
+            accent = (G and G.Enabled) and (G.Mode == "Gradient" and G.Color2 or Shared.fxColor(cfg, 0.35))
                 or color:Lerp(WHITE, 0.45),
             s = math.max(cfg.Scale or 1, 0.05), dur = math.max(cfg.Duration or 0.35, 0.05), kill = kill,
         }
@@ -17468,7 +17456,7 @@ end)()
 Koffee.SelfFX = {
     Jump   = { Style = "Rune", Color = Color3.fromRGB(217, 150, 95), Size = 4, Duration = 1.1, Land = "Bubble" },
     Trail  = { Style = "Ribbon", Color = Color3.fromRGB(217, 150, 95), Color2 = Color3.fromRGB(255, 236, 200),
-               Life = 0.45, Width = 1.1, Sparkles = true },
+               Life = 0.45, Width = 1.1, Sparkles = true, OffX = 0, OffY = 0 },
     Hat    = { Color = Color3.fromRGB(217, 150, 95), Radius = 1.7, Height = 0.8, Alpha = 0.35, Rim = true,
                Roughness = 0 },
     Marker = { Style = "Orbit", Color = Color3.fromRGB(255, 120, 200), Size = 1, Speed = 1,
@@ -17477,27 +17465,26 @@ Koffee.SelfFX = {
 }
 registerConfig("self_fx", Koffee.SelfFX)
 
--- v0.85.0 colour modes for the new visuals. Any cfg with Color / Color2 /
--- ColorMode / ColorSpeed works; phase fans parts of one effect across the ramp.
-Shared.FX_COLOR_MODES = { "Static", "Gradient", "Rainbow", "Pulse" }
+-- v0.85.0 one shared "Effects Gradient" (ESP tab) drives every new visual when on;
+-- off, each visual keeps its own colour. Phase fans parts of one effect across it.
+Koffee.FXGradient = { Enabled = false, Mode = "Gradient", Color = Color3.fromRGB(120, 180, 255),
+    Color2 = Color3.fromRGB(255, 120, 200), Speed = 0.5 }
+registerConfig("fx_gradient", Koffee.FXGradient)
 function Shared.fxColor(cfg, phase)
-    local m, c1 = cfg.ColorMode or "Static", cfg.Color or Color3.new(1, 1, 1)
-    local sp, ph = cfg.ColorSpeed or 0.5, phase or 0
-    if m == "Rainbow" then
+    local G = Koffee.FXGradient
+    if not G.Enabled then return cfg.Color or Color3.new(1, 1, 1) end
+    local sp, ph, c1 = G.Speed or 0.5, phase or 0, G.Color
+    if G.Mode == "Rainbow" then
         return Color3.fromHSV((os.clock() * sp * 0.5 + ph) % 1, 0.7, 1)
-    elseif m == "Gradient" then
-        local t = (os.clock() * sp * 0.5 + ph) % 1
-        local f = t < 0.5 and t * 2 or (1 - t) * 2
-        return c1:Lerp(cfg.Color2 or c1, f)
-    elseif m == "Pulse" then
+    elseif G.Mode == "Pulse" then
         return c1:Lerp(Color3.new(1, 1, 1), (math.sin(os.clock() * sp * 6 + ph * 6.28) + 1) * 0.3)
     end
-    return c1
+    local t = (os.clock() * sp * 0.5 + ph) % 1
+    return c1:Lerp(G.Color2, t < 0.5 and t * 2 or (1 - t) * 2)
 end
--- a ramp for things that take a ColorSequence (trails): samples the mode at spread phases
+-- a ramp for things that take a ColorSequence (trails)
 function Shared.fxSequence(cfg)
-    local m = cfg.ColorMode or "Static"
-    if m == "Static" then
+    if not Koffee.FXGradient.Enabled then
         return ColorSequence.new(cfg.Color, cfg.Color2 or cfg.Color)
     end
     local k = {}
@@ -17525,8 +17512,29 @@ end
         local g = h.groundUnder(c, r.Position)
         local sz = math.max(cfg.Size or 4, 0.5)
         local dur = math.max(cfg.Duration or 1.1, 0.2)
-        h.groundRing(g, JUMP_TEX[cfg.Style] or "fx_rune", col(cfg, 0), 0.25 * sz, sz, dur, 1.5, 0, 0.3)
-        h.groundRing(g, "fx_glow", col(cfg, 0.35), 0.2 * sz, 0.55 * sz, dur * 0.6, 0, 0, 0.4)
+        local st = cfg.Style
+        if st == "Pulse" then
+            -- three thin rings chasing each other outward
+            for i = 0, 2 do
+                h.groundRing(g, "fx_ring", col(cfg, i * 0.15), 0.2 * sz, sz * (0.75 + i * 0.25), dur * 0.8, 0, i * 0.09, 0.6)
+            end
+        elseif st == "Sparkle" then
+            h.groundRing(g, "fx_ring", col(cfg, 0), 0.2 * sz, 0.8 * sz, dur * 0.7, 0, 0, 0.5)
+            h.twinkles(g + Vector3.new(0, 0.4, 0), col(cfg, 0.3), sz * 0.22, 10, 6)
+        elseif st == "Hearts" then
+            h.burst(g + Vector3.new(0, 0.5, 0), { tex = "fx_heart", color = col(cfg, 0),
+                size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.15, 0.2 * sz),
+                    NumberSequenceKeypoint.new(1, 0.08 * sz) }),
+                life = NumberRange.new(0.6, 1.1), speed = NumberRange.new(4, 8), spread = Vector2.new(40, 40),
+                drag = 2, accel = Vector3.new(0, 4, 0), rot = NumberRange.new(-30, 30), light = 1 }, 8)
+            h.groundRing(g, "fx_ring", col(cfg, 0.3), 0.2 * sz, 0.6 * sz, dur * 0.6, 0, 0, 0.5)
+        elseif st == "Shock" then
+            h.groundRing(g, "fx_wave", col(cfg, 0), 0.3 * sz, 1.3 * sz, dur * 0.7, 0, 0, 0.9)
+            h.popRing({ Parent = true, Position = g + Vector3.new(0, 1.2, 0) }, "fx_wave", col(cfg, 0.4), 0.3, sz * 0.45, dur * 0.5)
+        else
+            h.groundRing(g, JUMP_TEX[st] or "fx_rune", col(cfg, 0), 0.25 * sz, sz, dur, 1.5, 0, 0.3)
+            h.groundRing(g, "fx_glow", col(cfg, 0.35), 0.2 * sz, 0.55 * sz, dur * 0.6, 0, 0, 0.4)
+        end
     end
     local function landFx(air)
         local h, c, r = H(), myChar(), myRoot()
@@ -17647,7 +17655,7 @@ end
         local style = cfg.Style or "Ribbon"
         local w = math.max(cfg.Width or 1, 0.1)
         local life = math.max(cfg.Life or 0.45, 0.05)
-        local sig = table.concat({ style, cfg.Life, w, tostring(cfg.Sparkles), tostring(cfg.ColorMode) }, "|")
+        local sig = table.concat({ style, cfg.Life, w, tostring(cfg.Sparkles) }, "|")
         if sig ~= trail.sig then
             trail.sig = sig
             local ribbon = style == "Ribbon" or style == "Helix" or style == "Comet"
@@ -17676,8 +17684,7 @@ end
         end
         -- per-frame: colours (animated modes) and attachment geometry
         trail.t1.Color = Shared.fxSequence(cfg)
-        trail.t2.Color = Shared.fxSequence({ Color = cfg.Color2 or cfg.Color, Color2 = cfg.Color,
-            ColorMode = cfg.ColorMode, ColorSpeed = cfg.ColorSpeed })
+        trail.t2.Color = Shared.fxSequence({ Color = cfg.Color2 or cfg.Color, Color2 = cfg.Color })
         if trail.em.Enabled then trail.em.Color = ColorSequence.new(col(cfg, 0.25), col(cfg, 0.6)) end
         local now = os.clock()
         if style == "Helix" then
@@ -17690,7 +17697,7 @@ end
             local ww = style == "Comet" and w * 1.4 or w
             trail.a[1].Position, trail.a[2].Position = Vector3.new(0, ww / 2, 0), Vector3.new(0, -ww / 2, 0)
         end
-        trail.host.CFrame = r.CFrame * CFrame.new(0, -0.4, 0.6)
+        trail.host.CFrame = r.CFrame * CFrame.new(cfg.OffX or 0, -0.4 + (cfg.OffY or 0), 0.6)
         -- comet head: a soft glow riding the host, only while moving
         local moving = r.AssemblyLinearVelocity.Magnitude > 2
         if style == "Comet" then
@@ -18195,20 +18202,15 @@ addTab("Visuals", function(root)
     -- v0.85.0 Effects: self + target visuals. Own function scope for registers.
     ;(function(fxSub)
         local F = Koffee.SelfFX
-        local function colorOpts(popup, c)
-            popup:dropdown("Color Mode", Shared.FX_COLOR_MODES, c.ColorMode or "Static", function(v) c.ColorMode = v end)
-            popup:swatch("Color 2", c.Color2 or c.Color, function(v) c.Color2 = v end)
-            popup:slider("Color Speed", 0.05, 4, c.ColorSpeed or 0.5, 2, function(v) c.ColorSpeed = v end)
-        end
         local selfPanel = panel(fxSub, "Self")
         local jr = moduleCheckbox(selfPanel, "Jump Circles", "selffx_jump")
         attachSingleSwatch(jr.row, F.Jump.Color, function(c) F.Jump.Color = c end)
         rightClickSettings(jr.row, "Jump Circles", function(popup)
-            popup:dropdown("Style", { "Rune", "Ring", "Wave" }, F.Jump.Style, function(v) F.Jump.Style = v end)
+            popup:dropdown("Style", { "Rune", "Ring", "Wave", "Pulse", "Sparkle", "Hearts", "Shock" }, F.Jump.Style,
+                function(v) F.Jump.Style = v end)
             popup:slider("Size", 1, 12, F.Jump.Size, 1, function(v) F.Jump.Size = v end)
             popup:slider("Duration", 0.2, 3, F.Jump.Duration, 2, function(v) F.Jump.Duration = v end)
             popup:dropdown("Landing", { "Bubble", "Ring", "Off" }, F.Jump.Land, function(v) F.Jump.Land = v end)
-            colorOpts(popup, F.Jump)
         end)
         local tr = moduleCheckbox(selfPanel, "Trail", "selffx_trail")
         attachDualSwatch(tr.row, F.Trail.Color, F.Trail.Color2,
@@ -18219,8 +18221,8 @@ addTab("Visuals", function(root)
             popup:slider("Lifetime", 0.1, 2, F.Trail.Life, 2, function(v) F.Trail.Life = v end)
             popup:slider("Width", 0.2, 4, F.Trail.Width, 1, function(v) F.Trail.Width = v end)
             popup:toggle("Sparkles On Ribbons", F.Trail.Sparkles, function(v) F.Trail.Sparkles = v end)
-            popup:dropdown("Color Mode", Shared.FX_COLOR_MODES, F.Trail.ColorMode or "Static", function(v) F.Trail.ColorMode = v end)
-            popup:slider("Color Speed", 0.05, 4, F.Trail.ColorSpeed or 0.5, 2, function(v) F.Trail.ColorSpeed = v end)
+            popup:slider("Offset X", -4, 4, F.Trail.OffX or 0, 2, function(v) F.Trail.OffX = v end)
+            popup:slider("Offset Y", -4, 4, F.Trail.OffY or 0, 2, function(v) F.Trail.OffY = v end)
         end)
         local hr = moduleCheckbox(selfPanel, "China Hat", "selffx_hat")
         attachSingleSwatch(hr.row, F.Hat.Color, function(c) F.Hat.Color = c end)
@@ -18230,7 +18232,6 @@ addTab("Visuals", function(root)
             popup:slider("Transparency", 0, 0.95, F.Hat.Alpha, 2, function(v) F.Hat.Alpha = v end)
             popup:toggle("Glow Rim", F.Hat.Rim, function(v) F.Hat.Rim = v end)
             popup:slider("Roughness", 0, 8, F.Hat.Roughness or 0, 0, function(v) F.Hat.Roughness = math.floor(v) end)
-            colorOpts(popup, F.Hat)
         end)
 
         local tgtPanel = panel(fxSub, "Target")
@@ -18242,7 +18243,6 @@ addTab("Visuals", function(root)
             popup:slider("Speed", 0.2, 4, F.Marker.Speed, 2, function(v) F.Marker.Speed = v end)
             popup:dropdown("Show For", { "Locked", "Best" }, F.Marker.Source, function(v) F.Marker.Source = v end)
             popup:toggle("Through Walls", F.Marker.ThroughWalls, function(v) F.Marker.ThroughWalls = v end)
-            colorOpts(popup, F.Marker)
         end)
         local hu = moduleCheckbox(tgtPanel, "Target HUD", "tgt_hud")
         rightClickSettings(hu.row, "Target HUD", function(popup)
@@ -18250,6 +18250,16 @@ addTab("Visuals", function(root)
             popup:dropdown("Anchor", { "Target", "Crosshair" }, F.HUD.Anchor, function(v) F.HUD.Anchor = v end)
         end)
     end)(Lsub["Effects"])
+    task.defer(function()
+        local G = Koffee.FXGradient
+        local gp = panel(espSub, "Effects Color")
+        local gr = configCheckbox(gp, "Effects Gradient", G.Enabled, function(v) G.Enabled = v end)
+        attachDualSwatch(gr.row, G.Color, G.Color2, function(c) G.Color = c end, function(c) G.Color2 = c end)
+        rightClickSettings(gr.row, "Effects Gradient", function(popup)
+            popup:dropdown("Mode", { "Gradient", "Rainbow", "Pulse" }, G.Mode, function(v) G.Mode = v end)
+            popup:slider("Speed", 0.05, 4, G.Speed, 2, function(v) G.Speed = v end)
+        end)
+    end)
 
     -- :: ESP ::
     local espPanel = panel(espSub, "ESP")
