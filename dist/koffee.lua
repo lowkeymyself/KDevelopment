@@ -2149,17 +2149,23 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
         style(false)
         ui.Scale = 1
     end
+    local docking = false
     local function dockAnimated()
+        docking = true
         local target = toOffset(slot.AbsolutePosition)
         TweenService:Create(ui, TweenInfo.new(0.18, Enum.EasingStyle.Quad), { Scale = 1 }):Play()
         local tw = TweenService:Create(float, TweenInfo.new(0.18, Enum.EasingStyle.Quad),
             { Position = UDim2.fromOffset(target.X, target.Y) })
         tw:Play()
-        tw.Completed:Once(function() if not Koffee.dead() then dockNow() end end)
+        tw.Completed:Once(function()
+            docking = false
+            if not Koffee.dead() then dockNow() end
+        end)
     end
+    local goal = Vector2.new(D.X, D.Y)
     local function nearSlot()
         if not slot.Visible then return false end
-        return (float.AbsolutePosition - slot.AbsolutePosition).Magnitude < NEAR
+        return ((probe.AbsolutePosition + goal) - slot.AbsolutePosition).Magnitude < NEAR
     end
 
     local press, grabFrom, dragging = nil, nil, false
@@ -2180,10 +2186,10 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
             slot.Visible = true
             grabFrom = float.AbsolutePosition
             press = m
+            TweenService:Create(ui, TweenInfo.new(0.15, Enum.EasingStyle.Quad), { Scale = SCALE * 1.04 }):Play()
         end
-        -- move by the mouse delta since the grab, so any mouse/GUI inset offset cancels
-        local o = toOffset(grabFrom + (m - press))
-        float.Position = UDim2.fromOffset(o.X, o.Y)
+        -- mouse delta since the grab (inset cancels); the follow loop eases toward it
+        goal = toOffset(grabFrom + (m - press))
         local near = nearSlot()
         slot.BackgroundTransparency = near and 0.8 or 1
         slotStroke.Transparency = near and 0 or 0.65
@@ -2197,20 +2203,35 @@ Koffee.Details = { Docked = true, X = 40, Y = 90 }   -- registered with the v0.8
             dockAnimated()
         else
             slot.Visible = false
-            D.X, D.Y = float.Position.X.Offset, float.Position.Y.Offset
+            D.X, D.Y = math.floor(goal.X + 0.5), math.floor(goal.Y + 0.5)
+            TweenService:Create(ui, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = SCALE }):Play()
         end
     end)
-    -- config loads refill D in place; follow it when nothing is being dragged
-    RunService.Heartbeat:Connect(function()
-        if Koffee.dead() or dragging then return end
-        if D.Docked and not docked then
-            dockNow()
-        elseif not D.Docked and docked then
-            popOut(probe.AbsolutePosition + Vector2.new(D.X, D.Y))
-        elseif not docked then
-            local p = float.Position
-            if p.X.Offset ~= D.X or p.Y.Offset ~= D.Y then float.Position = UDim2.fromOffset(D.X, D.Y) end
+    -- one follow loop for dragging, settling and config loads: eases toward the goal
+    -- the way the Target HUD does, so the card glides instead of snapping.
+    RunService.RenderStepped:Connect(function(dt)
+        if Koffee.dead() or docking then return end
+        if not dragging then
+            if D.Docked and not docked then
+                dockNow()
+                return
+            elseif not D.Docked and docked then
+                goal = Vector2.new(D.X, D.Y)
+                popOut(probe.AbsolutePosition + goal)
+                return
+            end
+            goal = Vector2.new(D.X, D.Y)
         end
+        if docked then return end
+        local p = float.Position
+        local cur = Vector2.new(p.X.Offset, p.Y.Offset)
+        local d = goal - cur
+        if d.Magnitude < 0.3 then
+            if d.Magnitude > 0 then float.Position = UDim2.fromOffset(goal.X, goal.Y) end
+            return
+        end
+        local n = cur + d * math.min(dt * 16, 1)
+        float.Position = UDim2.fromOffset(n.X, n.Y)
     end)
 end)()
 
