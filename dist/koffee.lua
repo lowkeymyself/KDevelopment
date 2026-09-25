@@ -17983,9 +17983,11 @@ end
             end
             return math.clamp(hi - floorY, 1, 12)
         end
-        -- size and seat the pane between its two ends on its own (fixed) plane
+        -- size and seat the pane between its two ends. Panes overlap a little at each
+        -- joint: they all show the same mirrored world, so the overlap is invisible
+        -- and there's no hairline gap where two meet
         local function place(pn)
-            local len = math.max((pn.b - pn.a).Magnitude, 0.05) + 0.02
+            local len = math.max((pn.b - pn.a).Magnitude, 0.05) + 0.24
             local mid = (pn.a + pn.b) / 2
             pn.len = len
             pn.P = Vector3.new(mid.X, pn.baseY + pn.h / 2, mid.Z)
@@ -18040,7 +18042,7 @@ end
             vp.CurrentCamera = cam
             local pn = { p = p, sg = sg, vp = vp, cam = cam, sky = sky, vfade = vfade, sfade = sfade,
                 a = a, b = b, dir = dir, n = dir:Cross(Vector3.yAxis), baseY = baseY, h = G.height,
-                tA = t0, tB = now }
+                tA = t0, tB = now, pts = { b } }
             place(pn)
             if #G.panes == 0 or not G.RN then
                 local toEye = Vector3.new(eye.X - pn.P.X, 0, eye.Z - pn.P.Z)
@@ -18106,7 +18108,11 @@ end
             local speed = Vector3.new(v.X, 0, v.Z).Magnitude
             -- one height for the whole trail, re-measured only while standing with no trail out
             if not G.height or (#G.panes == 0 and speed < 0.5) then G.height = measure(c, floorY) end
-            local flat = Vector3.new(here.X, 0, here.Z)
+            -- the glass follows a smoothed path, so walking wobble never reaches it
+            local raw = Vector3.new(here.X, 0, here.Z)
+            G.sp = (G.sp and (raw - G.sp).Magnitude < 12) and G.sp:Lerp(raw, math.min(1, 12 * (now - (G.spAt or now)))) or raw
+            G.spAt = now
+            local flat = G.sp
             if not G.tip then G.tip, G.tipAt = flat, now end
             local step = (flat - G.tip).Magnitude
             if step > 12 then
@@ -18116,13 +18122,23 @@ end
                 local live = last and (now - last.tB) < 0.3
                 local grown = false
                 if live then
-                    -- keep growing the newest pane while you stay on its line
-                    local rel = flat - last.a
-                    local t = rel:Dot(last.dir)
-                    if t > (last.b - last.a).Magnitude and (rel - last.dir * t).Magnitude < 0.4 and t < 40 then
-                        last.b, last.tB = last.a + last.dir * t, now
-                        place(last)
-                        grown = true
+                    -- the newest pane re-aims at the straight line from its start to you,
+                    -- and only splits once the path it covered strays from that line
+                    local chord = flat - last.a
+                    local L = chord.Magnitude
+                    if L > 0.05 and L < 40 then
+                        local d = chord.Unit
+                        local fits = true
+                        for _, q in ipairs(last.pts) do
+                            local r = q - last.a
+                            if (r - d * r:Dot(d)).Magnitude > 0.35 then fits = false; break end
+                        end
+                        if fits then
+                            last.b, last.dir, last.tB = flat, d, now
+                            last.pts[#last.pts + 1] = flat
+                            place(last)
+                            grown = true
+                        end
                     end
                 end
                 if not grown then
