@@ -1,7 +1,7 @@
 -- koffee v0.89.0
 
 local Koffee = {}
-Koffee.Version = "0.89.0"
+Koffee.Version = "0.90.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -292,6 +292,8 @@ do
         "folder-tree", "info", "server", "music", "keyboard",  -- v0.62.0: window-switcher bar
         "mouse-pointer-click", "user-plus", "fingerprint", "file", "package", "rotate-3d",  -- v0.84.0: NPC tab
         "bar-chart-2", "signal", "clock", "map-pin",  -- v0.85.0: details bar
+        "play", "pause", "skip-back", "skip-forward", "shuffle", "repeat", "repeat-1",
+        "volume-2", "volume-x", "mic-vocal",   -- v0.90.0: media player
     }
     local MANIFEST = {
         { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
@@ -1941,61 +1943,38 @@ local hudRight = new("Frame", {
     new("UIPadding", { PaddingRight = UDim.new(0, 14) }),
 })
 
--- v0.0.97: replaced the "del menu" hotkey panel with an Apple-style signal
--- indicator (4 ascending bars on a shared baseline, rounded like iOS wifi).
--- Color tracks ping latency:  green (<=100ms) / yellow (<=200ms) / red
--- (<=350ms) / deep red (>350ms). The widget locals + paint closure live inside
--- a do/end so they don't add to the chunk-local count (the file sits at Luau's
--- 200-register ceiling); only the paintSignal forward declaration escapes so
--- the ping task can reach it.
+-- v0.90.0: the ping indicator is a single status dot (was 4 signal bars). Colour
+-- tracks latency: green (<=100ms) / yellow (<=200ms) / red (<=350ms) / deep red.
+-- Only the paintSignal forward declaration escapes (the chunk sits at 200 registers).
 local paintSignal
 do
-    -- 4 bars sitting on the same baseline; heights chosen to climb from short
-    -- to tall inside the 22px panel, widths uniform. Sizes: {w, h}.
-    local barSpecs = { { 4, 6 }, { 4, 9 }, { 4, 12 }, { 4, 15 } }
-    local BAR_W, BAR_H_MAX = 4, 15
-
-    local signalWidget = new("Frame", {
+    local dot = new("Frame", {
         Name = "Signal",
-        Size = UDim2.new(0, 8 + #barSpecs * BAR_W + (#barSpecs - 1) * 2 + 8, 0, BAR_H_MAX + 4),
-        BackgroundColor3 = Theme.Palette.Panel,
-        BackgroundTransparency = 0.1,
+        Size = UDim2.fromOffset(9, 9),
+        BackgroundColor3 = Theme.Palette.TextFaint,
         BorderSizePixel = 0,
-        ZIndex = 22,
+        ZIndex = 23,
         Parent = hudRight,
-    }, {
-        corner(Theme.Radius.Small),
-        stroke(Theme.Palette.BorderSubtle),
-        new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
-    })
-
-    -- bars bottom-anchored so they share the baseline: height drives the
-    -- "ascending" look without any manual vertical offsets.
-    local signalBars = {}
-    for i, spec in ipairs(barSpecs) do
-        signalBars[i] = new("Frame", {
-            Name = "Bar" .. i,
-            Size = UDim2.new(0, spec[1], 0, spec[2]),
-            Position = UDim2.new(0, 6 + (i - 1) * (BAR_W + 2), 1, -2),
-            AnchorPoint = Vector2.new(0, 1),     -- bottom-aligned
-            BackgroundColor3 = Theme.Palette.TextFaint,
-            BorderSizePixel = 0,
-            ZIndex = 23,
-            Parent = signalWidget,
-        }, { corner(1.5) })
-    end
+    }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+    -- a soft halo of the same colour behind it
+    local halo = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(17, 17), BackgroundColor3 = Theme.Palette.TextFaint,
+        BackgroundTransparency = 0.8, BorderSizePixel = 0, ZIndex = 22, Parent = dot,
+    }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 
     local function pingColor(ms)
         if not ms or ms <= 0 then return Theme.Palette.TextFaint end
-        if ms <= 100 then return Color3.fromRGB(127, 190, 143) end      -- green
-        if ms <= 200 then return Color3.fromRGB(232, 196, 110) end     -- yellow
-        if ms <= 350 then return Color3.fromRGB(212, 106, 90) end       -- red
-        return Color3.fromRGB(148, 54, 42)                              -- deep red
+        if ms <= 100 then return Color3.fromRGB(127, 190, 143) end
+        if ms <= 200 then return Color3.fromRGB(232, 196, 110) end
+        if ms <= 350 then return Color3.fromRGB(212, 106, 90) end
+        return Color3.fromRGB(148, 54, 42)
     end
 
     paintSignal = function(ms)
         local c = pingColor(ms)
-        for _, bar in ipairs(signalBars) do bar.BackgroundColor3 = c end
+        tween(dot, TweenInfo.new(0.35), { BackgroundColor3 = c })
+        tween(halo, TweenInfo.new(0.35), { BackgroundColor3 = c })
     end
 end
 
@@ -2256,7 +2235,12 @@ Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3 }   -- registered 
     -- one follow loop for dragging, settling and config loads: eases toward the goal
     -- the way the Target HUD does, so the card glides instead of snapping.
     RunService.RenderStepped:Connect(function(dt)
-        if Koffee.dead() or docking then return end
+        if Koffee.dead() then return end
+        -- v0.90.0: the dock's Info slot shows / hides the details bar
+        local WMs = Koffee.Windows
+        local want = not (WMs and WMs.isOpen) or WMs.isOpen("info")
+        if W.Visible ~= want then W.Visible = want end
+        if docking then return end
         if not dragging then
             if D.Docked and not docked then
                 dockNow()
@@ -6789,7 +6773,7 @@ local STATIC = { top = 3, bot = 3, aspect = 0.5 }   -- fallback width = height *
 local function projectStatic(torso, character)
     -- v0.0.15: anchor is torso.Position (live world read).
     if not torso or not torso.Parent then return nil, false, false end
-    local cam = Workspace.CurrentCamera
+    local cam = ESP._cam or Workspace.CurrentCamera
     if not cam then return nil, false, false end
     -- v0.0.26: derive the vertical extent from the ACTUAL character bounding box
     -- (centred on the real body), not a fixed ±3 studs off the hip. HRP sits at
@@ -7012,7 +6996,7 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
     }
     local screenCorners = table.create(8)
     local anyInFront, allInFront = false, true
-    local cam = Workspace.CurrentCamera
+    local cam = ESP._cam or Workspace.CurrentCamera
     if not cam then return nil, false, false end
     for i, wp in ipairs(worldCorners) do
         local sp = cam:WorldToViewportPoint(wp)
@@ -7066,7 +7050,7 @@ end
 
 function ESP._projectAlgorithm(character, characterOnly, bodyParts, rig)
     if not character then return nil, false, false end
-    local cam = Workspace.CurrentCamera
+    local cam = ESP._cam or Workspace.CurrentCamera
     if not cam then return nil, false, false end
 
     local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
@@ -7353,7 +7337,7 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     end
     local showName = nameStr ~= ""
 
-    local cam = Workspace.CurrentCamera
+    local cam = ESP._cam or Workspace.CurrentCamera
     -- v0.0.26: project the head TOP (world) so the tags sit directly above the
     -- head on screen at any camera angle. Fall back to the torso if no head.
     -- v0.56.0: an NPC has no "Head"; anchor its name to the TOP of its bounding
@@ -7465,7 +7449,7 @@ local function updateSkeleton(rig, overrideColor, dist)
         for _, l in ipairs(rig.skeleton) do l.Visible = false end
         return
     end
-    local cam = Workspace.CurrentCamera
+    local cam = ESP._cam or Workspace.CurrentCamera
     local char = rig.character
     if not cam or not char then
         for _, l in ipairs(rig.skeleton) do l.Visible = false end
@@ -7522,14 +7506,14 @@ local function updateLookLine(rig, overrideColor, dist)
     local cfg = ESP.Indicators.LookDirection
     local segs = rig.lookLine
     if not segs then return end
-    local cam = Workspace.CurrentCamera
+    local cam = ESP._cam or Workspace.CurrentCamera
     local char = rig.character
     local head = char and char:FindFirstChild("Head")
     if not (cfg.Enabled and cam and head and head:IsA("BasePart")) then
         for _, l in ipairs(segs) do l.Visible = false end
         return
     end
-    if not cfg.ThroughWalls then
+    if not cfg.ThroughWalls and not rig.preview then
         -- v0.75.2: reuse a hoisted params object; was allocated fresh per rig per frame.
         ESP._lookRayParams.FilterDescendantsInstances = { char, LocalPlayer.Character, cam }
         local from = cam.CFrame.Position
@@ -7583,10 +7567,13 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- centered on the visible body. If the torso reference goes stale
         -- (rig-swapping games, respawn mid-frame), re-resolve from character.
         if not rig then return end
+        -- v0.90.0: the ESP preview window draws its dummy through this same path,
+        -- so every gate below (workspace, team, distance, walls) is skipped for it
+        local pv = rig.preview
         -- v0.18.4: .Parent alone is not enough. A character moved out of Workspace
         -- (corpse folders, ReplicatedStorage stashes) keeps a truthy Parent and its
         -- parts keep their last position, which is the ghost-ESP case.
-        if not (rig.character and rig.character:IsDescendantOf(Workspace)) then
+        if not pv and not (rig.character and rig.character:IsDescendantOf(Workspace)) then
             hideRigVisuals(rig); return
         end
         if not (rig.torso and rig.torso.Parent) then
@@ -7599,10 +7586,11 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- NPC without one (a bare Part / prop) is always "alive".
         local hum = rig.character:FindFirstChildOfClass("Humanoid")
         if hum then
-            if hum.Health <= 0 then hideRigVisuals(rig); return end
-        elseif not isNPC then
+            if hum.Health <= 0 and not pv then hideRigVisuals(rig); return end
+        elseif not isNPC and not pv then
             hideRigVisuals(rig); return
         end
+        if pv then isNPC = true end
 
         -- gates (player-only: NPCs have no team / friend / self / target-lock)
         if not isNPC and plr == LocalPlayer and not ESP.Config.SelfESP then
@@ -7610,7 +7598,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         end
         -- v0.0.46: team gate via isTeammate (manual team list or Advanced auto-detect)
         -- + Options "Ignore Friends" gate, shared with the combat systems.
-        local same = (not isNPC) and isTeammate(plr)
+        local same = (not isNPC) and isTeammate(plr) or false
         if not isNPC and ((same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr))) then
             hideRigVisuals(rig); return
         end
@@ -7624,7 +7612,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             hideRigVisuals(rig); return
         end
         local dist = (rig.torso.Position - camPos).Magnitude
-        if dist > ESP.Config.RenderDistance then
+        if dist > ESP.Config.RenderDistance and not pv then
             hideRigVisuals(rig); return
         end
 
@@ -7636,11 +7624,12 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- v0.30.0: also raycast when Through Walls is off, so the box can be hidden
         -- behind geometry even with Visible Check (colour mode) switched off.
         local hidden = false
-        if (ESP.Config.VisibleCheck or not ESP.Boxes.ThroughWalls) and rig.torso and rig.torso.Parent then
+        if not pv and (ESP.Config.VisibleCheck or not ESP.Boxes.ThroughWalls) and rig.torso and rig.torso.Parent then
             espRayParams.FilterDescendantsInstances = { rig.character, LocalPlayer.Character }
             local hit = Workspace:Raycast(camPos, rig.torso.Position - camPos, espRayParams)
             hidden = hit ~= nil
         end
+        if pv then hidden = Shared._pvHidden == true end
         local boxHidden = (not ESP.Boxes.ThroughWalls) and hidden   -- v0.30.0 gate
         -- v0.11.0: the colour mode gets first say. Static returns nil, which falls
         -- through to exactly the v0.10 team/visible logic below: so the default
@@ -8091,9 +8080,10 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
 
         -- v0.0.21 TRACER: line from the chosen screen origin to the target feet.
         if ESP.Tracer.Enabled then
-            local vp = viewport()
+            local vp = ESP._vp or viewport()
             local ox, oy
             local o = ESP.Tracer.Origin
+            if o == "Mouse" and ESP._vp then o = "Bottom" end
             if o == "Mouse" then
                 local m = UserInputService:GetMouseLocation()
                 ox, oy = m.X, m.Y
@@ -19633,6 +19623,7 @@ registerConfig("chams", Koffee.Chams)
         end
         return hidden and ESP.Colors.Hidden or ESP.Colors.Visible
     end
+    Shared.chamsColor = colorFor
     -- same gates as the ESP rig renderer: team check, ignore friends, exclude marks,
     -- render distance (NPCs use the NPC ESP bundle for distance and colours)
     local function gather(cam)
@@ -31653,9 +31644,9 @@ setBackgroundActive(true)
     def{ id = "main",     icon = "pencil",      label = "Menu",           kind = "primary",   canFloat = false, bar = true, default = true }
     def{ id = "esp",      icon = "user",        label = "ESP Preview",    kind = "primary",   canFloat = false, bar = true }
     def{ id = "players",  icon = "users",       label = "Player List",    kind = "primary",   canFloat = false, bar = true }
-    def{ id = "explorer", icon = "folder-tree", label = "Explorer",       kind = "primary",   canFloat = false, bar = true }
-    def{ id = "details",  icon = "info",        label = "Details",        kind = "secondary", canFloat = true,  bar = true, default = true }
-    def{ id = "servers",  icon = "server",      label = "Server Browser", kind = "primary",   canFloat = false, bar = true }
+    -- v0.90.0: id "info" (was "details", which did nothing); a fresh key means saved
+    -- configs holding the old "off" do not hide the details bar
+    def{ id = "info",     icon = "info",        label = "Details",        kind = "secondary", canFloat = true,  bar = true, default = true }
     def{ id = "media",    icon = "music",       label = "Media",          kind = "secondary", canFloat = true,  bar = true }
     def{ id = "keybinds", icon = "keyboard",    label = "Hotkeys",        kind = "secondary", canFloat = true,  bar = true }
     -- array list is a window but not a bar slot (its own draggable overlay added
@@ -32740,7 +32731,7 @@ end)()
     -- preview-local state: rig display mode + rig size (%). render "3D" spins the
     -- rig; "2D" holds it static, facing forward. (This is about the RIG, not the ESP
     -- box type -- that mirrors ESP.Boxes.BoxType independently.) Persisted.
-    local PV = { render = "3D", size = 100 }
+    local PV = { render = "3D", size = 100, hidden = false, npc = false }
     registerConfig("esppreview", PV)
 
     -- window root
@@ -32808,146 +32799,44 @@ end)()
     local cam = new("Camera", { FieldOfView = 60, Parent = vpf })
     vpf.CurrentCamera = cam
 
-    -- 2D overlays (drawn OVER the viewport; a live mirror of the real ESP)
-    -- manual projection for the viewport camera (there is no WorldToViewportPoint for
-    -- a ViewportFrame). Returns a 0..1 fraction of the stage; only the aspect ratio
-    -- of the stage matters, which is constant, so AbsoluteSize is never needed here.
+    -- v0.90.0: the dummy is drawn by the real ESP renderer (Shared.espDrawRig) through a
+    -- stand-in camera that projects into stage pixels, so every ESP option shows here
     local STAGE_W, STAGE_H = 276, 322
-    local function proj(worldPos)
-        local rel = cam.CFrame:PointToObjectSpace(worldPos)
-        local depth = -rel.Z
-        if depth <= 0.05 then return nil end
-        local tanY = math.tan(math.rad(cam.FieldOfView) * 0.5)
-        local ndcX = (rel.X / depth) / (tanY * (STAGE_W / STAGE_H))
-        local ndcY = (rel.Y / depth) / tanY
-        return Vector2.new(ndcX * 0.5 + 0.5, 1 - (ndcY * 0.5 + 0.5))
-    end
-
-    local overlay = new("Frame", { Name = "overlay", BackgroundTransparency = 1,
+    local overlay = new("Frame", { Name = "overlay", BackgroundTransparency = 1, ClipsDescendants = true,
         Size = UDim2.new(1, 0, 1, 0), ZIndex = 5, Parent = stage })
-    local box2D = new("Frame", { Name = "box2D", BackgroundColor3 = ESP.Boxes.FillColor,
-        BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false, ZIndex = 5, Parent = overlay },
-        { new("UIStroke", { Color = ESP.Boxes.Color, Thickness = 1.5,
-            ApplyStrokeMode = Enum.ApplyStrokeMode.Border }) })
-    local box2Dstroke = box2D:FindFirstChildOfClass("UIStroke")
-    local headDot = new("Frame", { Name = "headDot", BackgroundColor3 = ESP.Indicators.HeadDot.Color,
-        AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 6, 0, 6), Visible = false,
-        ZIndex = 7, Parent = overlay }, { corner(999) })
-    local hpBg = new("Frame", { Name = "hpBg", BackgroundColor3 = Color3.fromRGB(18, 18, 20),
-        BorderSizePixel = 0, Visible = false, ZIndex = 6, Parent = overlay }, { corner(2) })
-    local hpFill = new("Frame", { Name = "hpFill", BackgroundColor3 = ESP.Health.Bar.Color,
-        AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0), Size = UDim2.new(1, 0, 0.72, 0),
-        BorderSizePixel = 0, ZIndex = 7, Parent = hpBg }, { corner(2) })
-    local tracer = new("Frame", { Name = "tracer", BackgroundColor3 = ESP.Tracer.Color,
-        AnchorPoint = Vector2.new(0, 0.5), BorderSizePixel = 0, Visible = false, ZIndex = 4, Parent = overlay })
-    local function overlayTxt(anchorTop)
-        return new("TextLabel", { BackgroundTransparency = 1, Text = "Name", Visible = false,
-            FontFace = Theme.Fonts.Medium, TextSize = 14, TextColor3 = Palette.Text,
-            TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 18),
-            Position = anchorTop and UDim2.new(0, 0, 0, 8) or UDim2.new(0, 0, 1, -26),
-            ZIndex = 7, Parent = overlay }, {
-            new("UIStroke", { Color = Color3.fromRGB(0, 0, 0), Thickness = 1.4,
-                Transparency = 0.25, LineJoinMode = Enum.LineJoinMode.Round }) })
+    local fcam = setmetatable({}, { __index = function(_, k) return cam[k] end })
+    function fcam.WorldToViewportPoint(_, p)
+        local rel = cam.CFrame:PointToObjectSpace(p)
+        local depth = -rel.Z
+        local d = math.abs(depth) > 1e-3 and depth or 1e-3
+        local tanY = math.tan(math.rad(cam.FieldOfView) * 0.5)
+        local nx = (rel.X / d) / (tanY * (STAGE_W / STAGE_H))
+        local ny = (rel.Y / d) / tanY
+        return Vector3.new((nx * 0.5 + 0.5) * STAGE_W, (0.5 - ny * 0.5) * STAGE_H, depth), depth > 0
     end
-    local nameLbl = overlayTxt(true)
-    local distLbl = overlayTxt(false); distLbl.Text = "10m"
 
-    -- rig + 3D cube (real R6 rig loaded async; box parts spin with it)
     local CENTER = Vector3.new(0, -0.5, 0)
-    local model, basePivot, curBox
-    local extents = Vector3.new(4, 5, 1)
-    local edges3D, edgeBase = {}, {}
-
-    local function buildCube()
-        local hx, hy, hz = extents.X * 0.5 + 0.1, extents.Y * 0.5 + 0.1, extents.Z * 0.5 + 0.15
-        local c = {
-            CENTER + Vector3.new( hx,  hy,  hz), CENTER + Vector3.new(-hx,  hy,  hz),
-            CENTER + Vector3.new( hx, -hy,  hz), CENTER + Vector3.new(-hx, -hy,  hz),
-            CENTER + Vector3.new( hx,  hy, -hz), CENTER + Vector3.new(-hx,  hy, -hz),
-            CENTER + Vector3.new( hx, -hy, -hz), CENTER + Vector3.new(-hx, -hy, -hz),
-        }
-        local E = { {1,2},{3,4},{1,3},{2,4},{5,6},{7,8},{5,7},{6,8},{1,5},{2,6},{3,7},{4,8} }
-        for _, e in ipairs(E) do
-            local a, b = c[e[1]], c[e[2]]
-            local d = b - a
-            local p = new("Part", { Name = "edge", Anchored = true, CanCollide = false, CastShadow = false,
-                Material = Enum.Material.Neon, Color = ESP.Boxes.Color, Transparency = 1,
-                Size = Vector3.new(0.06, 0.06, d.Magnitude), CFrame = CFrame.lookAt(a + d * 0.5, b),
-                Parent = world })
-            edgeBase[p] = p.CFrame; edges3D[#edges3D + 1] = p
-        end
-    end
-
-    -- the rig treated as a real player: parts + head, filled when the rig loads.
-    local rigBodyParts, rigHead = {}, nil
-
-    local function accBox(pt, box)
-        if not pt then return end
-        if pt.X < box[1] then box[1] = pt.X end
-        if pt.X > box[3] then box[3] = pt.X end
-        if pt.Y < box[2] then box[2] = pt.Y end
-        if pt.Y > box[4] then box[4] = pt.Y end
-    end
-
-    -- compute the rig's on-screen box the SAME way the live ESP sizes a real player,
-    -- honouring the current Sizing Type, so the preview is genuinely accurate.
-    local function computeBox()
-        local st = ESP.Config.SizingType
-        local box = { 1e9, 1e9, -1e9, -1e9 }
-        if st == "Algorithm" and #rigBodyParts > 0 then
-            -- tight silhouette: every body part's own 8 corners (mirrors ESP._projectAlgorithm).
-            for _, prt in ipairs(rigBodyParts) do
-                if prt.Parent then
-                    local pcf, ps = prt.CFrame, prt.Size
-                    local ax, ay, az = ps.X * 0.5, ps.Y * 0.5, ps.Z * 0.5
-                    for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
-                        accBox(proj((pcf * CFrame.new(sx * ax, sy * ay, sz * az)).Position), box)
-                    end end end
-                end
-            end
-        elseif st == "Static" then
-            -- aspect-locked from the projected height (mirrors ESP STATIC.aspect = 0.5).
-            local top = proj(CENTER + Vector3.new(0, extents.Y * 0.5, 0))
-            local bot = proj(CENTER - Vector3.new(0, extents.Y * 0.5, 0))
-            if top and bot then
-                local h = math.abs(bot.Y - top.Y)
-                local w = h * 0.5 * (STAGE_H / STAGE_W)
-                local cx, cy = (top.X + bot.X) * 0.5, (top.Y + bot.Y) * 0.5
-                box = { cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5 }
-            end
-        elseif model then
-            -- Bounding / Prediction: the rig's live oriented bounding box, 8 corners.
-            local cf, size = model:GetBoundingBox()
-            local ax, ay, az = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
-            for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
-                accBox(proj((cf * CFrame.new(sx * ax, sy * ay, sz * az)).Position), box)
-            end end end
-        end
-        if box[1] > box[3] then return nil end
-        return box[1], box[2], box[3] - box[1], box[4] - box[2]
-    end
-
-    -- position every 2D overlay from the computed screen box (called each frame).
-    local function positionOverlays(bx, by, bw, bh)
-        curBox = { x = bx, y = by, w = bw, h = bh }
-        box2D.Position = UDim2.fromScale(bx, by); box2D.Size = UDim2.fromScale(bw, bh)
-        local hp = (rigHead and rigHead.Parent) and proj(rigHead.Position) or proj(CENTER + Vector3.new(0, extents.Y * 0.5, 0))
-        if hp then headDot.Position = UDim2.fromScale(hp.X, hp.Y) end
-        hpBg.Position = UDim2.fromScale(bx - 0.05, by); hpBg.Size = UDim2.fromScale(0.028, bh)
-        nameLbl.Position = UDim2.new(0, 0, by, -20)
-        distLbl.Position = UDim2.new(0, 0, by + bh, 4)
-    end
+    local model, basePivot
+    local entry = { rig = nil, phase = 0 }
 
     local function finalizeRig(m)
         m.Parent = world
-        local cf, size = m:GetBoundingBox()
+        local cf = m:GetBoundingBox()
         m:PivotTo(CFrame.new(CENTER - cf.Position) * m:GetPivot())   -- centre bbox at CENTER
-        extents = size; basePivot = m:GetPivot(); model = m
-        rigBodyParts = collectBodyParts(m)   -- the rig's real body parts, for Algorithm sizing
-        rigHead = m:FindFirstChild("Head")
-        buildCube()
+        basePivot = m:GetPivot(); model = m
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        if hum then pcall(function() hum.MaxHealth = 100; hum.Health = 72 end) end
+        -- build a real ESP rig whose frames live in the stage overlay
+        local saved = ESP.BoxLayer
+        ESP.BoxLayer = overlay
+        local ok, rig = pcall(makeRig, LocalPlayer, m, false)
+        ESP.BoxLayer = saved
+        if ok and rig then
+            rig.preview = true
+            if rig.fill3D then pcall(function() rig.fill3D:Destroy() end); rig.fill3D = nil end
+            entry.rig = rig
+        end
     end
-
     local function buildFallback()
         local m = Instance.new("Model")
         local function bp(name, size, color, pos)
@@ -33011,68 +32900,146 @@ end)()
     -- camera
     local function applyCamera()
         local dist = 700 / math.clamp(PV.size, 40, 220)
-        cam.CFrame = CFrame.lookAt(CENTER + Vector3.new(0, 0, dist), CENTER)
+        -- aimed a little above the body so the name / avatar stack keeps headroom
+        local aim = CENTER + Vector3.new(0, dist * 0.09, 0)
+        cam.CFrame = CFrame.lookAt(aim + Vector3.new(0, 0, dist), aim)
     end
     applyCamera()
 
-    -- live mirror of the ESP config (runs each visible frame)
-    local function syncFromESP()
-        local B = ESP.Boxes
-        local cube = B.BoxType == "Cube"
-        local show2D = B.Enabled and not cube
-        box2D.Visible = show2D
-        if show2D then
-            box2Dstroke.Color = B.Color
-            box2D.BackgroundColor3 = B.FillColor
-            box2D.BackgroundTransparency = B.FillBox and B.FillTransparency or 1
-        end
-        -- edges are Parts (no .Visible property) -> hide via Transparency.
-        local edgeT = (B.Enabled and cube) and 0 or 1
-        for _, e in ipairs(edges3D) do e.Transparency = edgeT; e.Color = B.Color end
-        nameLbl.Visible = ESP.Names.Enabled; nameLbl.TextColor3 = ESP.Names.Color
-        distLbl.Visible = ESP.Indicators.Distance.Enabled; distLbl.TextColor3 = ESP.Indicators.Distance.Color
-        local hd = ESP.Indicators.HeadDot
-        headDot.Visible = hd.Enabled; headDot.BackgroundColor3 = hd.Color
-        headDot.Size = UDim2.new(0, hd.Size, 0, hd.Size)
-        local hb = ESP.Health.Bar
-        hpBg.Visible = hb.Enabled
-        if hb.Enabled then
-            hpFill.BackgroundColor3 = ESP.Health.Based
-                and Color3.fromRGB(230, 70, 70):Lerp(Color3.fromRGB(90, 220, 120), 0.72) or hb.Color
-        end
-        local T = ESP.Tracer
-        tracer.Visible = T.Enabled
-        if T.Enabled and curBox then
-            tracer.BackgroundColor3 = T.Color
-            local sz = overlay.AbsoluteSize
-            local oy = ({ Bottom = 1, Top = 0, Middle = 0.5, Mouse = 1 })[T.Origin] or 1
-            local ey = ({ Below = curBox.y + curBox.h, Middle = curBox.y + curBox.h * 0.5, Above = curBox.y })[T.Location]
-                or (curBox.y + curBox.h * 0.5)
-            local p0 = Vector2.new(0.5 * sz.X, oy * sz.Y)
-            local p1 = Vector2.new((curBox.x + curBox.w * 0.5) * sz.X, ey * sz.Y)
-            local d = p1 - p0
-            tracer.Position = UDim2.fromOffset(p0.X, p0.Y)
-            tracer.Size = UDim2.fromOffset(d.Magnitude, 2)
-            tracer.Rotation = math.deg(math.atan2(d.Y, d.X))
+    -- chams mirror: clones of the dummy's parts inside the viewport (Pattern / Lit)
+    -- or projected box edges on the overlay (Wireframe), coloured like the real chams
+    local chm = { clones = {}, key = nil, lines = {}, used = 0 }
+    local CORN, EDGES = {}, {}
+    for i = 0, 7 do
+        CORN[i + 1] = Vector3.new(i % 2 == 0 and -0.5 or 0.5, math.floor(i / 2) % 2 == 0 and -0.5 or 0.5,
+            math.floor(i / 4) == 0 and -0.5 or 0.5)
+    end
+    for a = 1, 8 do
+        for b = a + 1, 8 do
+            local d = CORN[a] - CORN[b]
+            if math.abs(d.X) + math.abs(d.Y) + math.abs(d.Z) == 1 then EDGES[#EDGES + 1] = { a, b } end
         end
     end
-
-    -- spin loop (idles when hidden)
-    RunService.RenderStepped:Connect(function()
-        if not root.Visible then return end
-        if model then
-            -- Render Type drives the RIG: 3D spins it, 2D holds it static facing forward
-            -- (ang 0 = the rig's base pose, which faces the camera).
-            local ang = (PV.render == "3D") and (tick() * 0.7) % (math.pi * 2) or 0
-            local about = CFrame.new(CENTER) * CFrame.Angles(0, ang, 0) * CFrame.new(-CENTER)
-            model:PivotTo(about * basePivot)
-            for _, e in ipairs(edges3D) do e.CFrame = about * edgeBase[e] end
-            local bx, by, bw, bh = computeBox()          -- box sized like the live ESP
-            if bx then positionOverlays(bx, by, bw, bh) end
+    local PATTEX = { Hex = "fx_pat_hex", Stripes = "fx_pat_stripes", Dots = "fx_pat_dots", Circuit = "fx_pat_circuit" }
+    local function chamsDrop()
+        for _, c in ipairs(chm.clones) do pcall(function() c.part:Destroy() end) end
+        chm.clones, chm.key = {}, nil
+    end
+    local function wline(a, b, color, th, alpha)
+        chm.used += 1
+        local f = chm.lines[chm.used]
+        if not f then
+            f = new("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 4, Parent = overlay })
+            chm.lines[chm.used] = f
         end
-        syncFromESP()
-    end)
+        local d = b - a
+        f.Size = UDim2.fromOffset(d.Magnitude + th * 0.5, th)
+        f.Position = UDim2.fromOffset((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5)
+        f.Rotation = math.deg(math.atan2(d.Y, d.X))
+        f.BackgroundColor3, f.BackgroundTransparency = color, alpha
+        f.Visible = true
+    end
+    local function bodyOf(m)
+        local out = {}
+        for _, p in ipairs(m:GetDescendants()) do
+            if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" and p.Transparency < 0.95 then out[#out + 1] = p end
+        end
+        return out
+    end
+    local function chamsStep()
+        chm.used = 0
+        local CH = Koffee.Chams
+        local on = CH and model and Modules.chams and Modules.chams.Enabled
+        local style = nil
+        if on then
+            style = (CH.Split and PV.hidden) and (CH.HiddenStyle or "Wireframe") or (CH.Style or "Pattern")
+        end
+        local color = ESP.Colors.Visible
+        if on and Shared.chamsColor then
+            local ok, c = pcall(Shared.chamsColor, LocalPlayer, model:FindFirstChildOfClass("Humanoid"), PV.hidden == true, 7, false)
+            if ok and c then color = c end
+        end
+        local a = math.clamp(CH and CH.Alpha or 0.3, 0, 0.95)
+        local key = (style == "Pattern" or style == "Lit") and (style .. tostring(CH.Pattern)) or nil
+        if key ~= chm.key then
+            chamsDrop()
+            chm.key = key
+            if key then
+                for _, p in ipairs(bodyOf(model)) do
+                    local c = p:Clone()
+                    for _, d in ipairs(c:GetChildren()) do
+                        if not d:IsA("DataModelMesh") then d:Destroy() end
+                    end
+                    local sm = c:FindFirstChildWhichIsA("SpecialMesh")
+                    if sm then sm.TextureId = "" end
+                    c.Size = p.Size * 1.04
+                    c.Material = Enum.Material.SmoothPlastic
+                    local texs = {}
+                    if style == "Pattern" then
+                        local img = Shared._hfx and Shared._hfx.tex(PATTEX[CH.Pattern] or PATTEX.Hex) or ""
+                        for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
+                            texs[#texs + 1] = new("Texture", { Face = face, StudsPerTileU = 1.2, StudsPerTileV = 1.05,
+                                Texture = img, Parent = c })
+                        end
+                    end
+                    c.Parent = world
+                    chm.clones[#chm.clones + 1] = { part = c, src = p, texs = texs }
+                end
+            end
+        end
+        local off = (os.clock() * 0.5 * (CH and CH.Scroll or 1)) % 1.2
+        for _, c in ipairs(chm.clones) do
+            c.part.CFrame = c.src.CFrame
+            c.part.Color = color
+            if style == "Lit" then
+                c.part.Transparency = a
+            else
+                c.part.Transparency = 0.45 + a * 0.5
+                for _, t in ipairs(c.texs) do
+                    t.Color3 = color:Lerp(Color3.new(1, 1, 1), 0.35)
+                    t.Transparency = a * 0.5
+                    t.OffsetStudsU, t.OffsetStudsV = off, off
+                end
+            end
+        end
+        if style == "Wireframe" then
+            for _, p in ipairs(bodyOf(model)) do
+                local pts, ok = {}, true
+                for i, cn in ipairs(CORN) do
+                    local v = fcam:WorldToViewportPoint(p.CFrame:PointToWorldSpace(cn * p.Size))
+                    if v.Z <= 0 then ok = false; break end
+                    pts[i] = Vector2.new(v.X, v.Y)
+                end
+                if ok then
+                    for _, e in ipairs(EDGES) do
+                        if CH.Glow ~= false then wline(pts[e[1]], pts[e[2]], color, 5, 0.8) end
+                        wline(pts[e[1]], pts[e[2]], color:Lerp(Color3.new(1, 1, 1), 0.3), 1.5, a * 0.6)
+                    end
+                end
+            end
+        end
+        for i = chm.used + 1, #chm.lines do chm.lines[i].Visible = false end
+    end
 
+    -- spin + draw loop (idles when hidden)
+    RunService.RenderStepped:Connect(function()
+        if not root.Visible or Koffee.dead() or not model then return end
+        -- Render Type drives the RIG: 3D spins it, 2D holds it static facing forward
+        local ang = (PV.render == "3D") and (tick() * 0.7) % (math.pi * 2) or 0
+        local about = CFrame.new(CENTER) * CFrame.Angles(0, ang, 0) * CFrame.new(-CENTER)
+        model:PivotTo(about * basePivot)
+        if entry.rig then
+            local saved = (PV.npc and Shared.NPCESP) and Shared.espSwap(Shared.NPCESP) or nil
+            Shared._pvHidden = PV.hidden == true
+            ESP._cam, ESP._vp = fcam, Vector2.new(STAGE_W, STAGE_H)
+            local ok, err = pcall(Shared.espDrawRig, LocalPlayer, entry, fcam, cam.CFrame.Position, false)
+            ESP._cam, ESP._vp = nil, nil
+            if saved then Shared.espRestore(saved) end
+            Shared._pvErr = (not ok) and err or nil
+        end
+        local ok2, err2 = pcall(chamsStep)
+        Shared._pvChamsErr = (not ok2) and err2 or nil
+    end)
     -- settings popup
     local settings = new("Frame", { Name = "settings", Visible = false, BackgroundColor3 = Palette.Panel,
         BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 32),
@@ -33111,6 +33078,8 @@ end)()
     end
     setRender(PV.render == "2D" and "2D" or "3D")
     slider(settings, "Rig Size", 60, 160, PV.size, 0, function(v) PV.size = v; applyCamera() end)
+    configCheckbox(settings, "Behind Wall", PV.hidden, function(v) PV.hidden = v end)
+    configCheckbox(settings, "NPC ESP Look", PV.npc, function(v) PV.npc = v end)
     gearBtn.MouseButton1Click:Connect(function()
         WM.raise("esp")
         settings.Visible = not settings.Visible
@@ -33263,6 +33232,645 @@ end)()
 
     WM.makeDraggable(root, header, "keybinds")
     WM.attachBody("keybinds", root, { onShow = animShow, onHide = animHide })
+end)()
+
+-- v0.90.0 MEDIA window (the dock's music slot): a mini-player for local music. Audio
+-- files dropped in the executor workspace folder "Koffee-music" play through a local
+-- Sound; a same-named .lrc beside a track shows synced lyrics (word tags = karaoke).
+Koffee.Media = { Volume = 0.5, Repeat = "All", Shuffle = false, Last = "", Lyrics = true, List = false }
+registerConfig("media", Koffee.Media)
+;(function()
+    local WM = Koffee.Windows
+    if not WM then return end
+    local MC = Koffee.Media
+    local Palette = Theme.Palette
+    local GS = game:GetService("GuiService")
+    local DIR = "Koffee-music"
+    local AUDIO = { mp3 = true, ogg = true, wav = true, flac = true }
+    local W, LYR_H, LIST_H, LINE_H = 300, 132, 150, 24
+
+    local M = { tracks = {}, idx = 0, lines = nil, lineLbls = {}, cur = 0, scrubbing = false }
+    Shared.Media = M
+
+    local function fsOk() return listfiles and isfolder and makefolder and getcustomasset and true or false end
+    local function baseName(p) return (tostring(p):match("([^/\\]+)$")) or tostring(p) end
+    local function stem(n) return n:match("^(.*)%.[^.]+$") or n end
+    local function fmt(t)
+        t = math.max(0, math.floor(t or 0))
+        return string.format("%d:%02d", t // 60, t % 60)
+    end
+
+    -- :: lyrics :: a sidecar with the song's exact name. LRC ([mm:ss.xx] lines,
+    -- <mm:ss.xx> word karaoke), SRT, VTT (<hh:mm:ss.mmm> word karaoke), ASS/SSA
+    -- ({\k} karaoke) and plain TXT (unsynced, scrolls with the song)
+    local LYR = { lrc = 1, vtt = 2, srt = 3, ass = 4, ssa = 5, txt = 6 }
+    local function stamp(m, s) return (tonumber(m) or 0) * 60 + (tonumber(s) or 0) end
+    local function clock(str)
+        str = str:gsub(",", ".")
+        local h, m, sec = str:match("^(%d+):(%d+):(%d+%.?%d*)$")
+        if h then return tonumber(h) * 3600 + tonumber(m) * 60 + tonumber(sec) end
+        local m2, s2 = str:match("^(%d+):(%d+%.?%d*)$")
+        if m2 then return tonumber(m2) * 60 + tonumber(s2) end
+        return nil
+    end
+    local function eachLine(text)
+        local out = {}
+        for raw in (text .. "\n"):gmatch("([^\n]*)\n") do out[#out + 1] = (raw:gsub("\r", "")) end
+        return out
+    end
+    local function tidy(t) return (t:gsub("<[^>]->", ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")) end
+    local function wordsText(words)
+        local parts = {}
+        for _, wd in ipairs(words) do parts[#parts + 1] = wd.w end
+        return (table.concat(parts):gsub("^%s+", ""):gsub("%s+$", ""))
+    end
+
+    local function parseLrc(text)
+        local out, meta, offset = {}, {}, 0
+        for _, line in ipairs(eachLine(text)) do
+            local key, val = line:match("^%[(%a+):(.-)%]%s*$")
+            if key then
+                key = key:lower()
+                if key == "offset" then offset = (tonumber(val) or 0) / 1000 else meta[key] = val end
+            else
+                local times, rest = {}, line
+                while true do
+                    local m, s, after = rest:match("^%[(%d+):(%d+%.?%d*)%](.*)$")
+                    if not m then break end
+                    times[#times + 1] = stamp(m, s)
+                    rest = after
+                end
+                if #times > 0 then
+                    local words = nil
+                    if rest:find("<%d+:%d") then
+                        words = {}
+                        local lead = rest:match("^([^<]*)")
+                        if lead and lead:match("%S") then words[#words + 1] = { t = times[1], w = lead } end
+                        for m, s, w in rest:gmatch("<(%d+):(%d+%.?%d*)>([^<]*)") do
+                            words[#words + 1] = { t = stamp(m, s), w = w }
+                        end
+                        rest = wordsText(words)
+                    end
+                    rest = tidy(rest)
+                    for _, t in ipairs(times) do out[#out + 1] = { t = t, text = rest, words = words } end
+                end
+            end
+        end
+        for _, l in ipairs(out) do
+            l.t -= offset
+            if l.words then for _, wd in ipairs(l.words) do wd.t -= offset end end
+        end
+        return out, meta
+    end
+
+    -- SRT and VTT share the cue shape: a "start --> end" line, then text lines
+    local function parseCues(text)
+        local out, lines = {}, eachLine(text)
+        local i = 1
+        while i <= #lines do
+            local a, b = lines[i]:match("^%s*([%d:%.,]+)%s*%-%->%s*([%d:%.,]+)")
+            if a then
+                local t0, t1 = clock(a), clock(b)
+                local body = {}
+                i += 1
+                while i <= #lines and lines[i]:match("%S") do body[#body + 1] = lines[i]; i += 1 end
+                local raw = table.concat(body, " ")
+                local words = nil
+                if t0 and raw:find("<%d+:%d") then
+                    words = {}
+                    local lead = raw:match("^([^<]*)")
+                    if lead and lead:match("%S") then words[#words + 1] = { t = t0, w = tidy(lead) .. " " } end
+                    for ts, w in raw:gmatch("<([%d:%.]+)>([^<]*)") do
+                        local tt = clock(ts)
+                        if tt then words[#words + 1] = { t = tt, w = w } end
+                    end
+                    -- inline <c> / <i> tags leave empty chunks behind; drop them
+                    for k = #words, 1, -1 do if words[k].w == "" then table.remove(words, k) end end
+                    if #words == 0 then words = nil end
+                end
+                if t0 then
+                    out[#out + 1] = { t = t0, e = t1, text = words and wordsText(words) or tidy(raw), words = words }
+                end
+            else
+                i += 1
+            end
+        end
+        return out, {}
+    end
+
+    -- ASS / SSA: Dialogue lines in [Events]; {\k<centiseconds>} tags time each syllable
+    local function parseAss(text)
+        local out, fmtCols = {}, nil
+        for _, line in ipairs(eachLine(text)) do
+            local f = line:match("^Format:%s*(.+)$")
+            if f and f:find("Text") then
+                fmtCols = {}
+                for col in f:gmatch("[^,]+") do fmtCols[#fmtCols + 1] = (col:gsub("%s", "")) end
+            end
+            local d = line:match("^Dialogue:%s*(.+)$")
+            if d then
+                local cols = fmtCols or { "Layer", "Start", "End", "Style", "Name", "MarginL", "MarginR", "MarginV", "Effect", "Text" }
+                local vals, rest = {}, d
+                for c = 1, #cols - 1 do
+                    local v, after = rest:match("^([^,]*),(.*)$")
+                    vals[cols[c]] = v or ""
+                    rest = after or ""
+                end
+                local t0, t1 = clock(vals.Start or ""), clock(vals.End or "")
+                if t0 then
+                    rest = rest:gsub("\\[Nn]", " ")
+                    local words, at = nil, t0
+                    if rest:find("{[^}]*\\[kK][fo]?%d") then
+                        words = {}
+                        for tags, chunk in rest:gmatch("{([^}]*)}([^{]*)") do
+                            local cs = tags:match("\\[kK][fo]?(%d+)")
+                            words[#words + 1] = { t = at, w = chunk }
+                            at += (tonumber(cs) or 0) / 100
+                        end
+                    end
+                    local plain = rest:gsub("{[^}]*}", "")
+                    out[#out + 1] = { t = t0, e = t1, text = words and wordsText(words) or tidy(plain), words = words }
+                end
+            end
+        end
+        return out, {}
+    end
+
+    local function parseLyrics(path, text)
+        local ext = (path:match("%.([^.]+)$") or ""):lower()
+        local lines, meta
+        if ext == "lrc" then lines, meta = parseLrc(text)
+        elseif ext == "srt" or ext == "vtt" then lines, meta = parseCues(text)
+        elseif ext == "ass" or ext == "ssa" then lines, meta = parseAss(text)
+        else
+            lines = {}
+            for _, l in ipairs(eachLine(text)) do
+                if l:match("%S") then lines[#lines + 1] = { t = 0, text = tidy(l) } end
+            end
+            return lines, {}, true
+        end
+        table.sort(lines, function(a, b) return a.t < b.t end)
+        return lines, meta, false
+    end
+
+    local function scan()
+        local list = {}
+        if not fsOk() then M.tracks = list; return list end
+        pcall(function() if not isfolder(DIR) then makefolder(DIR) end end)
+        local ok, files = pcall(listfiles, DIR)
+        if not ok or type(files) ~= "table" then M.tracks = list; return list end
+        -- lyric sidecars keyed by the exact song name (without extension)
+        local lrcs, rank = {}, {}
+        for _, f in ipairs(files) do
+            local n = baseName(f)
+            local ext = (n:match("%.([^.]+)$") or ""):lower()
+            local r = LYR[ext]
+            if r then
+                local k = stem(n):lower()
+                if not rank[k] or r < rank[k] then lrcs[k], rank[k] = f, r end
+            end
+        end
+        for _, f in ipairs(files) do
+            local n = baseName(f)
+            local ext = (n:match("%.([^.]+)$") or ""):lower()
+            if AUDIO[ext] then
+                local s = stem(n)
+                local artist, title = s:match("^(.-)%s+%-%s+(.+)$")
+                list[#list + 1] = { path = f, name = n, title = title or s, artist = artist or "", lrc = lrcs[s:lower()] }
+            end
+        end
+        table.sort(list, function(a, b) return a.name:lower() < b.name:lower() end)
+        M.tracks = list
+        return list
+    end
+
+    local sound = KID.track(new("Sound", { Name = KID.name("media"), Volume = MC.Volume, Parent = game:GetService("SoundService") }))
+    M.sound = sound
+
+    -- :: window ::
+    local root = new("CanvasGroup", {
+        Name = KID.name("media"), Active = false, GroupTransparency = 0,
+        Position = UDim2.new(0, 24, 0, 300), Size = UDim2.fromOffset(W, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Palette.Background,
+        BackgroundTransparency = 0, BorderSizePixel = 0, Visible = false, ZIndex = 40, Parent = screen,
+    }, { corner(Theme.Radius.Large), stroke(Palette.Border),
+        new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
+        new("UIPadding", { PaddingBottom = UDim.new(0, 10) }) })
+    do
+        local p = WM.persist.pos and WM.persist.pos.media
+        if p then root.Position = UDim2.new(p[1], p[2], p[3], p[4]) end
+    end
+
+    local function iconBtn(parent, icon, size, pos, color)
+        local b = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = pos, Size = UDim2.fromOffset(size + 10, size + 10),
+            Parent = parent })
+        local ic = Koffee.lucideIcon(b, icon, size, color or Palette.TextMuted)
+        ic.AnchorPoint = Vector2.new(0.5, 0.5); ic.Position = UDim2.fromScale(0.5, 0.5)
+        b.MouseEnter:Connect(function() tween(ic, Theme.Animation.Fast, { ImageTransparency = 0.25 }) end)
+        b.MouseLeave:Connect(function() tween(ic, Theme.Animation.Fast, { ImageTransparency = 0 }) end)
+        return b, ic
+    end
+    local function setIcon(ic, name)
+        local tmp = Koffee.lucideIcon(ic.Parent, name, 1, Palette.Text)
+        ic.Image, ic.ImageRectOffset, ic.ImageRectSize = tmp.Image, tmp.ImageRectOffset, tmp.ImageRectSize
+        tmp:Destroy()
+    end
+
+    -- header: drag handle, title, the tiny info button, refresh, list
+    local header = new("Frame", { Name = "hdr", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 32),
+        LayoutOrder = 1, Parent = root })
+    local hic = Koffee.lucideIcon(header, "music", 14, Palette.TextMuted)
+    hic.AnchorPoint = Vector2.new(0, 0.5); hic.Position = UDim2.new(0, 14, 0.5, 0)
+    new("TextLabel", { BackgroundTransparency = 1, Text = "Media", FontFace = Theme.Fonts.Bold,
+        TextSize = Theme.Text.Header, TextColor3 = Palette.Text, TextXAlignment = Enum.TextXAlignment.Left,
+        Position = UDim2.fromOffset(34, 0), Size = UDim2.new(0, 50, 1, 0), Parent = header })
+    local infoBtn = iconBtn(header, "info", 10, UDim2.new(0, 90, 0.5, 0), Palette.TextFaint)
+    local listBtn, listIc = iconBtn(header, "list", 14, UDim2.new(1, -20, 0.5, 0))
+    local lyrBtn, lyrIc = iconBtn(header, "mic-vocal", 14, UDim2.new(1, -46, 0.5, 0))
+    local refBtn = iconBtn(header, "refresh-cw", 13, UDim2.new(1, -72, 0.5, 0))
+
+    -- now playing
+    local np = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 40), LayoutOrder = 2, Parent = root },
+        { new("UIPadding", { PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14) }) })
+    local titleLbl = new("TextLabel", { BackgroundTransparency = 1, Text = "Nothing playing", FontFace = Theme.Fonts.Bold,
+        TextSize = 15, TextColor3 = Palette.Text, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, 0, 0, 20), Parent = np })
+    local artistLbl = new("TextLabel", { BackgroundTransparency = 1, Text = "Drop music in " .. DIR, FontFace = Theme.Fonts.Medium,
+        TextSize = 12, TextColor3 = Palette.TextMuted, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, Position = UDim2.fromOffset(0, 20), Size = UDim2.new(1, 0, 0, 16), Parent = np })
+
+    -- progress (click or drag to seek)
+    local prog = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 3, Parent = root },
+        { new("UIPadding", { PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14) }) })
+    local track = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Palette.PanelElevated,
+        BorderSizePixel = 0, Position = UDim2.fromOffset(0, 6), Size = UDim2.new(1, 0, 0, 4), Parent = prog }, { pillCorner() })
+    local fill = new("Frame", { BackgroundColor3 = Palette.Accent, BorderSizePixel = 0, Size = UDim2.fromScale(0, 1),
+        Parent = track }, { pillCorner() })
+    local knob = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0, 0.5),
+        Size = UDim2.fromOffset(10, 10), BackgroundColor3 = Palette.Text, BorderSizePixel = 0, Parent = track },
+        { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+    local function timeLbl(ax)
+        return new("TextLabel", { BackgroundTransparency = 1, Text = "0:00", FontFace = Theme.Fonts.Mono, TextSize = 11,
+            TextColor3 = Palette.TextFaint, TextXAlignment = ax == 0 and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right,
+            AnchorPoint = Vector2.new(ax, 0), Position = UDim2.new(ax, 0, 0, 14), Size = UDim2.fromOffset(40, 14), Parent = prog })
+    end
+    local tNow, tEnd = timeLbl(0), timeLbl(1)
+
+    -- transport + volume
+    local ctl = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 40), LayoutOrder = 4, Parent = root })
+    local shufBtn, shufIc = iconBtn(ctl, "shuffle", 15, UDim2.new(0.5, -86, 0.5, 0))
+    local prevBtn = iconBtn(ctl, "skip-back", 17, UDim2.new(0.5, -44, 0.5, 0), Palette.Text)
+    local playBtn = new("TextButton", { Text = "", AutoButtonColor = false, AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(36, 36), BackgroundColor3 = Palette.Text,
+        BorderSizePixel = 0, Parent = ctl }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+    local playIc = Koffee.lucideIcon(playBtn, "play", 16, Palette.Background)
+    playIc.AnchorPoint = Vector2.new(0.5, 0.5); playIc.Position = UDim2.new(0.5, 1, 0.5, 0)
+    local nextBtn = iconBtn(ctl, "skip-forward", 17, UDim2.new(0.5, 44, 0.5, 0), Palette.Text)
+    local repBtn, repIc = iconBtn(ctl, "repeat", 15, UDim2.new(0.5, 86, 0.5, 0))
+
+    local vol = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22), LayoutOrder = 5, Parent = root })
+    local volBtn, volIc = iconBtn(vol, "volume-2", 13, UDim2.new(0, 24, 0.5, 0))
+    local vtrack = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Palette.PanelElevated,
+        BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 42, 0.5, 0),
+        Size = UDim2.new(1, -60, 0, 4), Parent = vol }, { pillCorner() })
+    local vfill = new("Frame", { BackgroundColor3 = Palette.TextMuted, BorderSizePixel = 0,
+        Size = UDim2.fromScale(MC.Volume, 1), Parent = vtrack }, { pillCorner() })
+
+    -- lyrics: every line is its own label in a strip that glides so the sung line
+    -- stays centred; the sung line fills word by word when the .lrc has word tags
+    local lyr = new("Frame", { BackgroundColor3 = Palette.Panel, BackgroundTransparency = 0.3, BorderSizePixel = 0,
+        ClipsDescendants = true, Size = UDim2.new(1, -20, 0, LYR_H), LayoutOrder = 6, Parent = root },
+        { corner(8), new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.22, 0), NumberSequenceKeypoint.new(0.78, 0),
+            NumberSequenceKeypoint.new(1, 1) }) }) })
+    local lyrWrap = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, LYR_H + 6), LayoutOrder = 6,
+        Parent = root })
+    lyr.Parent = lyrWrap
+    lyr.AnchorPoint = Vector2.new(0.5, 0); lyr.Position = UDim2.new(0.5, 0, 0, 4)
+    local strip = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), Parent = lyr })
+    local noLyr = new("TextLabel", { BackgroundTransparency = 1, Text = "", FontFace = Theme.Fonts.Medium, TextSize = 12,
+        TextColor3 = Palette.TextFaint, Size = UDim2.fromScale(1, 1), TextWrapped = true, Parent = lyr })
+
+    -- track list
+    local listWrap = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, LIST_H + 6), LayoutOrder = 7,
+        Visible = false, Parent = root })
+    local listBox = new("ScrollingFrame", { BackgroundColor3 = Palette.Panel, BackgroundTransparency = 0.3,
+        BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 4),
+        Size = UDim2.new(1, -20, 0, LIST_H), ScrollBarThickness = 3, ScrollBarImageColor3 = Palette.TextFaint,
+        CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = listWrap },
+        { corner(8), new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }),
+        new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4), PaddingLeft = UDim.new(0, 4),
+            PaddingRight = UDim.new(0, 8) }) })
+
+    -- info popup (the tiny "i"): how to import music and lyrics
+    -- lives under the header (outside the card's list layout) and overlays the card
+    header.ZIndex = 5
+    local info = new("Frame", { BackgroundColor3 = Palette.PanelElevated, BorderSizePixel = 0, Visible = false,
+        Position = UDim2.new(0, 10, 1, 2), Size = UDim2.new(1, -20, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        ZIndex = 45, Parent = header }, { corner(8), stroke(Palette.Border),
+        new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 12),
+            PaddingRight = UDim.new(0, 12) }),
+        new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }) })
+    local function infoText(order, text, head)
+        new("TextLabel", { BackgroundTransparency = 1, RichText = true, TextWrapped = true, ZIndex = 46,
+            FontFace = head and Theme.Fonts.Bold or Theme.Fonts.Medium, TextSize = head and 13 or 12, LineHeight = 1.1,
+            TextColor3 = head and Palette.Text or Palette.TextMuted, TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.fromScale(1, 0),
+            LayoutOrder = order, Text = text, Parent = info })
+    end
+    infoText(1, "Importing music", true)
+    infoText(2, "1. Open your executor's <b>workspace</b> folder. Koffee made a folder there called <b>" .. DIR .. "</b>.")
+    infoText(3, "2. Drop in .mp3, .ogg, .wav or .flac files. Name them <i>Artist - Title</i> to show the artist.")
+    infoText(4, "3. Press the refresh button at the top of the card.")
+    infoText(5, "Lyrics", true)
+    infoText(6, "Put a lyric file next to the song with the <b>exact same name</b>, like <i>Artist - Title.mp3</i> and <i>Artist - Title.lrc</i>.")
+    infoText(7, "Works with .lrc, .srt, .vtt, .ass, .ssa and .txt. Word-timed .lrc, .vtt word stamps and .ass karaoke tags fill in word by word. A .txt just scrolls along.")
+    infoText(8, "<font color=\"#6e6e78\">Click this card to close it.</font>")
+
+    -- :: playback ::
+    local function lyricsShown() return MC.Lyrics ~= false end
+    local function buildLyrics()
+        for _, l in ipairs(M.lineLbls) do l:Destroy() end
+        M.lineLbls, M.cur = {}, 0
+        local lines = M.lines
+        if not lines or #lines == 0 then
+            noLyr.Text = M.idx > 0 and "No lyrics for this track\nadd a lyric file with the same name" or ""
+            strip.Size = UDim2.new(1, 0, 0, 0)
+            return
+        end
+        noLyr.Text = ""
+        for i, l in ipairs(lines) do
+            local lbl = new("TextLabel", { BackgroundTransparency = 1, Text = l.text ~= "" and l.text or "...",
+                FontFace = Theme.Fonts.Bold, TextSize = 15, TextColor3 = Palette.Text, TextTransparency = 0.6,
+                AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, (i - 1) * LINE_H),
+                AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, LINE_H), Parent = strip },
+                { new("UIScale", {}), new("UIGradient", { Enabled = false }) })
+            M.lineLbls[i] = lbl
+        end
+        strip.Size = UDim2.new(1, 0, 0, #lines * LINE_H)
+        strip.Position = UDim2.fromOffset(0, LYR_H / 2 - LINE_H / 2)
+    end
+
+    local function paintList()
+        for _, c in ipairs(listBox:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+        if #M.tracks == 0 then
+            new("TextButton", { Text = fsOk() and ("No songs yet. Drop files in " .. DIR) or "Your executor has no file API",
+                AutoButtonColor = false, BackgroundTransparency = 1, FontFace = Theme.Fonts.Medium, TextSize = 12,
+                TextColor3 = Palette.TextFaint, Size = UDim2.new(1, 0, 0, 26), Parent = listBox })
+            return
+        end
+        for i, t in ipairs(M.tracks) do
+            local on = i == M.idx
+            local b = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Palette.Accent,
+                BackgroundTransparency = on and 0.82 or 1, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 30),
+                LayoutOrder = i, Parent = listBox }, { corner(6) })
+            new("TextLabel", { BackgroundTransparency = 1, Text = t.title, FontFace = Theme.Fonts.Bold, TextSize = 13,
+                TextColor3 = on and Palette.Accent or Palette.Text, TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, Position = UDim2.fromOffset(8, 2), Size = UDim2.new(1, -30, 0, 15), Parent = b })
+            new("TextLabel", { BackgroundTransparency = 1, Text = t.artist ~= "" and t.artist or t.name, FontFace = Theme.Fonts.Medium,
+                TextSize = 11, TextColor3 = Palette.TextFaint, TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, Position = UDim2.fromOffset(8, 16), Size = UDim2.new(1, -30, 0, 12), Parent = b })
+            if t.lrc then
+                local li = Koffee.lucideIcon(b, "mic-vocal", 11, Palette.TextFaint)
+                li.AnchorPoint = Vector2.new(1, 0.5); li.Position = UDim2.new(1, -6, 0.5, 0)
+            end
+            b.MouseEnter:Connect(function() if i ~= M.idx then b.BackgroundTransparency = 0.93 end end)
+            b.MouseLeave:Connect(function() b.BackgroundTransparency = (i == M.idx) and 0.82 or 1 end)
+            b.MouseButton1Click:Connect(function() M.play(i) end)
+        end
+    end
+
+    local function paintState()
+        setIcon(playIc, sound.IsPlaying and "pause" or "play")
+        playIc.Position = UDim2.new(0.5, sound.IsPlaying and 0 or 1, 0.5, 0)
+        shufIc.ImageColor3 = MC.Shuffle and Palette.Accent or Palette.TextMuted
+        setIcon(repIc, MC.Repeat == "One" and "repeat-1" or "repeat")
+        repIc.ImageColor3 = MC.Repeat == "Off" and Palette.TextMuted or Palette.Accent
+        setIcon(volIc, MC.Volume <= 0.001 and "volume-x" or "volume-2")
+        lyrIc.ImageColor3 = lyricsShown() and Palette.Text or Palette.TextMuted
+        listIc.ImageColor3 = MC.List and Palette.Text or Palette.TextMuted
+        lyrWrap.Visible = lyricsShown()
+        listWrap.Visible = MC.List == true
+    end
+
+    function M.play(i)
+        local t = M.tracks[i]
+        if not t then return end
+        M.idx = i
+        MC.Last = t.name
+        local ok, id = pcall(getcustomasset, t.path)
+        if not ok or not id then
+            if Koffee.notify then Koffee.notify("Media", "Could not load " .. t.name, { severity = "error" }) end
+            return
+        end
+        sound:Stop()
+        sound.SoundId = id
+        sound.TimePosition = 0
+        sound:Play()
+        titleLbl.Text = t.title
+        artistLbl.Text = t.artist ~= "" and t.artist or "Unknown artist"
+        M.lines, M.unsynced = nil, false
+        if t.lrc and readfile then
+            local okr, txt = pcall(readfile, t.lrc)
+            if okr and type(txt) == "string" then
+                local okp, lines, meta, unsynced = pcall(parseLyrics, t.lrc, txt)
+                if not okp then lines, meta, unsynced = {}, {}, false end
+                M.lines, M.unsynced = lines, unsynced
+                if meta.ti and meta.ti ~= "" then titleLbl.Text = meta.ti end
+                if meta.ar and meta.ar ~= "" then artistLbl.Text = meta.ar end
+            end
+        end
+        buildLyrics()
+        paintList()
+        paintState()
+    end
+    local function step(dir)
+        local n = #M.tracks
+        if n == 0 then return end
+        if MC.Shuffle and n > 1 then
+            local j = M.idx
+            while j == M.idx do j = math.random(n) end
+            M.play(j)
+        else
+            M.play(((M.idx - 1 + dir) % n) + 1)
+        end
+    end
+    local function toggle()
+        if M.idx == 0 then
+            if #M.tracks == 0 then scan() end
+            if #M.tracks > 0 then M.play(1) end
+            return
+        end
+        -- the remembered track is selected but not loaded yet
+        if sound.SoundId == "" then M.play(M.idx); return end
+        if sound.IsPlaying then sound:Pause() else sound:Resume() end
+        paintState()
+    end
+    local function refresh()
+        local cur = M.tracks[M.idx]
+        scan()
+        M.idx = 0
+        if cur then
+            for i, t in ipairs(M.tracks) do if t.path == cur.path then M.idx = i end end
+        end
+        paintList()
+    end
+
+    sound.Ended:Connect(function()
+        if Koffee.dead() then return end
+        if MC.Repeat == "One" then
+            sound.TimePosition = 0; sound:Play()
+        elseif MC.Repeat == "All" or MC.Shuffle or M.idx < #M.tracks then
+            step(1)
+        end
+        paintState()
+    end)
+
+    playBtn.MouseButton1Click:Connect(toggle)
+    prevBtn.MouseButton1Click:Connect(function()
+        -- a few seconds in, "back" restarts the song first
+        if sound.TimePosition > 3 then sound.TimePosition = 0 else step(-1) end
+    end)
+    nextBtn.MouseButton1Click:Connect(function() step(1) end)
+    shufBtn.MouseButton1Click:Connect(function() MC.Shuffle = not MC.Shuffle; paintState() end)
+    repBtn.MouseButton1Click:Connect(function()
+        MC.Repeat = ({ Off = "All", All = "One", One = "Off" })[MC.Repeat] or "All"
+        paintState()
+    end)
+    lyrBtn.MouseButton1Click:Connect(function() MC.Lyrics = not lyricsShown(); paintState() end)
+    listBtn.MouseButton1Click:Connect(function() MC.List = not MC.List; paintState() end)
+    refBtn.MouseButton1Click:Connect(refresh)
+    infoBtn.MouseButton1Click:Connect(function() info.Visible = not info.Visible end)
+    info.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then info.Visible = false end
+    end)
+    local lastVol = MC.Volume > 0 and MC.Volume or 0.5
+    volBtn.MouseButton1Click:Connect(function()
+        if MC.Volume > 0.001 then lastVol = MC.Volume; MC.Volume = 0 else MC.Volume = lastVol end
+        paintState()
+    end)
+
+    -- scrubbing: mouse location minus the inset is AbsolutePosition space
+    local dragging = nil
+    local function fracOn(bar)
+        local m = UserInputService:GetMouseLocation() - GS:GetGuiInset()
+        return math.clamp((m.X - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+    end
+    local function applyDrag()
+        if dragging == track then
+            if sound.TimeLength > 0 then sound.TimePosition = fracOn(track) * sound.TimeLength end
+        elseif dragging == vtrack then
+            MC.Volume = fracOn(vtrack)
+        end
+    end
+    track.MouseButton1Down:Connect(function() dragging = track; applyDrag() end)
+    vtrack.MouseButton1Down:Connect(function() dragging = vtrack; applyDrag() end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then applyDrag() end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 and dragging then
+            dragging = nil
+            paintState()
+        end
+    end)
+
+    -- per frame: progress, volume, lyric scroll + karaoke fill
+    local HI, LO = Palette.Text, Color3.fromRGB(110, 110, 120)
+    RunService.RenderStepped:Connect(function(dt)
+        if Koffee.dead() then pcall(function() sound:Stop() end); return end
+        sound.Volume = MC.Volume * 1
+        vfill.Size = UDim2.fromScale(MC.Volume, 1)
+        if not root.Visible then return end
+        local len, pos = sound.TimeLength, sound.TimePosition
+        local f = len > 0 and math.clamp(pos / len, 0, 1) or 0
+        fill.Size = UDim2.fromScale(f, 1)
+        knob.Position = UDim2.fromScale(f, 0.5)
+        knob.Size = UDim2.fromOffset(dragging == track and 12 or 10, dragging == track and 12 or 10)
+        tNow.Text, tEnd.Text = fmt(pos), fmt(len)
+        local lines = M.lines
+        if not (lines and #lines > 0 and lyricsShown()) then return end
+        local cur = 0
+        if M.unsynced then
+            -- no timings: glide through the text at the song's pace, no highlight
+            cur = len > 0 and math.clamp(math.floor(f * #lines) + 1, 1, #lines) or 1
+        else
+            for i, l in ipairs(lines) do if l.t <= pos + 0.05 then cur = i else break end end
+            -- SRT / VTT / ASS cues end; between cues nothing is being sung
+            local cl = lines[cur]
+            if cl and cl.e and pos > cl.e + 0.05 and lines[cur + 1] then cur = -cur end
+        end
+        local gap = cur < 0
+        cur = math.abs(cur)
+        local target = LYR_H / 2 - LINE_H / 2 - (math.max(cur, 1) - 1) * LINE_H
+        local y = strip.Position.Y.Offset
+        strip.Position = UDim2.fromOffset(0, y + (target - y) * math.min(dt * 10, 1))
+        local maxW = lyr.AbsoluteSize.X - 20
+        for i, lbl in ipairs(M.lineLbls) do
+            local d = math.abs(i - cur)
+            local lit = i == cur and not gap and not M.unsynced
+            local sc = lbl:FindFirstChildOfClass("UIScale")
+            local tb = lbl.TextBounds.X
+            local fit = (tb > 0 and maxW > 0) and math.min(1, maxW / tb) or 1
+            sc.Scale = fit * (lit and 1.06 or 1)
+            lbl.TextTransparency = lit and 0 or math.clamp(0.45 + math.max(d, 1) * 0.15, 0, 0.9)
+            local g = lbl:FindFirstChildOfClass("UIGradient")
+            local l = lines[i]
+            if lit and l.words and #l.words > 0 then
+                -- share of the line sung so far, by characters
+                local total, done = 0, 0
+                for wi, wd in ipairs(l.words) do
+                    local nxt = l.words[wi + 1]
+                    local wEnd = nxt and nxt.t or l.e or (lines[i + 1] and lines[i + 1].t or wd.t + 0.6)
+                    local n = #wd.w
+                    total += n
+                    if pos >= wEnd then done += n
+                    elseif pos > wd.t then done += n * math.clamp((pos - wd.t) / math.max(wEnd - wd.t, 0.05), 0, 1) end
+                end
+                local p = total > 0 and math.clamp(done / total, 0.001, 0.998) or 0.001
+                g.Enabled = true
+                g.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Palette.Accent), ColorSequenceKeypoint.new(p, Palette.Accent),
+                    ColorSequenceKeypoint.new(math.min(p + 0.001, 0.999), LO), ColorSequenceKeypoint.new(1, LO) })
+            else
+                g.Enabled = false
+                lbl.TextColor3 = HI
+            end
+        end
+    end)
+
+    local function animShow()
+        root.Visible = true
+        info.Visible = false
+        if #M.tracks == 0 then
+            scan()
+            if MC.Last ~= "" and M.idx == 0 then
+                for i, t in ipairs(M.tracks) do if t.name == MC.Last then M.idx = i end end
+            end
+        end
+        paintList()
+        paintState()
+        local sel = M.tracks[M.idx]
+        if sel and sound.SoundId == "" then
+            titleLbl.Text = sel.title
+            artistLbl.Text = sel.artist ~= "" and sel.artist or "Unknown artist"
+            noLyr.Text = "Press play"
+        end
+        if M.idx == 0 then noLyr.Text = #M.tracks > 0 and "Press play" or ("Drop music in " .. DIR .. "\npress the tiny i for help") end
+        root.GroupTransparency = 1
+        tween(root, Theme.Animation.Menu, { GroupTransparency = 0 })
+    end
+    local function animHide()
+        tween(root, Theme.Animation.Menu, { GroupTransparency = 1 })
+        task.delay(Koffee.Anim.wait(0.22), function()
+            if not WM.shouldShow("media") then root.Visible = false end
+        end)
+    end
+
+    -- the folder exists from the first load, so the info steps are true
+    task.spawn(function() pcall(function() if fsOk() and not isfolder(DIR) then makefolder(DIR) end end) end)
+    WM.makeDraggable(root, header, "media")
+    WM.attachBody("media", root, { onShow = animShow, onHide = animHide })
 end)()
 
 -- v0.72.0 TOASTS. Bottom-right stack, max 3 visible, overflow queues. Each card
