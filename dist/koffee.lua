@@ -33123,12 +33123,20 @@ local _preMenuMouseBehavior, _preMenuMouseIcon, _preMenuCamMode = nil, nil, nil
 -- camera re-locks it EVERY frame during camera update, so the fix is to re-assert
 -- after it: RenderPriority.Last (2000) runs after Camera (200), where 3rd Person
 -- and the aimbot bind.
-local MFREE = KID.name("mfree")
+-- v0.90.0: unique per load (a dying run's unbind by name would hit the new one),
+-- stands down while right-click is held (the camera locks the mouse to turn, and
+-- freeing it every frame left one frame of turning per click), and stops once dead.
+local MFREE = KID.name("mfree") .. math.random(1, 1e9)
 local function holdMouseFree(on)
     pcall(function() RunService:UnbindFromRenderStep(MFREE) end)
     if not on then return end
     pcall(function()
         RunService:BindToRenderStep(MFREE, Enum.RenderPriority.Last.Value, function()
+            if Koffee.dead() then
+                pcall(function() RunService:UnbindFromRenderStep(MFREE) end)
+                return
+            end
+            if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
             if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
                 UserInputService.MouseBehavior = Enum.MouseBehavior.Default
             end
@@ -33217,6 +33225,10 @@ Shared.setWindowOpen = setWindowOpen
 window.GroupTransparency = 0
 window.Visible = true
 setBackgroundActive(true)
+-- v0.90.0: the menu opens on load, so free the cursor the same way a reopen does
+_preMenuMouseBehavior = UserInputService.MouseBehavior
+_preMenuMouseIcon = UserInputService.MouseIconEnabled
+holdMouseFree(true)
 
 -- v0.62.0 multi-window framework (Matcha-style): a window-switcher bar + the
 -- window-manager plumbing (registry / z-order / drag / persistence) every future
