@@ -5249,6 +5249,8 @@ local function loadSnapshot(data)
     -- v0.55.0: re-apply avatar deco against the freshly loaded accessory list even
     -- when the module's on/off state did not change (so a load updates the deco).
     if Shared.Deco and Shared.Deco.apply then pcall(Shared.Deco.apply) end
+    -- v0.90.0: a config saved while morphed brings that morph back
+    if Shared.Morph and Shared.Morph.onConfigLoaded then pcall(Shared.Morph.onConfigLoaded) end
     if rebuildConfigTabs then pcall(rebuildConfigTabs) end
     -- v0.0.96: the Arraylist option is registered state too, so a load can flip
     -- it: re-apply the actual column visibility (the rebuilt tab's checkbox
@@ -24379,6 +24381,7 @@ registerConfig("morph", Koffee.Morph)
         if MO.Emotes ~= false and M.emotes then writeEmotes(hum, M.emotes) end
         if M.src and M.src ~= src then pcall(function() M.src:Destroy() end) end
         M.src = src
+        M.target = text or MO.Target
         local ok2, nm = pcall(function() return Players:GetNameFromUserIdAsync(uid) end)
         M.name = (plr and plr.Name) or (ok2 and nm) or tostring(uid)
         setStatus("morphed into " .. M.name .. ((MO.Emotes ~= false and noEmotes) and " (they have no emotes, kept yours)" or ""))
@@ -24390,10 +24393,21 @@ registerConfig("morph", Koffee.Morph)
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if hum and M.origEmotes then pcall(writeEmotes, hum, M.origEmotes) end
         if M.src then pcall(function() M.src:Destroy() end) end
-        M.src, M.name, M.emotes = nil, nil, nil
+        M.src, M.name, M.emotes, M.target = nil, nil, nil, nil
         setStatus("back to yourself")
     end
 
+    -- after a config load: Morph was on when it was saved, so become its target (even
+    -- when already morphed into someone else); saved off means back to yourself
+    function M.onConfigLoaded()
+        local on = Modules.morph and Modules.morph.Enabled
+        local want = tostring(MO.Target or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if on and want ~= "" then
+            if M.target ~= want then task.spawn(M.morph, want) end
+        elseif M.src then
+            task.spawn(M.revert)
+        end
+    end
     registerModule("morph", "Morph", function()
         if not M.src then task.spawn(M.morph) end   -- the Morph button already did it
     end, function()
