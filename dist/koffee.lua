@@ -3003,7 +3003,7 @@ end
 -- Options flag + Team Check config:
 --   MyTeams      : Team NAMES the user marked "my team" (allies -> skipped)
 --   AdvancedTeam : use automatic isSameTeam heuristic instead of manual list
-local Shared = { IgnoreFriends = false, AdvancedTeam = false, MyTeams = {} }
+local Shared = { IgnoreFriends = false, IgnoreFriendsScope = "Everything", AdvancedTeam = false, MyTeams = {} }
 -- v0.0.97 Target Lock: type a player name, toggle the feature on, hit the keybind
 -- to "activate": while active, the named player is the ONLY target for aimbot,
 -- silent aim, trigger bot AND the only player ESP renders. Deactivate (hit the
@@ -3067,6 +3067,12 @@ end
 -- is `plr` a legal aim / trigger target? Exclude = never; lock engaged = ONLY the
 -- Prioritize set; otherwise the normal team-check + ignore-friends filters apply.
 -- (Prioritize is dormant while the lock is off; None defers to those filters.)
+-- v0.90.0: Ignore Friends can cover only combat, only visuals, or everything (default)
+function Shared.friendIgnored(plr, kind)
+    if not (Shared.IgnoreFriends and isFriend and isFriend(plr)) then return false end
+    local sc = Shared.IgnoreFriendsScope or "Everything"
+    return sc == "Everything" or sc == kind
+end
 function Shared.aimAllowed(plr, teamCheck)
     local mark = Shared.targetMark(plr)
     if mark == "exclude" then return false end
@@ -3074,7 +3080,7 @@ function Shared.aimAllowed(plr, teamCheck)
         return mark == "prioritize"
     end
     if teamCheck and isTeammate and isTeammate(plr) then return false end
-    if Shared.IgnoreFriends and isFriend and isFriend(plr) then return false end
+    if Shared.friendIgnored(plr, "Combat") then return false end
     return true
 end
 -- v0.65.0: the custom-graph tier of targetMark. A Custom Features "Target Status"
@@ -7603,7 +7609,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- v0.0.46: team gate via isTeammate (manual team list or Advanced auto-detect)
         -- + Options "Ignore Friends" gate, shared with the combat systems.
         local same = (not isNPC) and isTeammate(plr) or false
-        if not isNPC and ((same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr))) then
+        if not isNPC and ((same and ESP.Config.TeamCheck) or Shared.friendIgnored(plr, "Visuals")) then
             hideRigVisuals(rig); return
         end
         -- v0.64.1: player-list Exclude hides the rig from ESP too (not just aim).
@@ -8309,6 +8315,11 @@ World.FX = {
                   Color = Color3.fromRGB(255, 140, 60) },
     Fireflies = { Enabled = false, Density = 22, Size = 0.35, Reach = 1,
                   Color = Color3.fromRGB(190, 255, 150) },
+    -- v0.90.0: the Shapes trail's stars as weather. Style "Stars" = rounded stars,
+    -- "Mixed" = stars, snowflakes, clouds, hearts and moons.
+    Stars     = { Enabled = false, Density = 30, Speed = 1.0, Size = 0.6, Sway = 30, Spin = 60, Wind = 0,
+                  Reach = 1, Style = "Stars", Color = Color3.fromRGB(170, 220, 255),
+                  Color2 = Color3.fromRGB(255, 175, 220) },
 }
 registerConfig("world_fx", World.FX)
 
@@ -12955,7 +12966,7 @@ local Combat = {
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
                 local char = plr.Character
-                if char and not (Shared.IgnoreFriends and isFriend(plr)) then
+                if char and not Shared.friendIgnored(plr, "Visuals") then
                     local hum = char:FindFirstChildOfClass("Humanoid")
                     if hum and hum.Health > 0 then
                         local part = char:FindFirstChild("Head")
@@ -16652,6 +16663,58 @@ end)()
         pcall(function() em.Squash = NumberSequence.new(0) end)
     end
 
+    -- v0.90.0 STARS: slow falling shapes that twinkle and spin, landing like snow.
+    -- Mixed spreads the density over one emitter per shape (an emitter holds one texture).
+    -- a tall slab (spawning from above your head down past your feet) so the air is
+    -- full of stars right away instead of waiting on them to fall from the ceiling
+    local STAR_SLAB = Vector3.new(200, 60, 200)
+    local STAR_UP = 20
+    local STAR_TEX = { "fx_star_round", "fx_snowflake", "fx_cloud", "fx_heart", "fx_moon" }
+    local function stepStars()
+        local cfg = World.FX.Stars
+        if not cfg then return end
+        local rr = reachOf(cfg)
+        local n = cfg.Style == "Mixed" and #STAR_TEX or 1
+        for i = 1, #STAR_TEX do
+            local key = "stars" .. i
+            local on = cfg.Enabled and i <= n
+            local em, h = emitterFor(key, slab(STAR_SLAB, rr))
+            if em then
+                if em.Enabled ~= on then em.Enabled = on end
+                if on then
+                    parkAbove(h, STAR_UP)
+                    local drop = dropToGround(Workspace.CurrentCamera)
+                    if dirty(key, table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind, cfg.Sway, cfg.Spin,
+                        cfg.Style, rr, drop, tostring(cfg.Color), tostring(cfg.Color2) }, "|")) then
+                        local fall = 2.4 * math.max(cfg.Speed, 0.05)
+                        local DRAG = 1.3
+                        em.Texture = tex(STAR_TEX[i])
+                        em.Rate = math.max(cfg.Density / n, 0.5)
+                        em.EmissionDirection = Enum.NormalId.Bottom
+                        em.Speed = NumberRange.new(fall * 0.7, fall * 1.3)
+                        em.Lifetime = NumberRange.new((drop + STAR_UP) / (fall * 0.7),
+                            (drop + STAR_UP) / (fall * 0.7) * 1.1)
+                        em.Acceleration = Vector3.new(cfg.Wind, -(fall * DRAG), cfg.Wind * 0.6)
+                        em.Drag = DRAG
+                        em.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, cfg.Size * 0.6),
+                            NumberSequenceKeypoint.new(0.5, cfg.Size, cfg.Size * 0.3), NumberSequenceKeypoint.new(1, cfg.Size * 0.8) })
+                        em.Color = ColorSequence.new(cfg.Color, cfg.Color2 or cfg.Color)
+                        -- a slow twinkle over the fall
+                        em.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1),
+                            NumberSequenceKeypoint.new(0.06, 0.15), NumberSequenceKeypoint.new(0.3, 0.45),
+                            NumberSequenceKeypoint.new(0.5, 0.1), NumberSequenceKeypoint.new(0.72, 0.5),
+                            NumberSequenceKeypoint.new(0.92, 0.15), NumberSequenceKeypoint.new(1, 1) })
+                        em.SpreadAngle = Vector2.new(cfg.Sway, cfg.Sway)
+                        em.Rotation = NumberRange.new(0, 360)
+                        em.RotSpeed = NumberRange.new(-cfg.Spin, cfg.Spin)
+                        em.LightEmission = 0.6
+                        pcall(function() em.Squash = NumberSequence.new(0) end)
+                    end
+                end
+            end
+        end
+    end
+
     -- :: hit effects ::
     -- v0.9.0 REBUILD. Two things were wrong with v0.7 beyond it being flat. It drew
     -- into the ScreenGui, so an effect on someone behind a wall painted over the
@@ -16950,6 +17013,7 @@ end)()
         stepSakura()
         stepEmbers()
         stepFireflies()
+        stepStars()
         drawHitFx()
     end)
 end)()
@@ -17680,6 +17744,8 @@ Koffee.SelfFX = {
                AIType = "Ghost", AIDelay = 0.07, AIFade = 0.45, AIAlpha = 0.25, AIRise = 0, AIShrink = false,
                AIFadeTo = false, AIAccessories = false, AIItem = false, AIMoving = true },
     -- v0.90.0 motion smear: glowing copies left between frames by your held item and body
+    -- v0.90.0: who the self effects play on: "Self" | "Self + Targets" | "Targets" | "Everyone Else"
+    ApplyTo = "Self", OthersMax = 8,
     Smear  = { Color = Color3.fromRGB(170, 255, 205), Color2 = Color3.fromRGB(70, 150, 120), Target = "Item + Body",
                Type = "Neon", Fade = 0.25, Alpha = 0.82, Density = 3, MinMove = 0.08, IdleDrift = true, IdleRise = 1 },
     Hat    = { Color = Color3.fromRGB(217, 150, 95), Radius = 1.7, Height = 0.8, Alpha = 0.35, Rim = true,
@@ -17723,7 +17789,70 @@ end
     local FX = Koffee.SelfFX
     local WHITE = Color3.new(1, 1, 1)
     local function H() return Shared._hfx end
-    local function myChar() return LocalPlayer.Character end
+    -- v0.90.0 APPLY TO: effects run once per subject (you, your targets, or everyone
+    -- else). SUB.char is the character being drawn this pass; every per-effect state
+    -- table is swapped in per subject by SUB.run below.
+    local SUB = { char = nil, self = true, ctx = {} }
+    local function myChar() return SUB.char or LocalPlayer.Character end
+    function Shared.fxSelfOn()
+        local m = FX.ApplyTo or "Self"
+        return m == "Self" or m == "Self + Targets"
+    end
+    -- the characters effects play on this frame; aim and silent targets both count
+    function Shared.fxSubjects()
+        local mode = FX.ApplyTo or "Self"
+        local out, seen = {}, {}
+        local function add(ch)
+            if not (ch and ch.Parent) or seen[ch] then return end
+            local hum = ch:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health <= 0 then return end
+            seen[ch] = true
+            out[#out + 1] = ch
+        end
+        if mode == "Self" or mode == "Self + Targets" then add(LocalPlayer.Character) end
+        if mode == "Self + Targets" or mode == "Targets" then
+            local C = Shared.Combat
+            if C then
+                for _, t in ipairs({ C.Aim and C.Aim._target, C.Silent and C.Silent._target }) do
+                    add(t and t.Character)
+                end
+            end
+            -- each switched-on aim module's own best pick (its FOV / priority), so an
+            -- aimbot on distance and a silent aim on crosshair show on both people
+            local now = os.clock()
+            if now - (SUB.bestAt or 0) > 0.1 and Shared.crosshairTarget then
+                SUB.bestAt, SUB.best = now, {}
+                for _, pair in ipairs({ { "aimbot", "Aim" }, { "silentaim", "Silent" } }) do
+                    local m = Modules[pair[1]]
+                    if m and m.Enabled then
+                        local ok, t = pcall(Shared.crosshairTarget, pair[2])
+                        if ok and t then SUB.best[#SUB.best + 1] = t end
+                    end
+                end
+            end
+            for _, t in ipairs(SUB.best or {}) do add(t.Character) end
+            -- a pick that flips between people keeps its effects a moment, instead of
+            -- tearing them down and rebuilding them every tick
+            SUB.sticky = SUB.sticky or {}
+            for _, ch in ipairs(out) do SUB.sticky[ch] = now + 0.6 end
+            for ch, untilT in pairs(SUB.sticky) do
+                if untilT < now or not ch.Parent then SUB.sticky[ch] = nil else add(ch) end
+            end
+        elseif mode == "Everyone Else" then
+            local cam = Workspace.CurrentCamera
+            local list = {}
+            for _, p in ipairs(Players:GetPlayers()) do
+                local ch = p.Character
+                local r = ch and ch:FindFirstChild("HumanoidRootPart")
+                if p ~= LocalPlayer and r and cam and not Shared.friendIgnored(p, "Visuals") then
+                    list[#list + 1] = { ch, (r.Position - cam.CFrame.Position).Magnitude }
+                end
+            end
+            table.sort(list, function(a, b) return a[2] < b[2] end)
+            for i = 1, math.min(#list, math.max(math.floor(FX.OthersMax or 8), 1)) do add(list[i][1]) end
+        end
+        return out
+    end
     local function myRoot()
         local c = myChar()
         return c and c:FindFirstChild("HumanoidRootPart")
@@ -17783,6 +17912,7 @@ end
         local airAt
         jumpConn = hum.StateChanged:Connect(function(_, new)
             if Koffee.dead() or not (Modules.selffx_jump and Modules.selffx_jump.Enabled) then return end
+            if not Shared.fxSelfOn() then return end
             if new == Enum.HumanoidStateType.Jumping then
                 jumpCircle()
                 airAt = os.clock()
@@ -17980,7 +18110,7 @@ end
             for p in pairs(seen) do echo.copy(p, p.CFrame, io) end
         end
     end
-    registerModule("selffx_smear", "Motion Smear", function() end, function() smear.last = {} end)
+    registerModule("selffx_smear", "Motion Smear", function() end, function() if SUB.dropAll then SUB.dropAll("smear") end end)
     -- v0.89.0 GLASS trail: clear glass along your path that only reflects. A pane is
     -- an exact planar mirror: the nearby world (and you, clothes and all) is mirrored
     -- across it, and a camera at your eye looks straight into the plane with its
@@ -18461,11 +18591,14 @@ end
             trail.ghostAt = now
             ghost(cfg, c)
         end
-        if style == "Glass" then glass.step(cfg, c, r) elseif glass.last then glass.clear() end
+        if style == "Glass" and SUB.self then glass.step(cfg, c, r) end
         if style == "Shapes" then shapes.step(cfg, c, r) elseif shapes.host then shapes.clear() end
     end
-    trailExtraDrop = function() glass.clear(); shapes.clear() end
-    registerModule("selffx_trail", "Trail", function() end, function() trailDrop() end)
+    trailExtraDrop = function()
+        if SUB.self then glass.clear() end
+        shapes.clear()
+    end
+    registerModule("selffx_trail", "Trail", function() end, function() if SUB.dropAll then SUB.dropAll("trail") end end)
 
     -- :: china hat :: cone adornment over the head plus a glowing rim; hidden in
     -- first person where it would fill the screen.
@@ -18561,7 +18694,7 @@ end
         hat.rimImg.ImageColor3 = col(cfg, 0.5):Lerp(WHITE, 0.35)
         hat.rimImg.ImageTransparency = (firstPerson or not cfg.Rim) and 1 or 0.1
     end
-    registerModule("selffx_hat", "China Hat", function() end, function() hatDrop() end)
+    registerModule("selffx_hat", "China Hat", function() end, function() if SUB.dropAll then SUB.dropAll("hat") end end)
 
     -- :: target resolution :: Locked = what aim / silent actually hold right now;
     -- Best = the aimbot's best candidate even before you engage (10Hz sweep).
@@ -18815,6 +18948,90 @@ end
     end
     registerModule("tgt_hud", "Target HUD", function() end, function() hudDrop() end)
 
+    -- one context per subject; the shared singletons (trail, hat, smear, shapes) are
+    -- swapped in for each pass and written back after it
+    local function newCtx()
+        return { trail = {}, hat = {}, smear = { last = {}, still = 0, idleAt = 0, t = os.clock() }, sh = {}, jump = {} }
+    end
+    local function swapIn(k)
+        trail, hat, smear = k.trail, k.hat, k.smear
+        shapes.host, shapes.ems, shapes.acc = k.sh.host, k.sh.ems, k.sh.acc
+    end
+    local function swapOut(k)
+        k.trail, k.hat, k.smear = trail, hat, smear
+        k.sh.host, k.sh.ems, k.sh.acc = shapes.host, shapes.ems, shapes.acc
+    end
+    local DROPS = { trail = function() trailDrop() end, hat = function() hatDrop() end,
+        smear = function() smear.last = {} end }
+    function SUB.dropAll(which)
+        for key, k in pairs(SUB.ctx) do
+            SUB.char, SUB.self = (key ~= "self") and key or nil, key == "self"
+            swapIn(k)
+            for name, fn in pairs(DROPS) do
+                if not which or which == name then pcall(fn) end
+            end
+            swapOut(k)
+        end
+        SUB.char, SUB.self = nil, true
+    end
+    -- other people's jumps are polled (their state replicates; we can't hook their events)
+    local function pollJump(k, ch)
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        local r = ch:FindFirstChild("HumanoidRootPart")
+        if not (hum and r) then return end
+        local air = hum.FloorMaterial == Enum.Material.Air
+        local j = k.jump
+        if air and not j.air and r.AssemblyLinearVelocity.Y > 6 then
+            j.air = os.clock()
+            jumpCircle()
+        elseif not air and j.air then
+            local t = os.clock() - j.air
+            j.air = nil
+            if t > 0.3 then landFx(t) end
+        elseif air and not j.air then
+            j.air = os.clock()
+        end
+    end
+    function SUB.run()
+        local subs = Shared.fxSubjects()
+        local seen = {}
+        for _, ch in ipairs(subs) do
+            local key = (ch == LocalPlayer.Character) and "self" or ch
+            local k = SUB.ctx[key]
+            if not k then k = newCtx(); SUB.ctx[key] = k end
+            seen[key] = true
+            SUB.char, SUB.self = ch, key == "self"
+            swapIn(k)
+            if Modules.selffx_trail.Enabled then pcall(trailStep) end
+            if Modules.selffx_smear.Enabled then pcall(smearStep) end
+            if Modules.selffx_hat.Enabled then pcall(hatStep) end
+            if not SUB.self and Modules.selffx_jump.Enabled then pcall(pollJump, k, ch) end
+            swapOut(k)
+        end
+        -- anyone who stopped being a subject loses their effects
+        for key, k in pairs(SUB.ctx) do
+            if not seen[key] then
+                SUB.char, SUB.self = (key ~= "self") and key or nil, key == "self"
+                swapIn(k)
+                for _, fn in pairs(DROPS) do pcall(fn) end
+                swapOut(k)
+                SUB.ctx[key] = nil
+            end
+        end
+        SUB.char, SUB.self = nil, true
+    end
+    -- a respawned you is a new character, but still "self"
+    LocalPlayer.CharacterAdded:Connect(function()
+        local k = SUB.ctx.self
+        if k then
+            SUB.char, SUB.self = nil, true
+            swapIn(k)
+            for _, fn in pairs(DROPS) do pcall(fn) end
+            swapOut(k)
+            SUB.ctx.self = nil
+        end
+    end)
+
     -- unload / re-exec: tear down everything this layer owns exactly once, so a
     -- superseded run never leaves a hat, trail or HUD card behind.
     local torn = false
@@ -18822,15 +19039,13 @@ end
         if Koffee.dead() then
             if not torn then
                 torn = true
-                pcall(hatDrop); pcall(trailDrop); pcall(markerDrop); pcall(hudDrop); pcall(echo.clear)
+                pcall(SUB.dropAll); pcall(markerDrop); pcall(hudDrop); pcall(echo.clear)
                 if jumpConn then jumpConn:Disconnect(); jumpConn = nil end
             end
             return
         end
-        if Modules.selffx_trail.Enabled then pcall(trailStep) end
-        if Modules.selffx_smear.Enabled then pcall(smearStep) end
+        pcall(SUB.run)
         pcall(echo.step)
-        if Modules.selffx_hat.Enabled then pcall(hatStep) end
         if Modules.tgt_marker.Enabled then pcall(markerStep) end
         if Modules.tgt_hud.Enabled then pcall(hudStep, dt) end
     end)
@@ -19129,6 +19344,8 @@ registerConfig("self_auras", Koffee.Auras)
     end
     local function itemTarget(ctx)
         local IS = Shared.ItemSkins
+        -- item skins / viewmodels are yours; anyone else just glows their Tool
+        if not ctx.self then return ctx.char:FindFirstChildOfClass("Tool") end
         if IS and Modules.itemskins and Modules.itemskins.Enabled then
             local rt = IS._ed and IS._ed.rt
             if rt and rt.model and rt.model.Parent then return rt.model end
@@ -19394,42 +19611,82 @@ registerConfig("self_auras", Koffee.Auras)
         { "aura_itemglow", "Held Item Glow", igStep, igDrop },
         { "aura_wings", "Wings", wingStep, wingDrop },
     }
-    for _, m in ipairs(MODS) do registerModule(m[1], m[2], function() end, function() pcall(m[4]) end) end
+    -- v0.90.0 Apply To: each subject gets its own copy of every aura's state; the
+    -- singletons above are swapped in per subject and written back after its pass
+    local actx = {}
+    local function newK()
+        return { ring = {}, dome = {}, orb = {}, halo = {}, body = { char = nil, at = 0, list = {} }, shed = {}, ig = {}, wing = {} }
+    end
+    local function swapIn(k) ring, dome, orb, halo, body, shed, ig, wing = k.ring, k.dome, k.orb, k.halo, k.body, k.shed, k.ig, k.wing end
+    local function swapOut(k) k.ring, k.dome, k.orb, k.halo, k.body, k.shed, k.ig, k.wing = ring, dome, orb, halo, body, shed, ig, wing end
+    local function dropEvery(fn)
+        for _, k in pairs(actx) do swapIn(k); pcall(fn); swapOut(k) end
+        swapIn(actx.self or newK())
+    end
+    for _, m in ipairs(MODS) do registerModule(m[1], m[2], function() end, function() dropEvery(m[4]) end) end
     Shared.Auras = { state = function() return wing.state end, pose = function() return wing.pose end }
+    LocalPlayer.CharacterAdded:Connect(function()
+        local k = actx.self
+        if k then
+            swapIn(k)
+            for _, m in ipairs(MODS) do pcall(m[4]) end
+            actx.self = nil
+            swapIn(newK())
+        end
+    end)
 
     local torn = false
     RunService.RenderStepped:Connect(function(dt)
         if Koffee.dead() then
             if not torn then
                 torn = true
-                for _, m in ipairs(MODS) do pcall(m[4]) end
+                for _, m in ipairs(MODS) do dropEvery(m[4]) end
             end
             return
         end
         local any = false
         for _, m in ipairs(MODS) do if Modules[m[1]].Enabled then any = true; break end end
         if not any or not H() then return end
-        local c = LocalPlayer.Character
-        local r = c and c:FindFirstChild("HumanoidRootPart")
-        local hum = c and c:FindFirstChildOfClass("Humanoid")
-        local alive = r and (not hum or hum.Health > 0)
         local cam = Workspace.CurrentCamera
-        local head = c and c:FindFirstChild("Head")
-        local ctx = { char = c, root = r, hum = hum,
-            fp = (cam and head and (cam.CFrame.Position - head.Position).Magnitude < 1.6) or false }
-        if alive and (Modules.aura_ring.Enabled or Modules.aura_dome.Enabled) then
-            ctx.ground = H().groundUnder(c, r.Position)
-        end
-        for _, m in ipairs(MODS) do
-            if Modules[m[1]].Enabled then
-                if alive then
-                    local ok, err = pcall(m[3], ctx, dt)
-                    if not ok and getgenv and getgenv().KoffeeFxDebug then warn("[aura]", m[1], err) end
-                else
-                    pcall(m[4])
+        local subs = Shared.fxSubjects and Shared.fxSubjects() or { LocalPlayer.Character }
+        local seen = {}
+        for _, c in ipairs(subs) do
+            local key = (c == LocalPlayer.Character) and "self" or c
+            local k = actx[key]
+            if not k then k = newK(); actx[key] = k end
+            seen[key] = true
+            swapIn(k)
+            local r = c and c:FindFirstChild("HumanoidRootPart")
+            local hum = c and c:FindFirstChildOfClass("Humanoid")
+            local alive = r and (not hum or hum.Health > 0)
+            local head = c and c:FindFirstChild("Head")
+            local isSelf = key == "self"
+            local ctx = { char = c, root = r, hum = hum, self = isSelf,
+                fp = (isSelf and cam and head and (cam.CFrame.Position - head.Position).Magnitude < 1.6) or false }
+            if alive and (Modules.aura_ring.Enabled or Modules.aura_dome.Enabled) then
+                ctx.ground = H().groundUnder(c, r.Position)
+            end
+            for _, m in ipairs(MODS) do
+                if Modules[m[1]].Enabled then
+                    if alive then
+                        local ok, err = pcall(m[3], ctx, dt)
+                        if not ok and getgenv and getgenv().KoffeeFxDebug then warn("[aura]", m[1], err) end
+                    else
+                        pcall(m[4])
+                    end
                 end
             end
+            swapOut(k)
         end
+        for key, k in pairs(actx) do
+            if not seen[key] then
+                swapIn(k)
+                for _, m in ipairs(MODS) do pcall(m[4]) end
+                actx[key] = nil
+            end
+        end
+        -- rest on your own state, so Shared.Auras reads describe you
+        swapIn(actx.self or newK())
     end)
 end)()
 
@@ -19759,7 +20016,7 @@ registerConfig("chams", Koffee.Chams)
             local ch = plr.Character
             if plr ~= LocalPlayer and ch then
                 local same = isTeammate(plr)
-                local skip = (same and ESP.Config.TeamCheck) or (Shared.IgnoreFriends and isFriend(plr))
+                local skip = (same and ESP.Config.TeamCheck) or Shared.friendIgnored(plr, "Visuals")
                     or (Shared.targetMark and Shared.targetMark(plr) == "exclude")
                 if not skip then add(plr, ch, ch:FindFirstChildOfClass("Humanoid"), ESP.Config.RenderDistance, same) end
             end
@@ -19899,7 +20156,7 @@ registerConfig("details_dock", Koffee.Details)
         NAMES[#NAMES + 1] = n
     end
     Shared.AmbienceNames = NAMES
-    local WEATHER = { "Snow", "Rain", "Sakura", "Embers", "Fireflies" }
+    local WEATHER = { "Snow", "Rain", "Sakura", "Embers", "Fireflies", "Stars" }
     local function ensure(id, on)
         local m = Modules[id]
         if m and m.Enabled ~= on then toggleModule(id) end
@@ -19986,6 +20243,17 @@ addTab("Visuals", function(root)
     -- v0.85.0 Effects: self + target visuals. Own function scope for registers.
     ;(function(fxSub)
         local F = Koffee.SelfFX
+        -- v0.90.0 master: who the self effects and auras play on
+        local apPanel = panel(fxSub, "Apply Effects To")
+        dropdown(apPanel, "Show On", { "Self", "Self + Targets", "Targets", "Everyone Else" }, F.ApplyTo or "Self",
+            function(v) F.ApplyTo = v end)
+        new("TextLabel", {
+            Text = "Targets = whoever aimbot and silent aim are on (both, if they differ). Everyone Else = the nearest other players.",
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+            AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = apPanel,
+        })
+        slider(apPanel, "Everyone Else Limit", 1, 20, F.OthersMax or 8, 0, function(v) F.OthersMax = math.floor(v) end)
         local selfPanel = panel(fxSub, "Self")
         local jr = moduleCheckbox(selfPanel, "Jump Circles", "selffx_jump")
         attachSingleSwatch(jr.row, F.Jump.Color, function(c) F.Jump.Color = c end)
@@ -20804,6 +21072,20 @@ addTab("World", function(root)
             popup:slider("Density", 2, 150, Fl.Density, 0, function(v) Fl.Density = math.floor(v) end)
             popup:slider("Size",    0.1, 1.2, Fl.Size,  2, function(v) Fl.Size = v end)
             popup:slider("Reach",   0.25, 6, Fl.Reach,  2, function(v) Fl.Reach = v end)
+        end)
+        -- v0.90.0 stars (the Shapes trail's art as weather)
+        local St = World.FX.Stars
+        local sr = configCheckbox(fx2, "Stars", St.Enabled, function(v) St.Enabled = v end)
+        attachDualSwatch(sr.row, St.Color, St.Color2, function(c) St.Color = c end, function(c) St.Color2 = c end)
+        rightClickSettings(sr.row, "Stars", function(popup)
+            popup:dropdown("Style", { "Stars", "Mixed" }, St.Style, function(v) St.Style = v end)
+            popup:slider("Density", 2, 300, St.Density, 0, function(v) St.Density = math.floor(v) end)
+            popup:slider("Speed",   0.1, 3,  St.Speed,   2, function(v) St.Speed = v end)
+            popup:slider("Size",    0.1, 3,  St.Size,    2, function(v) St.Size = v end)
+            popup:slider("Sway",    0, 80,   St.Sway,    0, function(v) St.Sway = v end)
+            popup:slider("Spin",    0, 300,  St.Spin,    0, function(v) St.Spin = v end)
+            popup:slider("Wind",   -12, 12,  St.Wind,    1, function(v) St.Wind = v end)
+            popup:slider("Reach",   0.25, 6, St.Reach,   2, function(v) St.Reach = v end)
         end)
     end)()
 
@@ -23794,8 +24076,14 @@ addTab("Options", function(root)
     colorRow("Text Muted",     "TextMuted")
 
     -- Ignore Friends: friends are excluded from ESP + aimbot + silent + trigger.
-    configCheckbox(card, "Ignore Friends", Shared.IgnoreFriends, function(v)
+    -- v0.90.0: right-click to limit it to combat or visuals (default everything).
+    local ifr = configCheckbox(card, "Ignore Friends", Shared.IgnoreFriends, function(v)
         Shared.IgnoreFriends = v
+    end)
+    rightClickSettings(ifr.row, "Ignore Friends", function(popup)
+        popup:dropdown("Applies To", { "Everything", "Combat Only", "Visuals Only" },
+            ({ Everything = "Everything", Combat = "Combat Only", Visuals = "Visuals Only" })[Shared.IgnoreFriendsScope or "Everything"],
+            function(v) Shared.IgnoreFriendsScope = ({ ["Combat Only"] = "Combat", ["Visuals Only"] = "Visuals" })[v] or "Everything" end)
     end)
 
     -- v0.0.95 UNLOAD KOFFEE. Confirm popup then a clean tear-down: disables
@@ -33823,6 +34111,9 @@ end)()
     WM.attachBody("esp", root, { onShow = animShow, onHide = animHide })
 end)()
 
+-- v0.90.0: Hotkeys window design, switched by right-clicking the window
+Koffee.KeybindsUI = { Design = "Pills" }
+registerConfig("keybinds_ui", Koffee.KeybindsUI)
 -- v0.66.0 keybinds window (the "Hotkeys" HUD): a floating secondary HUD, a stack of
 -- very-rounded pills each showing a [key cap] + the action it fires, driven live off
 -- the keybind registry (Koffee._keybinds) and the live Keybinds table. A held key
@@ -33914,21 +34205,88 @@ end)()
         for _, e in ipairs(bl) do parts[#parts + 1] = e.id .. "=" .. (keyLabel(e.bind) or "?") end
         return table.concat(parts, "|")
     end
+    -- v0.90.0 "Card" design: one dark card, a KeyBinds header with a badge, a row per
+    -- bind with the key in an accent cap; names of switched-on modules light up
+    local KBUI = Koffee.KeybindsUI
+    local cardF, cardRows = nil, {}
+    local function buildCard(bl)
+        if cardF then cardF:Destroy() end
+        cardRows = {}
+        cardF = new("Frame", { Name = "card", BackgroundColor3 = Color3.fromRGB(17, 17, 21), BackgroundTransparency = 0.06,
+            BorderSizePixel = 0, Size = UDim2.fromOffset(196, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 0,
+            Parent = root }, { corner(8), stroke(Palette.BorderSubtle),
+            new("UIPadding", { PaddingTop = UDim.new(0, 9), PaddingBottom = UDim.new(0, 10),
+                PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 10) }),
+            new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local head = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20), LayoutOrder = 0, Parent = cardF })
+        new("TextLabel", { BackgroundTransparency = 1, Text = "KeyBinds", FontFace = Theme.Fonts.Bold, TextSize = 15,
+            TextColor3 = Palette.Text, TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -24, 1, 0), Parent = head })
+        local badge = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.fromOffset(20, 14), BackgroundColor3 = Palette.Accent, BorderSizePixel = 0, Parent = head }, { corner(3) })
+        local bi = Koffee.lucideIcon(badge, "keyboard", 11, Color3.fromRGB(20, 20, 24))
+        bi.AnchorPoint = Vector2.new(0.5, 0.5); bi.Position = UDim2.fromScale(0.5, 0.5)
+        if #bl == 0 then
+            new("TextLabel", { BackgroundTransparency = 1, Text = "No hotkeys set", FontFace = Theme.Fonts.Medium, TextSize = 13,
+                TextColor3 = Palette.TextFaint, TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, 0, 0, 18),
+                LayoutOrder = 1, Parent = cardF })
+        end
+        for i, e in ipairs(bl) do
+            local r = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20), LayoutOrder = i, Parent = cardF })
+            local lbl = new("TextLabel", { BackgroundTransparency = 1, Text = e.label, FontFace = Theme.Fonts.Medium, TextSize = 13,
+                TextColor3 = Palette.Text, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                Size = UDim2.new(1, -70, 1, 0), Parent = r })
+            local cap = new("TextLabel", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+                AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, 17), BackgroundColor3 = Palette.Accent,
+                BorderSizePixel = 0, Text = keyLabel(e.bind) or "-", FontFace = Theme.Fonts.Bold, TextSize = 12,
+                TextColor3 = Color3.fromRGB(255, 255, 255), Parent = r }, { corner(4),
+                new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
+            cardRows[#cardRows + 1] = { id = e.id, lbl = lbl, cap = cap, bind = e.bind }
+        end
+    end
+
     local shownSig = nil
     local function rebuild()
         for _, r in pairs(rows) do r.row:Destroy() end
         rows = {}
         local bl = boundList()
-        empty.Visible = #bl == 0
-        for i, e in ipairs(bl) do makeEntry(e.id, e.label, e.bind, i) end
-        shownSig = signature(bl)
+        local card = KBUI.Design == "Card"
+        header.Visible = not card
+        if card then
+            empty.Visible = false
+            buildCard(bl)
+        else
+            if cardF then cardF:Destroy(); cardF = nil end
+            cardRows = {}
+            empty.Visible = #bl == 0
+            for i, e in ipairs(bl) do makeEntry(e.id, e.label, e.bind, i) end
+        end
+        shownSig = signature(bl) .. KBUI.Design
     end
+    -- right-click anywhere on the window cycles the design
+    local DESIGNS = { "Pills", "Card" }
+    UIS.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton2 or not root.Visible or Koffee.dead() then return end
+        local m = UIS:GetMouseLocation() - game:GetService("GuiService"):GetGuiInset()
+        local a, z = root.AbsolutePosition, root.AbsoluteSize
+        if m.X < a.X or m.X > a.X + z.X or m.Y < a.Y or m.Y > a.Y + z.Y then return end
+        local nxt = 1
+        for i, d in ipairs(DESIGNS) do if d == KBUI.Design then nxt = i % #DESIGNS + 1 end end
+        KBUI.Design = DESIGNS[nxt]
+        rebuild()
+    end)
 
     -- live: rebuild when the bound set changes; glow held keys each frame.
     RunService.RenderStepped:Connect(function()
         if not root.Visible then return end
         local bl = boundList()
-        if signature(bl) ~= shownSig then rebuild() end
+        if signature(bl) .. KBUI.Design ~= shownSig then rebuild() end
+        -- card design: switched-on modules light their name in the accent colour
+        for _, r in ipairs(cardRows) do
+            local m = Modules[r.id]
+            local on = m and m.Enabled
+            r.lbl.TextColor3 = on and Palette.Accent or Palette.Text
+            r.cap.BackgroundTransparency = isHeld(r.bind) and 0.35 or 0
+        end
         for _, r in pairs(rows) do
             local held = isHeld(r.bind)
             r.keyPill.BackgroundColor3 = held and Color3.fromRGB(120, 220, 130) or PILL_BG
