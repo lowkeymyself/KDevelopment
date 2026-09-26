@@ -19249,6 +19249,14 @@ end
         local cfg = FX.HUD
         local now = os.clock()
         local t = targetOf(cfg.Source)
+        -- a new target has to hold for a moment before the card switches, so aim and
+        -- silent briefly disagreeing can't flip the name back and forth every frame
+        if t and hud.who and t ~= hud.who and charOf(hud.who) then
+            if hud.pending ~= t then hud.pending, hud.pendingAt = t, now end
+            if now - hud.pendingAt < 0.12 then t = hud.who end
+        else
+            hud.pending = nil
+        end
         local ch, hum = charOf(t)
         local cam = Workspace.CurrentCamera
         -- linger: the last target stays on the card a moment after it's lost
@@ -19317,7 +19325,9 @@ end
         pos = pos or Vector2.new(vp.X * 0.5 + ox - 20, vp.Y * 0.5 + oy + 130)
         pos = Vector2.new(math.clamp(pos.X, 8, vp.X - 244), math.clamp(pos.Y, 40, vp.Y - 40))
         -- follow: how long the card takes to reach the target, and how it gets there
-        local p0 = Vector2.new(hud.card.Position.X.Offset, hud.card.Position.Y.Offset)
+        -- the eased position lives in hud.pf; the card itself sits on whole pixels (a
+        -- CanvasGroup re-sampled at sub-pixel offsets every frame makes its text shimmer)
+        local p0 = hud.pf or Vector2.new(hud.card.Position.X.Offset, hud.card.Position.Y.Offset)
         local ft = math.max(cfg.FollowTime or 0.1, 0)
         local ease = cfg.Easing or "Smooth"
         if wasHidden or ft <= 0.001 or ease == "Instant" then
@@ -19337,7 +19347,8 @@ end
         else
             p0 = p0 + (pos - p0) * (1 - math.exp(-dt * 3 / math.max(ft, 0.01)))
         end
-        hud.card.Position = UDim2.fromOffset(p0.X, p0.Y)
+        hud.pf = p0
+        hud.card.Position = UDim2.fromOffset(math.floor(p0.X + 0.5), math.floor(p0.Y + 0.5))
     end
     registerModule("tgt_hud", "Target HUD", function() end, function() hudDrop() end)
 
