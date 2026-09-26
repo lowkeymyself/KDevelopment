@@ -8245,13 +8245,17 @@ end
     local npcRigs = {}
     function Shared.updateNpcRigs(cam, camPos)
         local NPC = Shared.NPC
-        if not (Shared.NPCESP and Shared.NPCESP.Config.MasterOn and NPC and NPC.entities) then
+        -- v0.91.0: Include all Humanoids counts bots as people, so with the NPC ESP
+        -- master off they still draw under the player ESP toggle + its config.
+        local master = Shared.NPCESP and Shared.NPCESP.Config.MasterOn
+        local asPlayers = KoffeeOptions and KoffeeOptions.IncludeHumanoids and Modules.esp and Modules.esp.Enabled
+        if not ((master or asPlayers) and NPC and NPC.entities) then
             for m, r in pairs(npcRigs) do cleanRig(r.rig); npcRigs[m] = nil end
             return
         end
         local live = {}
         for _, e in ipairs(NPC.entities()) do
-            if not (e.exclude and e.exclude.ESP) and e.char and e.char.Parent then
+            if (master or e.all) and not (e.exclude and e.exclude.ESP) and e.char and e.char.Parent then
                 local model = e.char
                 live[model] = true
                 local rr = npcRigs[model]
@@ -8259,7 +8263,9 @@ end
                     local rig = makeRig(e.wrapper, model, true)
                     if rig then rr = { rig = rig, phase = math.random() }; npcRigs[model] = rr end
                 end
-                if rr then
+                if rr and not master then
+                    pcall(Shared.espDrawRig, e.wrapper, rr, cam, camPos, true)
+                elseif rr then
                     local saved = Shared.espSwap(Shared.NPCESP)
                     pcall(Shared.espDrawRig, e.wrapper, rr, cam, camPos, true)
                     Shared.espRestore(saved)
@@ -30269,7 +30275,8 @@ function NPC.entities()
         end
         local w = wrapperFor(holder, model)
         w.Name, w.DisplayName = nm, nm
-        out[#out + 1] = { wrapper = w, char = model, hum = hum, name = nm, health = hp, exclude = st.Exclude }
+        out[#out + 1] = { wrapper = w, char = model, hum = hum, name = nm, health = hp, exclude = st.Exclude,
+            all = holder == NPC._allHolder or nil }
     end
     -- manually learned entries + directories
     for _, entry in ipairs(NPC.Entries) do
