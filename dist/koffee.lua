@@ -23167,9 +23167,390 @@ end)()
     IS._editor = ED
 end)()
 
+-- v0.90.0 MORPH: become someone else, locally. Their avatar is generated on YOUR rig
+-- type with CreateHumanoidModelFromDescription (client-safe; ApplyDescription is
+-- server-only), then moved onto your real character: body parts and scale (so your
+-- physics size really changes), accessories, clothing, colours, face, animations.
+Koffee.Morph = { Target = "", Source = "Avatar", Body = true, Accessories = true, Clothing = true, Face = true,
+    Animations = true, KeepOnRespawn = true }
+registerConfig("morph", Koffee.Morph)
+;(function()
+    local MO = Koffee.Morph
+    local Players = game:GetService("Players")
+    local M = { src = nil, orig = nil, name = nil, busy = false, status = "" }
+    Shared.Morph = M
+    local SCALES = { "BodyHeightScale", "BodyWidthScale", "BodyDepthScale", "HeadScale", "BodyTypeScale",
+        "BodyProportionScale" }
+
+    local function setStatus(s)
+        M.status = s
+        if M.onStatus then pcall(M.onStatus, s) end
+    end
+    -- clone a live character: characters are not Archivable by default
+    local function snapshot(model)
+        local marks = {}
+        for _, d in ipairs(model:GetDescendants()) do
+            if not d.Archivable then marks[#marks + 1] = d; d.Archivable = true end
+        end
+        local was = model.Archivable
+        model.Archivable = true
+        local ok, c = pcall(function() return model:Clone() end)
+        model.Archivable = was
+        for _, d in ipairs(marks) do pcall(function() d.Archivable = false end) end
+        return ok and c or nil
+    end
+
+    -- username, display name in the server, or a user id -> userId, player (if here)
+    local function resolve(text)
+        text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if text == "" then return nil, nil, "type a username or user id" end
+        local id = tonumber(text)
+        local lower = text:lower()
+        for _, p in ipairs(Players:GetPlayers()) do
+            if (id and p.UserId == id) or p.Name:lower() == lower or p.DisplayName:lower() == lower then
+                return p.UserId, p
+            end
+        end
+        if id then return id, nil end
+        local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(text) end)
+        if ok and uid then return uid, nil end
+        return nil, nil, "no user called " .. text
+    end
+
+    -- the look to copy, built on our rig type
+    local function buildSource(uid, plr, rig)
+        if MO.Source == "In-Game Look" and plr and plr.Character then
+            local th = plr.Character:FindFirstChildOfClass("Humanoid")
+            if th and th.RigType == rig then return snapshot(plr.Character) end
+        end
+        local ok, desc = pcall(function() return Players:GetHumanoidDescriptionFromUserId(uid) end)
+        if not ok or not desc then return nil, "could not load that avatar" end
+        local ok2, model = pcall(function() return Players:CreateHumanoidModelFromDescription(desc, rig) end)
+        if not ok2 or not model then return nil, "could not build that avatar" end
+        return model
+    end
+
+    -- move a look from `src` onto the live character `char`
+    local function transplant(src, char)
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local sh = src:FindFirstChildOfClass("Humanoid")
+        if not (hum and sh) then return false, "no humanoid" end
+        -- a limb swap briefly breaks joints; keep the humanoid from dying meanwhile
+        local wasNeck, wasBreak = hum.RequiresNeck, hum.BreakJointsOnDeath
+        hum.RequiresNeck, hum.BreakJointsOnDeath = false, false
+        pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false) end)
+        local tool = char:FindFirstChildOfClass("Tool")
+        if tool then hum:UnequipTools() end
+
+        if MO.Body ~= false then
+            -- scale first, so the swapped parts land at their final size
+            for _, n in ipairs(SCALES) do
+                local sv = sh:FindFirstChild(n)
+                if sv and sv:IsA("NumberValue") then
+                    local mv = hum:FindFirstChild(n)
+                    if not mv then mv = Instance.new("NumberValue"); mv.Name = n; mv.Parent = hum end
+                    mv.Value = sv.Value
+                end
+            end
+            if hum.RigType == Enum.HumanoidRigType.R15 then
+                for _, bp in ipairs(Enum.BodyPartR15:GetEnumItems()) do
+                    if bp ~= Enum.BodyPartR15.RootPart and bp ~= Enum.BodyPartR15.Unknown then
+                        local sp = src:FindFirstChild(bp.Name)
+                        if sp and sp:IsA("BasePart") then
+                            local c = sp:Clone()
+                            for _, d in ipairs(c:GetChildren()) do
+                                if d:IsA("JointInstance") or d:IsA("Constraint") then d:Destroy() end
+                            end
+                            -- keep the face out of it when Face is off
+                            if bp == Enum.BodyPartR15.Head and MO.Face == false then
+                                for _, d in ipairs(c:GetChildren()) do if d:IsA("Decal") then d:Destroy() end end
+                                local old = char:FindFirstChild("Head")
+                                if old then for _, d in ipairs(old:GetChildren()) do
+                                    if d:IsA("Decal") then d:Clone().Parent = c end
+                                end end
+                            end
+                            pcall(function() hum:ReplaceBodyPartR15(bp, c) end)
+                        end
+                    end
+                end
+                pcall(function() hum.HipHeight = sh.HipHeight end)
+            else
+                -- R6: bundles are CharacterMeshes; the head shape is a SpecialMesh
+                for _, d in ipairs(char:GetChildren()) do if d:IsA("CharacterMesh") then d:Destroy() end end
+                for _, d in ipairs(src:GetChildren()) do if d:IsA("CharacterMesh") then d:Clone().Parent = char end end
+                local h, shd = char:FindFirstChild("Head"), src:FindFirstChild("Head")
+                if h and shd then
+                    local m = h:FindFirstChildOfClass("SpecialMesh")
+                    local sm = shd:FindFirstChildOfClass("SpecialMesh")
+                    if m then m:Destroy() end
+                    if sm then sm:Clone().Parent = h end
+                end
+            end
+        end
+
+        if MO.Face ~= false then
+            local h, shd = char:FindFirstChild("Head"), src:FindFirstChild("Head")
+            if h and shd and (hum.RigType == Enum.HumanoidRigType.R6 or MO.Body == false) then
+                for _, d in ipairs(h:GetChildren()) do if d:IsA("Decal") then d:Destroy() end end
+                for _, d in ipairs(shd:GetChildren()) do if d:IsA("Decal") then d:Clone().Parent = h end end
+            end
+        end
+
+        if MO.Clothing ~= false then
+            for _, d in ipairs(char:GetChildren()) do
+                if d:IsA("Clothing") or d:IsA("ShirtGraphic") or d:IsA("BodyColors") then d:Destroy() end
+            end
+            for _, d in ipairs(src:GetChildren()) do
+                if d:IsA("Clothing") or d:IsA("ShirtGraphic") or d:IsA("BodyColors") then d:Clone().Parent = char end
+            end
+            -- paint the colours straight on too (R15 parts swapped above already carry them)
+            local bc = src:FindFirstChildOfClass("BodyColors")
+            if bc then
+                local map = { Head = bc.HeadColor3, Torso = bc.TorsoColor3, UpperTorso = bc.TorsoColor3,
+                    LowerTorso = bc.TorsoColor3, ["Left Arm"] = bc.LeftArmColor3, ["Right Arm"] = bc.RightArmColor3,
+                    ["Left Leg"] = bc.LeftLegColor3, ["Right Leg"] = bc.RightLegColor3 }
+                for _, p in ipairs(char:GetChildren()) do
+                    if p:IsA("BasePart") then
+                        local col = map[p.Name]
+                        if not col then
+                            if p.Name:find("LeftUpperArm") or p.Name:find("LeftLowerArm") or p.Name:find("LeftHand") then col = bc.LeftArmColor3
+                            elseif p.Name:find("RightUpperArm") or p.Name:find("RightLowerArm") or p.Name:find("RightHand") then col = bc.RightArmColor3
+                            elseif p.Name:find("LeftUpperLeg") or p.Name:find("LeftLowerLeg") or p.Name:find("LeftFoot") then col = bc.LeftLegColor3
+                            elseif p.Name:find("RightUpperLeg") or p.Name:find("RightLowerLeg") or p.Name:find("RightFoot") then col = bc.RightLegColor3 end
+                        end
+                        if col then p.Color = col end
+                    end
+                end
+            end
+        end
+
+        if MO.Accessories ~= false then
+            for _, d in ipairs(char:GetChildren()) do if d:IsA("Accoutrement") then d:Destroy() end end
+            for _, d in ipairs(src:GetChildren()) do
+                if d:IsA("Accoutrement") then
+                    -- client-side AddAccessory parents but never welds (the hair fell off),
+                    -- so re-point the source weld at our part of the same name (our body
+                    -- is theirs now, so its offsets still fit), else weld attachment to attachment
+                    local c = d:Clone()
+                    local hdl = c:FindFirstChild("Handle")
+                    local welded = false
+                    if hdl then
+                        hdl.Anchored, hdl.CanCollide = false, false
+                        pcall(function() hdl.Massless = true end)
+                        local sw = d:FindFirstChild("Handle") and d.Handle:FindFirstChildWhichIsA("JointInstance")
+                        local cw = hdl:FindFirstChildWhichIsA("JointInstance")
+                        if sw and cw then
+                            local other = (sw.Part0 == d.Handle) and sw.Part1 or sw.Part0
+                            local mine = other and char:FindFirstChild(other.Name)
+                            if mine and mine:IsA("BasePart") then
+                                if sw.Part0 == d.Handle then cw.Part0, cw.Part1 = hdl, mine else cw.Part0, cw.Part1 = mine, hdl end
+                                welded = true
+                            end
+                        end
+                        if not welded then
+                            for _, w in ipairs(hdl:GetChildren()) do
+                                if w:IsA("JointInstance") or w:IsA("WeldConstraint") then w:Destroy() end
+                            end
+                            local att = hdl:FindFirstChildOfClass("Attachment")
+                            local target = att and char:FindFirstChild(att.Name, true)
+                            if target and target:IsA("Attachment") and target.Parent:IsA("BasePart") then
+                                local w = Instance.new("Weld")
+                                w.Name = "AccessoryWeld"
+                                w.Part0, w.Part1 = hdl, target.Parent
+                                w.C0, w.C1 = att.CFrame, target.CFrame
+                                w.Parent = hdl
+                                welded = true
+                            end
+                        end
+                    end
+                    c.Parent = char
+                end
+            end
+        end
+
+        if MO.Animations ~= false then
+            local sa, ma = src:FindFirstChild("Animate"), char:FindFirstChild("Animate")
+            if sa and ma then
+                for _, sv in ipairs(sa:GetChildren()) do
+                    local mv = ma:FindFirstChild(sv.Name)
+                    if mv then
+                        for _, an in ipairs(sv:GetChildren()) do
+                            if an:IsA("Animation") then
+                                local mine = mv:FindFirstChild(an.Name)
+                                if mine and mine:IsA("Animation") then mine.AnimationId = an.AnimationId
+                                else an:Clone().Parent = mv end
+                            end
+                        end
+                    end
+                end
+                -- restart the animate script so it loads the new ids
+                local animator = hum:FindFirstChildOfClass("Animator")
+                if animator then for _, t in ipairs(animator:GetPlayingAnimationTracks()) do t:Stop(0) end end
+                pcall(function() ma.Disabled = true; task.wait(); ma.Disabled = false end)
+            end
+        end
+
+        if tool and tool.Parent then pcall(function() hum:EquipTool(tool) end) end
+        task.delay(0.25, function()
+            if hum.Parent then
+                pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end)
+                hum.RequiresNeck, hum.BreakJointsOnDeath = wasNeck, wasBreak
+            end
+        end)
+        return true
+    end
+
+    function M.morph(text)
+        if M.busy then return false, "busy" end
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum then return false, "no character" end
+        M.busy = true
+        setStatus("loading...")
+        local uid, plr, err = resolve(text or MO.Target)
+        if not uid then M.busy = false; setStatus(err); return false, err end
+        local src, e2 = buildSource(uid, plr, hum.RigType)
+        if not src then M.busy = false; setStatus(e2); return false, e2 end
+        -- remember who we were the first time, so Revert can bring it back
+        if not M.orig then M.orig = snapshot(char) end
+        local ok, e3 = transplant(src, char)
+        M.busy = false
+        if not ok then setStatus(e3); return false, e3 end
+        if M.src and M.src ~= src then pcall(function() M.src:Destroy() end) end
+        M.src = src
+        local ok2, nm = pcall(function() return Players:GetNameFromUserIdAsync(uid) end)
+        M.name = (plr and plr.Name) or (ok2 and nm) or tostring(uid)
+        setStatus("morphed into " .. M.name)
+        return true
+    end
+    function M.revert()
+        local char = LocalPlayer.Character
+        if M.orig and char then pcall(transplant, M.orig, char) end
+        if M.src then pcall(function() M.src:Destroy() end) end
+        M.src, M.name = nil, nil
+        setStatus("back to yourself")
+    end
+
+    registerModule("morph", "Morph", function()
+        if not M.src then task.spawn(M.morph) end   -- the Morph button already did it
+    end, function()
+        task.spawn(M.revert)
+    end)
+    -- a respawn gives you your own look back; re-apply the morph on top
+    LocalPlayer.CharacterAdded:Connect(function(c)
+        M.orig = nil
+        if Koffee.dead() or not (Modules.morph and Modules.morph.Enabled) or MO.KeepOnRespawn == false then return end
+        c:WaitForChild("Animate", 5)
+        c:WaitForChild("HumanoidRootPart", 5)
+        task.wait(0.5)
+        if not c.Parent then return end
+        M.orig = snapshot(c)
+        if M.src then pcall(transplant, M.src, c) else task.spawn(M.morph) end
+    end)
+
+    -- :: panel (Character tab) ::
+    function M.buildPanel(root)
+        local card = panel(root, "Morph")
+        local mr = moduleCheckbox(card, "Morph", "morph")
+        rightClickSettings(mr.row, "Morph", function(popup)
+            popup:dropdown("Source", { "Avatar", "In-Game Look" }, MO.Source, function(v) MO.Source = v end)
+            popup:toggle("Body + Size", MO.Body ~= false, function(v) MO.Body = v end)
+            popup:toggle("Accessories", MO.Accessories ~= false, function(v) MO.Accessories = v end)
+            popup:toggle("Clothing + Colours", MO.Clothing ~= false, function(v) MO.Clothing = v end)
+            popup:toggle("Face", MO.Face ~= false, function(v) MO.Face = v end)
+            popup:toggle("Animations", MO.Animations ~= false, function(v) MO.Animations = v end)
+            popup:toggle("Keep After Respawn", MO.KeepOnRespawn ~= false, function(v) MO.KeepOnRespawn = v end)
+        end)
+        new("TextLabel", {
+            Text = "Become someone else: username, user id, or pick a player here. Local only.",
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+            AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = card,
+        })
+        local row = new("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, Parent = card },
+            { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+                VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local box = new("TextBox", {
+            Text = MO.Target or "", PlaceholderText = "username or user id", ClearTextOnFocus = false,
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+            PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
+            BackgroundTransparency = 0.15, Size = UDim2.new(1, -140, 0, 26), TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = 0, Parent = row,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        box.FocusLost:Connect(function() MO.Target = box.Text end)
+        local function btn(text, order, accent, cb)
+            local b = new("TextButton", {
+                Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, AutoButtonColor = true,
+                TextColor3 = accent and Theme.Palette.Background or Theme.Palette.Text,
+                BackgroundColor3 = accent and Theme.Palette.Accent or Theme.Palette.PanelElevated,
+                Size = UDim2.fromOffset(64, 26), LayoutOrder = order, Parent = row,
+            }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            b.MouseButton1Click:Connect(cb)
+            return b
+        end
+        btn("Morph", 1, true, function()
+            MO.Target = box.Text
+            task.spawn(function()
+                local ok = M.morph(box.Text)
+                if ok and not Modules.morph.Enabled then toggleModule("morph") end
+            end)
+        end)
+        btn("Revert", 2, false, function()
+            if Modules.morph.Enabled then toggleModule("morph") else task.spawn(M.revert) end
+        end)
+        local status = new("TextLabel", {
+            Text = M.status ~= "" and M.status or "not morphed", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Accent, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, 0, 0, 16), Parent = card,
+        })
+        M.onStatus = function(s) status.Text = s end
+        -- server players: click one to morph into them
+        local pick = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1, Parent = card },
+            { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 3),
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local function drawPick()
+            for _, c in ipairs(pick:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
+            local others = {}
+            for _, p in ipairs(Players:GetPlayers()) do if p ~= LocalPlayer then others[#others + 1] = p end end
+            if #others == 0 then
+                new("TextLabel", { Text = "Nobody else in this server.", FontFace = Theme.Fonts.Regular,
+                    TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                    TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, 0, 0, 16), Parent = pick })
+                return
+            end
+            for i, p in ipairs(others) do
+                local b = new("TextButton", {
+                    Text = "", AutoButtonColor = true, BackgroundColor3 = Theme.Palette.PanelElevated,
+                    BackgroundTransparency = 0.5, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = i, Parent = pick,
+                }, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 30), PaddingRight = UDim.new(0, 6) }) })
+                new("ImageLabel", { BackgroundColor3 = Theme.Palette.Background, Size = UDim2.fromOffset(20, 20),
+                    Position = UDim2.new(0, -26, 0.5, -10), Image = "rbxthumb://type=AvatarHeadShot&id=" .. p.UserId .. "&w=48&h=48",
+                    Parent = b }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+                new("TextLabel", { Text = p.DisplayName .. "  @" .. p.Name, FontFace = Theme.Fonts.Medium,
+                    TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+                    TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                    Size = UDim2.fromScale(1, 1), Parent = b })
+                b.MouseButton1Click:Connect(function()
+                    box.Text = p.Name
+                    MO.Target = p.Name
+                    task.spawn(function()
+                        if M.morph(p.Name) and not Modules.morph.Enabled then toggleModule("morph") end
+                    end)
+                end)
+            end
+        end
+        drawPick()
+        Players.PlayerAdded:Connect(function() if pick.Parent then drawPick() end end)
+        Players.PlayerRemoving:Connect(function() task.defer(function() if pick.Parent then drawPick() end end) end)
+    end
+end)()
+
 addTab("Character", function(root)
     Koffee._characterTab(root)
     if Shared.Deco then Shared.Deco.buildPanel(root) end
+    if Shared.Morph then Shared.Morph.buildPanel(root) end
     if Shared.ItemSkins then Shared.ItemSkins.buildPanel(root) end
 end)
 
