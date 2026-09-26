@@ -19335,14 +19335,15 @@ end
     local P = Theme.Palette
     local function hudBuild()
         if hud.card then return end
-        local card = new("CanvasGroup", {
+        -- a plain Frame, not a CanvasGroup: the card changes every frame (bar, hp,
+        -- distance) and a CanvasGroup re-rasterises on each change, so its text flickered
+        local card = new("Frame", {
             Name = KID.name("thud"), AnchorPoint = Vector2.new(0, 0.5), Size = UDim2.fromOffset(236, 66),
-            BackgroundColor3 = P.Panel, BackgroundTransparency = 0.08, GroupTransparency = 1,
+            BackgroundColor3 = P.Panel, BackgroundTransparency = 1,
             Visible = false, ZIndex = 18, Parent = screen,
-        }, {
-            new("UICorner", { CornerRadius = UDim.new(0, 8) }),
-            new("UIStroke", { Color = P.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
-        })
+        }, { new("UICorner", { CornerRadius = UDim.new(0, 8) }) })
+        local cardStroke = new("UIStroke", { Color = P.Border, Thickness = 1, Transparency = 1,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = card })
         local pfp = new("ImageLabel", {
             Position = UDim2.fromOffset(9, 9), Size = UDim2.fromOffset(48, 48), BackgroundColor3 = P.PanelElevated,
             Image = "", ZIndex = 19, Parent = card,
@@ -19372,7 +19373,14 @@ end
         })
         local scale = new("UIScale", { Parent = card })
         hud = { card = card, pfp = pfp, name = name, sub = sub, fill = fill, chunk = chunk, hp = hp, track = track,
-                scale = scale, shown = 0, frac = 1, trail = 1, trailAt = 0, who = nil, vel = Vector2.zero }
+                scale = scale, shown = 0, frac = 1, trail = 1, trailAt = 0, who = nil, vel = Vector2.zero,
+                -- { instance, property, resting transparency } faded by `shown`
+                fades = { { card, "BackgroundTransparency", 0.08 }, { cardStroke, "Transparency", 0 },
+                    { pfp, "BackgroundTransparency", 0 }, { pfp, "ImageTransparency", 0 },
+                    { name, "TextTransparency", 0 }, { sub, "TextTransparency", 0 }, { hp, "TextTransparency", 0 },
+                    { track, "BackgroundTransparency", 0 }, { chunk, "BackgroundTransparency", 0.25 },
+                    { fill, "BackgroundTransparency", 0 } } }
+        for _, f in ipairs(hud.fades) do f[1][f[2]] = 1 end
     end
     local function hudDrop()
         if hud.card then pcall(function() hud.card:Destroy() end) end
@@ -19419,10 +19427,14 @@ end
         local wasHidden = hud.shown <= 0.01
         local fade = math.max(cfg.FadeTime or 0.12, 0.01)
         hud.shown = math.clamp(hud.shown + (want > hud.shown and 1 or -1) * dt / fade, 0, 1)
-        hud.card.GroupTransparency = 1 - hud.shown
+        if hud.fadeAt ~= hud.shown then
+            hud.fadeAt = hud.shown
+            for _, f in ipairs(hud.fades) do f[1][f[2]] = 1 - (1 - f[3]) * hud.shown end
+        end
         hud.card.Visible = hud.shown > 0.01
         local k0 = 1 - (1 - hud.shown) ^ 3
-        hud.scale.Scale = math.max(cfg.Scale or 1, 0.3) * ((cfg.ScaleIn ~= false) and (0.85 + 0.15 * k0) or 1)
+        local sc = math.max(cfg.Scale or 1, 0.3) * ((cfg.ScaleIn ~= false) and (0.85 + 0.15 * k0) or 1)
+        if hud.scale.Scale ~= sc then hud.scale.Scale = sc end
         if not ch then return end
         local isPlr = typeof(t) == "Instance" and t:IsA("Player")
         if hud.who ~= t then
@@ -19430,13 +19442,18 @@ end
             hud.name.Text = t.DisplayName or t.Name or "?"
             hud.frac, hud.trail = 1, 1
         end
+        -- only touch a property when its value changes
+        local function put(i, k, v) if i[k] ~= v then i[k] = v end end
         local av = cfg.Avatar ~= false
-        hud.pfp.Visible = av
-        hud.pfp.Image = av and thumbFor(t) or ""
+        put(hud.pfp, "Visible", av)
+        put(hud.pfp, "Image", av and thumbFor(t) or "")
         local x0 = av and 66 or 10
-        hud.name.Position, hud.sub.Position = UDim2.fromOffset(x0, 8), UDim2.fromOffset(x0, 25)
-        hud.track.Position, hud.track.Size = UDim2.fromOffset(x0, 44), UDim2.new(1, -(x0 + 44), 0, 7)
-        hud.card.Size = UDim2.fromOffset(av and 236 or 180, 66)
+        if hud.x0 ~= x0 then
+            hud.x0 = x0
+            hud.name.Position, hud.sub.Position = UDim2.fromOffset(x0, 8), UDim2.fromOffset(x0, 25)
+            hud.track.Position, hud.track.Size = UDim2.fromOffset(x0, 44), UDim2.new(1, -(x0 + 44), 0, 7)
+            hud.card.Size = UDim2.fromOffset(av and 236 or 180, 66)
+        end
         local maxHp = hum and math.max(hum.MaxHealth, 1) or 100
         local cur = hum and math.max(hum.Health, 0) or maxHp
         local f = math.clamp(cur / maxHp, 0, 1)
@@ -19452,15 +19469,16 @@ end
         else
             hud.trail = hud.frac
         end
-        hud.chunk.Visible = cfg.Chunk ~= false
-        hud.fill.Size = UDim2.fromScale(hud.frac, 1)
-        hud.chunk.Size = UDim2.fromScale(math.max(hud.trail, hud.frac), 1)
-        hud.fill.BackgroundColor3 = P.Danger:Lerp(P.Success, math.clamp(f * 1.4 - 0.2, 0, 1))
+        put(hud.chunk, "Visible", cfg.Chunk ~= false)
+        -- bar widths snap to 1/1000 so a settled bar stops writing
+        put(hud.fill, "Size", UDim2.fromScale(math.floor(hud.frac * 1000 + 0.5) / 1000, 1))
+        put(hud.chunk, "Size", UDim2.fromScale(math.floor(math.max(hud.trail, hud.frac) * 1000 + 0.5) / 1000, 1))
+        put(hud.fill, "BackgroundColor3", P.Danger:Lerp(P.Success, math.clamp(f * 1.4 - 0.2, 0, 1)))
         local root = ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Head")
         local me = myRoot()
         local dist = (root and me) and math.floor((root.Position - me.Position).Magnitude) or 0
-        hud.hp.Text = tostring(math.floor(cur + 0.5))
-        hud.sub.Text = (isPlr and ("@" .. t.Name) or "NPC") .. ((cfg.Distance ~= false) and ("  .  " .. dist .. "m") or "")
+        put(hud.hp, "Text", tostring(math.floor(cur + 0.5)))
+        put(hud.sub, "Text", (isPlr and ("@" .. t.Name) or "NPC") .. ((cfg.Distance ~= false) and ("  .  " .. dist .. "m") or ""))
         local vp = cam.ViewportSize
         local ox, oy = cfg.OffX or 60, cfg.OffY or -40
         local pos
@@ -19494,7 +19512,7 @@ end
             p0 = p0 + (pos - p0) * (1 - math.exp(-dt * 3 / math.max(ft, 0.01)))
         end
         hud.pf = p0
-        hud.card.Position = UDim2.fromOffset(math.floor(p0.X + 0.5), math.floor(p0.Y + 0.5))
+        put(hud.card, "Position", UDim2.fromOffset(math.floor(p0.X + 0.5), math.floor(p0.Y + 0.5)))
     end
     registerModule("tgt_hud", "Target HUD", function() end, function() hudDrop() end)
 
