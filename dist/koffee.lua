@@ -8442,8 +8442,10 @@ World.FX = {
     -- v0.90.0: the Shapes trail's stars as weather. Style "Stars" = rounded stars,
     -- "Mixed" = stars, snowflakes, clouds, hearts and moons.
     -- v0.90.0: thin wireframe shapes (constellations) drifting in the air around you
-    Constellations = { Enabled = false, Count = 14, Size = 1, Speed = 1, Reach = 1, Alpha = 0.35, Dots = true,
-                       Color = Color3.fromRGB(225, 232, 255) },
+    -- Speed = drift (travel), Turn = rotation, Shift / ShiftAmount = joints wandering
+    -- around their rest spots so the limbs reshape
+    Constellations = { Enabled = false, Count = 14, Size = 1, Speed = 1, Turn = 1, Shift = 1, ShiftAmount = 1,
+                       Reach = 1, Alpha = 0.35, Dots = true, Color = Color3.fromRGB(225, 232, 255) },
     Stars     = { Enabled = false, Density = 30, Speed = 1.0, Size = 0.6, Sway = 30, Spin = 60, Wind = 0,
                   Reach = 1, Style = "Stars", Color = Color3.fromRGB(170, 220, 255),
                   Color2 = Color3.fromRGB(255, 175, 220) },
@@ -8520,6 +8522,13 @@ registerConfig("world_fx", World.FX)
             sh.inst[#sh.inst + 1] = b
         end
         sh.pts = pts
+        sh.wob = {}
+        for i = 1, n do
+            local function ax() return Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5).Unit end
+            sh.wob[i] = { a1 = ax(), a2 = ax(), f1 = 0.6 + math.random() * 0.8, f2 = 1.1 + math.random() * 1.2,
+                p1 = math.random() * 6.28, p2 = math.random() * 6.28 }
+        end
+        sh.shiftT = 0
         local p = cam.CFrame.Position
         local ang, r = math.random() * math.pi * 2, (14 + math.random() * 60) * reach
         sh.center = p + Vector3.new(math.cos(ang) * r, -4 + math.random() * 30, math.sin(ang) * r)
@@ -8555,6 +8564,9 @@ registerConfig("world_fx", World.FX)
         local reach = math.clamp(cfg.Reach or 1, 0.25, 6)
         local base = math.clamp(cfg.Alpha or 0.35, 0, 0.95)
         local sp = math.max(cfg.Speed or 1, 0)
+        local turn = math.max(cfg.Turn or 1, 0)
+        local shift = math.max(cfg.Shift or 1, 0)
+        local amt = math.max(cfg.ShiftAmount or 1, 0) * 0.9 * math.max(cfg.Size or 1, 0.2)
         local colSeq = ColorSequence.new(cfg.Color)
         for _, sh in ipairs(st.shapes) do
             local age = now - sh.born
@@ -8563,12 +8575,19 @@ registerConfig("world_fx", World.FX)
                 age = 0
             end
             sh.center += sh.vel * dt * sp
+            -- turning and shifting keep their own clocks, so each slider changes smoothly
+            sh.turnT = (sh.turnT or 0) + dt * turn
+            sh.shiftT = (sh.shiftT or 0) + dt * shift
             -- fade in over 1.5s, out over the last 2s
             local k = math.min(age / 1.5, 1, (sh.life - age) / 2)
             local a = 1 - (1 - base) * math.clamp(k, 0, 1)
-            local rot = CFrame.fromAxisAngle(sh.axis, age * sh.spin * sp)
+            local rot = CFrame.fromAxisAngle(sh.axis, sh.turnT * sh.spin)
+            local t = sh.shiftT
             for i, att in ipairs(sh.atts) do
-                local wp = sh.center + rot * sh.pts[i]
+                local w = sh.wob[i]
+                local wander = w and (w.a1 * math.sin(t * w.f1 + w.p1) + w.a2 * math.sin(t * w.f2 + w.p2) * 0.6) * amt
+                    or Vector3.zero
+                local wp = sh.center + rot * (sh.pts[i] + wander)
                 att.Position = wp
                 local dot = sh.dots[i]
                 dot.CFrame = CFrame.new(wp)
@@ -21677,7 +21696,10 @@ addTab("World", function(root)
         rightClickSettings(cnr.row, "Constellations", function(popup)
             popup:slider("Count", 1, 60, Cn.Count, 0, function(v) Cn.Count = math.floor(v) end)
             popup:slider("Size", 0.3, 3, Cn.Size, 2, function(v) Cn.Size = v end)
-            popup:slider("Speed", 0, 4, Cn.Speed, 2, function(v) Cn.Speed = v end)
+            popup:slider("Drift Speed", 0, 5, Cn.Speed, 2, function(v) Cn.Speed = v end)
+            popup:slider("Turn Speed", 0, 5, Cn.Turn or 1, 2, function(v) Cn.Turn = v end)
+            popup:slider("Shift Speed", 0, 5, Cn.Shift or 1, 2, function(v) Cn.Shift = v end)
+            popup:slider("Shift Amount", 0, 4, Cn.ShiftAmount or 1, 2, function(v) Cn.ShiftAmount = v end)
             popup:slider("Reach", 0.25, 4, Cn.Reach, 2, function(v) Cn.Reach = v end)
             popup:slider("Transparency", 0, 0.9, Cn.Alpha, 2, function(v) Cn.Alpha = v end)
             popup:toggle("Dots", Cn.Dots ~= false, function(v) Cn.Dots = v end)
