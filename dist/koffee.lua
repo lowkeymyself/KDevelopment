@@ -2374,12 +2374,12 @@ KoffeeOptions = {
         Text          = Color3.fromRGB(242, 234, 223),
         TextMuted     = Color3.fromRGB(142, 129, 116),
     },
-    -- v0.91.0: UI sounds (Options > Sounds). Groups: Load + Menu, Controls, Configs +
+    -- v0.90.0: UI sounds (Options > Sounds). Groups: Load + Menu, Controls, Configs +
     -- Toasts, Hotkeys (blips when a bind toggles a module with the menu closed).
     SfxOn = true, SfxVolume = 0.5, SfxPack = "Crisp",
     SfxMenu = true, SfxControls = false, SfxConfigs = true, SfxHotkeys = true,
 }
--- v0.91.0: UI sound player. Cloned Sound per play (overlaps, cleans itself up),
+-- v0.90.0: UI sound player. Cloned Sound per play (overlaps, cleans itself up),
 -- slight pitch variance so repeats do not sound robotic, rate-limited per name.
 Koffee.Sfx = (function()
     local SS = game:GetService("SoundService")
@@ -5423,7 +5423,7 @@ function ConfigIO.rename(old, newName)
     return true, newName
 end
 ;(function()
-    -- v0.91.0: config sounds. A load re-settles every slider/toggle, so control sounds
+    -- v0.90.0: config sounds. A load re-settles every slider/toggle, so control sounds
     -- are muted around it; boot auto-load stays quiet (the load chime covers it).
     local save, ld, del = ConfigIO.save, ConfigIO.load, ConfigIO.delete
     function ConfigIO.save(name)
@@ -8245,7 +8245,7 @@ end
     local npcRigs = {}
     function Shared.updateNpcRigs(cam, camPos)
         local NPC = Shared.NPC
-        -- v0.91.0: Include all Humanoids counts bots as people, so with the NPC ESP
+        -- v0.90.0: Include all Humanoids counts bots as people, so with the NPC ESP
         -- master off they still draw under the player ESP toggle + its config.
         local master = Shared.NPCESP and Shared.NPCESP.Config.MasterOn
         local asPlayers = KoffeeOptions and KoffeeOptions.IncludeHumanoids and Modules.esp and Modules.esp.Enabled
@@ -24723,7 +24723,7 @@ registerConfig("options", KoffeeOptions)
     -- ONCE and tagged, so they're exact from then on.
     -- KUserColor marks instances whose colour is the user's DATA (swatch previews,
     -- picker chips), not chrome: repainting those desynced preview from value.
-    -- v0.91.0: untagged instances are adopted only by a STOCK palette value. Matching
+    -- v0.90.0: untagged instances are adopted only by a STOCK palette value. Matching
     -- the live (user) value let a picker drag through black claim the menu dim, snow
     -- and shadows as Accent. Tagged ones follow the role their colour is showing now
     -- (active tab = Text, idle = TextMuted), and a non-palette colour is left alone.
@@ -24957,7 +24957,7 @@ addTab("Options", function(root)
             Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, -24, 1, 0),
             ZIndex = 34, Parent = row,
         })
-        -- v0.91.0: kept in sync by the repaint loop. A stale swatch (after a config
+        -- v0.90.0: kept in sync by the repaint loop. A stale swatch (after a config
         -- load) opened the picker on its old colour and pushed it straight back.
         Koffee._uiSwatches = Koffee._uiSwatches or {}
         Koffee._uiSwatches[key] = attachSingleSwatch(row, KoffeeOptions.UIColors[key],
