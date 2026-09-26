@@ -320,6 +320,18 @@ do
             min  = 512,
         })
     end
+    for _, pack in ipairs({ "Crisp", "Soft", "Glass" }) do
+        for _, n in ipairs({ "load", "unload", "open", "close", "tab", "toggle_on", "toggle_off", "select",
+            "slider", "keybind", "save", "cfg_load", "delete", "error", "hotkey_on", "hotkey_off",
+            "toast_info", "toast_success", "toast_error" }) do
+            table.insert(MANIFEST, {
+                name = "ui sound: " .. pack .. " " .. n,
+                path = "Koffee/sfx/" .. pack .. "/" .. n .. ".ogg",
+                url  = BASE .. "ui/" .. pack .. "/" .. n .. ".ogg",
+                min  = 256,
+            })
+        end
+    end
     for _, t in ipairs(FXTEX) do
         table.insert(MANIFEST, {
             name = "fx: " .. t,
@@ -2361,7 +2373,65 @@ KoffeeOptions = {
         Text          = Color3.fromRGB(242, 234, 223),
         TextMuted     = Color3.fromRGB(142, 129, 116),
     },
+    -- v0.91.0: UI sounds (Options > Sounds). Groups: Load + Menu, Controls, Configs +
+    -- Toasts, Hotkeys (blips when a bind toggles a module with the menu closed).
+    SfxOn = true, SfxVolume = 0.5, SfxPack = "Crisp",
+    SfxMenu = true, SfxControls = false, SfxConfigs = true, SfxHotkeys = true,
 }
+-- v0.91.0: UI sound player. Cloned Sound per play (overlaps, cleans itself up),
+-- slight pitch variance so repeats do not sound robotic, rate-limited per name.
+Koffee.Sfx = (function()
+    local SS = game:GetService("SoundService")
+    local GROUP = {
+        load = "SfxMenu", unload = "SfxMenu", open = "SfxMenu", close = "SfxMenu", tab = "SfxMenu",
+        toggle_on = "SfxControls", toggle_off = "SfxControls", select = "SfxControls",
+        slider = "SfxControls", keybind = "SfxControls",
+        save = "SfxConfigs", cfg_load = "SfxConfigs", delete = "SfxConfigs", error = "SfxConfigs",
+        toast_info = "SfxConfigs", toast_success = "SfxConfigs", toast_error = "SfxConfigs",
+        hotkey_on = "SfxHotkeys", hotkey_off = "SfxHotkeys",
+    }
+    local GAP = { slider = 0.045, tab = 0.04, toggle_on = 0.03, toggle_off = 0.03 }
+    local ids, last = {}, {}
+    local api = { mutedUntil = 0, lastAny = 0, bootAt = os.clock() }
+    local function resolve(pack, name)
+        local key = pack .. "/" .. name
+        if ids[key] ~= nil then return ids[key] end
+        local id, path = false, "Koffee/sfx/" .. key .. ".ogg"
+        if getcustomasset and ((not isfile) or isfile(path)) then
+            local ok, r = pcall(getcustomasset, path)
+            if ok and type(r) == "string" and #r > 0 then id = r end
+        end
+        ids[key] = id
+        return id
+    end
+    -- force = skip the group check (the Sounds panel preview)
+    function api.play(name, force)
+        local o = KoffeeOptions
+        if not o.SfxOn then return end
+        local g = GROUP[name]
+        if not force and g and o[g] == false then return end
+        local now = os.clock()
+        if now < api.mutedUntil and not force then return end
+        if last[name] and now - last[name] < (GAP[name] or 0.06) then return end
+        local id = resolve(o.SfxPack or "Crisp", name)
+        if not id then return end
+        last[name], api.lastAny = now, now
+        pcall(function()
+            local snd = Instance.new("Sound")
+            snd.Name = "KUiSfx"
+            snd.SoundId = id
+            snd.Volume = math.clamp(o.SfxVolume or 0.5, 0, 1) * (name == "slider" and 0.6 or 1)
+            snd.PlaybackSpeed = 1 + (math.random() - 0.5) * 0.04
+            snd.Parent = SS
+            snd.Ended:Once(function() snd:Destroy() end)
+            task.delay(3, function() if snd.Parent then snd:Destroy() end end)
+            snd:Play()
+        end)
+    end
+    -- silence control sounds while a config applies (sliders + toggles re-settle)
+    function api.mute(sec) api.mutedUntil = math.max(api.mutedUntil, os.clock() + sec) end
+    return api
+end)()
 -- v0.33.0: recolour the arraylist accent line from KoffeeOptions. Called on the
 -- swatch change and after a config load; activeLine predates KoffeeOptions so it
 -- starts Snow and this repaints it.
@@ -2952,6 +3022,7 @@ tabBar:GetPropertyChangedSignal("AbsolutePosition"):Connect(pillResync)
 
 local function selectTab(name)
     if activeTab == name then return end
+    if activeTab ~= nil then Koffee.Sfx.play("tab") end
     activeTab = name
     -- v0.48.0: tab switches honour Animations > Tab Switching; off snaps the
     -- colours, panels and pill straight to their resting states.
@@ -3542,6 +3613,7 @@ local function moduleCheckbox(parent, label, moduleId)
     local ctrl = checkboxVisual(parent, label, mod and mod.Enabled or false)
     ctrl.button.MouseButton1Click:Connect(function()
         toggleModule(moduleId)
+        Koffee.Sfx.play(Modules[moduleId] and Modules[moduleId].Enabled and "toggle_on" or "toggle_off")
         -- state sync is handled by the watcher below: covers keybind toggles too
     end)
     -- v0.0.13: subscribe so keybind toggles (or any other toggleModule caller)
@@ -3557,6 +3629,7 @@ local function configCheckbox(parent, label, initialOn, onChange)
     ctrl.button.MouseButton1Click:Connect(function()
         local newState = not ctrl.getState()
         ctrl.setState(newState)
+        Koffee.Sfx.play(newState and "toggle_on" or "toggle_off")
         if onChange then onChange(newState) end
     end)
     return ctrl
@@ -3643,6 +3716,7 @@ local function completeRebind(keyCode)
     local pill = pendingRebind.pill
     Keybinds[moduleId] = keyCode
     pill.Text = keyLabel(keyCode) or "?"
+    Koffee.Sfx.play("keybind")
     -- growing pulse animation
     local origSize = pill.Size
     pill.Size = UDim2.new(0, origSize.X.Offset + 8, 0, origSize.Y.Offset + 4)
@@ -4457,6 +4531,7 @@ local function dropdown(parent, label, options, initial, onChange)
         optBtn.MouseButton1Click:Connect(function()
             valueLbl.Text = opt
             pulse(valueLbl, 1.08)   -- v0.0.98: value ticks on pick
+            Koffee.Sfx.play("select")
             closeList()
             if onChange then onChange(opt) end
         end)
@@ -4527,6 +4602,7 @@ end)
 local function slider(parent, label, min, max, initial, precision, onChange, opts)
     precision = precision or 0
     opts = opts or {}   -- v0.0.56: opts.infinite -> value at max shows "Infinite", onChange gets math.huge
+    local sfxState = {}
     local function round(v)
         local m = 10 ^ precision
         return math.floor(v * m + 0.5) / m
@@ -4631,6 +4707,8 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         end
         if animate then pulse(track, 1.02) end   -- v0.0.98: track ticks on settle
         local atMax = opts.infinite and current >= max
+        if sfxState.last ~= nil and sfxState.last ~= current then Koffee.Sfx.play("slider") end
+        sfxState.last = current
             valueBox.Text = atMax and "Infinite" or tostring(current)
         if onChange then onChange(atMax and math.huge or current) end
     end
@@ -5343,6 +5421,31 @@ function ConfigIO.rename(old, newName)
     pcall(fileAPI.delfile, src)
     return true, newName
 end
+;(function()
+    -- v0.91.0: config sounds. A load re-settles every slider/toggle, so control sounds
+    -- are muted around it; boot auto-load stays quiet (the load chime covers it).
+    local save, ld, del = ConfigIO.save, ConfigIO.load, ConfigIO.delete
+    function ConfigIO.save(name)
+        local ok, r = save(name)
+        Koffee.Sfx.play(ok and "save" or "error")
+        return ok, r
+    end
+    function ConfigIO.load(name)
+        Koffee.Sfx.mute(0.6)
+        local ok, r = ld(name)
+        if os.clock() - Koffee.Sfx.bootAt > 2 then
+            Koffee.Sfx.mutedUntil = 0
+            Koffee.Sfx.play(ok and "cfg_load" or "error")
+            Koffee.Sfx.mute(0.4)
+        end
+        return ok, r
+    end
+    function ConfigIO.delete(name)
+        local ok, r = del(name)
+        Koffee.Sfx.play(ok and "delete" or "error")
+        return ok, r
+    end
+end)()
 -- v0.56.0: auto-load rules. One JSON sidecar holds ONE global rule (loads in any
 -- game) plus any number of per-game rules keyed by PlaceId (each loads only in its
 -- game). A game rule wins over the global when you are in that game. Each rule has
@@ -24715,6 +24818,20 @@ addTab("Options", function(root)
     -- v0.48.0: animation settings. Master + speed + one flag per surface, all
     -- read live so they take effect instantly, all nil-means-on so old configs
     -- animate exactly as before. Persisted through registerConfig("options").
+    ;(function()
+        local o = KoffeeOptions
+        local sp = panel(root, "Sounds")
+        configCheckbox(sp, "UI Sounds", o.SfxOn ~= false, function(v) o.SfxOn = v end)
+        slider(sp, "Volume", 0, 1, o.SfxVolume or 0.5, 2, function(v) o.SfxVolume = v end)
+        dropdown(sp, "Pack", { "Crisp", "Soft", "Glass" }, o.SfxPack or "Crisp", function(v)
+            o.SfxPack = v
+            task.delay(0.08, function() Koffee.Sfx.play("toast_success", true) end)
+        end)
+        configCheckbox(sp, "Load + Menu", o.SfxMenu ~= false, function(v) o.SfxMenu = v end)
+        configCheckbox(sp, "Controls", o.SfxControls == true, function(v) o.SfxControls = v end)
+        configCheckbox(sp, "Configs + Toasts", o.SfxConfigs ~= false, function(v) o.SfxConfigs = v end)
+        configCheckbox(sp, "Hotkeys", o.SfxHotkeys ~= false, function(v) o.SfxHotkeys = v end)
+    end)()
     local animPanel = panel(root, "Animations")
     local function animFlag(label, key)
         configCheckbox(animPanel, label, KoffeeOptions[key] ~= false, function(v)
@@ -24841,6 +24958,8 @@ addTab("Options", function(root)
     -- restores camera + mouse, unbinds our RenderStep binds, and flips a
     -- global unloaded flag so any residual loops early-return.
     local function unloadKoffee()
+        Koffee.Sfx.play("unload")
+        Koffee.Sfx.mute(5)
         -- 1. flip every enabled module OFF so their OnDisable cleanup runs
         for id, m in pairs(Modules) do
             if m.Enabled then pcall(toggleModule, id) end
@@ -33270,6 +33389,7 @@ local function setWindowOpen(open)
     -- v0.62.0: publish the primary-interface state to the window manager so its
     -- drag gate ("only draggable while the main UI is open") needs no chunk upvalue.
     if Koffee.Windows then Koffee.Windows._setPrimary(open) end
+    Koffee.Sfx.play(open and "open" or "close")
     if open then
         window.Visible = true
         -- v0.48.0: window open honours the Animations > Window Open flag; off
@@ -35848,6 +35968,9 @@ function Koffee.notify(title, msg, opts)
     local rec = { key = key, total = total, remain = total, done = false }
     local function show()
         if Koffee.dead() then return end
+        if os.clock() - Koffee.Sfx.lastAny > 0.35 then
+            Koffee.Sfx.play("toast_" .. (SEV[opts.severity] and opts.severity or "info"))
+        end
         order = order + 1
         local wrap = new("CanvasGroup", {
             Name = KID.name("toast"), Active = false, BackgroundTransparency = 1,
@@ -35992,6 +36115,9 @@ UserInputService.InputBegan:Connect(function(input, processed)
         if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" and id ~= "targetlock" then
             if bindMatches(input, key) then
                 toggleModule(id)
+                if not windowOpen then
+                    Koffee.Sfx.play(Modules[id] and Modules[id].Enabled and "hotkey_on" or "hotkey_off")
+                end
                 return
             end
         end
@@ -36012,6 +36138,7 @@ end)
             if k then
                 Keybinds[pendingRebind.moduleId] = k
                 pendingRebind.pill.Text = keyLabel(k)
+                Koffee.Sfx.play("keybind")
                 tween(pendingRebind.pill, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
                 pendingRebind = nil
             end
@@ -36022,6 +36149,9 @@ end)
                 if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" and id ~= "targetlock" then
                     if (key == "XButton2" and e2) or (key == "XButton1" and e1) then
                         toggleModule(id)
+                        if not (window and window.Visible and window.GroupTransparency < 1) then
+                            Koffee.Sfx.play(Modules[id] and Modules[id].Enabled and "hotkey_on" or "hotkey_off")
+                        end
                     end
                 end
             end
@@ -36080,6 +36210,8 @@ if getgenv and getgenv().KoffeeDev == true then
         ESP = ESP, World = World, Modules = Modules, Options = KoffeeOptions, Theme = Theme,
         toggle = toggleModule, Crosshair = Crosshair }
 end
+
+task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") end end)
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
 -- pcall'd so a bad/locked config never blocks the UI from coming up.
