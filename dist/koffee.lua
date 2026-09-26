@@ -19426,7 +19426,10 @@ end
         local want = (ch and cam) and 1 or 0
         local wasHidden = hud.shown <= 0.01
         local fade = math.max(cfg.FadeTime or 0.12, 0.01)
-        hud.shown = math.clamp(hud.shown + (want > hud.shown and 1 or -1) * dt / fade, 0, 1)
+        -- step toward `want` and hold there (the old `and 1 or -1` stepped down at full
+        -- opacity every other frame, which was the flicker)
+        local dir = (want > hud.shown and 1) or (want < hud.shown and -1) or 0
+        hud.shown = math.clamp(hud.shown + dir * dt / fade, 0, 1)
         if hud.fadeAt ~= hud.shown then
             hud.fadeAt = hud.shown
             for _, f in ipairs(hud.fades) do f[1][f[2]] = 1 - (1 - f[3]) * hud.shown end
