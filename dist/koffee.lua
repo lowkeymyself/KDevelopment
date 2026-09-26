@@ -1,7 +1,100 @@
--- koffee v0.89.0
+-- koffee v0.92.0
 
 local Koffee = {}
-Koffee.Version = "0.91.0"
+Koffee.Version = "0.92.0"
+
+-- v0.92.0: rivals neutra
+if game.PlaceId == 17625359962 then pcall(function()
+    -- the AC reports every uncaught error through ScriptContext.Error. Filter its reporter
+    -- so errors from outside the game never land, leaving its connection and script alone.
+    local hookfn = hookfunction or replaceclosure
+    if not (hookfn and getconnections and debug and debug.info) then return end
+    local S = { hooked = 0, passed = 0, dropped = 0, forwardErrors = 0, inForward = false,
+        windowAt = 0, windowN = 0, selfScripts = {}, originals = {} }
+    Koffee._acRivals = S
+
+    -- resolve a closure's source back to its script, so the AC's own errors are identifiable
+    local function ownerOf(src)
+        local name = tostring(src):match("([^%.]+)$")
+        if not name then return nil end
+        local found
+        pcall(function()
+            for _, root in ipairs({ game:GetService("ReplicatedFirst"), game:GetService("Players").LocalPlayer }) do
+                for _, d in ipairs(root:GetDescendants()) do
+                    if d:IsA("LuaSourceContainer") and d.Name == name then found = d; return end
+                end
+            end
+        end)
+        return found
+    end
+
+    local function wrap(target)
+        local original
+        local function filtered(message, trace, scriptArg, ...)
+            local pass = false
+            pcall(function()
+                pass = typeof(scriptArg) == "Instance" and scriptArg:IsDescendantOf(game)
+            end)
+            -- never hand the AC its own error back: that recurses to the engine's
+            -- re-entrancy cap and leaves its decoder reading garbage
+            if pass and S.selfScripts[scriptArg] then pass = false end
+            if pass and S.inForward then pass = false end
+            if pass then
+                local now = os.clock()
+                if now - S.windowAt >= 1 then S.windowAt, S.windowN = now, 0 end
+                S.windowN += 1
+                if S.windowN > 12 then pass = false end
+            end
+            if pass and original then
+                S.passed += 1
+                S.inForward = true
+                local okf = pcall(original, message, trace, scriptArg, ...)
+                S.inForward = false
+                if not okf then S.forwardErrors += 1 end
+                return nil
+            end
+            S.dropped += 1
+            return nil
+        end
+        local list = { filtered }
+        if newcclosure then
+            local okc, c = pcall(newcclosure, filtered)
+            if okc and c then table.insert(list, 1, c) end
+        end
+        for _, fn in ipairs(list) do
+            local okh, res = pcall(hookfn, target, fn)
+            if okh and res then original = res; return res end
+        end
+        return nil
+    end
+
+    local function apply()
+        local okc, conns = pcall(getconnections, game:GetService("ScriptContext").Error)
+        if not okc or type(conns) ~= "table" then return end
+        for _, c in ipairs(conns) do
+            -- skip the foreign-state CoreScript listener, it belongs to Roblox
+            if c.ForeignState ~= true and c.Function and not S.originals[c.Function] then
+                local src = ""
+                pcall(function() src = tostring(debug.info(c.Function, "s")) end)
+                if src:find("LocalScript3", 1, true) then
+                    local owner = ownerOf(src)
+                    if owner then S.selfScripts[owner] = true end
+                    local orig = wrap(c.Function)
+                    if orig then S.originals[c.Function] = orig; S.hooked += 1 end
+                end
+            end
+        end
+    end
+
+    apply()
+    -- the AC may connect a fresh closure after a respawn or teleport
+    task.spawn(function()
+        while not (Koffee.dead and Koffee.dead()) do
+            task.wait(10)
+            pcall(apply)
+        end
+    end)
+end) end
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -6178,6 +6271,13 @@ RunService.Heartbeat:Connect(function()
     -- ESP text labels use (textGradSeq with GradientColorA/B, Rotation, Spacing,
     -- animated offset) so arraylist reads exactly like the ESP text.
     local gradOn = ESP.Config.TextGradient == true
+    -- v0.92.0: only the animated gradient needs every frame; the rest syncs at 10Hz
+    -- (was ~0.8ms a frame with a dozen modules shown, mostly rebuilding label text)
+    if not gradOn then
+        local now = os.clock()
+        if now < (Koffee._arrSyncAt or 0) then return end
+        Koffee._arrSyncAt = now + 0.1
+    end
     local gSeq, gRot, gOff
     if gradOn then
         gSeq = textGradSeq(ESP.Config.GradientColorA, ESP.Config.GradientColorB, ESP.Config.GradientSpacing)
@@ -6187,7 +6287,7 @@ RunService.Heartbeat:Connect(function()
     for _, m in ipairs(shown) do
         local lbl = m._arrayLabel
         if lbl and lbl.Parent then
-            local s = lbl:FindFirstChild("KArrayStroke")
+            local s = ESP._getChild(lbl, "KArrayStroke")
             if s then
                 local strokeEnabled, strokeColor, strokeSize
                 if KoffeeOptions.ArraylistOutline then
@@ -6203,7 +6303,7 @@ RunService.Heartbeat:Connect(function()
                 if s.Thickness ~= strokeSize then s.Thickness = strokeSize end
                 if s.Color ~= strokeColor then s.Color = strokeColor end
             end
-            local g = lbl:FindFirstChild("KArrayGrad")
+            local g = ESP._getChild(lbl, "KArrayGrad")
             if g then
                 if g.Enabled ~= gradOn then g.Enabled = gradOn end
                 -- v0.0.97: UIGradient does not render on RichText labels (Roblox
@@ -6759,6 +6859,11 @@ local function cleanRig(rig)
     if rig.skeleton then
         for _, l in ipairs(rig.skeleton) do pcall(function() l:Destroy() end) end
     end
+    if rig.skelAd then
+        pcall(function() rig.skelAd.core:Destroy() end)
+        pcall(function() rig.skelAd.out:Destroy() end)
+        rig.skelAd = nil
+    end
     if rig.lookLine then
         for _, l in ipairs(rig.lookLine) do pcall(function() l:Destroy() end) end
     end
@@ -7285,6 +7390,8 @@ local function hideRigVisuals(rig)
     if rig.fill3D then rig.fill3D.Visible = false end
     -- v0.0.21 overlays
     for _, l in ipairs(rig.skeleton) do l.Visible = false end
+    if rig.skelAd then rig.skelAd.core.Visible = false; rig.skelAd.out.Visible = false end
+    if rig.lookLine then for _, l in ipairs(rig.lookLine) do l.Visible = false end end
     rig.headDot.Visible = false
     rig.tracer.Visible = false
     rig.healthBg.Visible = false
@@ -7401,7 +7508,15 @@ local function pinStrokeColor(stroke, on, color)
     g.Rotation = 0
 end
 
+-- v0.92.0: last applied line style per frame, so unchanged styling costs one compare
+-- instead of 4 to 6 property writes per line per frame
+ESP._styleCache = setmetatable({}, { __mode = "k" })
 local function applyLineOutline(frame, on, color, thick)
+    -- keep the outline solid even when the frame's KGrad is animating
+    local grad = ESP._getChild(frame, "KGrad")
+    local gOn = grad ~= nil and grad.Enabled
+    local c = ESP._styleCache[frame]
+    if c and c[1] == on and c[2] == color and c[3] == thick and c[4] == gOn then return end
     local s = ESP._getChild(frame, "KOutline")
     if not s then return end
     s.Enabled = on
@@ -7409,9 +7524,8 @@ local function applyLineOutline(frame, on, color, thick)
         s.Color = color
         s.Thickness = thick
     end
-    -- keep the outline solid even when the frame's KGrad is animating
-    local grad = ESP._getChild(frame, "KGrad")
-    pinStrokeColor(s, on and grad ~= nil and grad.Enabled, color)
+    pinStrokeColor(s, on and gOn, color)
+    ESP._styleCache[frame] = { on, color, thick, gOn }
 end
 
 -- v0.0.24: the Outline effect on ESP text. The label's Contextual UIStroke hugs
@@ -7459,10 +7573,14 @@ end
 -- v0.0.25: line gradient (on a feature line-frame's KGrad UIGradient). When on it
 -- OVERRIDES the feature colour (forces white so the gradient shows its own colours
 --: gradient wins over per-feature colours, per he).
+ESP._gradOff = setmetatable({}, { __mode = "k" })
 local function applyLineGradient(frame, on)
+    -- v0.92.0: an already-disabled gradient needs no write
+    if not on and ESP._gradOff[frame] then return end
     local g = ESP._getChild(frame, "KGrad")
     if not g then return end
     g.Enabled = on
+    if on then ESP._gradOff[frame] = nil else ESP._gradOff[frame] = true end
     if on then
         frame.BackgroundColor3 = Color3.new(1, 1, 1)
         g.Color = lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
@@ -7490,7 +7608,7 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     local function styleTextBg(lbl)
         lbl.BackgroundColor3 = bgCol
         lbl.BackgroundTransparency = textBg
-        local pad = lbl:FindFirstChildOfClass("UIPadding")
+        local pad = ESP._getChildOfClass(lbl, "UIPadding")
         if pad then
             pad.PaddingLeft  = UDim.new(0, bgPad)
             pad.PaddingRight = UDim.new(0, bgPad)
@@ -7516,9 +7634,9 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     -- v0.56.0: an NPC has no "Head"; anchor its name to the TOP of its bounding
     -- box (model or bare part) so the name always sits above the ESP box.
     local headTopWorld
+    local bcf, bsz   -- v0.92.0: one bounding box per NPC per frame, shared with distance
     if rig.isNPC then
         local c = rig.character
-        local bcf, bsz
         if c:IsA("Model") then
             local okb, cf2, s2 = pcall(function() return c:GetBoundingBox() end)
             if okb and cf2 then bcf, bsz = cf2, s2 end
@@ -7566,7 +7684,10 @@ local function updateBillboards(rig, plr, dist, overrideColor)
         rig.pfp.Size = UDim2.new(0, pfpSize, 0, pfpSize)
         local pfpStroke = rig.pfp:FindFirstChildOfClass("UIStroke")
         if pfpStroke then pfpStroke.Thickness = pfpCfg.OutlineThickness or 1 end
-        local nameH = (showName and rig.nameLbl.Visible) and (rig.nameLbl.AbsoluteSize.Y + 3) or 0
+        -- v0.92.0: the tag's height is a fixed offset (AutomaticSize is X only). Reading
+        -- AbsoluteSize right after the Text write forced a GUI layout per rig (~370us each)
+        local nameH = 0
+        if showName and rig.nameLbl.Visible then nameH = rig.nameLbl.Size.Y.Offset + 3 end
         rig.pfp.Position = UDim2.new(0, hp.X, 0, hp.Y - 3 - nameH - (pfpCfg.YOffset or 0))
         rig.pfp.Visible = true
     else
@@ -7579,14 +7700,8 @@ local function updateBillboards(rig, plr, dist, overrideColor)
         -- v0.56.0: NPCs sit the distance below the bounding-box bottom, not a fixed
         -- torso offset, so it lands just under the ESP box for any model / part.
         local feetWorld = rig.torso.Position - Vector3.new(0, 3.2, 0)
-        if rig.isNPC then
-            local c = rig.character
-            if c:IsA("Model") then
-                local okb, cf2, s2 = pcall(function() return c:GetBoundingBox() end)
-                if okb and cf2 then feetWorld = cf2.Position - Vector3.new(0, s2.Y * 0.5 + 0.4, 0) end
-            elseif c:IsA("BasePart") then
-                feetWorld = c.Position - Vector3.new(0, c.Size.Y * 0.5 + 0.4, 0)
-            end
+        if rig.isNPC and bcf then
+            feetWorld = bcf.Position - Vector3.new(0, bsz.Y * 0.5 + 0.4, 0)
         end
         local fp = cam and cam:WorldToViewportPoint(feetWorld)
         if fp and fp.Z > 0 then
@@ -7608,6 +7723,23 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     end
 end
 
+-- v0.92.0: skeleton as world-space lines on two WireframeHandleAdornments (outline
+-- under core). ~11us per bone as GUI frames (2 projections + 5 writes), ~1 here.
+function ESP._skelAdorn(rig)
+    local ad = rig.skelAd
+    if ad and ad.core.Parent and ad.out.Parent then return ad end
+    if ad then
+        pcall(function() ad.core:Destroy() end)
+        pcall(function() ad.out:Destroy() end)
+    end
+    local function mk(z)
+        return KID.track(new("WireframeHandleAdornment", { Name = KID.name("esk"), Adornee = Workspace.Terrain,
+            AlwaysOnTop = true, ZIndex = z, Visible = false, Parent = ensureAdornLayer() }))
+    end
+    ad = { out = mk(1), core = mk(2), pts = {} }
+    rig.skelAd = ad
+    return ad
+end
 -- v0.0.21: skeleton: project each bone pair whose both parts exist (covers R6
 -- + R15 since missing parts skip) and draw a rotated line frame between them.
 local function updateSkeleton(rig, overrideColor, dist)
@@ -7618,14 +7750,17 @@ local function updateSkeleton(rig, overrideColor, dist)
     local outlineOn = ESP.Config.Outline
     local outlineCol = ESP.Boxes.OutlineColor
     local outlineThick = math.max(1, thick)
+    local ad = rig.skelAd
     if not cfg.Enabled then
         for _, l in ipairs(rig.skeleton) do l.Visible = false end
+        if ad then ad.core.Visible = false; ad.out.Visible = false end
         return
     end
     local cam = ESP._cam or Workspace.CurrentCamera
     local char = rig.character
     if not cam or not char then
         for _, l in ipairs(rig.skeleton) do l.Visible = false end
+        if ad then ad.core.Visible = false; ad.out.Visible = false end
         return
     end
     local col = overrideColor or cfg.Color
@@ -7645,7 +7780,57 @@ local function updateSkeleton(rig, overrideColor, dist)
         rig.skelChar = char
         rig.skelParts = sp
         rig._skelResync = now + 2
+        -- v0.92.0: bones share joints; index unique parts so each is read once a frame
+        local uniq, at, idx = {}, {}, {}
+        for i, pair in ipairs(sp) do
+            for j = 1, 2 do
+                local p = pair[j]
+                if not at[p] then uniq[#uniq + 1] = p; at[p] = #uniq end
+            end
+            idx[i] = { at[pair[1]], at[pair[2]] }
+        end
+        rig.skelU, rig.skelIdx = uniq, idx
     end
+    -- adornments can't render in the preview viewport or carry a UIGradient
+    if not ESP._cam and not ESP.Config.Gradient then
+        for _, l in ipairs(rig.skeleton) do if l.Visible then l.Visible = false end end
+        ad = ESP._skelAdorn(rig)
+        -- parents are checked on the 2s resync, not per bone per frame (each read ~0.6us)
+        local pos, pts = ad.pos or {}, ad.pts
+        ad.pos = pos
+        table.clear(pts)
+        for i, p in ipairs(rig.skelU) do pos[i] = p.Position end
+        for _, pr in ipairs(rig.skelIdx) do
+            pts[#pts + 1] = pos[pr[1]]
+            pts[#pts + 1] = pos[pr[2]]
+        end
+        ad.core:Clear()
+        ad.out:Clear()
+        if #pts > 0 then
+            ad.core:AddLines(pts)
+            if ad.col ~= col or ad.th ~= thick then
+                ad.col, ad.th = col, thick
+                ad.core.Color3, ad.core.Thickness = col, thick
+            end
+            if not ad.core.Visible then ad.core.Visible = true end
+            if outlineOn then
+                ad.out:AddLines(pts)
+                local oth = thick + outlineThick * 2
+                if ad.ocol ~= outlineCol or ad.oth ~= oth then
+                    ad.ocol, ad.oth = outlineCol, oth
+                    ad.out.Color3, ad.out.Thickness = outlineCol, oth
+                end
+                if not ad.out.Visible then ad.out.Visible = true end
+            else
+                ad.out.Visible = false
+            end
+        else
+            ad.core.Visible = false
+            ad.out.Visible = false
+        end
+        return
+    end
+    if ad then ad.core.Visible = false; ad.out.Visible = false end
     local slot = 0
     for _, pair in ipairs(rig.skelParts) do
         local pa, pb = pair[1], pair[2]
@@ -7701,9 +7886,11 @@ local function updateLookLine(rig, overrideColor, dist)
     local origin = head.Position
     local step = head.CFrame.LookVector * ((cfg.Length or 5) / LOOK_SEGS)
     local used = 0
+    -- v0.92.0: neighbouring segments share an endpoint, so project each point once
+    local b = cam:WorldToViewportPoint(origin)
     for i = 1, LOOK_SEGS do
-        local a = cam:WorldToViewportPoint(origin + step * (i - 1))
-        local b = cam:WorldToViewportPoint(origin + step * i)
+        local a = b
+        b = cam:WorldToViewportPoint(origin + step * i)
         if a.Z > 0 and b.Z > 0 then
             used = used + 1
             local l = segs[used]
@@ -8329,9 +8516,16 @@ end
             if not live[m] then cleanRig(r.rig); npcRigs[m] = nil end
         end
     end
+    function Shared.clearNpcRigs()
+        for m, r in pairs(npcRigs) do cleanRig(r.rig); npcRigs[m] = nil end
+    end
 end)()
 RunService.RenderStepped:Connect(function()
-    if Koffee.dead() then return end
+    -- v0.92.0: a superseded run left its NPC ESP frozen on screen
+    if Koffee.dead() then
+        if Shared.clearNpcRigs then pcall(Shared.clearNpcRigs); Shared.clearNpcRigs = nil end
+        return
+    end
     local cam = Workspace.CurrentCamera
     if cam then Shared.updateNpcRigs(cam, cam.CFrame.Position) end
 end)
@@ -8456,6 +8650,12 @@ end)
 end)()
 
 local function updateESPRigs()
+    -- v0.92.0: a superseded run kept drawing (and paying for) its player ESP
+    if Koffee.dead() then
+        if ESP.UpdateConn then ESP.UpdateConn:Disconnect(); ESP.UpdateConn = nil end
+        for _, entry in pairs(ESP.Rigs) do pcall(hideRigVisuals, entry.rig) end
+        return
+    end
     local cam = Workspace.CurrentCamera
     if not cam then return end
     rescanRigs(applyESP, stripESP)   -- self-throttled, see rescanRigs
@@ -11742,13 +11942,48 @@ local Combat = {
         return mp
     end
 
+    -- v0.92.0: candidates are scored first, then ray-checked best-first until one is
+    -- visible (was a Visible Check ray per candidate). Same pick, ~1 ray instead of N.
+    -- A per-frame memo per config answers repeat asks (silent, crosshair, trigger).
+    Combat._gbt = { memo = setmetatable({}, { __mode = "k" }), s = {}, t = {}, p = {}, c = {},
+        bind = KID.name("gbf") .. math.random(1, 1e9) }
+    -- ticks before any other render step, so a memo never outlives its frame
+    RunService:BindToRenderStep(Combat._gbt.bind, Enum.RenderPriority.First.Value - 1, function()
+        if Koffee.dead() then
+            pcall(function() RunService:UnbindFromRenderStep(Combat._gbt.bind) end)
+            return
+        end
+        Combat._frame = (Combat._frame or 0) + 1
+    end)
+    local function pickVisible(cfg, camPos, n)
+        local G = Combat._gbt
+        local S, T, P, C = G.s, G.t, G.p, G.c
+        for _ = 1, n do
+            local bi, bs = nil, math.huge
+            for i = 1, n do
+                if S[i] < bs then bi, bs = i, S[i] end
+            end
+            if not bi then break end
+            if not (cfg.VisibleCheck and occluded(C[bi], camPos, P[bi].Position)) then
+                return T[bi], P[bi]
+            end
+            S[bi] = math.huge
+        end
+        return nil, nil
+    end
     -- returns player, part. maxRadius in screen px (math.huge = no FOV limit).
     local function getBestTarget(cfg, maxRadius, center)
         local cam = Workspace.CurrentCamera
         if not cam then return nil end
         center = center or fovCenter()
+        local memo = Combat._gbt.memo[cfg]
+        if memo and memo.f == Combat._frame and memo.r == maxRadius and memo.c == center then
+            return memo.t, memo.p
+        end
         local camPos = cam.CFrame.Position
-        local best, bestPart, bestScore = nil, nil, math.huge
+        local G = Combat._gbt
+        local S, T, P, C = G.s, G.t, G.p, G.c
+        local n = 0
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
                 local char = plr.Character
@@ -11778,25 +12013,20 @@ local Combat = {
                                     pass = crossDist <= maxRadius
                                 end
                                 if pass then
-                                    local vis = not (cfg.VisibleCheck and occluded(char, camPos, part.Position))
-                                    if vis then
-                                        -- v0.50.0 target priority. Crosshair scores screen
-                                        -- distance to the ring center; Distance scores world
-                                        -- distance; Health scores lowest health fraction first.
-                                        -- "Nearest" is the pre-rename Distance value.
-                                        local pri = cfg.Priority
-                                        local score
-                                        if pri == "Nearest" or pri == "Distance" or cfg.BehindCam then
-                                            score = worldDist
-                                        elseif pri == "Health" then
-                                            score = hum.Health / math.max(hum.MaxHealth or 100, 1)
-                                        else
-                                            score = crossDist
-                                        end
-                                        if score < bestScore then
-                                            bestScore, best, bestPart = score, plr, part
-                                        end
+                                    -- v0.50.0 target priority. Crosshair scores screen distance
+                                    -- to the ring center; Distance scores world distance; Health
+                                    -- scores lowest health fraction first. "Nearest" = old Distance.
+                                    local pri = cfg.Priority
+                                    local score
+                                    if pri == "Nearest" or pri == "Distance" or cfg.BehindCam then
+                                        score = worldDist
+                                    elseif pri == "Health" then
+                                        score = hum.Health / math.max(hum.MaxHealth or 100, 1)
+                                    else
+                                        score = crossDist
                                     end
+                                    n += 1
+                                    S[n], T[n], P[n], C[n] = score, plr, part, char
                                 end
                             end
                         end
@@ -11827,7 +12057,7 @@ local Combat = {
                                 crossDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
                                 pass = crossDist <= maxRadius
                             end
-                            if pass and not (cfg.VisibleCheck and occluded(char, camPos, part.Position)) then
+                            if pass then
                                 local pri = cfg.Priority
                                 local score
                                 if pri == "Nearest" or pri == "Distance" or cfg.BehindCam then
@@ -11837,15 +12067,20 @@ local Combat = {
                                 else
                                     score = crossDist
                                 end
-                                if score < bestScore then
-                                    bestScore, best, bestPart = score, e.wrapper, part
-                                end
+                                n += 1
+                                S[n], T[n], P[n], C[n] = score, e.wrapper, part, char
                             end
                         end
                     end
                 end
             end
         end
+        local best, bestPart = pickVisible(cfg, camPos, n)
+        -- drop references so the buffers don't pin dead characters
+        for i = 1, n do T[i], P[i], C[i] = nil, nil, nil end
+        local mm = Combat._gbt.memo[cfg]
+        if not mm then mm = {}; Combat._gbt.memo[cfg] = mm end
+        mm.f, mm.r, mm.c, mm.t, mm.p = Combat._frame, maxRadius, center, best, bestPart
         return best, bestPart
     end
 
@@ -13823,13 +14058,27 @@ local Combat = {
             -- v0.1.6: own root position cached namecall-safe (outbound arg-rewrite origin)
             local rt = ch and (ch:FindFirstChild("HumanoidRootPart") or (findTorso and findTorso(ch)))
             if rt then SR.rootPos = rt.Position else SR.rootPos = nil end
-            local sp = {}
-            if ch then
-                for _, d in ipairs(ch:GetDescendants()) do
-                    if d:IsA("BasePart") or d:IsA("Attachment") or d:IsA("Bone") then sp[d] = true end
+            -- v0.92.0: rebuilt only when the character or its contents change (tool equip
+            -- fires DescendantAdded). Walking every descendant each frame was ~0.7ms.
+            if SR._spoofChar ~= ch then
+                SR._spoofChar, SR._spoofDirty = ch, true
+                if SR._spoofConns then for _, c in ipairs(SR._spoofConns) do c:Disconnect() end end
+                SR._spoofConns = nil
+                if ch then
+                    local function dirty() SR._spoofDirty = true end
+                    SR._spoofConns = { ch.DescendantAdded:Connect(dirty), ch.DescendantRemoving:Connect(dirty) }
                 end
             end
-            SR.spoofParts = sp
+            if SR._spoofDirty or not SR.spoofParts then
+                SR._spoofDirty = false
+                local sp = {}
+                if ch then
+                    for _, d in ipairs(ch:GetDescendants()) do
+                        if d:IsA("BasePart") or d:IsA("Attachment") or d:IsA("Bone") then sp[d] = true end
+                    end
+                end
+                SR.spoofParts = sp
+            end
             Combat.Silent._lastGoodAt = os.clock()
         else
             -- v0.3.7: grace window. Keep the last known silentPos alive for
@@ -20756,6 +21005,7 @@ registerConfig("chams", Koffee.Chams)
                     if not d:IsA("DataModelMesh") then d:Destroy() end
                 end
                 c.Anchored = true
+                c.Transparency = 0
                 c.Material = Enum.Material.SmoothPlastic
                 pcall(function() c.TextureID = "" end)
                 local sm = c:FindFirstChildWhichIsA("SpecialMesh")
@@ -20784,19 +21034,26 @@ registerConfig("chams", Koffee.Chams)
         lit.cam.CFrame, lit.cam.FieldOfView = cam.CFrame, cam.FieldOfView
         vp.LightDirection = (cam.CFrame.LookVector - cam.CFrame.UpVector * 0.8 + cam.CFrame.RightVector * 0.6).Unit
         vp.ImageTransparency = math.clamp(CH.Alpha or 0.3, 0, 0.95)
+        -- v0.92.0: one BulkMoveTo for every clone, colour written only when it changes.
+        -- Lost parts are caught by litRig's 1s part-count check, not a Parent read per part
         local keep = {}
+        local bp, bc = lit.bp or {}, lit.bc or {}
+        lit.bp, lit.bc = bp, bc
+        table.clear(bp)
+        table.clear(bc)
         for _, t in ipairs(list) do
             keep[t.char] = true
             local r = litRig(t.char, vp)
+            local recolor = r.col ~= t.color
+            r.col = t.color
             for src, c in pairs(r.map) do
-                if src.Parent then
-                    c.CFrame = src.CFrame
-                    c.Color = t.color
-                    c.Transparency = 0
-                else
-                    c.Transparency = 1
-                end
+                bp[#bp + 1] = c
+                bc[#bc + 1] = src.CFrame
+                if recolor then c.Color = t.color end
             end
+        end
+        if #bp > 0 and lit.wm then
+            pcall(function() lit.wm:BulkMoveTo(bp, bc, Enum.BulkMoveMode.FireCFrameChanged) end)
         end
         for char, r in pairs(lit.rigs) do
             if not keep[char] then litDropRig(r); lit.rigs[char] = nil end

@@ -2,6 +2,7 @@
 globals:
   getgc: { args: [{ type: bool, required: false }] }
   hookfunction: { args: [{ type: any }, { type: any }] }
+  replaceclosure: { args: [{ type: any }, { type: any }] }
   hookmetamethod: { args: [{ type: any }, { type: string }, { type: any }] }
   getnamecallmethod: { args: [] }
   setthreadidentity: { args: [{ type: number }] }
