@@ -34135,6 +34135,9 @@ registerConfig("keybinds_ui", Koffee.KeybindsUI)
     }, {
         new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 7),
             HorizontalAlignment = Enum.HorizontalAlignment.Left, SortOrder = Enum.SortOrder.LayoutOrder }),
+        -- a little room so borders and rounded corners are not clipped by the group
+        new("UIPadding", { PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 3),
+            PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3) }),
     })
     do
         local p = WM.persist.pos and WM.persist.pos.keybinds
@@ -34213,17 +34216,17 @@ registerConfig("keybinds_ui", Koffee.KeybindsUI)
         if cardF then cardF:Destroy() end
         cardRows = {}
         cardF = new("Frame", { Name = "card", BackgroundColor3 = Color3.fromRGB(17, 17, 21), BackgroundTransparency = 0.06,
-            BorderSizePixel = 0, Size = UDim2.fromOffset(196, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 0,
+            BorderSizePixel = 0, Size = UDim2.fromOffset(210, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 0,
             Parent = root }, { corner(8), stroke(Palette.BorderSubtle),
-            new("UIPadding", { PaddingTop = UDim.new(0, 9), PaddingBottom = UDim.new(0, 10),
-                PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 10) }),
+            new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 11),
+                PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 12) }),
             new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
-        local head = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20), LayoutOrder = 0, Parent = cardF })
-        new("TextLabel", { BackgroundTransparency = 1, Text = "KeyBinds", FontFace = Theme.Fonts.Bold, TextSize = 15,
-            TextColor3 = Palette.Text, TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -24, 1, 0), Parent = head })
+        local head = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22), LayoutOrder = 0, Parent = cardF })
+        new("TextLabel", { BackgroundTransparency = 1, Text = "Keybinds", FontFace = Theme.Fonts.Bold, TextSize = 15,
+            TextColor3 = Palette.Text, TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -34, 1, 0), Parent = head })
         local badge = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
-            Size = UDim2.fromOffset(20, 14), BackgroundColor3 = Palette.Accent, BorderSizePixel = 0, Parent = head }, { corner(3) })
-        local bi = Koffee.lucideIcon(badge, "keyboard", 11, Color3.fromRGB(20, 20, 24))
+            Size = UDim2.fromOffset(28, 20), BackgroundColor3 = Palette.Accent, BorderSizePixel = 0, Parent = head }, { corner(4) })
+        local bi = Koffee.lucideIcon(badge, "keyboard", 15, Color3.fromRGB(20, 20, 24))
         bi.AnchorPoint = Vector2.new(0.5, 0.5); bi.Position = UDim2.fromScale(0.5, 0.5)
         if #bl == 0 then
             new("TextLabel", { BackgroundTransparency = 1, Text = "No hotkeys set", FontFace = Theme.Fonts.Medium, TextSize = 13,
