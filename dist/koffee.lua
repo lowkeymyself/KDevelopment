@@ -11435,7 +11435,42 @@ local Combat = {
         ["Left Foot"]  = { "LeftFoot", "Left Leg" },
         ["Right Foot"] = { "RightFoot", "Right Leg" },
     }
+    -- v0.90.0 AUTO: the first part you can actually see, in priority order (head,
+    -- torso, root, arms, legs, hands, feet), by a camera ray to each part. Cached a
+    -- few frames per character so the candidate loops don't ray every part each frame.
+    local HITPART_OPTIONS = { "Auto" }
+    for _, n in ipairs(HITPARTS) do HITPART_OPTIONS[#HITPART_OPTIONS + 1] = n end
+    local autoCache = setmetatable({}, { __mode = "k" })
+    local autoParams = RaycastParams.new()
+    autoParams.FilterType = Enum.RaycastFilterType.Exclude
+    local function autoPart(character)
+        local now = os.clock()
+        local c = autoCache[character]
+        if c and now - c.at < 0.05 and c.part and c.part.Parent then return c.part end
+        local cam = Workspace.CurrentCamera
+        local first, pick
+        if cam then
+            local from = cam.CFrame.Position
+            autoParams.FilterDescendantsInstances = { character, LocalPlayer.Character, cam }
+            for _, n in ipairs(HITPARTS) do
+                local p
+                for _, rn in ipairs(HITMAP[n]) do
+                    p = character:FindFirstChild(rn)
+                    if p then break end
+                end
+                if p and p:IsA("BasePart") then
+                    first = first or p
+                    if not Workspace:Raycast(from, p.Position - from, autoParams) then pick = p; break end
+                end
+            end
+        end
+        -- nothing visible: fall back to the head (or whatever the rig has first)
+        pick = pick or first or findTorso(character)
+        autoCache[character] = { part = pick, at = now }
+        return pick
+    end
     local function aimPart(character, partName)
+        if partName == "Auto" then return autoPart(character) end
         local cands = HITMAP[partName] or { "Head" }
         for _, n in ipairs(cands) do
             local p = character:FindFirstChild(n)
@@ -14189,7 +14224,7 @@ local Combat = {
         slider(L.Aimbot, "Distance", 1, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end, { infinite = true })
         slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
         configCheckbox(L.Aimbot, "Perfect Lock", Combat.Aim.PerfectLock, function(v) Combat.Aim.PerfectLock = v end)
-        dropdown(L.Aimbot, "Hit Part", HITPARTS, Combat.Aim.HitPart, function(v) Combat.Aim.HitPart = v end)
+        dropdown(L.Aimbot, "Hit Part", HITPART_OPTIONS, Combat.Aim.HitPart, function(v) Combat.Aim.HitPart = v end)
         dropdown(L.Aimbot, "Aim Type", { "Camera", "Mouse" }, Combat.Aim.AimType, function(v) Combat.Aim.AimType = v end)
         local rageRow = configCheckbox(L.Aimbot, "Ragebot", Combat.Aim.Rage, function(v) Combat.Aim.Rage = v end)
         attachHelp(rageRow.row)
@@ -14351,7 +14386,7 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Health Check", Combat.Silent.HealthCheck, function(v) Combat.Silent.HealthCheck = v end)
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 1, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
-        dropdown(R["Silent Aim"], "Hit Part", HITPARTS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
+        dropdown(R["Silent Aim"], "Hit Part", HITPART_OPTIONS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
         dropdown(R["Silent Aim"], "Method", { "Forced Camera", "Second-Camera", "Raycast", "External" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v; if Koffee.External then Koffee.External.onMethodChange(v) end end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
