@@ -24085,7 +24085,7 @@ end)()
 -- server-only), then moved onto your real character: body parts and scale (so your
 -- physics size really changes), accessories, clothing, colours, face, animations.
 Koffee.Morph = { Target = "", Source = "Avatar", Body = true, Accessories = true, Clothing = true, Face = true,
-    Animations = true, KeepOnRespawn = true }
+    Animations = true, Emotes = true, KeepOnRespawn = true }
 registerConfig("morph", Koffee.Morph)
 ;(function()
     local MO = Koffee.Morph
@@ -24134,14 +24134,54 @@ registerConfig("morph", Koffee.Morph)
     local function buildSource(uid, plr, rig)
         if MO.Source == "In-Game Look" and plr and plr.Character then
             local th = plr.Character:FindFirstChildOfClass("Humanoid")
-            if th and th.RigType == rig then return snapshot(plr.Character) end
+            if th and th.RigType == rig then
+                local okd, live = pcall(function() return th:GetAppliedDescription() end)
+                if not okd or not live then
+                    okd, live = pcall(function() return Players:GetHumanoidDescriptionFromUserId(uid) end)
+                end
+                return snapshot(plr.Character), okd and live or nil
+            end
         end
         local ok, desc = pcall(function() return Players:GetHumanoidDescriptionFromUserId(uid) end)
-        if not ok or not desc then return nil, "could not load that avatar" end
+        if not ok or not desc then return nil, nil, "could not load that avatar" end
         local ok2, model = pcall(function() return Players:CreateHumanoidModelFromDescription(desc, rig) end)
-        if not ok2 or not model then return nil, "could not build that avatar" end
-        return model
+        if not ok2 or not model then return nil, nil, "could not build that avatar" end
+        return model, desc
     end
+
+    -- :: emotes :: the emote wheel reads the Humanoid's HumanoidDescription, which a
+    -- LocalScript may edit (Roblox documents setting emotes this way), so their list
+    -- and equipped slots are copied onto ours. Played emotes replicate like any
+    -- animation your client runs.
+    local function readEmotes(desc)
+        if not desc then return nil end
+        local ok, list = pcall(function() return desc:GetEmotes() end)
+        local ok2, eq = pcall(function() return desc:GetEquippedEmotes() end)
+        if not ok then return nil end
+        local names = {}
+        if ok2 and type(eq) == "table" then
+            table.sort(eq, function(a, b) return (a.Slot or 0) < (b.Slot or 0) end)
+            for _, e in ipairs(eq) do names[#names + 1] = e.Name end
+        end
+        return { list = list or {}, equipped = names }
+    end
+    local function myDesc(hum)
+        local d = hum:FindFirstChildOfClass("HumanoidDescription")
+        if not d then
+            -- some games strip it; the wheel still reads a fresh one we add
+            d = Instance.new("HumanoidDescription")
+            d.Parent = hum
+        end
+        return d
+    end
+    local function writeEmotes(hum, e)
+        if not (hum and e) then return false end
+        local d = myDesc(hum)
+        local ok = pcall(function() d:SetEmotes(e.list) end)
+        pcall(function() d:SetEquippedEmotes(e.equipped) end)
+        return ok
+    end
+    M.readEmotes = readEmotes
 
     -- move a look from `src` onto the live character `char`
     local function transplant(src, char)
@@ -24322,25 +24362,35 @@ registerConfig("morph", Koffee.Morph)
         setStatus("loading...")
         local uid, plr, err = resolve(text or MO.Target)
         if not uid then M.busy = false; setStatus(err); return false, err end
-        local src, e2 = buildSource(uid, plr, hum.RigType)
+        local src, sdesc, e2 = buildSource(uid, plr, hum.RigType)
         if not src then M.busy = false; setStatus(e2); return false, e2 end
         -- remember who we were the first time, so Revert can bring it back
-        if not M.orig then M.orig = snapshot(char) end
+        if not M.orig then
+            M.orig = snapshot(char)
+            M.origEmotes = readEmotes(hum:FindFirstChildOfClass("HumanoidDescription"))
+        end
         local ok, e3 = transplant(src, char)
         M.busy = false
         if not ok then setStatus(e3); return false, e3 end
+        M.emotes = readEmotes(sdesc)
+        -- someone with no emotes would leave you an empty wheel; keep yours then
+        local noEmotes = not M.emotes or next(M.emotes.list) == nil
+        if noEmotes then M.emotes = nil end
+        if MO.Emotes ~= false and M.emotes then writeEmotes(hum, M.emotes) end
         if M.src and M.src ~= src then pcall(function() M.src:Destroy() end) end
         M.src = src
         local ok2, nm = pcall(function() return Players:GetNameFromUserIdAsync(uid) end)
         M.name = (plr and plr.Name) or (ok2 and nm) or tostring(uid)
-        setStatus("morphed into " .. M.name)
+        setStatus("morphed into " .. M.name .. ((MO.Emotes ~= false and noEmotes) and " (they have no emotes, kept yours)" or ""))
         return true
     end
     function M.revert()
         local char = LocalPlayer.Character
         if M.orig and char then pcall(transplant, M.orig, char) end
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and M.origEmotes then pcall(writeEmotes, hum, M.origEmotes) end
         if M.src then pcall(function() M.src:Destroy() end) end
-        M.src, M.name = nil, nil
+        M.src, M.name, M.emotes = nil, nil, nil
         setStatus("back to yourself")
     end
 
@@ -24358,7 +24408,14 @@ registerConfig("morph", Koffee.Morph)
         task.wait(0.5)
         if not c.Parent then return end
         M.orig = snapshot(c)
-        if M.src then pcall(transplant, M.src, c) else task.spawn(M.morph) end
+        local hum = c:FindFirstChildOfClass("Humanoid")
+        M.origEmotes = hum and readEmotes(hum:FindFirstChildOfClass("HumanoidDescription")) or M.origEmotes
+        if M.src then
+            pcall(transplant, M.src, c)
+            if MO.Emotes ~= false and M.emotes and hum then pcall(writeEmotes, hum, M.emotes) end
+        else
+            task.spawn(M.morph)
+        end
     end)
 
     -- :: panel (Character tab) ::
@@ -24372,6 +24429,7 @@ registerConfig("morph", Koffee.Morph)
             popup:toggle("Clothing + Colours", MO.Clothing ~= false, function(v) MO.Clothing = v end)
             popup:toggle("Face", MO.Face ~= false, function(v) MO.Face = v end)
             popup:toggle("Animations", MO.Animations ~= false, function(v) MO.Animations = v end)
+            popup:toggle("Emotes", MO.Emotes ~= false, function(v) MO.Emotes = v end)
             popup:toggle("Keep After Respawn", MO.KeepOnRespawn ~= false, function(v) MO.KeepOnRespawn = v end)
         end)
         new("TextLabel", {
