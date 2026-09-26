@@ -1661,6 +1661,7 @@ local dim = new("Frame", {
     ZIndex = 1,
     Parent = screen,
 })
+dim:SetAttribute("KUserColor", true)
 
 -- v0.56.0: full-screen input guard. An Active, invisible TextButton under the
 -- window swallows every click that lands off the menu, so changing settings can
@@ -15098,7 +15099,7 @@ local function attachSingleSwatch(row, initialColor, onChange)
             SortOrder = Enum.SortOrder.LayoutOrder,
         }),
     })
-    colorSwatch(wrap, initialColor, 14, { onChange = onChange })
+    return colorSwatch(wrap, initialColor, 14, { onChange = onChange })
 end
 
 -- v0.5.0: CROSSHAIR + HIT NUMBERS render layer. Container Frame parents both
@@ -15839,6 +15840,7 @@ end)()
             BackgroundTransparency = 1, BorderSizePixel = 0,
             ZIndex = 200, Parent = popupScreen,
         })
+        dim:SetAttribute("KUserColor", true)
         -- v0.10.0: a Frame doesn't absorb input, so clicks landed on the window
         -- behind the modal: you could drive the UI underneath a dialog. A
         -- full-bleed transparent button under the box eats everything that misses.
@@ -24705,8 +24707,8 @@ registerConfig("options", KoffeeOptions)
 ;(function()
     local ROLES = { "Accent", "Background", "Panel", "PanelElevated", "Border",
                     "Text", "TextMuted" }
-    local live, lastAt = {}, 0
-    for _, r in ipairs(ROLES) do live[r] = Theme.Palette[r] end
+    local live, stock, lastAt = {}, {}, 0
+    for _, r in ipairs(ROLES) do live[r] = Theme.Palette[r]; stock[r] = Theme.Palette[r] end
 
     -- v0.12.1: repaint by ROLE TAG (stamped in new()), not by value. Value matching
     -- collided as soon as two roles shared a colour: set Panel to white and every
@@ -24715,17 +24717,33 @@ registerConfig("options", KoffeeOptions)
     -- ONCE and tagged, so they're exact from then on.
     -- KUserColor marks instances whose colour is the user's DATA (swatch previews,
     -- picker chips), not chrome: repainting those desynced preview from value.
+    -- v0.91.0: untagged instances are adopted only by a STOCK palette value. Matching
+    -- the live (user) value let a picker drag through black claim the menu dim, snow
+    -- and shadows as Accent. Tagged ones follow the role their colour is showing now
+    -- (active tab = Text, idle = TextMuted), and a non-palette colour is left alone.
     local function paint(d, prop)
-        local role = d:GetAttribute("KR" .. prop)
-        if not role then
-            local cur = d[prop]
+        local cur = d[prop]
+        local tag = d:GetAttribute("KR" .. prop)
+        local role
+        if tag then
+            if live[tag] == cur then
+                role = tag
+            else
+                for _, r in ipairs(ROLES) do
+                    if live[r] == cur then role = r; break end
+                end
+                if not role then return end
+                d:SetAttribute("KR" .. prop, role)
+            end
+        else
             for _, r in ipairs(ROLES) do
-                if cur == live[r] then role = r; d:SetAttribute("KR" .. prop, r); break end
+                if cur == stock[r] then role = r; break end
             end
             if not role then return end
+            d:SetAttribute("KR" .. prop, role)
         end
         local c = KoffeeOptions.UIColors[role]
-        if c and d[prop] ~= c then d[prop] = c end
+        if c and cur ~= c then d[prop] = c end
     end
     local function repaint(root)
         for _, d in ipairs(root:GetDescendants()) do
@@ -24771,6 +24789,9 @@ registerConfig("options", KoffeeOptions)
         end
         ROW.muted = rich(Theme.Palette.TextMuted)
         ROW.on    = rich(Theme.Palette.Accent)
+        for r, sw in pairs(Koffee._uiSwatches or {}) do
+            if want[r] and sw.getColor() ~= want[r] then pcall(sw.setColor, want[r]) end
+        end
     end)
 end)()
 
@@ -24930,7 +24951,10 @@ addTab("Options", function(root)
             Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, -24, 1, 0),
             ZIndex = 34, Parent = row,
         })
-        attachSingleSwatch(row, KoffeeOptions.UIColors[key],
+        -- v0.91.0: kept in sync by the repaint loop. A stale swatch (after a config
+        -- load) opened the picker on its old colour and pushed it straight back.
+        Koffee._uiSwatches = Koffee._uiSwatches or {}
+        Koffee._uiSwatches[key] = attachSingleSwatch(row, KoffeeOptions.UIColors[key],
             function(c) KoffeeOptions.UIColors[key] = c end)
     end
     colorRow("Accent",         "Accent")
@@ -25019,6 +25043,7 @@ addTab("Options", function(root)
             BackgroundTransparency = 0.55, BorderSizePixel = 0,
             ZIndex = 100, Parent = pS,
         })
+        dim:SetAttribute("KUserColor", true)
         local box = new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
             Size = UDim2.new(0, 320, 0, 148),
