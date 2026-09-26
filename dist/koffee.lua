@@ -1,7 +1,7 @@
 -- koffee v0.89.0
 
 local Koffee = {}
-Koffee.Version = "0.90.0"
+Koffee.Version = "0.91.0"
 
 -- v0.0.70: newindex neutra
 pcall(function()
@@ -5377,6 +5377,7 @@ function ConfigIO.save(name)
     ensureDir()
     local ok, text = pcall(function() return "return " .. encTable(snapshotAll()) end)
     if not ok then return false, "encode failed" end
+    ConfigIO.backup(name)
     local wok = pcall(fileAPI.write, CFG_DIR .. "/" .. name .. ".koffee", text)
     if not wok then return false, "write failed" end
     return true, name
@@ -5402,7 +5403,10 @@ end
 function ConfigIO.delete(name)
     if not (filesReady() and fileAPI.delfile) then return false end
     local path = CFG_DIR .. "/" .. name .. ".koffee"
-    if fileAPI.isfile(path) then return pcall(fileAPI.delfile, path) end
+    if fileAPI.isfile(path) then
+        ConfigIO.backup(name)
+        return pcall(fileAPI.delfile, path)
+    end
     return false
 end
 -- v0.12.3: rename = copy the file's bytes to the new name, then drop the old one.
@@ -5421,6 +5425,49 @@ function ConfigIO.rename(old, newName)
     if not pcall(fileAPI.write, dst, text) then return false, "write failed" end
     pcall(fileAPI.delfile, src)
     return true, newName
+end
+-- v0.91.0: one backup slot per name in configs/_backup, written before an overwrite
+-- or delete. listfiles is not recursive, so backups never show up as configs.
+function ConfigIO.backup(name)
+    if not filesReady() then return false end
+    local src = CFG_DIR .. "/" .. name .. ".koffee"
+    if not fileAPI.isfile(src) then return false end
+    local rok, text = pcall(fileAPI.read, src)
+    if not rok or type(text) ~= "string" then return false end
+    ensureDir()
+    if fileAPI.isfolder and fileAPI.makefolder and not fileAPI.isfolder(CFG_DIR .. "/_backup") then
+        pcall(fileAPI.makefolder, CFG_DIR .. "/_backup")
+    end
+    return (pcall(fileAPI.write, CFG_DIR .. "/_backup/" .. name .. ".koffee", text))
+end
+function ConfigIO.backups()
+    local out = {}
+    if not (filesReady() and fileAPI.isfolder and fileAPI.isfolder(CFG_DIR .. "/_backup")) then return out end
+    local ok, files = pcall(fileAPI.listfiles, CFG_DIR .. "/_backup")
+    if not ok or type(files) ~= "table" then return out end
+    for _, path in ipairs(files) do
+        local n = tostring(path):match("([^/\\]+)%.koffee$")
+        if n then out[#out + 1] = n end
+    end
+    table.sort(out)
+    return out
+end
+-- restoring swaps: the live file (if any) becomes the new backup, so a restore can be undone
+function ConfigIO.restore(name)
+    if not filesReady() then return false, "no file access" end
+    local bak = CFG_DIR .. "/_backup/" .. name .. ".koffee"
+    if not fileAPI.isfile(bak) then return false, "no backup for " .. name end
+    local rok, text = pcall(fileAPI.read, bak)
+    if not rok or type(text) ~= "string" then return false, "read failed" end
+    ConfigIO.backup(name)
+    if not pcall(fileAPI.write, CFG_DIR .. "/" .. name .. ".koffee", text) then return false, "write failed" end
+    return true, name
+end
+function ConfigIO.exists(name)
+    name = tostring(name):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" or not filesReady() then return false, name end
+    if fileAPI.isfile(CFG_DIR .. "/" .. name .. ".koffee") then return true, name end
+    return false, name
 end
 ;(function()
     -- v0.90.0: config sounds. A load re-settles every slider/toggle, so control sounds
@@ -5444,6 +5491,12 @@ end
     function ConfigIO.delete(name)
         local ok, r = del(name)
         Koffee.Sfx.play(ok and "delete" or "error")
+        return ok, r
+    end
+    local rst = ConfigIO.restore
+    function ConfigIO.restore(name)
+        local ok, r = rst(name)
+        Koffee.Sfx.play(ok and "save" or "error")
         return ok, r
     end
 end)()
@@ -10246,6 +10299,19 @@ local function findRootJoint(char)
     end
     return nil
 end
+-- v0.91.0: shiftlock and first person turn the root inside physics (RotationType
+-- CameraRelative + AutoRotate), after the Last+1 write, so spin lost ~70%. Spin
+-- hands physics MovementRelative with AutoRotate off, and this puts both back.
+st.spinRestore = function()
+    if st.spinRT0 then
+        pcall(function() UserSettings():GetService("UserGameSettings").RotationType = st.spinRT0 end)
+    end
+    if st.spinHum and st.spinHum.Parent and st.spinAR ~= nil then
+        pcall(function() st.spinHum.AutoRotate = st.spinAR end)
+    end
+    st.spinRT0, st.spinHum, st.spinAR = nil, nil, nil
+end
+Shared.spinRestore = st.spinRestore
 -- shared spin writer: bound while either feature runs, released when neither
 -- does. Stamps in on() record activation order for the first-wins rule.
 local function ensureSpinBind()
@@ -10254,6 +10320,7 @@ local function ensureSpinBind()
     pcall(function()
         RunService:BindToRenderStep("KSpinbot",
             Enum.RenderPriority.Last.Value + 1, function(rsDt)
+                if Koffee.dead() then st.spinRestore(); return end
                 local frameDt = rsDt or 0.016
                 local sp, aa = st.spin, st.aa
                 if not (sp or aa) then return end
@@ -10267,11 +10334,25 @@ local function ensureSpinBind()
                         pcall(function() st.aaJoint.C0 = st.aaOrigC0 end)
                         st.aaJoint, st.aaOrigC0, st.aaChar = nil, nil, nil
                     end
+                    local ok, ugs = pcall(function() return UserSettings():GetService("UserGameSettings") end)
+                    if ok and ugs and ugs.RotationType ~= Enum.RotationType.MovementRelative then
+                        if not st.spinRT0 then st.spinRT0 = ugs.RotationType end
+                        ugs.RotationType = Enum.RotationType.MovementRelative
+                    end
+                    local hum = r.Parent and r.Parent:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        if st.spinHum ~= hum then
+                            if st.spinHum then st.spinRestore() end
+                            st.spinHum, st.spinAR = hum, hum.AutoRotate
+                        end
+                        if hum.AutoRotate then hum.AutoRotate = false end
+                    end
                     -- Nonlinear map: slider 1..1000 -> rad/s via 0.05 * v^1.7,
                     -- so 1 crawls (~3 deg/s) and 1000 hits ~630 rev/s.
                     sp.a = (sp.a or 0) + math.rad(0.05 * Move.Spin.Speed ^ 1.7) * frameDt
                     r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, sp.a, 0)
                 else
+                    if st.spinHum or st.spinRT0 then st.spinRestore() end
                     -- AA JITTER: root rides the camera yaw (what shiftlock wants,
                     -- so nothing fights) while the twist joint oscillates. Legs
                     -- keep their anims; jointless rigs just ride the camera.
@@ -10321,6 +10402,7 @@ local function ensureSpinBind()
     end)
 end
 local function releaseSpinBind()
+    if not st.spin then st.spinRestore() end
     if st.spin or st.aa then return end
     if st.aaJoint and st.aaOrigC0 then
         pcall(function() st.aaJoint.C0 = st.aaOrigC0 end)
@@ -20461,6 +20543,65 @@ registerConfig("self_auras", Koffee.Auras)
     end)
 end)()
 
+-- v0.91.0 FX refresh: some games clear or swap the camera on spawn, which kills the
+-- cached effect hosts while their state still says built. Re-runs drop + enable, like a re-toggle.
+;(function()
+    local IDS = { "selffx_trail", "selffx_hat", "selffx_smear", "selffx_jump", "tgt_marker", "aura_ring", "aura_feet",
+        "aura_dome", "aura_orbit", "aura_halo", "aura_glints", "aura_shed", "aura_itemglow", "aura_wings" }
+    local function anyOn()
+        for _, id in ipairs(IDS) do
+            local m = Modules[id]
+            if m and m.Enabled then return true end
+        end
+        return false
+    end
+    local function refresh()
+        if Koffee.dead() then return end
+        for _, id in ipairs(IDS) do
+            local m = Modules[id]
+            if m and m.Enabled then
+                pcall(m.OnDisable)
+                pcall(m.OnEnable)
+            end
+        end
+    end
+    Shared.fxRefresh = refresh
+    LocalPlayer.CharacterAdded:Connect(function()
+        task.delay(1.5, function() if anyOn() then refresh() end end)
+    end)
+    Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        task.delay(0.1, function() if anyOn() then refresh() end end)
+    end)
+    -- a tiny sentinel in the camera notices a ClearAllChildren at any time
+    local sentinel
+    task.spawn(function()
+        while not Koffee.dead() do
+            local cam = Workspace.CurrentCamera
+            if anyOn() and cam then
+                if sentinel and sentinel.Parent ~= cam then
+                    pcall(function() sentinel:Destroy() end)
+                    sentinel = nil
+                    refresh()
+                end
+                if not sentinel then
+                    local p = Instance.new("Part")
+                    p.Name = KID.name("fxs")
+                    p.Anchored, p.CanCollide, p.Transparency = true, false, 1
+                    p.Size = Vector3.new(0.05, 0.05, 0.05)
+                    pcall(function() p.CanQuery = false; p.CanTouch = false end)
+                    p.Parent = cam
+                    sentinel = p
+                end
+            elseif sentinel then
+                pcall(function() sentinel:Destroy() end)
+                sentinel = nil
+            end
+            task.wait(0.5)
+        end
+        if sentinel then pcall(function() sentinel:Destroy() end) end
+    end)
+end)()
+
 -- v0.88.0 CHAMS without Highlight: Pattern (always-on-top SurfaceGuis with a
 -- scrolling texture), Lit (a lit ViewportFrame copy of each rig) and Wireframe
 -- (projected part edges). Split By Visibility swaps style when a target is behind a wall.
@@ -20581,7 +20722,11 @@ registerConfig("chams", Koffee.Chams)
         grad.Rotation = 90
         grad.Color = ColorSequence.new(WHITE, Color3.fromRGB(185, 185, 205))
         grad.Parent = vp
-        lit.sg, lit.vp, lit.cam = sg, vp, cam
+        -- v0.91.0: clones live in a WorldModel. Measured in KTE: moving parts straight
+        -- under a ViewportFrame rebuilt its whole cluster each frame (240 to 157 fps), here 239
+        local wm = Instance.new("WorldModel")
+        wm.Parent = vp
+        lit.sg, lit.vp, lit.cam, lit.wm = sg, vp, cam, wm
         return vp
     end
     local function litDropRig(r) if r.model then pcall(function() r.model:Destroy() end) end end
@@ -20619,14 +20764,19 @@ registerConfig("chams", Koffee.Chams)
                 r.map[p] = c
             end
         end
-        model.Parent = vp
+        model.Parent = lit.wm or vp
         lit.rigs[char] = r
         return r
     end
+    local function litClear()
+        for c, r in pairs(lit.rigs) do litDropRig(r); lit.rigs[c] = nil end
+        if lit.sg then pcall(function() lit.sg:Destroy() end) end
+        lit.sg, lit.vp, lit.cam, lit.wm = nil, nil, nil, nil
+    end
     local function litSync(list, cam)
+        -- a WorldModel keeps stepping even under a hidden viewport, so tear the host down
         if #list == 0 then
-            for c, r in pairs(lit.rigs) do litDropRig(r); lit.rigs[c] = nil end
-            if lit.vp then lit.vp.Visible = false end
+            if lit.sg then litClear() end
             return
         end
         local vp = litHost()
@@ -20652,15 +20802,9 @@ registerConfig("chams", Koffee.Chams)
             if not keep[char] then litDropRig(r); lit.rigs[char] = nil end
         end
     end
-    local function litClear()
-        for c, r in pairs(lit.rigs) do litDropRig(r); lit.rigs[c] = nil end
-        if lit.sg then pcall(function() lit.sg:Destroy() end) end
-        lit.sg, lit.vp, lit.cam = nil, nil, nil
-    end
-
-    -- :: wireframe :: every part's 12 box edges as screen lines, optionally with a
-    -- soft wide copy underneath for glow
-    local wire = { pool = {}, used = 0 }
+    -- :: wireframe :: v0.91.0: every part's 12 box edges fed to two WireframeHandleAdornments
+    -- per rig (glow + core). Replaces ~4000 screen Frames a frame (KTE: 117 to 240 fps)
+    local wire = { rigs = {} }
     local CORN, EDGES = {}, {}
     for i = 0, 7 do
         CORN[i + 1] = Vector3.new(i % 2 == 0 and -0.5 or 0.5, math.floor(i / 2) % 2 == 0 and -0.5 or 0.5,
@@ -20673,69 +20817,74 @@ registerConfig("chams", Koffee.Chams)
         end
     end
     local function wireHost()
-        if wire.sg and wire.sg.Parent then return wire.sg end
-        local sg = KID.track(new("ScreenGui", { Name = KID.name("chw"), ResetOnSpawn = false, IgnoreGuiInset = true,
-            DisplayOrder = screen.DisplayOrder - 1, Parent = guiParent() }))
-        protectGuiSafe(sg)
-        wire.sg, wire.pool = sg, {}
-        return sg
+        if wire.host and wire.host.Parent then return wire.host end
+        wire.host, wire.rigs = KID.track(new("Folder", { Name = KID.name("chw"), Parent = guiParent() })), {}
+        return wire.host
     end
-    local function wline(a, b, color, th, alpha)
-        wire.used += 1
-        local f = wire.pool[wire.used]
-        if not f then
-            f = Instance.new("Frame")
-            f.BorderSizePixel = 0
-            f.AnchorPoint = Vector2.new(0.5, 0.5)
-            f.Parent = wire.sg
-            wire.pool[wire.used] = f
-        end
-        local d = b - a
-        f.Size = UDim2.fromOffset(d.Magnitude + th * 0.5, th)
-        f.Position = UDim2.fromOffset((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5)
-        f.Rotation = math.deg(math.atan2(d.Y, d.X))
-        f.BackgroundColor3, f.BackgroundTransparency = color, alpha
-        f.Visible = true
+    local function wadorn(host, th)
+        local w = Instance.new("WireframeHandleAdornment")
+        w.Name = KID.name("chw")
+        w.Adornee = Workspace.Terrain
+        w.AlwaysOnTop, w.ZIndex, w.Thickness = true, 1, th
+        w.Parent = host
+        return w
+    end
+    local function wireDrop(r)
+        pcall(function() r.glow:Destroy() end)
+        pcall(function() r.core:Destroy() end)
     end
     local function wireSync(list, cam)
-        wire.used = 0
+        local keep = {}
         if #list > 0 then
-            wireHost()
+            local host = wireHost()
             local a = math.clamp(CH.Alpha or 0.3, 0, 0.95)
             local vpSize = cam.ViewportSize
+            local now = os.clock()
             for _, t in ipairs(list) do
-                -- skip rigs that are off screen entirely (the edges are the expensive part)
+                keep[t.char] = true
+                local r = wire.rigs[t.char]
+                if not r then
+                    r = { glow = wadorn(host, 5), core = wadorn(host, 1.5), pts = {}, at = -1 }
+                    wire.rigs[t.char] = r
+                end
+                -- part list refreshes at 1Hz; it used to walk GetDescendants every frame
+                if now - r.at > 1 then r.parts, r.at = bodyParts(t.char), now end
                 local rt = t.char:FindFirstChild("HumanoidRootPart") or t.char:FindFirstChild("Head")
                 local rv = rt and cam:WorldToViewportPoint(rt.Position)
                 local onScreen = rv and rv.Z > 0 and rv.X > -300 and rv.X < vpSize.X + 300
                     and rv.Y > -300 and rv.Y < vpSize.Y + 300
-                t.parts = onScreen and (t.parts or bodyParts(t.char)) or {}
-                for _, p in ipairs(t.parts) do
-                    if p.Parent then
-                        local cf, sz = p.CFrame, p.Size
-                        local pts, ok = {}, true
-                        for i, c in ipairs(CORN) do
-                            local v = cam:WorldToViewportPoint(cf:PointToWorldSpace(c * sz))
-                            if v.Z <= 0 then ok = false; break end
-                            pts[i] = Vector2.new(v.X, v.Y)
-                        end
-                        if ok then
+                local pts = r.pts
+                table.clear(pts)
+                if onScreen then
+                    for _, p in ipairs(r.parts) do
+                        if p.Parent then
+                            local cf, sz = p.CFrame, p.Size
+                            local c = {}
+                            for i, k in ipairs(CORN) do c[i] = cf:PointToWorldSpace(k * sz) end
                             for _, e in ipairs(EDGES) do
-                                if CH.Glow ~= false then wline(pts[e[1]], pts[e[2]], t.color, 5, 0.8) end
-                                wline(pts[e[1]], pts[e[2]], t.color:Lerp(WHITE, 0.3), 1.5, a * 0.6)
+                                pts[#pts + 1] = c[e[1]]
+                                pts[#pts + 1] = c[e[2]]
                             end
                         end
                     end
                 end
+                r.glow:Clear()
+                r.core:Clear()
+                if #pts > 0 then
+                    if CH.Glow ~= false then r.glow:AddLines(pts) end
+                    r.core:AddLines(pts)
+                end
+                r.glow.Color3, r.glow.Transparency = t.color, 0.8
+                r.core.Color3, r.core.Transparency = t.color:Lerp(WHITE, 0.3), a * 0.6
             end
         end
-        for i = wire.used + 1, #wire.pool do
-            if wire.pool[i].Visible then wire.pool[i].Visible = false else break end
+        for char, r in pairs(wire.rigs) do
+            if not keep[char] then wireDrop(r); wire.rigs[char] = nil end
         end
     end
     local function wireClear()
-        if wire.sg then pcall(function() wire.sg:Destroy() end) end
-        wire = { pool = {}, used = 0 }
+        if wire.host then pcall(function() wire.host:Destroy() end) end
+        wire = { rigs = {} }
     end
 
     -- :: targets + visibility ::
@@ -25028,6 +25177,7 @@ addTab("Options", function(root)
         -- 3. unbind our RenderStep bindings
         pcall(function() RunService:UnbindFromRenderStep(KID.ctx.bind) end)
         pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
+        if Shared.spinRestore then pcall(Shared.spinRestore) end
         pcall(function() RunService:UnbindFromRenderStep("KThirdPerson") end)
         -- 4. destroy every UI surface we own
         pcall(function() screen:Destroy() end)
@@ -29472,6 +29622,50 @@ registerConfig("custom", Koffee.Custom)
     end)
 end)()
 
+-- v0.91.0: shared "are you sure" popup, same look as the Unload confirm (dim + box on
+-- popupScreen). onConfirm runs only on the confirm button, so its sounds fire after.
+function Shared.confirm(title, body, confirmText, onConfirm)
+    local pS = popupScreen
+    if not (pS and pS.Parent) then return end
+    local dim = new("Frame", {
+        Name = KID.name("cfm"), Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 0.55, BorderSizePixel = 0, ZIndex = 100, Parent = pS,
+    })
+    dim:SetAttribute("KUserColor", true)
+    local box = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, 320, 0, 148),
+        BackgroundColor3 = Theme.Palette.Panel, BorderSizePixel = 0, ZIndex = 101, Parent = dim,
+    }, { corner(Theme.Radius.Medium), stroke(Theme.Palette.BorderSubtle) })
+    new("TextLabel", {
+        Text = title, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+        Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 102, Parent = box,
+    })
+    new("TextLabel", {
+        Text = body, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+        Position = UDim2.new(0, 16, 0, 36), Size = UDim2.new(1, -32, 0, 44),
+        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+        TextWrapped = true, ZIndex = 102, Parent = box,
+    })
+    local function btn(text, x, color, font)
+        return new("TextButton", {
+            Text = text, FontFace = font, TextSize = Theme.Text.Small, AutoButtonColor = false, TextColor3 = color,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, x, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 102, Parent = box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+    end
+    local cancel = btn("Cancel", -108, Theme.Palette.TextMuted, Theme.Fonts.Medium)
+    local ok = btn(confirmText or "Confirm", -14, Theme.Palette.Danger or Color3.fromRGB(220, 90, 90), Theme.Fonts.Bold)
+    cancel.MouseButton1Click:Connect(function() dim:Destroy() end)
+    ok.MouseButton1Click:Connect(function()
+        dim:Destroy()
+        pcall(onConfirm)
+    end)
+end
+
 addTab("Configs", function(root)
     local CIO = Koffee.Config
 
@@ -29545,7 +29739,7 @@ addTab("Configs", function(root)
         FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
-        BorderSizePixel = 0, Size = UDim2.new(1, -150, 1, 0),
+        BorderSizePixel = 0, Size = UDim2.new(1, -222, 1, 0),
         TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, ZIndex = 36, Parent = newRow,
     }, { corner(5), stroke(Theme.Palette.BorderSubtle),
         new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
@@ -29575,9 +29769,13 @@ addTab("Configs", function(root)
     end, true).LayoutOrder = 1
     mkBtn(actionRow, "Overwrite", 90, function()
         if not needSel() then return end
-        local ok, msg = CIO.save(selectedName)   -- same filename -> overwrites in place
-            if ok then setStatus("Overwrote: " .. tostring(selectedName), true)
-            else setStatus("Overwrite failed: " .. tostring(msg), false) end
+        local nm = selectedName
+        Shared.confirm("Overwrite " .. nm .. "?", "Replaces it with your current settings. The old version is kept as a backup (Restore).",
+            "Overwrite", function()
+                local ok, msg = CIO.save(nm)   -- same filename -> overwrites in place
+                if ok then setStatus("Overwrote: " .. tostring(nm), true)
+                else setStatus("Overwrite failed: " .. tostring(msg), false) end
+            end)
     end).LayoutOrder = 2
     mkBtn(actionRow, "Rename", 72, function()
         if not needSel() then return end
@@ -29597,19 +29795,17 @@ addTab("Configs", function(root)
     mkBtn(actionRow, "Delete", 66, function()
         if not needSel() then return end
         local nm = selectedName
-        -- v0.0.50 fix (two bugs):
-        --   1. CIO.delete's return was discarded: a failed/unavailable delfile
-        --      still reported "deleted", and the name stayed on disk.
-        --   2. deleting the auto-load config left the _auto_<PlaceId> marker
-        --      pointing at a file that no longer exists, so auto-load silently
-        --      did nothing every session with no way to notice from the UI.
-        local ok = CIO.delete(nm)
-        if ok then CIO.autoDrop(nm) end   -- clear any auto-load rules pointing at it
-        if ok then CIO.cloudMetaDrop(nm) end   -- v0.29.0: drop the local cloud link (cloud entry stays)
-        selectedName = nil
-        rebuildManager()
-            if ok then setStatus("Deleted: " .. nm, true)
-            else setStatus("Delete failed: " .. nm, false) end
+        Shared.confirm("Delete " .. nm .. "?", "Removes the config and any auto-load rule on it. A backup is kept (Restore).",
+            "Delete", function()
+                -- v0.0.50: check delete's result, and drop auto-load rules pointing at the file
+                local ok = CIO.delete(nm)
+                if ok then CIO.autoDrop(nm) end
+                if ok then CIO.cloudMetaDrop(nm) end   -- v0.29.0: drop the local cloud link (cloud entry stays)
+                if selectedName == nm then selectedName = nil end
+                rebuildManager()
+                if ok then setStatus("Deleted: " .. nm, true)
+                else setStatus("Delete failed: " .. nm, false) end
+            end)
     end).LayoutOrder = 4
     autoBtn = mkBtn(actionRow, "Auto", 58, function()
         if not needSel() then return end
@@ -29621,16 +29817,50 @@ addTab("Configs", function(root)
     autoBtn.LayoutOrder = 5
 
     -- new-config actions
-    mkBtn(newRow, "Create", 66, function()
-        local ok, msg = CIO.save(nameBox.Text)
+    local function create(txt)
+        local ok, msg = CIO.save(txt)
         if ok then
             selectedName = msg
             nameBox.Text = ""
             rebuildManager()
             setStatus("Created: " .. tostring(msg), true)
-            else setStatus("Create failed: " .. tostring(msg), false) end
+        else setStatus("Create failed: " .. tostring(msg), false) end
+    end
+    mkBtn(newRow, "Create", 66, function()
+        local txt = nameBox.Text
+        -- a name that already exists is an overwrite, so it gets the same confirm
+        local exists, clean = CIO.exists(txt)
+        if exists then
+            Shared.confirm("Overwrite " .. clean .. "?", "A config with this name already exists. The old version is kept as a backup (Restore).",
+                "Overwrite", function() create(txt) end)
+        else
+            create(txt)
+        end
     end, true).LayoutOrder = 2
     mkBtn(newRow, "Refresh", 66, function() rebuildManager(); setStatus("Refreshed", true) end).LayoutOrder = 3
+    -- v0.91.0: restore the typed name's backup, else the selected config's
+    mkBtn(newRow, "Restore", 66, function()
+        local nm = nameBox.Text:gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if nm == "" then nm = selectedName or "" end
+        local list = CIO.backups()
+        local has = false
+        for _, b in ipairs(list) do if b == nm then has = true; break end end
+        if not has then
+            if #list == 0 then setStatus("No backups yet", false)
+            else setStatus("Backups: " .. table.concat(list, ", ") .. ". Type a name, then Restore", false) end
+            return
+        end
+        Shared.confirm("Restore " .. nm .. "?", "Puts the backup back. The current file (if any) becomes the new backup, so this can be undone.",
+            "Restore", function()
+                local ok, msg = CIO.restore(nm)
+                if ok then
+                    selectedName = nm
+                    nameBox.Text = ""
+                    rebuildManager()
+                    setStatus("Restored: " .. nm, true)
+                else setStatus("Restore failed: " .. tostring(msg), false) end
+            end)
+    end).LayoutOrder = 4
 
     -- (re)build the selector from disk, keeping the current selection valid.
     rebuildManager = function()
