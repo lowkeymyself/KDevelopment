@@ -1,7 +1,7 @@
 -- koffee v0.93.13
 
 local Koffee = {}
-Koffee.Version = "0.93.13"
+Koffee.Version = "0.93.14"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -5334,7 +5334,15 @@ end
 
 local function snapshotAll()
     local snap = { registry = {}, keybinds = {}, modules = {} }
-    for name, tbl in pairs(ConfigRegistry) do snap.registry[name] = tbl end
+    for name, tbl in pairs(ConfigRegistry) do
+        local skip = (name == "shared") and Shared._cfgSkip
+        if skip then
+            local copy = {}
+            for k, v in pairs(tbl) do if not skip[k] then copy[k] = v end end
+            tbl = copy
+        end
+        snap.registry[name] = tbl
+    end
     for id, key in pairs(Keybinds) do snap.keybinds[id] = key end
     for id, m in pairs(Modules) do snap.modules[id] = m.Enabled and true or false end
     return snap
@@ -5380,7 +5388,13 @@ local function loadSnapshot(data)
     if data.registry then
         for name, tbl in pairs(data.registry) do
             local target = ConfigRegistry[name]
-            if target and type(tbl) == "table" then applyInto(target, tbl) end
+            if target and type(tbl) == "table" then
+                local skip = (name == "shared") and Shared._cfgSkip
+                if skip then
+                    for k in pairs(skip) do tbl[k] = nil end
+                end
+                applyInto(target, tbl)
+            end
         end
     end
     -- v0.54.0: NPC entries loaded above carry no modules yet; reconcile hands
@@ -6185,6 +6199,10 @@ registerConfig("npc_esp_colors",     Shared.NPCESP.Colors)
 
 end)()
 registerConfig("shared",         Shared)
+-- v0.93.14: runtime tables published on Shared are not settings. Loading a saved copy
+-- wrote old dock defs over live ones by index, so the Skins slot toggled Media.
+Shared._cfgSkip = { Windows = true, RivalsSkins = true, Media = true, Suspects = true,
+    AmbienceNames = true, HFX_NEW = true, KILL_ANIMS = true }
 
 -- v0.5.0: Crosshair: custom on-screen crosshair renderer, sits between world
 -- and Koffee UI. GUI-based (not Drawing.new) so it respects the ScreenGui
@@ -34374,7 +34392,8 @@ holdMouseFree(true)
         btn.MouseButton1Down:Connect(function() rec.pressed = true end)
         btn.MouseButton1Up:Connect(function() rec.pressed = false end)
         btn.MouseLeave:Connect(function() rec.pressed = false end)   -- press ended off-btn
-        btn.MouseButton1Click:Connect(function() WM.toggle(d.id) end)
+        local slotId = d.id
+        btn.MouseButton1Click:Connect(function() WM.toggle(slotId) end)
         return rec
     end
 
