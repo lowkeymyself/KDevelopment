@@ -1,7 +1,7 @@
--- koffee v0.93.1
+-- koffee v0.93.2
 
 local Koffee = {}
-Koffee.Version = "0.93.1"
+Koffee.Version = "0.93.2"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -1295,6 +1295,10 @@ do
         end)
         return (ok and res) and res or nil
     end
+
+    -- v0.93.2: hand a single face out by name without touching the global Fei state,
+    -- so a surface can have its own default font (the rivals skin picker uses Minecraft).
+    Theme.fontByName = loadFeiFont
 
     -- swap the custom font in (or revert to Theme.Fonts when name == "None"). Downloads
     -- on demand the first time a font is selected. Recursively re-applies to all tracked
@@ -37262,110 +37266,195 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
     end)
 end) end
 
--- v0.93.0: rivals skins window (dock slot "skins", rivals only)
-if game.PlaceId == 17625359962 then pcall(function()
+
+-- v0.93.2: rivals skins window. Layout ported from the community changer (traffic
+-- lights, weapon rail, card grid), restyled onto the coffee palette, no settings gear.
+if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) then pcall(function()
     local WM = Koffee.Windows
     if not (WM and WM.byId and WM.byId.skins) then return end
     local S = Koffee.Skins
-    local Palette = Theme.Palette
+    local P = Theme.Palette
     local RANDOM = "__random__"
     local picked, mode = nil, "Skin"
+    local W, H = 720, 470
+
+    -- Minecraft by default here, but the Options custom font wins when it is on.
+    local mcFace
+    task.spawn(function()
+        if Theme.fontByName then
+            local ok, f = pcall(Theme.fontByName, "Minecraft Regular")
+            if ok then mcFace = f end
+        end
+    end)
+    local fonts = {}
+    local function face(kind)
+        if Theme.FeiOn then return Theme.FeiFonts[kind] or Theme.Fonts[kind] end
+        return mcFace or Theme.Fonts[kind]
+    end
+    -- every label made here is tracked so a font or Fei change repaints the window
+    local function txt(props, kind)
+        local l = new("TextLabel", props)
+        fonts[#fonts + 1] = { l, kind or "Medium" }
+        l.FontFace = face(kind or "Medium")
+        return l
+    end
+    local function repaintFonts()
+        for _, e in ipairs(fonts) do
+            if e[1].Parent then pcall(function() e[1].FontFace = face(e[2]) end) end
+        end
+    end
+    Shared._skinsFonts = repaintFonts
 
     local root = new("CanvasGroup", {
         Name = KID.name("skinwin"), GroupTransparency = 0,
-        Position = UDim2.new(0, 120, 0, 150), Size = UDim2.new(0, 440, 0, 330),
-        BackgroundColor3 = Palette.Panel, BorderSizePixel = 0,
+        Position = UDim2.new(0, 120, 0, 110), Size = UDim2.new(0, W, 0, H),
+        BackgroundColor3 = P.Background, BorderSizePixel = 0,
         Visible = false, ZIndex = 40, Parent = screen,
-    }, { corner(Theme.Radius.Medium), stroke(Palette.BorderSubtle) })
+    }, { corner(Theme.Radius.Medium), stroke(P.Border) })
     do
         local p = WM.persist.pos and WM.persist.pos.skins
         if p then root.Position = UDim2.new(p[1], p[2], p[3], p[4]) end
     end
 
-    local header = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = Palette.PanelElevated,
-        BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 41, Parent = root,
+    -- :: title bar ::
+    local bar = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = P.Panel, BorderSizePixel = 0,
+        ZIndex = 41, Parent = root,
     }, { corner(Theme.Radius.Medium) })
-    local hicon = Koffee.lucideIcon(header, "package", 15, Palette.TextMuted)
-    hicon.Position = UDim2.new(0, 12, 0.5, -7)
-    new("TextLabel", {
-        Text = "Skins", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
-        TextColor3 = Palette.Text, BackgroundTransparency = 1,
-        Position = UDim2.new(0, 34, 0, 0), Size = UDim2.new(0, 120, 1, 0),
-        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = header,
+    new("Frame", {
+        Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1),
+        BackgroundColor3 = P.Border, BorderSizePixel = 0, ZIndex = 42, Parent = bar,
     })
-    local status = new("TextLabel", {
-        Text = "loading", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-        TextColor3 = Palette.TextMuted, BackgroundTransparency = 1,
-        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 0),
-        Size = UDim2.new(0, 220, 1, 0), TextXAlignment = Enum.TextXAlignment.Right,
-        TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 42, Parent = header,
+    local collapsed, zoomed = false, false
+    local function light(col, x, onClick)
+        local b = new("TextButton", {
+            Text = "", AutoButtonColor = false, BackgroundColor3 = col, BorderSizePixel = 0,
+            Position = UDim2.new(0, x, 0.5, -6), Size = UDim2.new(0, 12, 0, 12),
+            ZIndex = 43, Parent = bar,
+        }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        b.MouseEnter:Connect(function() tween(b, Theme.Animation.Fast, { BackgroundColor3 = col:Lerp(Color3.new(1, 1, 1), 0.25) }) end)
+        b.MouseLeave:Connect(function() tween(b, Theme.Animation.Fast, { BackgroundColor3 = col }) end)
+        b.MouseButton1Click:Connect(onClick)
+        return b
+    end
+    local body = new("Frame", {
+        Position = UDim2.new(0, 10, 0, 42), Size = UDim2.new(1, -20, 1, -52),
+        BackgroundTransparency = 1, ZIndex = 41, Parent = root,
     })
+    light(P.Danger, 12, function() WM.toggle("skins") end)
+    light(Color3.fromRGB(235, 185, 70), 32, function()
+        collapsed = not collapsed
+        body.Visible = not collapsed
+        tween(root, Theme.Animation.Menu, { Size = UDim2.new(0, root.Size.X.Offset, 0, collapsed and 34 or (zoomed and H + 120 or H)) })
+    end)
+    light(P.Success, 52, function()
+        if collapsed then return end
+        zoomed = not zoomed
+        tween(root, Theme.Animation.Menu, { Size = UDim2.new(0, zoomed and W + 180 or W, 0, zoomed and H + 120 or H) })
+    end)
+    txt({ Text = "Skins", TextSize = Theme.Text.Body, TextColor3 = P.Text,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 42, Parent = bar }, "Bold")
+    local status = txt({ Text = "loading", TextSize = Theme.Text.Small, TextColor3 = P.TextMuted,
+        BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 0),
+        Size = UDim2.new(0, 230, 1, 0), TextXAlignment = Enum.TextXAlignment.Right,
+        TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 42, Parent = bar }, "Mono")
+
+    -- :: left rail ::
+    local left = new("Frame", {
+        Size = UDim2.new(0, 210, 1, 0), BackgroundColor3 = P.Panel, BorderSizePixel = 0,
+        ZIndex = 42, Parent = body,
+    }, { corner(8), stroke(P.BorderSubtle) })
+    txt({ Text = "WEAPONS", TextSize = Theme.Text.Small, TextColor3 = P.TextMuted,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 10, 0, 6), Size = UDim2.new(0.5, 0, 0, 18),
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 43, Parent = left }, "Bold")
+    local wCount = txt({ Text = "", TextSize = Theme.Text.Small, TextColor3 = P.TextFaint,
+        BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 6),
+        Size = UDim2.new(0.5, -10, 0, 18), TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 43, Parent = left }, "Mono")
 
     local search = new("TextBox", {
-        Text = "", PlaceholderText = "Search weapons", ClearTextOnFocus = false,
-        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-        TextColor3 = Palette.Text, PlaceholderColor3 = Palette.TextFaint,
-        BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
-        Position = UDim2.new(0, 10, 0, 42), Size = UDim2.new(0, 132, 0, 24),
-        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = root,
-    }, { corner(5), stroke(Palette.BorderSubtle),
+        Text = "", PlaceholderText = "Search", ClearTextOnFocus = false,
+        FontFace = face("Regular"), TextSize = Theme.Text.Small,
+        TextColor3 = P.Text, PlaceholderColor3 = P.TextFaint,
+        BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        Position = UDim2.new(0, 10, 0, 28), Size = UDim2.new(1, -46, 0, 26),
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 43, Parent = left,
+    }, { corner(6), stroke(P.BorderSubtle),
         new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+    fonts[#fonts + 1] = { search, "Regular" }
 
     local refreshBtn = new("TextButton", {
-        Text = "", AutoButtonColor = false, BackgroundColor3 = Palette.PanelElevated,
+        Text = "", AutoButtonColor = false, BackgroundColor3 = P.PanelElevated,
         BackgroundTransparency = 0.2, BorderSizePixel = 0,
-        Position = UDim2.new(0, 148, 0, 42), Size = UDim2.new(0, 22, 0, 24),
-        ZIndex = 42, Parent = root,
-    }, { corner(5), stroke(Palette.BorderSubtle) })
-    local refreshIcon = Koffee.lucideIcon(refreshBtn, "refresh-cw", 13, Palette.TextMuted, 43)
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 28),
+        Size = UDim2.new(0, 26, 0, 26), ZIndex = 43, Parent = left,
+    }, { corner(6), stroke(P.BorderSubtle) })
+    local refreshIcon = Koffee.lucideIcon(refreshBtn, "refresh-cw", 13, P.TextMuted, 44)
     refreshIcon.AnchorPoint = Vector2.new(0.5, 0.5)
     refreshIcon.Position = UDim2.new(0.5, 0, 0.5, 0)
 
     local wList = new("ScrollingFrame", {
-        Position = UDim2.new(0, 10, 0, 72), Size = UDim2.new(0, 160, 1, -82),
+        Position = UDim2.new(0, 6, 0, 62), Size = UDim2.new(1, -12, 1, -70),
         BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
-        ScrollBarImageColor3 = Palette.Border, CanvasSize = UDim2.new(),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 42, Parent = root,
-    }, { new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        ScrollBarImageColor3 = P.Border, CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 43, Parent = left,
+    }, { new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4),
+            PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 4) }) })
+
+    -- :: right panel ::
+    local right = new("Frame", {
+        Position = UDim2.new(0, 220, 0, 0), Size = UDim2.new(1, -220, 1, 0),
+        BackgroundColor3 = P.Panel, BorderSizePixel = 0, ZIndex = 42, Parent = body,
+    }, { corner(8), stroke(P.BorderSubtle) })
 
     local tabRow = new("Frame", {
-        Position = UDim2.new(0, 180, 0, 42), Size = UDim2.new(1, -190, 0, 24),
-        BackgroundTransparency = 1, ZIndex = 42, Parent = root,
+        Position = UDim2.new(0, 12, 0, 6), Size = UDim2.new(1, -24, 0, 28),
+        BackgroundTransparency = 1, ZIndex = 43, Parent = right,
     })
-    local oSearch = new("TextBox", {
+    new("Frame", {
+        Position = UDim2.new(0, 0, 1, 0), Size = UDim2.new(1, 0, 0, 1),
+        BackgroundColor3 = P.BorderSubtle, BorderSizePixel = 0, ZIndex = 43, Parent = tabRow,
+    })
+
+    local head = new("Frame", {
+        Position = UDim2.new(0, 12, 0, 40), Size = UDim2.new(1, -24, 0, 30),
+        BackgroundTransparency = 1, ZIndex = 43, Parent = right,
+    })
+    local selLbl = txt({ Text = "Select a weapon", TextSize = Theme.Text.Body, TextColor3 = P.Text,
+        BackgroundTransparency = 1, Size = UDim2.new(1, -200, 0, 18),
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 44, Parent = head }, "Bold")
+    local selSub = txt({ Text = "", TextSize = Theme.Text.Small, TextColor3 = P.TextFaint,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 17), Size = UDim2.new(1, -200, 0, 13),
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 44, Parent = head }, "Mono")
+    local filter = new("TextBox", {
         Text = "", PlaceholderText = "Filter", ClearTextOnFocus = false,
-        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-        TextColor3 = Palette.Text, PlaceholderColor3 = Palette.TextFaint,
-        BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        FontFace = face("Regular"), TextSize = Theme.Text.Small,
+        TextColor3 = P.Text, PlaceholderColor3 = P.TextFaint,
+        BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
         AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
-        Size = UDim2.new(0, 110, 0, 22), TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 43, Parent = tabRow,
-    }, { corner(5), stroke(Palette.BorderSubtle),
-        new("UIPadding", { PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7) }) })
+        Size = UDim2.new(0, 180, 0, 26), TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 44, Parent = head,
+    }, { corner(6), stroke(P.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+    fonts[#fonts + 1] = { filter, "Regular" }
 
-    local oList = new("ScrollingFrame", {
-        Position = UDim2.new(0, 180, 0, 72), Size = UDim2.new(1, -190, 1, -82),
+    local grid = new("ScrollingFrame", {
+        Position = UDim2.new(0, 12, 0, 76), Size = UDim2.new(1, -24, 1, -86),
         BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
-        ScrollBarImageColor3 = Palette.Border, CanvasSize = UDim2.new(),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 42, Parent = root,
-    }, { new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        ScrollBarImageColor3 = P.Border, CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 43, Parent = right,
+    }, { new("UIGridLayout", { CellSize = UDim2.new(0, 132, 0, 160),
+            CellPadding = UDim2.new(0, 10, 0, 10), SortOrder = Enum.SortOrder.LayoutOrder }),
+        new("UIPadding", { PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 6) }) })
+    local emptyLbl = txt({ Text = "Select a weapon", TextSize = Theme.Text.Small, TextColor3 = P.TextFaint,
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 40), Position = UDim2.new(0, 0, 0, 90),
+        ZIndex = 44, Parent = right }, "Regular")
 
-    local function rowBtn(parent, text, order, on, onRight)
-        local b = new("TextButton", {
-            Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-            AutoButtonColor = false, TextColor3 = on and Palette.Accent or Palette.Text,
-            BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = on and 0.1 or 0.45,
-            BorderSizePixel = 0, Size = UDim2.new(1, -6, 0, 24), LayoutOrder = order,
-            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 43, Parent = parent,
-        }, { corner(5), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 6) }) })
-        b.MouseEnter:Connect(function() b.BackgroundTransparency = 0.1 end)
-        b.MouseLeave:Connect(function() b.BackgroundTransparency = on and 0.1 or 0.45 end)
-        if onRight then b.MouseButton2Click:Connect(onRight) end
-        return b
-    end
-
-    -- big preview on right-click. Each cosmetic carries its own art, rarity and blurb.
+    -- :: preview popup (right-click a card) ::
     local preview
     local function closePreview()
         if preview then preview:Destroy(); preview = nil end
@@ -37375,7 +37464,7 @@ if game.PlaceId == 17625359962 then pcall(function()
         if not (popupScreen and popupScreen.Parent) then return end
         local R = Shared.RivalsSkins
         local d = (R and R.info and cosName) and R.info(cosName) or nil
-        local W, H = 300, 330
+        local PW, PH = 300, 330
         local catcher = new("TextButton", {
             Name = KID.name("skprev"), Text = "", AutoButtonColor = false,
             BackgroundTransparency = 1, BorderSizePixel = 0,
@@ -37383,160 +37472,229 @@ if game.PlaceId == 17625359962 then pcall(function()
         })
         preview = catcher
         local card = new("Frame", {
-            BackgroundColor3 = Palette.Panel, BorderSizePixel = 0,
-            Size = UDim2.new(0, W, 0, H), ZIndex = 121, Parent = catcher,
-        }, { corner(Theme.Radius.Medium), stroke(Palette.Border) })
+            BackgroundColor3 = P.Panel, BorderSizePixel = 0,
+            Size = UDim2.new(0, PW, 0, PH), ZIndex = 121, Parent = catcher,
+        }, { corner(Theme.Radius.Medium), stroke(P.Border) })
         local img = new("ImageLabel", {
-            BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = 0.35,
-            BorderSizePixel = 0, ScaleType = Enum.ScaleType.Fit,
-            Image = d and (d.ImageHighResolution or d.Image) or "",
+            BackgroundColor3 = P.Background, BackgroundTransparency = 0.25, BorderSizePixel = 0,
+            ScaleType = Enum.ScaleType.Fit, Image = d and (d.ImageHighResolution or d.Image) or "",
             Position = UDim2.new(0, 12, 0, 12), Size = UDim2.new(1, -24, 0, 190),
             ZIndex = 122, Parent = card,
         }, { corner(6) })
         if img.Image == "" then
-            new("TextLabel", {
-                Text = "No image", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-                TextColor3 = Palette.TextFaint, BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 1, 0), ZIndex = 123, Parent = img,
-            })
+            txt({ Text = "No image", TextSize = Theme.Text.Small, TextColor3 = P.TextFaint,
+                BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), ZIndex = 123, Parent = img }, "Regular")
         end
-        new("TextLabel", {
-            Text = cosName or fallbackTitle or "?", FontFace = Theme.Fonts.Bold,
-            TextSize = Theme.Text.Header, TextColor3 = Palette.Text, BackgroundTransparency = 1,
-            Position = UDim2.new(0, 12, 0, 208), Size = UDim2.new(1, -24, 0, 20),
+        txt({ Text = cosName or fallbackTitle or "?", TextSize = Theme.Text.Header, TextColor3 = P.Text,
+            BackgroundTransparency = 1, Position = UDim2.new(0, 12, 0, 208), Size = UDim2.new(1, -24, 0, 20),
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-            ZIndex = 122, Parent = card,
-        })
+            ZIndex = 122, Parent = card }, "Bold")
         local meta = {}
         if d then
             if d.ItemName then meta[#meta + 1] = tostring(d.ItemName) end
             if d.Type then meta[#meta + 1] = tostring(d.Type) end
             if d.Rarity then meta[#meta + 1] = tostring(d.Rarity) end
         end
-        new("TextLabel", {
-            Text = #meta > 0 and table.concat(meta, "  /  ") or "not in the catalogue",
-            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-            TextColor3 = Palette.Accent, BackgroundTransparency = 1,
+        txt({ Text = #meta > 0 and table.concat(meta, "  /  ") or "not in the catalogue",
+            TextSize = Theme.Text.Small, TextColor3 = P.Accent, BackgroundTransparency = 1,
             Position = UDim2.new(0, 12, 0, 230), Size = UDim2.new(1, -24, 0, 16),
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-            ZIndex = 122, Parent = card,
-        })
-        new("TextLabel", {
-            Text = (d and tostring(d.Description or "")) or "",
-            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-            TextColor3 = Palette.TextMuted, BackgroundTransparency = 1, TextWrapped = true,
+            ZIndex = 122, Parent = card }, "Medium")
+        txt({ Text = (d and tostring(d.Description or "")) or "", TextSize = Theme.Text.Small,
+            TextColor3 = P.TextMuted, BackgroundTransparency = 1, TextWrapped = true,
             Position = UDim2.new(0, 12, 0, 250), Size = UDim2.new(1, -24, 0, 68),
             TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-            ZIndex = 122, Parent = card,
-        })
-        -- popupScreen reports AbsolutePosition offset by the topbar inset, so the cursor
-        -- is converted into that space and popupOffsetFor does the final correction
+            ZIndex = 122, Parent = card }, "Regular")
         local mp = game:GetService("UserInputService"):GetMouseLocation()
         local inset = game:GetService("GuiService"):GetGuiInset()
         local cam = Workspace.CurrentCamera
         local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
-        local px = math.clamp(mp.X - inset.X + 12, 4, math.max(4, vp.X - W - 4))
-        local py = math.clamp(mp.Y - inset.Y + 12, 4, math.max(4, vp.Y - H - 4))
+        local px = math.clamp(mp.X - inset.X + 12, 4, math.max(4, vp.X - PW - 4))
+        local py = math.clamp(mp.Y - inset.Y + 12, 4, math.max(4, vp.Y - PH - 4))
         local ox, oy = popupOffsetFor(card, px, py)
         card.Position = UDim2.fromOffset(ox, oy)
         catcher.MouseButton1Click:Connect(closePreview)
         catcher.MouseButton2Click:Connect(closePreview)
     end
 
-    local rebuildOptions
-    local function rebuildWeapons()
+    -- :: cards ::
+    local rebuildGrid, rebuildWeapons
+    local function makeCard(name, order, equipped, isRandom)
+        local R = Shared.RivalsSkins
+        local d = (not isRandom) and R and R.info and R.info(name) or nil
+        local card = new("TextButton", {
+            Text = "", AutoButtonColor = false, BorderSizePixel = 0, LayoutOrder = order,
+            BackgroundColor3 = equipped and P.PanelElevated or P.Pill,
+            BackgroundTransparency = equipped and 0 or 0.25, ZIndex = 44, Parent = grid,
+        }, { corner(8) })
+        local cs = stroke(equipped and P.Accent or P.BorderSubtle)
+        cs.Parent = card
+        local thumbWrap = new("Frame", {
+            BackgroundColor3 = P.Background, BackgroundTransparency = 0.15, BorderSizePixel = 0,
+            Position = UDim2.new(0, 8, 0, 8), Size = UDim2.new(1, -16, 0, 100),
+            ZIndex = 45, Parent = card,
+        }, { corner(6) })
+        local image = d and (d.ImageHighResolution or d.Image) or ""
+        if isRandom or image == "" then
+            txt({ Text = isRandom and "?" or name:sub(1, 1):upper(), TextSize = 34,
+                TextColor3 = isRandom and P.Accent or P.TextMuted, BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 1, 0), ZIndex = 46, Parent = thumbWrap }, "Bold")
+        else
+            new("ImageLabel", {
+                BackgroundTransparency = 1, ScaleType = Enum.ScaleType.Fit, Image = image,
+                Position = UDim2.new(0, 4, 0, 4), Size = UDim2.new(1, -8, 1, -8),
+                ZIndex = 46, Parent = thumbWrap,
+            })
+        end
+        if equipped then
+            new("Frame", {
+                BackgroundColor3 = P.Accent, BorderSizePixel = 0,
+                AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 8),
+                Size = UDim2.new(0, 7, 0, 7), ZIndex = 47, Parent = card,
+            }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        end
+        txt({ Text = isRandom and ("Random " .. mode) or name, TextSize = Theme.Text.Small,
+            TextColor3 = equipped and P.Accent or P.Text, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 7, 0, 112), Size = UDim2.new(1, -14, 0, 16),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 46, Parent = card }, "Medium")
+        txt({ Text = isRandom and "rerolls on equip" or (d and tostring(d.Rarity or "") or ""),
+            TextSize = Theme.Text.Small, TextColor3 = P.TextFaint, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 7, 0, 129), Size = UDim2.new(1, -14, 0, 14),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 46, Parent = card }, "Mono")
+        if not equipped then
+            card.MouseEnter:Connect(function()
+                tween(card, Theme.Animation.Fast, { BackgroundTransparency = 0.05 })
+                tween(cs, Theme.Animation.Fast, { Color = P.Border })
+            end)
+            card.MouseLeave:Connect(function()
+                tween(card, Theme.Animation.Fast, { BackgroundTransparency = 0.25 })
+                tween(cs, Theme.Animation.Fast, { Color = P.BorderSubtle })
+            end)
+        end
+        card.MouseButton1Click:Connect(function()
+            if not picked then return end
+            S.Data[picked] = S.Data[picked] or { Skin = "Default", Wrap = "None" }
+            S.Data[picked][mode] = isRandom and RANDOM or name
+            if Koffee.Sfx then pcall(Koffee.Sfx.play, "dropdown") end
+            rebuildGrid()
+            rebuildWeapons()
+        end)
+        card.MouseButton2Click:Connect(function()
+            if not isRandom then showPreview(name, name) end
+        end)
+        return card
+    end
+
+    rebuildGrid = function()
+        for _, c in ipairs(grid:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+        end
+        local R = Shared.RivalsSkins
+        if not (R and picked) then
+            emptyLbl.Visible = true
+            emptyLbl.Text = R and "Select a weapon" or "loading the catalogue"
+            return
+        end
+        local list = (mode == "Skin") and (R.skins[picked] or { "Default" }) or R.wraps
+        local cur = S.Data[picked] and S.Data[picked][mode] or nil
+        local q = filter.Text:lower()
+        local order, shown = 0, 0
+        if q == "" then
+            order += 1
+            makeCard(nil, order, cur == RANDOM, true)
+        end
+        for _, name in ipairs(list) do
+            if q == "" or name:lower():find(q, 1, true) then
+                if shown >= 150 then break end
+                order += 1; shown += 1
+                makeCard(name, order, cur == name, false)
+            end
+        end
+        emptyLbl.Visible = (order == 0)
+        emptyLbl.Text = "Nothing matches that filter"
+        local d = S.Data[picked]
+        selSub.Text = ("skin: %s   wrap: %s"):format(
+            d and (d.Skin == RANDOM and "random" or tostring(d.Skin)) or "Default",
+            d and (d.Wrap == RANDOM and "random" or tostring(d.Wrap)) or "None")
+    end
+
+    rebuildWeapons = function()
         for _, c in ipairs(wList:GetChildren()) do
             if c:IsA("TextButton") then c:Destroy() end
         end
-        local data = Shared.RivalsSkins and Shared.RivalsSkins.skins
-        if not data then return end
-        local names = {}
-        local q = search.Text:lower()
-        for w in pairs(data) do
+        local R = Shared.RivalsSkins
+        if not (R and R.skins) then return end
+        local names, q = {}, search.Text:lower()
+        for w in pairs(R.skins) do
             if q == "" or w:lower():find(q, 1, true) then names[#names + 1] = w end
         end
         table.sort(names)
+        wCount.Text = #names .. ""
         for i, w in ipairs(names) do
             local d = S.Data[w] or { Skin = "Default", Wrap = "None" }
-            local tag = ""
-            if d.Skin == RANDOM then tag = "  random"
-            elseif d.Skin and d.Skin ~= "Default" then tag = "  on" end
-            local b = rowBtn(wList, w .. tag, i, picked == w, function()
+            local on = (d.Skin and d.Skin ~= "Default") or (d.Wrap and d.Wrap ~= "None")
+            local b = new("TextButton", {
+                Text = "", AutoButtonColor = false, BorderSizePixel = 0, LayoutOrder = i,
+                BackgroundColor3 = picked == w and P.PanelElevated or P.Pill,
+                BackgroundTransparency = picked == w and 0.05 or 0.45,
+                Size = UDim2.new(1, 0, 0, 26), ZIndex = 44, Parent = wList,
+            }, { corner(6) })
+            txt({ Text = w, TextSize = Theme.Text.Small,
+                TextColor3 = picked == w and P.Text or P.TextMuted, BackgroundTransparency = 1,
+                Position = UDim2.new(0, 9, 0, 0), Size = UDim2.new(1, -26, 1, 0),
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                ZIndex = 45, Parent = b }, "Medium")
+            if on then
+                new("Frame", {
+                    BackgroundColor3 = P.Accent, BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.new(0, 5, 0, 5),
+                    ZIndex = 45, Parent = b,
+                }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+            end
+            b.MouseButton1Click:Connect(function()
+                picked = w
+                selLbl.Text = w
+                rebuildWeapons()
+                rebuildGrid()
+            end)
+            b.MouseButton2Click:Connect(function()
                 local cur = d.Skin
                 if cur == RANDOM or cur == "Default" or not cur then cur = nil end
                 showPreview(cur, w)
             end)
-            b.MouseButton1Click:Connect(function()
-                picked = w
-                rebuildWeapons()
-                rebuildOptions()
-            end)
         end
     end
 
-    rebuildOptions = function()
-        for _, c in ipairs(oList:GetChildren()) do
-            if c:IsA("TextButton") then c:Destroy() end
-        end
-        local R = Shared.RivalsSkins
-        if not (R and picked) then return end
-        local list = (mode == "Skin") and (R.skins[picked] or { "Default" }) or R.wraps
-        local cur = S.Data[picked] and S.Data[picked][mode] or nil
-        local q = oSearch.Text:lower()
-        -- 382 wraps is too many to build in one frame, so filter first and cap the rest
-        local opts = {}
-        for _, name in ipairs(list) do
-            if q == "" or name:lower():find(q, 1, true) then opts[#opts + 1] = name end
-        end
-        if q == "" then table.insert(opts, 2, RANDOM) end
-        local shown, capped = #opts, false
-        if shown > 120 then shown, capped = 120, true end
-        for i = 1, shown do
-            local name = opts[i]
-            local label = (name == RANDOM) and "Random" or name
-            local b = rowBtn(oList, label, i, cur == name, function()
-                if name ~= RANDOM then showPreview(name, label) end
-            end)
-            b.MouseButton1Click:Connect(function()
-                S.Data[picked] = S.Data[picked] or { Skin = "Default", Wrap = "None" }
-                S.Data[picked][mode] = name
-                rebuildOptions()
-                rebuildWeapons()
-                if Koffee.Sfx then pcall(Koffee.Sfx.play, "dropdown") end
-            end)
-        end
-        if capped then
-            local more = rowBtn(oList, (#opts - shown) .. " more, keep typing", shown + 1, false)
-            more.TextColor3 = Palette.TextFaint
-            more.AutoButtonColor = false
-        end
-    end
-
+    -- :: tabs ::
     local tabs = {}
     for i, id in ipairs({ "Skin", "Wrap" }) do
         local b = new("TextButton", {
-            Text = (id == "Skin") and "SKINS" or "WRAPS",
-            FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small, AutoButtonColor = false,
-            TextColor3 = Palette.TextMuted, BackgroundTransparency = 1, BorderSizePixel = 0,
-            Position = UDim2.new(0, (i - 1) * 74, 0, 0), Size = UDim2.new(0, 70, 1, 0),
-            ZIndex = 43, Parent = tabRow,
+            Text = "", AutoButtonColor = false, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Position = UDim2.new(0, (i - 1) * 96, 0, 0), Size = UDim2.new(0, 92, 1, 0),
+            ZIndex = 44, Parent = tabRow,
         })
+        local lbl = txt({ Text = (id == "Skin") and "SKINS" or "WRAPS", TextSize = Theme.Text.Small,
+            TextColor3 = P.TextMuted, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+            ZIndex = 45, Parent = b }, "Bold")
         local u = new("Frame", {
-            BackgroundColor3 = Palette.Accent, BorderSizePixel = 0, Visible = false,
-            Position = UDim2.new(0, 6, 1, -2), Size = UDim2.new(1, -12, 0, 2), ZIndex = 44, Parent = b,
+            BackgroundColor3 = P.Accent, BorderSizePixel = 0, Visible = false,
+            Position = UDim2.new(0, 10, 1, -2), Size = UDim2.new(1, -20, 0, 2), ZIndex = 45, Parent = b,
         })
-        tabs[id] = { btn = b, line = u }
+        tabs[id] = { lbl = lbl, line = u }
         b.MouseButton1Click:Connect(function()
             mode = id
             for k, t in pairs(tabs) do
                 t.line.Visible = (k == mode)
-                t.btn.TextColor3 = (k == mode) and Palette.Text or Palette.TextMuted
+                t.lbl.TextColor3 = (k == mode) and P.Text or P.TextMuted
             end
-            rebuildOptions()
+            filter.Text = ""
+            rebuildGrid()
         end)
     end
     tabs.Skin.line.Visible = true
-    tabs.Skin.btn.TextColor3 = Palette.Text
+    tabs.Skin.lbl.TextColor3 = P.Text
 
     refreshBtn.MouseButton1Click:Connect(function()
         local R = Shared.RivalsSkins
@@ -37545,19 +37703,20 @@ if game.PlaceId == 17625359962 then pcall(function()
         if Shared._skinsRefresh then Shared._skinsRefresh() end
     end)
     search:GetPropertyChangedSignal("Text"):Connect(rebuildWeapons)
-    oSearch:GetPropertyChangedSignal("Text"):Connect(function() rebuildOptions() end)
+    filter:GetPropertyChangedSignal("Text"):Connect(function() rebuildGrid() end)
 
     local function refresh()
         local R = Shared.RivalsSkins
         if R and R.skins then
-            local n = 0
-            for _ in pairs(R.skins) do n += 1 end
-            status.Text = n .. " weapons, " .. (#R.wraps - 1) .. " wraps"
+            local n, sk = 0, 0
+            for _, l in pairs(R.skins) do n += 1; sk += #l - 1 end
+            status.Text = ("%d weapons  %d skins  %d wraps"):format(n, sk, #R.wraps - 1)
         else
             status.Text = "loading"
         end
+        repaintFonts()
         rebuildWeapons()
-        rebuildOptions()
+        rebuildGrid()
     end
     Shared._skinsRefresh = refresh
 
@@ -37575,7 +37734,7 @@ if game.PlaceId == 17625359962 then pcall(function()
         end)
     end
 
-    WM.makeDraggable(root, header, "skins")
+    WM.makeDraggable(root, bar, "skins")
     WM.attachBody("skins", root, { onShow = animShow, onHide = animHide })
 end) end
 
