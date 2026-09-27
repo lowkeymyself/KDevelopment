@@ -1,7 +1,7 @@
--- koffee v0.93.6
+-- koffee v0.93.8
 
 local Koffee = {}
-Koffee.Version = "0.93.6"
+Koffee.Version = "0.93.8"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -12226,7 +12226,7 @@ local Combat = {
     local silentPos    = nil   -- Vector3 redirect point (predicted; drives Hit/UnitRay)
     -- v0.11.1 Perfect Lock redirect. Not silentPos: the silent heartbeat nils that
     -- whenever Silent Aim is off, which is the case Perfect Lock must work in.
-    local plPos, plPart = nil, nil
+    local plPos, plPart, plScr = nil, nil, nil
     local function plArmed()
         return plPos ~= nil and Combat.Aim.Enabled and Combat.Aim.PerfectLock
     end
@@ -12770,6 +12770,16 @@ local Combat = {
                     q[#q + 1] = { r = self, a = args, lk = Shared._bulletLook }
                 end
             end
+            -- v0.93.7 Perfect Lock shot sync. The camera snap alone desyncs on weapons
+            -- that build their ray from the mouse SCREEN point, which never moved. Only
+            -- while silent aim is off: with both on, silent owns the outbound path.
+            if plArmed() and not Combat.Silent.Enabled then
+                if method == "GetMouseLocation" then
+                    if plScr then return true, plScr end
+                elseif method == "ScreenPointToRay" or method == "ViewportPointToRay" then
+                    if SR.camPos then return true, Ray.new(SR.camPos, (plPos - SR.camPos).Unit) end
+                end
+            end
             -- v0.3.0: External method offloads everything to KoffeeHelper (see
             -- resolveIndex head comment). Every namecall passes through vanilla.
             if Combat.Silent.Method == "External" then return PASS_H, PASS_V end
@@ -12968,14 +12978,16 @@ local Combat = {
             end
         end
 
-        -- v0.92.3 HOOK LIFECYCLE. These sit on EVERY property read and method call in the
-        -- game, measured at about 0.4us each in a 28 player server, and the body cannot
-        -- avoid that: the cost is the hook call itself. So they are installed only while a
-        -- feature needs them and handed back the moment none does. Delegates to the
-        -- repointable resolvers above, so a re-exec rewires behaviour without reinstalling.
+        -- v0.92.3 HOOK LIFECYCLE. These sit on every property read and method call in
+        -- the game (about 0.4us each), and the cost is the hook call itself, so they are
+        -- installed only while a feature needs them and handed back when none does.
         local function hookNeeded()
-            local s, g, b = Combat.Silent, Combat.Gun, Koffee.Bullets
+            local s, g, b, a = Combat.Silent, Combat.Gun, Koffee.Bullets, Combat.Aim
             if s and s.Enabled then return true end
+            -- v0.93.7: Perfect Lock answers its redirect through this hook too. Omitting
+            -- it removed the hook a second after the aim writer installed it, so the
+            -- camera snapped while every weapon read stayed vanilla.
+            if a and a.Enabled and a.PerfectLock then return true end
             if g and (g.InfiniteAmmo or g.ShootInCar) then return true end
             if b and b.Enabled then return true end
             return false
@@ -13024,11 +13036,9 @@ local Combat = {
             local wrap = safe and function(f) return f end
                                 or (newcclosure or function(f) return f end)
 
-            -- v0.92.2: these hooks see EVERY property read and method call in the game and
-            -- stay installed for the session, so the miss path has to be near free. The
-            -- resolvers only ever compare the keys and methods below, and can only act while
-            -- one of these features is on, so anything else was already falling through.
-            -- Measured in a 28 player server: property reads 0.50us back to vanilla.
+            -- v0.92.2: the resolvers only ever compare the keys and methods below, so
+            -- anything else was already falling through to vanilla. Rejecting on one table
+            -- lookup keeps the miss path off the resolver pcall entirely.
             local IDX_KEYS = { CFrame = true, Hit = true, IsPlaying = true, Origin = true,
                 Position = true, SeatPart = true, Target = true, UnitRay = true, Value = true,
                 WorldCFrame = true, WorldPosition = true, X = true, Y = true }
@@ -13115,8 +13125,9 @@ local Combat = {
         end)
         end
         Shared._silentHooks = { install = installHooks, remove = removeHooks, needed = hookNeeded }
-        -- one cheap check a frame flips the hooks with the feature set. The cold delay
-        -- keeps a toggle flicker from thrashing the metatable.
+        -- v0.93.8: install only, never restore. Taking a metamethod back out measured
+        -- fine but hard-crashed the client natively after a few arm/disarm cycles, with
+        -- nothing logged. Set Koffee._hookRelease = true to opt back into removal.
         if not Shared._silentHookWatch then
             Shared._silentHookWatch = true
             local coldAt = 0
@@ -13125,10 +13136,10 @@ local Combat = {
                 if hookNeeded() then
                     coldAt = 0
                     installHooks()
-                elseif genv and genv[K.hooked] then
+                elseif Koffee._hookRelease and genv and genv[K.hooked] then
                     if coldAt == 0 then
                         coldAt = os.clock()
-                    elseif os.clock() - coldAt > 1 then
+                    elseif os.clock() - coldAt > 5 then
                         removeHooks()
                         coldAt = 0
                     end
@@ -13147,7 +13158,7 @@ local Combat = {
     RunService:BindToRenderStep(KID.ctx.bind, Enum.RenderPriority.Last.Value + 1, function()
         -- v0.11.1: cleared every frame and only re-set below, so the redirect can
         -- never outlive the frame that armed it.
-        plPos, plPart = nil, nil
+        plPos, plPart, plScr = nil, nil, nil
         -- v0.66.1: no key bound means always armed while enabled (matches silent).
         -- An unbound aim key used to wedge aimHeld false forever and kill the aimbot.
         if not Combat.Aim.Enabled or (Combat.Aim.ActivationKey and not aimHeld) then
@@ -13296,6 +13307,10 @@ local Combat = {
             -- snap (factor 1), ON = delta * 1/Smooth per axis, so it converges in a
             -- couple of frames without overshoot. Sensitivity stays ignored (perfect).
             plPos, plPart = tpos, part
+            -- v0.93.7: cache the target's screen point here, where a namecall is legal.
+            -- The resolvers cannot call WorldToViewportPoint themselves.
+            local psp = cam:WorldToViewportPoint(tpos)
+            plScr = (psp.Z > 0) and Vector2.new(psp.X, psp.Y) or nil
             if Combat.Aim.ThirdPerson or Combat.Aim.AimType == "Mouse" then
                 local sp = cam:WorldToViewportPoint(tpos)
                 if sp.Z > 0 and mousemoverel then
@@ -14763,9 +14778,23 @@ local Combat = {
         configCheckbox(L.Aimbot, "Third Person", Combat.Aim.ThirdPerson, function(v) Combat.Aim.ThirdPerson = v end)
         slider(L.Aimbot, "Distance", 1, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end, { infinite = true })
         slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
-        configCheckbox(L.Aimbot, "Perfect Lock", Combat.Aim.PerfectLock, function(v) Combat.Aim.PerfectLock = v end)
+        -- v0.93.7: Perfect Lock ignores Aim Type entirely, so the dropdown reads
+        -- "Perfect Lock" and stops offering choices while it is on.
+        local aimTypeDD
+        local function syncAimType()
+            if not aimTypeDD then return end
+            local pl = Combat.Aim.PerfectLock == true
+            aimTypeDD.setValue(pl and "Perfect Lock" or Combat.Aim.AimType)
+            aimTypeDD.button.Active = not pl
+            if pl then aimTypeDD.close() end
+        end
+        configCheckbox(L.Aimbot, "Perfect Lock", Combat.Aim.PerfectLock, function(v)
+            Combat.Aim.PerfectLock = v
+            syncAimType()
+        end)
         dropdown(L.Aimbot, "Hit Part", HITPART_OPTIONS, Combat.Aim.HitPart, function(v) Combat.Aim.HitPart = v end)
-        dropdown(L.Aimbot, "Aim Type", { "Camera", "Mouse" }, Combat.Aim.AimType, function(v) Combat.Aim.AimType = v end)
+        aimTypeDD = dropdown(L.Aimbot, "Aim Type", { "Camera", "Mouse" }, Combat.Aim.AimType, function(v) Combat.Aim.AimType = v end)
+        syncAimType()
         local rageRow = configCheckbox(L.Aimbot, "Ragebot", Combat.Aim.Rage, function(v) Combat.Aim.Rage = v end)
         attachHelp(rageRow.row)
         local rageTypeDd = dropdown(L.Aimbot, "Type", { "Camera Teleport", "Character Teleport" }, Combat.Aim.RageType,
@@ -37399,10 +37428,9 @@ local _skinsOk, _skinsErr = pcall(function()
     end
     Shared._skinsFonts = repaintFonts
 
-    -- v0.93.5: a plain Frame, NOT a CanvasGroup. This window creates and destroys
-    -- hundreds of children per rebuild and a group re-rasterises on every one of them,
-    -- which saturated the main thread hard enough to time out the game's own scripts.
-    -- Koffee's own notes say it: plain Frames for anything whose children churn.
+    -- v0.93.5: a plain Frame, NOT a CanvasGroup. A group re-rasterises on every child
+    -- change, and this window churns hundreds per rebuild, which saturated the main
+    -- thread hard enough to time out the game's own scripts.
     local root = new("Frame", {
         Name = KID.name("skinwin"),
         Position = UDim2.new(0, 120, 0, 110), Size = UDim2.new(0, W, 0, H),
