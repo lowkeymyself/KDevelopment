@@ -1,7 +1,7 @@
--- koffee v0.92.3
+-- koffee v0.93.0
 
 local Koffee = {}
-Koffee.Version = "0.92.3"
+Koffee.Version = "0.93.0"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -34151,6 +34151,10 @@ holdMouseFree(true)
     def{ id = "keybinds", icon = "keyboard",    label = "Hotkeys",        kind = "secondary", canFloat = true,  bar = true }
     -- array list is a window but not a bar slot (its own draggable overlay added
     -- later); registered here so the framework knows it.
+    -- v0.93.0: rivals only cosmetic picker, so the dock gains a slot just in that game
+    if game.PlaceId == 17625359962 then
+        def{ id = "skins", icon = "package", label = "Skins", kind = "primary", canFloat = false, bar = true }
+    end
     def{ id = "arraylist", label = "Array List", kind = "secondary", canFloat = true, bar = false }
 
     -- seed default open-states only where a config hasn't already provided one.
@@ -36834,6 +36838,736 @@ end)()
         end)
     end
 end)()
+
+-- v0.93.0: rivals skins
+Koffee.Skins = { Enabled = true, Heal = true, Data = {} }
+registerConfig("rivals_skins", Koffee.Skins)
+if game.PlaceId == 17625359962 then pcall(function()
+    local S = Koffee.Skins
+    local RS = game:GetService("ReplicatedStorage")
+    local LP = LocalPlayer
+    local RANDOM = "__random__"
+    local SKINS, WRAPS = {}, { "None" }
+    local Cos, RepClass, CVM
+
+    -- ported from a community skin changer. The parts kept are the cosmetic injection
+    -- and the missing-part healer; its UI, skies and hit sounds are Koffee's already.
+    local function idRequire(inst)
+        if not inst then return nil end
+        local prev
+        pcall(function()
+            if getthreadidentity and setthreadidentity then
+                prev = getthreadidentity(); setthreadidentity(2)
+            end
+        end)
+        local ok, res = pcall(require, inst)
+        pcall(function() if setthreadidentity and prev then setthreadidentity(prev) end end)
+        if ok then return res end
+        return nil
+    end
+    -- the module tables stay recognisable by shape when require is blocked
+    local function gcFind(pred)
+        if not getgc then return nil end
+        local ok, objs = pcall(getgc, true)
+        if not ok or type(objs) ~= "table" then return nil end
+        for _, v in pairs(objs) do
+            if type(v) == "table" then
+                local good = false
+                pcall(function() good = pred(v) end)
+                if good then return v end
+            end
+        end
+        return nil
+    end
+
+    local function resolveModules()
+        local mods = RS:FindFirstChild("Modules")
+        if mods then
+            Cos = idRequire(mods:FindFirstChild("CosmeticLibrary"))
+            RepClass = idRequire(mods:FindFirstChild("ReplicatedClass"))
+        end
+        local ps = LP:FindFirstChild("PlayerScripts")
+        local pm = ps and ps:FindFirstChild("Modules")
+        local crc = pm and pm:FindFirstChild("ClientReplicatedClasses")
+        local cf = crc and crc:FindFirstChild("ClientFighter")
+        local ci = cf and cf:FindFirstChild("ClientItem")
+        CVM = ci and idRequire(ci:FindFirstChild("ClientViewModel")) or nil
+        if not Cos then Cos = gcFind(function(v) return rawget(v, "Cosmetics") ~= nil and type(rawget(v, "Equip")) == "function" end) end
+        if not RepClass then RepClass = gcFind(function(v) return type(rawget(v, "ToEnum")) == "function" end) end
+        if not CVM then CVM = gcFind(function(v) return rawget(v, "new") ~= nil and rawget(v, "GetWrap") ~= nil end) end
+        return Cos and RepClass and CVM
+    end
+
+    local function buildLists()
+        if not Cos then return end
+        if type(Cos.Skins) == "table" then
+            for weapon, tbl in pairs(Cos.Skins) do
+                if type(tbl) == "table" then
+                    SKINS[weapon] = SKINS[weapon] or { "Default" }
+                    for name in pairs(tbl) do
+                        if not table.find(SKINS[weapon], name) then table.insert(SKINS[weapon], name) end
+                    end
+                end
+            end
+        end
+        -- the live shape is one flat Cosmetics map keyed by name, where a skin carries
+        -- its weapon in ItemName. Types seen: Skin, Wrap, Charm, Emote, Finisher.
+        if type(Cos.Cosmetics) == "table" then
+            for name, d in pairs(Cos.Cosmetics) do
+                if type(d) == "table" then
+                    local t = tostring(d.Type or "")
+                    if t == "Wrap" then
+                        if not table.find(WRAPS, name) then table.insert(WRAPS, name) end
+                    elseif t == "Skin" then
+                        local w = d.ItemName
+                        if type(w) == "string" and w ~= "" then
+                            SKINS[w] = SKINS[w] or { "Default" }
+                            if not table.find(SKINS[w], name) then table.insert(SKINS[w], name) end
+                        end
+                    end
+                end
+            end
+        end
+        if type(Cos.Wraps) == "table" then
+            for name in pairs(Cos.Wraps) do
+                if not table.find(WRAPS, name) then table.insert(WRAPS, name) end
+            end
+        end
+        local function sorter(first)
+            return function(a, b)
+                if a == first then return true end
+                if b == first then return false end
+                return a < b
+            end
+        end
+        for _, l in pairs(SKINS) do table.sort(l, sorter("Default")) end
+        table.sort(WRAPS, sorter("None"))
+        for weapon in pairs(SKINS) do
+            S.Data[weapon] = S.Data[weapon] or { Skin = "Default", Wrap = "None" }
+        end
+    end
+
+    local function deepClone(t, seen)
+        if type(t) ~= "table" then return t end
+        seen = seen or {}
+        if seen[t] then return seen[t] end
+        local out = {}
+        seen[t] = out
+        for k, v in pairs(t) do out[deepClone(k, seen)] = deepClone(v, seen) end
+        return setmetatable(out, getmetatable(t))
+    end
+
+    local function cosmetic(name, kind)
+        if not (Cos and Cos.Cosmetics) then return nil end
+        local base = Cos.Cosmetics[name]
+        if not base then return nil end
+        local d = deepClone(base)
+        d.Name, d.Type = name, kind
+        if name == "AKEY-47" then
+            d.IsMythical, d.BundlePath = true, "Bundles"
+        elseif name:find("Gingerbread") then
+            d.BundlePath = "Festive Skin Case"
+        end
+        return d
+    end
+
+    local function rollFrom(list, skip)
+        local pool = {}
+        for _, v in ipairs(list or {}) do
+            if v ~= skip and v ~= RANDOM then pool[#pool + 1] = v end
+        end
+        if #pool == 0 then return nil end
+        return pool[math.random(#pool)]
+    end
+    local function pickSkin(weapon)
+        local d = S.Data[weapon]
+        if not d then return nil end
+        if d.Skin == RANDOM then return rollFrom(SKINS[weapon], "Default") end
+        if d.Skin and d.Skin ~= "Default" then return d.Skin end
+        return nil
+    end
+    local function pickWrap(weapon)
+        local d = S.Data[weapon]
+        if not d then return nil end
+        if d.Wrap == RANDOM then return rollFrom(WRAPS, "None") end
+        if d.Wrap and d.Wrap ~= "None" then return d.Wrap end
+        return nil
+    end
+
+    -- :: healer ::
+    -- Some skins reference parts the model does not have, so the game's WaitForChild
+    -- hangs. This answers those with a near match, a clone, or a typed dummy.
+    local heal = { active = false, installed = false, at = 0, count = 0 }
+    local TempVMs
+    pcall(function()
+        local a = RS:FindFirstChild("Assets")
+        local t = a and a:FindFirstChild("Temp")
+        TempVMs = t and t:FindFirstChild("ViewModels") or nil
+    end)
+    local consumed = setmetatable({}, { __mode = "k" })
+
+    local function inTempVMs(inst)
+        if not (TempVMs and inst) then return false end
+        local cur = inst
+        for _ = 1, 32 do
+            if cur == TempVMs then return true end
+            cur = cur.Parent
+            if not cur then return false end
+        end
+        return false
+    end
+
+    -- Everything below runs inside __namecall, where a nested `:` call corrupts the one
+    -- shared getnamecallmethod state and takes the in-flight dispatch with it. Grabbing
+    -- the method as a value and calling it plainly issues no namecall at all.
+    local mChildren, mFind = game.GetChildren, game.FindFirstChild
+    local mClone, mDescendants = game.Clone, game.GetDescendants
+    local mIsA, mDestroy = game.IsA, game.Destroy
+
+    local function fuzzy(parent, want, skip)
+        if type(want) ~= "string" then return nil end
+        skip = skip or {}
+        local kids = mChildren(parent)
+        local low = want:lower()
+        for _, c in ipairs(kids) do
+            if not skip[c] and c.Name:lower() == low then return c end
+        end
+        local bare = want:gsub("%d+$", "")
+        if bare ~= "" and bare ~= want then
+            for _, c in ipairs(kids) do
+                if not skip[c] and c.Name:lower() == bare:lower() then return c end
+            end
+        end
+        for _, suf in ipairs({ "1", "_1", "01" }) do
+            local probe = (want .. suf):lower()
+            for _, c in ipairs(kids) do
+                if not skip[c] and c.Name:lower() == probe then return c end
+            end
+        end
+        if low:find("mesh") then
+            local meshes = {}
+            for _, c in ipairs(kids) do
+                if not skip[c] and (mIsA(c, "BasePart") or mIsA(c, "SpecialMesh")) then meshes[#meshes + 1] = c end
+            end
+            if #meshes == 1 then return meshes[1] end
+        end
+        return nil
+    end
+
+    local function dummyFor(name, parent)
+        local n = name:lower()
+        local d
+        if n:find("motor") or n:find("joint") then
+            d = Instance.new("Motor6D")
+        elseif n:find("attach") or n:find("muzzle") or n:find("sight") or n:find("grip") then
+            d = Instance.new("Attachment")
+        elseif n:find("sound") or n:find("audio") then
+            d = Instance.new("Sound")
+        else
+            d = Instance.new("Part")
+            d.Transparency, d.CanCollide, d.Massless = 1, false, true
+            d.Size = Vector3.new(0.01, 0.01, 0.01)
+        end
+        d.Name = name
+        d.Parent = parent
+        return d
+    end
+
+    -- runs inside __namecall, so the existence test is a property read rather than a
+    -- FindFirstChild. Anything past that point always returns, never falls through.
+    local function tryHeal(self, want)
+        if type(want) ~= "string" or not inTempVMs(self) then return nil end
+        -- FindFirstChild as a value, not a namecall. An earlier build indexed self[want],
+        -- which hits properties before children and reads "Parent" as a found child.
+        local okf, existing = pcall(mFind, self, want)
+        if okf and existing ~= nil then return nil end
+        local used = consumed[self]
+        if not used then used = {}; consumed[self] = used end
+        local cand = fuzzy(self, want, used)
+        if cand then
+            used[cand] = true
+            heal.count += 1
+            return cand
+        end
+        local src = fuzzy(self, want)
+        if src then
+            local okc, clone = pcall(mClone, src)
+            if okc and clone then
+                clone.Name = want
+                for _, d in ipairs(mDescendants(clone)) do
+                    if mIsA(d, "WeldConstraint") or mIsA(d, "Weld") or mIsA(d, "ManualWeld") then mDestroy(d) end
+                end
+                clone.Parent = self
+                used[clone] = true
+                heal.count += 1
+                return clone
+            end
+        end
+        local d = dummyFor(want, self)
+        used[d] = true
+        heal.count += 1
+        return d
+    end
+
+    -- Installed at most ONCE per session and never taken back out. An earlier build
+    -- guarded on a rawget of the live metamethod, which this executor does not return
+    -- as our own closure, so every weapon spawn stacked another layer until it crashed.
+    -- The body is a boolean test, so one dormant layer is the whole cost.
+    local function healArm()
+        heal.at = os.clock()
+        if heal.installed then return end
+        if not (hookmetamethod and getnamecallmethod and newcclosure) then return end
+        heal.installed = true
+        -- the hook goes live the instant it is installed, a moment before `old` is
+        -- assigned, so keep the pre-install metamethod as the fallback for that window
+        local mt0 = getrawmetatable and getrawmetatable(game)
+        local raw = mt0 and rawget(mt0, "__namecall") or nil
+        local old
+        local fn = newcclosure(function(self, ...)
+            local o = old or raw
+            if not o then return end
+            if not heal.active or Koffee.dead() then return o(self, ...) end
+            local m = getnamecallmethod()
+            if m == "WaitForChild" and typeof(self) == "Instance" then
+                local want = ...
+                local got
+                local okh = pcall(function() got = tryHeal(self, want) end)
+                if okh and got ~= nil then return got end
+            end
+            return o(self, ...)
+        end)
+        local okh, prev = pcall(hookmetamethod, game, "__namecall", fn)
+        if not okh or not prev then
+            -- never leave the flag set on a failed install, but never retry either:
+            -- a retry loop is how the stacking happened in the first place
+            heal.installed = "failed"
+            return
+        end
+        old = prev
+    end
+
+    -- :: cosmetic injection ::
+    local function enumOf(name)
+        local ok, v = pcall(function() return RepClass:ToEnum(name) end)
+        if ok then return v end
+        return nil
+    end
+
+    local function installHooks()
+        if not CVM or rawget(CVM, "_koffeeSkins") then return end
+        rawset(CVM, "_koffeeSkins", true)
+
+        local oldWrap = rawget(CVM, "GetWrap")
+        if oldWrap then
+            rawset(CVM, "GetWrap", function(self, ...)
+                if S.Enabled then
+                    local ok, res = pcall(function()
+                        local item = self and self.ClientItem
+                        local name = item and item.Name
+                        if not name then return nil end
+                        local w = pickWrap(name)
+                        if w then return cosmetic(w, "Wrap") end
+                        return nil
+                    end)
+                    if ok and res then return res end
+                end
+                return oldWrap(self, ...)
+            end)
+        end
+
+        local oldNew = rawget(CVM, "new")
+        if not oldNew then return end
+        rawset(CVM, "new", function(replicatedData, clientItem, ...)
+            local weapon, undo
+            if S.Enabled then
+                pcall(function()
+                    if not clientItem then return end
+                    weapon = clientItem.Name
+                    if not (weapon and S.Data[weapon]) then weapon = nil; return end
+                    local cf = rawget(clientItem, "ClientFighter") or clientItem.ClientFighter
+                    if not cf or cf.Player ~= LP then weapon = nil; return end
+                    local dataK, skinK, nameK, wrapK = enumOf("Data"), enumOf("Skin"), enumOf("Name"), enumOf("Wrap")
+                    if not dataK then weapon = nil; return end
+                    replicatedData[dataK] = replicatedData[dataK] or {}
+                    local bag = replicatedData[dataK]
+                    -- snapshot so a failed build can be retried on the game's own data
+                    undo = { bag = bag, skinK = skinK, nameK = nameK, wrapK = wrapK,
+                        skin = skinK and bag[skinK], name = nameK and bag[nameK], wrap = wrapK and bag[wrapK] }
+                    local sk = pickSkin(weapon)
+                    if sk and skinK then
+                        local cd = cosmetic(sk, "Skin")
+                        if cd then
+                            bag[skinK] = cd
+                            if nameK then bag[nameK] = sk end
+                        end
+                    end
+                    local wr = pickWrap(weapon)
+                    if wr and wrapK then
+                        local cd = cosmetic(wr, "Wrap")
+                        if cd then bag[wrapK] = cd end
+                    end
+                end)
+            end
+            if S.Enabled and S.Heal then healArm() end
+            -- oldNew yields, so constructions can nest: count them instead of a flag
+            heal.depth = (heal.depth or 0) + 1
+            heal.active = true
+            local ok, vm = pcall(oldNew, replicatedData, clientItem, ...)
+            heal.depth -= 1
+            if heal.depth <= 0 then heal.depth, heal.active = 0, false end
+            -- improvement over the original, which handed the game a nil viewmodel:
+            -- put the game's own data back and build again, so a bad skin falls back
+            if not ok then
+                if undo then
+                    if undo.skinK then undo.bag[undo.skinK] = undo.skin end
+                    if undo.nameK then undo.bag[undo.nameK] = undo.name end
+                    if undo.wrapK then undo.bag[undo.wrapK] = undo.wrap end
+                end
+                if weapon and Koffee.notify then
+                    Koffee.notify("Skins", weapon .. " skin failed, using default", { severity = "error" })
+                end
+                local ok2, vm2 = pcall(oldNew, replicatedData, clientItem, ...)
+                if ok2 then return vm2 end
+                return nil
+            end
+            return vm
+        end)
+    end
+
+    task.spawn(function()
+        for _ = 1, 40 do
+            if Koffee.dead() then return end
+            if resolveModules() then break end
+            task.wait(0.5)
+        end
+        if not (Cos and CVM and RepClass) then return end
+        buildLists()
+        installHooks()
+        Shared.RivalsSkins = { skins = SKINS, wraps = WRAPS, heal = heal, rebuild = buildLists,
+            info = function(name)
+                if not (Cos and Cos.Cosmetics) then return nil end
+                return Cos.Cosmetics[name]
+            end }
+        if Shared._skinsRefresh then pcall(Shared._skinsRefresh) end
+    end)
+end) end
+
+-- v0.93.0: rivals skins window (dock slot "skins", rivals only)
+if game.PlaceId == 17625359962 then pcall(function()
+    local WM = Koffee.Windows
+    if not (WM and WM.byId and WM.byId.skins) then return end
+    local S = Koffee.Skins
+    local Palette = Theme.Palette
+    local RANDOM = "__random__"
+    local picked, mode = nil, "Skin"
+
+    local root = new("CanvasGroup", {
+        Name = KID.name("skinwin"), GroupTransparency = 0,
+        Position = UDim2.new(0, 120, 0, 150), Size = UDim2.new(0, 440, 0, 330),
+        BackgroundColor3 = Palette.Panel, BorderSizePixel = 0,
+        Visible = false, ZIndex = 40, Parent = screen,
+    }, { corner(Theme.Radius.Medium), stroke(Palette.BorderSubtle) })
+    do
+        local p = WM.persist.pos and WM.persist.pos.skins
+        if p then root.Position = UDim2.new(p[1], p[2], p[3], p[4]) end
+    end
+
+    local header = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = Palette.PanelElevated,
+        BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 41, Parent = root,
+    }, { corner(Theme.Radius.Medium) })
+    local hicon = Koffee.lucideIcon(header, "package", 15, Palette.TextMuted)
+    hicon.Position = UDim2.new(0, 12, 0.5, -7)
+    new("TextLabel", {
+        Text = "Skins", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+        TextColor3 = Palette.Text, BackgroundTransparency = 1,
+        Position = UDim2.new(0, 34, 0, 0), Size = UDim2.new(0, 120, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = header,
+    })
+    local status = new("TextLabel", {
+        Text = "loading", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Palette.TextMuted, BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 0),
+        Size = UDim2.new(0, 220, 1, 0), TextXAlignment = Enum.TextXAlignment.Right,
+        TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 42, Parent = header,
+    })
+
+    local search = new("TextBox", {
+        Text = "", PlaceholderText = "Search weapons", ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Palette.Text, PlaceholderColor3 = Palette.TextFaint,
+        BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        Position = UDim2.new(0, 10, 0, 42), Size = UDim2.new(0, 132, 0, 24),
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = root,
+    }, { corner(5), stroke(Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+
+    local refreshBtn = new("TextButton", {
+        Text = "", AutoButtonColor = false, BackgroundColor3 = Palette.PanelElevated,
+        BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        Position = UDim2.new(0, 148, 0, 42), Size = UDim2.new(0, 22, 0, 24),
+        ZIndex = 42, Parent = root,
+    }, { corner(5), stroke(Palette.BorderSubtle) })
+    local refreshIcon = Koffee.lucideIcon(refreshBtn, "refresh-cw", 13, Palette.TextMuted, 43)
+    refreshIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+    refreshIcon.Position = UDim2.new(0.5, 0, 0.5, 0)
+
+    local wList = new("ScrollingFrame", {
+        Position = UDim2.new(0, 10, 0, 72), Size = UDim2.new(0, 160, 1, -82),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Palette.Border, CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 42, Parent = root,
+    }, { new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+    local tabRow = new("Frame", {
+        Position = UDim2.new(0, 180, 0, 42), Size = UDim2.new(1, -190, 0, 24),
+        BackgroundTransparency = 1, ZIndex = 42, Parent = root,
+    })
+    local oSearch = new("TextBox", {
+        Text = "", PlaceholderText = "Filter", ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+        TextColor3 = Palette.Text, PlaceholderColor3 = Palette.TextFaint,
+        BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 110, 0, 22), TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 43, Parent = tabRow,
+    }, { corner(5), stroke(Palette.BorderSubtle),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7) }) })
+
+    local oList = new("ScrollingFrame", {
+        Position = UDim2.new(0, 180, 0, 72), Size = UDim2.new(1, -190, 1, -82),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Palette.Border, CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 42, Parent = root,
+    }, { new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+    local function rowBtn(parent, text, order, on, onRight)
+        local b = new("TextButton", {
+            Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            AutoButtonColor = false, TextColor3 = on and Palette.Accent or Palette.Text,
+            BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = on and 0.1 or 0.45,
+            BorderSizePixel = 0, Size = UDim2.new(1, -6, 0, 24), LayoutOrder = order,
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 43, Parent = parent,
+        }, { corner(5), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 6) }) })
+        b.MouseEnter:Connect(function() b.BackgroundTransparency = 0.1 end)
+        b.MouseLeave:Connect(function() b.BackgroundTransparency = on and 0.1 or 0.45 end)
+        if onRight then b.MouseButton2Click:Connect(onRight) end
+        return b
+    end
+
+    -- big preview on right-click. Each cosmetic carries its own art, rarity and blurb.
+    local preview
+    local function closePreview()
+        if preview then preview:Destroy(); preview = nil end
+    end
+    local function showPreview(cosName, fallbackTitle)
+        closePreview()
+        if not (popupScreen and popupScreen.Parent) then return end
+        local R = Shared.RivalsSkins
+        local d = (R and R.info and cosName) and R.info(cosName) or nil
+        local W, H = 300, 330
+        local catcher = new("TextButton", {
+            Name = KID.name("skprev"), Text = "", AutoButtonColor = false,
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 1, 0), ZIndex = 120, Parent = popupScreen,
+        })
+        preview = catcher
+        local card = new("Frame", {
+            BackgroundColor3 = Palette.Panel, BorderSizePixel = 0,
+            Size = UDim2.new(0, W, 0, H), ZIndex = 121, Parent = catcher,
+        }, { corner(Theme.Radius.Medium), stroke(Palette.Border) })
+        local img = new("ImageLabel", {
+            BackgroundColor3 = Palette.PanelElevated, BackgroundTransparency = 0.35,
+            BorderSizePixel = 0, ScaleType = Enum.ScaleType.Fit,
+            Image = d and (d.ImageHighResolution or d.Image) or "",
+            Position = UDim2.new(0, 12, 0, 12), Size = UDim2.new(1, -24, 0, 190),
+            ZIndex = 122, Parent = card,
+        }, { corner(6) })
+        if img.Image == "" then
+            new("TextLabel", {
+                Text = "No image", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = Palette.TextFaint, BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 1, 0), ZIndex = 123, Parent = img,
+            })
+        end
+        new("TextLabel", {
+            Text = cosName or fallbackTitle or "?", FontFace = Theme.Fonts.Bold,
+            TextSize = Theme.Text.Header, TextColor3 = Palette.Text, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 208), Size = UDim2.new(1, -24, 0, 20),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 122, Parent = card,
+        })
+        local meta = {}
+        if d then
+            if d.ItemName then meta[#meta + 1] = tostring(d.ItemName) end
+            if d.Type then meta[#meta + 1] = tostring(d.Type) end
+            if d.Rarity then meta[#meta + 1] = tostring(d.Rarity) end
+        end
+        new("TextLabel", {
+            Text = #meta > 0 and table.concat(meta, "  /  ") or "not in the catalogue",
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Palette.Accent, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 230), Size = UDim2.new(1, -24, 0, 16),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 122, Parent = card,
+        })
+        new("TextLabel", {
+            Text = (d and tostring(d.Description or "")) or "",
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Palette.TextMuted, BackgroundTransparency = 1, TextWrapped = true,
+            Position = UDim2.new(0, 12, 0, 250), Size = UDim2.new(1, -24, 0, 68),
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+            ZIndex = 122, Parent = card,
+        })
+        -- popupScreen reports AbsolutePosition offset by the topbar inset, so the cursor
+        -- is converted into that space and popupOffsetFor does the final correction
+        local mp = game:GetService("UserInputService"):GetMouseLocation()
+        local inset = game:GetService("GuiService"):GetGuiInset()
+        local cam = Workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+        local px = math.clamp(mp.X - inset.X + 12, 4, math.max(4, vp.X - W - 4))
+        local py = math.clamp(mp.Y - inset.Y + 12, 4, math.max(4, vp.Y - H - 4))
+        local ox, oy = popupOffsetFor(card, px, py)
+        card.Position = UDim2.fromOffset(ox, oy)
+        catcher.MouseButton1Click:Connect(closePreview)
+        catcher.MouseButton2Click:Connect(closePreview)
+    end
+
+    local rebuildOptions
+    local function rebuildWeapons()
+        for _, c in ipairs(wList:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+        end
+        local data = Shared.RivalsSkins and Shared.RivalsSkins.skins
+        if not data then return end
+        local names = {}
+        local q = search.Text:lower()
+        for w in pairs(data) do
+            if q == "" or w:lower():find(q, 1, true) then names[#names + 1] = w end
+        end
+        table.sort(names)
+        for i, w in ipairs(names) do
+            local d = S.Data[w] or { Skin = "Default", Wrap = "None" }
+            local tag = ""
+            if d.Skin == RANDOM then tag = "  random"
+            elseif d.Skin and d.Skin ~= "Default" then tag = "  on" end
+            local b = rowBtn(wList, w .. tag, i, picked == w, function()
+                local cur = d.Skin
+                if cur == RANDOM or cur == "Default" or not cur then cur = nil end
+                showPreview(cur, w)
+            end)
+            b.MouseButton1Click:Connect(function()
+                picked = w
+                rebuildWeapons()
+                rebuildOptions()
+            end)
+        end
+    end
+
+    rebuildOptions = function()
+        for _, c in ipairs(oList:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+        end
+        local R = Shared.RivalsSkins
+        if not (R and picked) then return end
+        local list = (mode == "Skin") and (R.skins[picked] or { "Default" }) or R.wraps
+        local cur = S.Data[picked] and S.Data[picked][mode] or nil
+        local q = oSearch.Text:lower()
+        -- 382 wraps is too many to build in one frame, so filter first and cap the rest
+        local opts = {}
+        for _, name in ipairs(list) do
+            if q == "" or name:lower():find(q, 1, true) then opts[#opts + 1] = name end
+        end
+        if q == "" then table.insert(opts, 2, RANDOM) end
+        local shown, capped = #opts, false
+        if shown > 120 then shown, capped = 120, true end
+        for i = 1, shown do
+            local name = opts[i]
+            local label = (name == RANDOM) and "Random" or name
+            local b = rowBtn(oList, label, i, cur == name, function()
+                if name ~= RANDOM then showPreview(name, label) end
+            end)
+            b.MouseButton1Click:Connect(function()
+                S.Data[picked] = S.Data[picked] or { Skin = "Default", Wrap = "None" }
+                S.Data[picked][mode] = name
+                rebuildOptions()
+                rebuildWeapons()
+                if Koffee.Sfx then pcall(Koffee.Sfx.play, "dropdown") end
+            end)
+        end
+        if capped then
+            local more = rowBtn(oList, (#opts - shown) .. " more, keep typing", shown + 1, false)
+            more.TextColor3 = Palette.TextFaint
+            more.AutoButtonColor = false
+        end
+    end
+
+    local tabs = {}
+    for i, id in ipairs({ "Skin", "Wrap" }) do
+        local b = new("TextButton", {
+            Text = (id == "Skin") and "SKINS" or "WRAPS",
+            FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small, AutoButtonColor = false,
+            TextColor3 = Palette.TextMuted, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Position = UDim2.new(0, (i - 1) * 74, 0, 0), Size = UDim2.new(0, 70, 1, 0),
+            ZIndex = 43, Parent = tabRow,
+        })
+        local u = new("Frame", {
+            BackgroundColor3 = Palette.Accent, BorderSizePixel = 0, Visible = false,
+            Position = UDim2.new(0, 6, 1, -2), Size = UDim2.new(1, -12, 0, 2), ZIndex = 44, Parent = b,
+        })
+        tabs[id] = { btn = b, line = u }
+        b.MouseButton1Click:Connect(function()
+            mode = id
+            for k, t in pairs(tabs) do
+                t.line.Visible = (k == mode)
+                t.btn.TextColor3 = (k == mode) and Palette.Text or Palette.TextMuted
+            end
+            rebuildOptions()
+        end)
+    end
+    tabs.Skin.line.Visible = true
+    tabs.Skin.btn.TextColor3 = Palette.Text
+
+    refreshBtn.MouseButton1Click:Connect(function()
+        local R = Shared.RivalsSkins
+        if R and R.rebuild then pcall(R.rebuild) end
+        tween(refreshIcon, TweenInfo.new(0.5), { Rotation = refreshIcon.Rotation + 360 })
+        if Shared._skinsRefresh then Shared._skinsRefresh() end
+    end)
+    search:GetPropertyChangedSignal("Text"):Connect(rebuildWeapons)
+    oSearch:GetPropertyChangedSignal("Text"):Connect(function() rebuildOptions() end)
+
+    local function refresh()
+        local R = Shared.RivalsSkins
+        if R and R.skins then
+            local n = 0
+            for _ in pairs(R.skins) do n += 1 end
+            status.Text = n .. " weapons, " .. (#R.wraps - 1) .. " wraps"
+        else
+            status.Text = "loading"
+        end
+        rebuildWeapons()
+        rebuildOptions()
+    end
+    Shared._skinsRefresh = refresh
+
+    local function animShow()
+        root.Visible = true
+        refresh()
+        root.GroupTransparency = 1
+        tween(root, Theme.Animation.Menu, { GroupTransparency = 0 })
+    end
+    local function animHide()
+        closePreview()
+        tween(root, Theme.Animation.Menu, { GroupTransparency = 1 })
+        task.delay(Koffee.Anim.wait(0.22), function()
+            if not WM.shouldShow("skins") then root.Visible = false end
+        end)
+    end
+
+    WM.makeDraggable(root, header, "skins")
+    WM.attachBody("skins", root, { onShow = animShow, onHide = animHide })
+end) end
 
 -- v0.85.0: Koffee Lab dev handle. Only exists when getgenv().KoffeeDev = true is
 -- set before loading, so a normal load publishes nothing new.
