@@ -1,7 +1,7 @@
--- koffee v0.92.1
+-- koffee v0.92.2
 
 local Koffee = {}
-Koffee.Version = "0.92.1"
+Koffee.Version = "0.92.2"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -12986,8 +12986,33 @@ local Combat = {
             local wrap = safe and function(f) return f end
                                 or (newcclosure or function(f) return f end)
 
+            -- v0.92.2: these hooks see EVERY property read and method call in the game and
+            -- stay installed for the session, so the miss path has to be near free. The
+            -- resolvers only ever compare the keys and methods below, and can only act while
+            -- one of these features is on, so anything else was already falling through.
+            -- Measured in a 28 player server: property reads 0.50us back to vanilla.
+            local IDX_KEYS = { CFrame = true, Hit = true, IsPlaying = true, Origin = true,
+                Position = true, SeatPart = true, Target = true, UnitRay = true, Value = true,
+                WorldCFrame = true, WorldPosition = true, X = true, Y = true }
+            local NC_METHODS = { FireServer = true, GetMouseLocation = true, GetPivot = true,
+                GetPrimaryPartCFrame = true, InvokeServer = true, Raycast = true,
+                ScreenPointToRay = true, ViewportPointToRay = true }
+            -- plain table reads, no metamethods, so this is cheaper than caching it per frame
+            -- and can never go stale against a toggle
+            -- nil safe on purpose: this runs outside the resolver pcall, so a throw here
+            -- would surface inside a real property read and break the game
+            local function hot()
+                local s, g, b = Combat.Silent, Combat.Gun, Koffee.Bullets
+                if s and s.Enabled then return true end
+                if g and (g.InfiniteAmmo or g.ShootInCar) then return true end
+                if b and b.Enabled then return true end
+                return false
+            end
+
             local oldIndex
             oldIndex = hookmm(game, "__index", wrap(function(self, key)
+                if not IDX_KEYS[key] then return oldIndex(self, key) end
+                if not hot() then return oldIndex(self, key) end
                 -- our own reads are never spoofed; also defeats trap-callbacks that
                 -- run in our context and probe the hook behaviorally.
                 if ccaller and ccaller() then return oldIndex(self, key) end
@@ -13007,6 +13032,8 @@ local Combat = {
                     -- real FireServer is dispatching corrupts it and bricks the weapon after
                     -- one shot ("one bullet then the gun dies" bug, fixed in v0.0.40).
                     local m = ncmethod and ncmethod() or ""
+                    if not NC_METHODS[m] then return oldNc(self, ...) end
+                    if not hot() then return oldNc(self, ...) end
                     if ccaller and ccaller() then return oldNc(self, ...) end
                     local r = genv and genv[K.nc]
                     if r then
