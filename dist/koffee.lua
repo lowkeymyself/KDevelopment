@@ -1,7 +1,7 @@
--- koffee v0.92.2
+-- koffee v0.92.3
 
 local Koffee = {}
-Koffee.Version = "0.92.2"
+Koffee.Version = "0.92.3"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -12961,10 +12961,41 @@ local Combat = {
             end
         end
 
-        -- HOOK BODY: installed once per session, forever. Delegates to the repointable
-        -- resolvers above so re-exec rewires behaviour without reinstalling the hook.
+        -- v0.92.3 HOOK LIFECYCLE. These sit on EVERY property read and method call in the
+        -- game, measured at about 0.4us each in a 28 player server, and the body cannot
+        -- avoid that: the cost is the hook call itself. So they are installed only while a
+        -- feature needs them and handed back the moment none does. Delegates to the
+        -- repointable resolvers above, so a re-exec rewires behaviour without reinstalling.
+        local function hookNeeded()
+            local s, g, b = Combat.Silent, Combat.Gun, Koffee.Bullets
+            if s and s.Enabled then return true end
+            if g and (g.InfiniteAmmo or g.ShootInCar) then return true end
+            if b and b.Enabled then return true end
+            return false
+        end
+        local function removeHooks()
+            local h = genv and genv[K.hooked]
+            if type(h) ~= "table" then return end
+            local mt = getrawmetatable and getrawmetatable(game)
+            if not (mt and hookmetamethod) then return end
+            -- the executor does not preserve our closure's identity (measured: neither
+            -- rawget nor hookmetamethod's return compares equal to what we passed), so
+            -- compare the metatable against what it held right after we installed. If
+            -- something hooked on top since, leave it be rather than wiping it out.
+            local done = true
+            local function give(name, live, orig)
+                if not (live and orig) then return end
+                if rawget(mt, name) ~= live then done = false return end
+                if not pcall(hookmetamethod, game, name, orig) then done = false end
+            end
+            give("__index", h.idxLive, h.oidx)
+            give("__namecall", h.ncLive, h.onc)
+            give("__newindex", h.wiLive, h.owi)
+            -- only forget the record once every hook really went back
+            if done and genv then genv[K.hooked] = nil end
+        end
+        local function installHooks()
         if genv and genv[K.hooked] then return end
-        if genv then genv[K.hooked] = true end
         pcall(function()
             local hookmm   = hookmetamethod
             local ncmethod = getnamecallmethod
@@ -12999,20 +13030,13 @@ local Combat = {
                 ScreenPointToRay = true, ViewportPointToRay = true }
             -- plain table reads, no metamethods, so this is cheaper than caching it per frame
             -- and can never go stale against a toggle
-            -- nil safe on purpose: this runs outside the resolver pcall, so a throw here
-            -- would surface inside a real property read and break the game
-            local function hot()
-                local s, g, b = Combat.Silent, Combat.Gun, Koffee.Bullets
-                if s and s.Enabled then return true end
-                if g and (g.InfiniteAmmo or g.ShootInCar) then return true end
-                if b and b.Enabled then return true end
-                return false
-            end
+            local rec = {}
+            local mt0 = getrawmetatable and getrawmetatable(game)
 
             local oldIndex
-            oldIndex = hookmm(game, "__index", wrap(function(self, key)
+            local ourIndex = wrap(function(self, key)
                 if not IDX_KEYS[key] then return oldIndex(self, key) end
-                if not hot() then return oldIndex(self, key) end
+                if not hookNeeded() then return oldIndex(self, key) end
                 -- our own reads are never spoofed; also defeats trap-callbacks that
                 -- run in our context and probe the hook behaviorally.
                 if ccaller and ccaller() then return oldIndex(self, key) end
@@ -13022,18 +13046,21 @@ local Combat = {
                     if ok and handled then return value end
                 end
                 return oldIndex(self, key)
-            end))
+            end)
+            oldIndex = hookmm(game, "__index", ourIndex)
+            rec.oidx = oldIndex
+            if mt0 then rec.idxLive = rawget(mt0, "__index") end
 
             if not safe then
                 local oldNc
-                oldNc = hookmm(game, "__namecall", wrap(function(self, ...)
+                local ourNc = wrap(function(self, ...)
                     -- Capture method BEFORE anything else. NEVER do a nested namecall here:
                     -- getnamecallmethod reads one shared C state; a nested namecall while a
                     -- real FireServer is dispatching corrupts it and bricks the weapon after
                     -- one shot ("one bullet then the gun dies" bug, fixed in v0.0.40).
                     local m = ncmethod and ncmethod() or ""
                     if not NC_METHODS[m] then return oldNc(self, ...) end
-                    if not hot() then return oldNc(self, ...) end
+                    if not hookNeeded() then return oldNc(self, ...) end
                     if ccaller and ccaller() then return oldNc(self, ...) end
                     local r = genv and genv[K.nc]
                     if r then
@@ -13045,7 +13072,10 @@ local Combat = {
                         end
                     end
                     return oldNc(self, ...)
-                end))
+                end)
+                oldNc = hookmm(game, "__namecall", ourNc)
+                rec.onc = oldNc
+                if mt0 then rec.ncLive = rawget(mt0, "__namecall") end
 
                 -- v0.1.5 Second-Camera WRITER-DETECTOR: any game script that writes
                 -- Camera.CFrame is a camera RENDERER/CONTROLLER (FpsController, custom
@@ -13056,7 +13086,7 @@ local Combat = {
                 -- (no namecall involved), so this is hook-body safe.
                 local gcs = getcallingscript
                 local oldWi
-                oldWi = hookmm(game, "__newindex", wrap(function(self, k, v)
+                local ourWi = wrap(function(self, k, v)
                     if Combat.Silent.Method == "Second-Camera"
                         and k == "CFrame" and self == SR.cam then
                         if ccaller and ccaller() then return oldWi(self, k, v) end
@@ -13069,9 +13099,35 @@ local Combat = {
                         end
                     end
                     return oldWi(self, k, v)
-                end))
+                end)
+                oldWi = hookmm(game, "__newindex", ourWi)
+                rec.owi = oldWi
+                if mt0 then rec.wiLive = rawget(mt0, "__newindex") end
             end
+            if genv then genv[K.hooked] = rec end
         end)
+        end
+        Shared._silentHooks = { install = installHooks, remove = removeHooks, needed = hookNeeded }
+        -- one cheap check a frame flips the hooks with the feature set. The cold delay
+        -- keeps a toggle flicker from thrashing the metatable.
+        if not Shared._silentHookWatch then
+            Shared._silentHookWatch = true
+            local coldAt = 0
+            RunService.Heartbeat:Connect(function()
+                if Koffee.dead() then return end
+                if hookNeeded() then
+                    coldAt = 0
+                    installHooks()
+                elseif genv and genv[K.hooked] then
+                    if coldAt == 0 then
+                        coldAt = os.clock()
+                    elseif os.clock() - coldAt > 1 then
+                        removeHooks()
+                        coldAt = 0
+                    end
+                end
+            end)
+        end
     end
 
     -- :: render loops ::
