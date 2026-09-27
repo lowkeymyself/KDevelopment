@@ -1,7 +1,7 @@
--- koffee v0.93.0
+-- koffee v0.93.1
 
 local Koffee = {}
-Koffee.Version = "0.93.0"
+Koffee.Version = "0.93.1"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -36840,9 +36840,11 @@ end)()
 end)()
 
 -- v0.93.0: rivals skins
+-- getgenv().KoffeeNoSkins = true before loading skips this whole block, so Koffee can
+-- always come up without it if it ever misbehaves in a live match.
 Koffee.Skins = { Enabled = true, Heal = true, Data = {} }
 registerConfig("rivals_skins", Koffee.Skins)
-if game.PlaceId == 17625359962 then pcall(function()
+if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) then pcall(function()
     local S = Koffee.Skins
     local RS = game:GetService("ReplicatedStorage")
     local LP = LocalPlayer
@@ -36866,36 +36868,43 @@ if game.PlaceId == 17625359962 then pcall(function()
         return nil
     end
     -- the module tables stay recognisable by shape when require is blocked
-    local function gcFind(pred)
-        if not getgc then return nil end
-        local ok, objs = pcall(getgc, true)
-        if not ok or type(objs) ~= "table" then return nil end
-        for _, v in pairs(objs) do
-            if type(v) == "table" then
-                local good = false
-                pcall(function() good = pred(v) end)
-                if good then return v end
-            end
-        end
-        return nil
-    end
-
-    local function resolveModules()
+    -- cheap pass: keep whatever already resolved and only retry what is still missing
+    local function requirePass()
         local mods = RS:FindFirstChild("Modules")
         if mods then
-            Cos = idRequire(mods:FindFirstChild("CosmeticLibrary"))
-            RepClass = idRequire(mods:FindFirstChild("ReplicatedClass"))
+            if not Cos then Cos = idRequire(mods:FindFirstChild("CosmeticLibrary")) end
+            if not RepClass then RepClass = idRequire(mods:FindFirstChild("ReplicatedClass")) end
         end
-        local ps = LP:FindFirstChild("PlayerScripts")
-        local pm = ps and ps:FindFirstChild("Modules")
-        local crc = pm and pm:FindFirstChild("ClientReplicatedClasses")
-        local cf = crc and crc:FindFirstChild("ClientFighter")
-        local ci = cf and cf:FindFirstChild("ClientItem")
-        CVM = ci and idRequire(ci:FindFirstChild("ClientViewModel")) or nil
-        if not Cos then Cos = gcFind(function(v) return rawget(v, "Cosmetics") ~= nil and type(rawget(v, "Equip")) == "function" end) end
-        if not RepClass then RepClass = gcFind(function(v) return type(rawget(v, "ToEnum")) == "function" end) end
-        if not CVM then CVM = gcFind(function(v) return rawget(v, "new") ~= nil and rawget(v, "GetWrap") ~= nil end) end
+        if not CVM then
+            local ps = LP:FindFirstChild("PlayerScripts")
+            local pm = ps and ps:FindFirstChild("Modules")
+            local crc = pm and pm:FindFirstChild("ClientReplicatedClasses")
+            local cf = crc and crc:FindFirstChild("ClientFighter")
+            local ci = cf and cf:FindFirstChild("ClientItem")
+            CVM = ci and idRequire(ci:FindFirstChild("ClientViewModel")) or nil
+        end
         return Cos and RepClass and CVM
+    end
+
+    -- getgc(true) walks every live object in the game. Running it per retry, three times
+    -- a pass, froze the client and starved the asset preloader (the font fell back to
+    -- Nunito). It is now one walk, once, only for what require could not reach, and it
+    -- matches all three shapes in that single pass with an early exit.
+    local function gcPass()
+        if (Cos and RepClass and CVM) or not getgc then return end
+        local ok, objs = pcall(getgc, true)
+        if not ok or type(objs) ~= "table" then return end
+        local n = 0
+        for _, v in pairs(objs) do
+            if type(v) == "table" then
+                if not Cos and rawget(v, "Cosmetics") ~= nil and type(rawget(v, "Equip")) == "function" then Cos = v end
+                if not RepClass and type(rawget(v, "ToEnum")) == "function" then RepClass = v end
+                if not CVM and rawget(v, "new") ~= nil and rawget(v, "GetWrap") ~= nil then CVM = v end
+                if Cos and RepClass and CVM then return end
+            end
+            n += 1
+            if n % 4000 == 0 then task.wait() end   -- never spend a whole frame in here
+        end
     end
 
     local function buildLists()
@@ -37237,9 +37246,10 @@ if game.PlaceId == 17625359962 then pcall(function()
     task.spawn(function()
         for _ = 1, 40 do
             if Koffee.dead() then return end
-            if resolveModules() then break end
+            if requirePass() then break end
             task.wait(0.5)
         end
+        if not (Cos and CVM and RepClass) then gcPass() end
         if not (Cos and CVM and RepClass) then return end
         buildLists()
         installHooks()
