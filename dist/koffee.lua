@@ -1,7 +1,7 @@
--- koffee v0.93.2
+-- koffee v0.93.3
 
 local Koffee = {}
-Koffee.Version = "0.93.2"
+Koffee.Version = "0.93.3"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -36846,15 +36846,17 @@ end)()
 -- v0.93.0: rivals skins
 -- getgenv().KoffeeNoSkins = true before loading skips this whole block, so Koffee can
 -- always come up without it if it ever misbehaves in a live match.
-Koffee.Skins = { Enabled = true, Heal = true, Data = {} }
+Koffee.Skins = { Enabled = true, Heal = true, Data = {}, Finisher = "None" }
 registerConfig("rivals_skins", Koffee.Skins)
 if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) then pcall(function()
     local S = Koffee.Skins
     local RS = game:GetService("ReplicatedStorage")
     local LP = LocalPlayer
     local RANDOM = "__random__"
-    local SKINS, WRAPS = {}, { "None" }
-    local Cos, RepClass, CVM
+    -- charms carry no ItemName, so every charm is available on every weapon. The
+    -- original applied one charm globally; per weapon is a superset of that.
+    local SKINS, WRAPS, CHARMS, FINISHERS = {}, { "None" }, { "None" }, { "None" }
+    local Cos, RepClass, CVM, CEnt
 
     -- ported from a community skin changer. The parts kept are the cosmetic injection
     -- and the missing-part healer; its UI, skies and hit sounds are Koffee's already.
@@ -36879,13 +36881,16 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             if not Cos then Cos = idRequire(mods:FindFirstChild("CosmeticLibrary")) end
             if not RepClass then RepClass = idRequire(mods:FindFirstChild("ReplicatedClass")) end
         end
-        if not CVM then
+        if not (CVM and CEnt) then
             local ps = LP:FindFirstChild("PlayerScripts")
             local pm = ps and ps:FindFirstChild("Modules")
             local crc = pm and pm:FindFirstChild("ClientReplicatedClasses")
-            local cf = crc and crc:FindFirstChild("ClientFighter")
-            local ci = cf and cf:FindFirstChild("ClientItem")
-            CVM = ci and idRequire(ci:FindFirstChild("ClientViewModel")) or nil
+            if crc then
+                if not CEnt then CEnt = idRequire(crc:FindFirstChild("ClientEntity")) end
+                local cf = crc:FindFirstChild("ClientFighter")
+                local ci = cf and cf:FindFirstChild("ClientItem")
+                if not CVM and ci then CVM = idRequire(ci:FindFirstChild("ClientViewModel")) end
+            end
         end
         return Cos and RepClass and CVM
     end
@@ -36931,6 +36936,10 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
                     local t = tostring(d.Type or "")
                     if t == "Wrap" then
                         if not table.find(WRAPS, name) then table.insert(WRAPS, name) end
+                    elseif t == "Charm" then
+                        if not table.find(CHARMS, name) then table.insert(CHARMS, name) end
+                    elseif t == "Finisher" then
+                        if not table.find(FINISHERS, name) then table.insert(FINISHERS, name) end
                     elseif t == "Skin" then
                         local w = d.ItemName
                         if type(w) == "string" and w ~= "" then
@@ -36955,8 +36964,26 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         end
         for _, l in pairs(SKINS) do table.sort(l, sorter("Default")) end
         table.sort(WRAPS, sorter("None"))
+        table.sort(CHARMS, sorter("None"))
+        -- the Finishers folder is what _PlayFinisher validates against, so it is the
+        -- authoritative list. The Cosmetics entries above only add display names.
+        pcall(function()
+            local mods = RS:FindFirstChild("Modules")
+            local folder = mods and mods:FindFirstChild("Finishers")
+            if not folder then return end
+            for _, m in ipairs(folder:GetChildren()) do
+                if not table.find(FINISHERS, m.Name) then table.insert(FINISHERS, m.Name) end
+            end
+        end)
+        table.sort(FINISHERS, sorter("None"))
         for weapon in pairs(SKINS) do
-            S.Data[weapon] = S.Data[weapon] or { Skin = "Default", Wrap = "None" }
+            local d = S.Data[weapon]
+            if not d then
+                d = { Skin = "Default", Wrap = "None", Charm = "None" }
+                S.Data[weapon] = d
+            elseif d.Charm == nil then
+                d.Charm = "None"   -- configs saved before charms existed
+            end
         end
     end
 
@@ -37004,6 +37031,13 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         if not d then return nil end
         if d.Wrap == RANDOM then return rollFrom(WRAPS, "None") end
         if d.Wrap and d.Wrap ~= "None" then return d.Wrap end
+        return nil
+    end
+    local function pickCharm(weapon)
+        local d = S.Data[weapon]
+        if not d then return nil end
+        if d.Charm == RANDOM then return rollFrom(CHARMS, "None") end
+        if d.Charm and d.Charm ~= "None" then return d.Charm end
         return nil
     end
 
@@ -37166,7 +37200,32 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         return nil
     end
 
+    -- finishers are global, not per weapon, and are swapped by name inside the client's
+    -- own play call rather than injected as viewmodel data. Plain module-table swap.
+    local function installFinisherHook()
+        if not CEnt or rawget(CEnt, "_koffeeFin") then return end
+        local oldPlay = rawget(CEnt, "_PlayFinisher")
+        if type(oldPlay) ~= "function" then return end
+        rawset(CEnt, "_koffeeFin", true)
+        rawset(CEnt, "_PlayFinisher", function(self, finisherName, ...)
+            if S.Enabled then
+                local pick = S.Finisher
+                if pick and pick ~= "None" then
+                    local ok = false
+                    pcall(function()
+                        local mods = RS:FindFirstChild("Modules")
+                        local folder = mods and mods:FindFirstChild("Finishers")
+                        ok = folder ~= nil and folder:FindFirstChild(pick) ~= nil
+                    end)
+                    if ok then finisherName = pick end
+                end
+            end
+            return oldPlay(self, finisherName, ...)
+        end)
+    end
+
     local function installHooks()
+        installFinisherHook()
         if not CVM or rawget(CVM, "_koffeeSkins") then return end
         rawset(CVM, "_koffeeSkins", true)
 
@@ -37199,13 +37258,15 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
                     if not (weapon and S.Data[weapon]) then weapon = nil; return end
                     local cf = rawget(clientItem, "ClientFighter") or clientItem.ClientFighter
                     if not cf or cf.Player ~= LP then weapon = nil; return end
-                    local dataK, skinK, nameK, wrapK = enumOf("Data"), enumOf("Skin"), enumOf("Name"), enumOf("Wrap")
+                    local dataK, skinK, nameK = enumOf("Data"), enumOf("Skin"), enumOf("Name")
+                    local wrapK, charmK = enumOf("Wrap"), enumOf("Charm")
                     if not dataK then weapon = nil; return end
                     replicatedData[dataK] = replicatedData[dataK] or {}
                     local bag = replicatedData[dataK]
                     -- snapshot so a failed build can be retried on the game's own data
-                    undo = { bag = bag, skinK = skinK, nameK = nameK, wrapK = wrapK,
-                        skin = skinK and bag[skinK], name = nameK and bag[nameK], wrap = wrapK and bag[wrapK] }
+                    undo = { bag = bag, skinK = skinK, nameK = nameK, wrapK = wrapK, charmK = charmK,
+                        skin = skinK and bag[skinK], name = nameK and bag[nameK],
+                        wrap = wrapK and bag[wrapK], charm = charmK and bag[charmK] }
                     local sk = pickSkin(weapon)
                     if sk and skinK then
                         local cd = cosmetic(sk, "Skin")
@@ -37218,6 +37279,11 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
                     if wr and wrapK then
                         local cd = cosmetic(wr, "Wrap")
                         if cd then bag[wrapK] = cd end
+                    end
+                    local ch = pickCharm(weapon)
+                    if ch and charmK then
+                        local cd = cosmetic(ch, "Charm")
+                        if cd then bag[charmK] = cd end
                     end
                 end)
             end
@@ -37257,7 +37323,8 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         if not (Cos and CVM and RepClass) then return end
         buildLists()
         installHooks()
-        Shared.RivalsSkins = { skins = SKINS, wraps = WRAPS, heal = heal, rebuild = buildLists,
+        Shared.RivalsSkins = { skins = SKINS, wraps = WRAPS, charms = CHARMS, finishers = FINISHERS,
+            heal = heal, rebuild = buildLists,
             info = function(name)
                 if not (Cos and Cos.Cosmetics) then return nil end
                 return Cos.Cosmetics[name]
@@ -37298,10 +37365,18 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         l.FontFace = face(kind or "Medium")
         return l
     end
+    -- every rebuilt card registers its labels, so prune the dead ones here or this
+    -- list grows by a few hundred entries per grid rebuild and never shrinks
     local function repaintFonts()
+        local live, n = {}, 0
         for _, e in ipairs(fonts) do
-            if e[1].Parent then pcall(function() e[1].FontFace = face(e[2]) end) end
+            if e[1] and e[1].Parent then
+                n += 1
+                live[n] = e
+                pcall(function() e[1].FontFace = face(e[2]) end)
+            end
         end
+        fonts = live
     end
     Shared._skinsFonts = repaintFonts
 
@@ -37574,9 +37649,14 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             end)
         end
         card.MouseButton1Click:Connect(function()
-            if not picked then return end
-            S.Data[picked] = S.Data[picked] or { Skin = "Default", Wrap = "None" }
-            S.Data[picked][mode] = isRandom and RANDOM or name
+            local val = isRandom and RANDOM or name
+            if mode == "Finisher" then
+                S.Finisher = val
+            else
+                if not picked then return end
+                S.Data[picked] = S.Data[picked] or { Skin = "Default", Wrap = "None", Charm = "None" }
+                S.Data[picked][mode] = val
+            end
             if Koffee.Sfx then pcall(Koffee.Sfx.play, "dropdown") end
             rebuildGrid()
             rebuildWeapons()
@@ -37592,13 +37672,28 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             if c:IsA("TextButton") then c:Destroy() end
         end
         local R = Shared.RivalsSkins
-        if not (R and picked) then
+        if not R then
             emptyLbl.Visible = true
-            emptyLbl.Text = R and "Select a weapon" or "loading the catalogue"
+            emptyLbl.Text = "loading the catalogue"
             return
         end
-        local list = (mode == "Skin") and (R.skins[picked] or { "Default" }) or R.wraps
-        local cur = S.Data[picked] and S.Data[picked][mode] or nil
+        -- finishers are one global pick, so that tab does not need a selected weapon
+        local global = (mode == "Finisher")
+        if not (global or picked) then
+            emptyLbl.Visible = true
+            emptyLbl.Text = "Select a weapon"
+            return
+        end
+        local list, cur
+        if global then
+            list, cur = R.finishers or { "None" }, S.Finisher
+        elseif mode == "Skin" then
+            list, cur = R.skins[picked] or { "Default" }, S.Data[picked] and S.Data[picked].Skin
+        elseif mode == "Charm" then
+            list, cur = R.charms or { "None" }, S.Data[picked] and S.Data[picked].Charm
+        else
+            list, cur = R.wraps or { "None" }, S.Data[picked] and S.Data[picked].Wrap
+        end
         local q = filter.Text:lower()
         local order, shown = 0, 0
         if q == "" then
@@ -37614,10 +37709,20 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         end
         emptyLbl.Visible = (order == 0)
         emptyLbl.Text = "Nothing matches that filter"
-        local d = S.Data[picked]
-        selSub.Text = ("skin: %s   wrap: %s"):format(
-            d and (d.Skin == RANDOM and "random" or tostring(d.Skin)) or "Default",
-            d and (d.Wrap == RANDOM and "random" or tostring(d.Wrap)) or "None")
+        if global then
+            selLbl.Text = "Finishers"
+            selSub.Text = "one pick, plays on every elimination: "
+                .. (S.Finisher == RANDOM and "random" or tostring(S.Finisher or "None"))
+        else
+            local d = S.Data[picked]
+            local function show(v, none)
+                if v == RANDOM then return "random" end
+                return tostring(v or none)
+            end
+            selLbl.Text = picked
+            selSub.Text = ("skin: %s   wrap: %s   charm: %s"):format(
+                show(d and d.Skin, "Default"), show(d and d.Wrap, "None"), show(d and d.Charm, "None"))
+        end
     end
 
     rebuildWeapons = function()
@@ -37669,13 +37774,14 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
 
     -- :: tabs ::
     local tabs = {}
-    for i, id in ipairs({ "Skin", "Wrap" }) do
+    local TAB_LABEL = { Skin = "SKINS", Wrap = "WRAPS", Charm = "CHARMS", Finisher = "FINISHERS" }
+    for i, id in ipairs({ "Skin", "Wrap", "Charm", "Finisher" }) do
         local b = new("TextButton", {
             Text = "", AutoButtonColor = false, BackgroundTransparency = 1, BorderSizePixel = 0,
             Position = UDim2.new(0, (i - 1) * 96, 0, 0), Size = UDim2.new(0, 92, 1, 0),
             ZIndex = 44, Parent = tabRow,
         })
-        local lbl = txt({ Text = (id == "Skin") and "SKINS" or "WRAPS", TextSize = Theme.Text.Small,
+        local lbl = txt({ Text = TAB_LABEL[id], TextSize = Theme.Text.Small,
             TextColor3 = P.TextMuted, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
             ZIndex = 45, Parent = b }, "Bold")
         local u = new("Frame", {
@@ -37702,8 +37808,20 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         tween(refreshIcon, TweenInfo.new(0.5), { Rotation = refreshIcon.Rotation + 360 })
         if Shared._skinsRefresh then Shared._skinsRefresh() end
     end)
-    search:GetPropertyChangedSignal("Text"):Connect(rebuildWeapons)
-    filter:GetPropertyChangedSignal("Text"):Connect(function() rebuildGrid() end)
+    -- a grid rebuild is up to 150 cards of several instances each, so typing runs it
+    -- once the keystrokes stop rather than on every character
+    local typeSeq = 0
+    local function debounced(fn)
+        return function()
+            typeSeq += 1
+            local mine = typeSeq
+            task.delay(0.18, function()
+                if mine == typeSeq and root.Visible then fn() end
+            end)
+        end
+    end
+    search:GetPropertyChangedSignal("Text"):Connect(debounced(function() rebuildWeapons() end))
+    filter:GetPropertyChangedSignal("Text"):Connect(debounced(function() rebuildGrid() end))
 
     local function refresh()
         local R = Shared.RivalsSkins
