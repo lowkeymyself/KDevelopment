@@ -1,7 +1,7 @@
--- koffee v0.93.9
+-- koffee v0.93.10
 
 local Koffee = {}
-Koffee.Version = "0.93.9"
+Koffee.Version = "0.93.10"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -12226,7 +12226,7 @@ local Combat = {
     local silentPos    = nil   -- Vector3 redirect point (predicted; drives Hit/UnitRay)
     -- v0.11.1 Perfect Lock redirect. Not silentPos: the silent heartbeat nils that
     -- whenever Silent Aim is off, which is the case Perfect Lock must work in.
-    local plPos, plPart, plScr = nil, nil, nil
+    local plPos, plPart = nil, nil
     local function plArmed()
         return plPos ~= nil and Combat.Aim.Enabled and Combat.Aim.PerfectLock
     end
@@ -12770,16 +12770,6 @@ local Combat = {
                     q[#q + 1] = { r = self, a = args, lk = Shared._bulletLook }
                 end
             end
-            -- v0.93.7 Perfect Lock shot sync. The camera snap alone desyncs on weapons
-            -- that build their ray from the mouse SCREEN point, which never moved. Only
-            -- while silent aim is off: with both on, silent owns the outbound path.
-            if plArmed() and not Combat.Silent.Enabled then
-                if method == "GetMouseLocation" then
-                    if plScr then return true, plScr end
-                elseif method == "ScreenPointToRay" or method == "ViewportPointToRay" then
-                    if SR.camPos then return true, Ray.new(SR.camPos, (plPos - SR.camPos).Unit) end
-                end
-            end
             -- v0.3.0: External method offloads everything to KoffeeHelper (see
             -- resolveIndex head comment). Every namecall passes through vanilla.
             if Combat.Silent.Method == "External" then return PASS_H, PASS_V end
@@ -13158,7 +13148,7 @@ local Combat = {
     RunService:BindToRenderStep(KID.ctx.bind, Enum.RenderPriority.Last.Value + 1, function()
         -- v0.11.1: cleared every frame and only re-set below, so the redirect can
         -- never outlive the frame that armed it.
-        plPos, plPart, plScr = nil, nil, nil
+        plPos, plPart = nil, nil
         -- v0.66.1: no key bound means always armed while enabled (matches silent).
         -- An unbound aim key used to wedge aimHeld false forever and kill the aimbot.
         if not Combat.Aim.Enabled or (Combat.Aim.ActivationKey and not aimHeld) then
@@ -13307,10 +13297,6 @@ local Combat = {
             -- snap (factor 1), ON = delta * 1/Smooth per axis, so it converges in a
             -- couple of frames without overshoot. Sensitivity stays ignored (perfect).
             plPos, plPart = tpos, part
-            -- v0.93.7: cache the target's screen point here, where a namecall is legal.
-            -- The resolvers cannot call WorldToViewportPoint themselves.
-            local psp = cam:WorldToViewportPoint(tpos)
-            plScr = (psp.Z > 0) and Vector2.new(psp.X, psp.Y) or nil
             if Combat.Aim.ThirdPerson or Combat.Aim.AimType == "Mouse" then
                 local sp = cam:WorldToViewportPoint(tpos)
                 if sp.Z > 0 and mousemoverel then
