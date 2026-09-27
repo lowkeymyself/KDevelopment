@@ -5,6 +5,7 @@ globals:
   replaceclosure: { args: [{ type: any }, { type: any }] }
   getrawmetatable: { args: [{ type: any }] }
   getthreadidentity: { args: [] }
+  setreadonly: { args: [{ type: any }, { type: bool }] }
   hookmetamethod: { args: [{ type: any }, { type: string }, { type: any }] }
   getnamecallmethod: { args: [] }
   setthreadidentity: { args: [{ type: number }] }
