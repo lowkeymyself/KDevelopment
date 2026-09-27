@@ -1,7 +1,7 @@
--- koffee v0.93.5
+-- koffee v0.93.6
 
 local Koffee = {}
-Koffee.Version = "0.93.5"
+Koffee.Version = "0.93.6"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -5436,6 +5436,9 @@ local function loadSnapshot(data)
     if Shared.Deco and Shared.Deco.apply then pcall(Shared.Deco.apply) end
     -- v0.90.0: a config saved while morphed brings that morph back
     if Shared.Morph and Shared.Morph.onConfigLoaded then pcall(Shared.Morph.onConfigLoaded) end
+    -- v0.93.6: configs carry window ids that no longer exist (details, explorer,
+    -- servers, all dropped in v0.90.0). Harmless but it accumulates, so drop them.
+    if Shared._windowsPrune then pcall(Shared._windowsPrune) end
     if rebuildConfigTabs then pcall(rebuildConfigTabs) end
     -- v0.0.96: the Arraylist option is registered state too, so a load can flip
     -- it: re-apply the actual column visibility (the rebuilt tab's checkbox
@@ -34167,6 +34170,15 @@ holdMouseFree(true)
     end
 
     local function isOpen(id) return WM.persist.open[id] == true end
+    -- drop saved state for ids this build no longer defines
+    Shared._windowsPrune = function()
+        for id in pairs(WM.persist.open) do
+            if not WM.byId[id] then WM.persist.open[id] = nil end
+        end
+        for id in pairs(WM.persist.pos or {}) do
+            if not WM.byId[id] then WM.persist.pos[id] = nil end
+        end
+    end
     WM.isOpen = isOpen
 
     -- ---- z-order: click a window -> it goes on top of the others (his rule). ----
@@ -37250,7 +37262,7 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         local oldNew = rawget(CVM, "new")
         if not oldNew then return end
         rawset(CVM, "new", function(replicatedData, clientItem, ...)
-            local weapon, undo
+            local weapon, undo, injected
             if S.Enabled then
                 pcall(function()
                     if not clientItem then return end
@@ -37273,21 +37285,25 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
                         if cd then
                             bag[skinK] = cd
                             if nameK then bag[nameK] = sk end
+                            injected = true
                         end
                     end
                     local wr = pickWrap(weapon)
                     if wr and wrapK then
                         local cd = cosmetic(wr, "Wrap")
-                        if cd then bag[wrapK] = cd end
+                        if cd then bag[wrapK] = cd; injected = true end
                     end
                     local ch = pickCharm(weapon)
                     if ch and charmK then
                         local cd = cosmetic(ch, "Charm")
-                        if cd then bag[charmK] = cd end
+                        if cd then bag[charmK] = cd; injected = true end
                     end
                 end)
             end
-            if S.Enabled and S.Heal then healArm() end
+            -- v0.93.6: only arm the healer once something is actually being injected.
+            -- With every cosmetic left at Default the game builds its own viewmodel, so
+            -- nothing can be missing, and an idle user should never pay for the layer.
+            if S.Enabled and S.Heal and injected then healArm() end
             -- oldNew yields, so constructions can nest: count them instead of a flag
             heal.depth = (heal.depth or 0) + 1
             heal.active = true
