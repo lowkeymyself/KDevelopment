@@ -1,7 +1,7 @@
--- koffee v0.93.12
+-- koffee v0.93.13
 
 local Koffee = {}
-Koffee.Version = "0.93.12"
+Koffee.Version = "0.93.13"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -13149,6 +13149,7 @@ local Combat = {
         -- v0.11.1: cleared every frame and only re-set below, so the redirect can
         -- never outlive the frame that armed it.
         plPos, plPart = nil, nil
+        Shared._plAim = nil
         -- v0.66.1: no key bound means always armed while enabled (matches silent).
         -- An unbound aim key used to wedge aimHeld false forever and kill the aimbot.
         if not Combat.Aim.Enabled or (Combat.Aim.ActivationKey and not aimHeld) then
@@ -13297,6 +13298,9 @@ local Combat = {
             -- snap (factor 1), ON = delta * 1/Smooth per axis, so it converges in a
             -- couple of frames without overshoot. Sensitivity stays ignored (perfect).
             plPos, plPart = tpos, part
+            -- published for game-specific aim hooks. Silent aim keeps priority, so it
+            -- stays nil while silent is on, and with the aimbot off this never runs.
+            if not Combat.Silent.Enabled then Shared._plAim = tpos end
             if Combat.Aim.ThirdPerson or Combat.Aim.AimType == "Mouse" then
                 local sp = cam:WorldToViewportPoint(tpos)
                 if sp.Z > 0 and mousemoverel then
@@ -37256,6 +37260,70 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             return oldPlay(self, finisherName, ...)
         end)
     end
+
+    -- v0.93.13 Perfect Lock. GetMouse*FromCameraData take the camera CFrame AS AN ARGUMENT
+    -- and raycast along its LookVector, so rewriting that argument redirects only this
+    -- shot. Their own raycast still runs, so the hit keeps a real Instance.
+    local GU
+    local function aimedCF(cf)
+        local aim = Shared._plAim
+        if aim == nil or typeof(cf) ~= "CFrame" then return cf end
+        local from = cf.Position
+        local d = aim - from
+        local m = d.Magnitude
+        -- skip degenerate and near-vertical: a parallel up vector yields a NaN rotation
+        if m ~= m or m < 1 or math.abs(d.Y / m) > 0.999 then return cf end
+        local ok, out = pcall(CFrame.lookAt, from, aim)
+        if not ok or typeof(out) ~= "CFrame" then return cf end
+        local r = { out:GetComponents() }
+        for i = 1, #r do if r[i] ~= r[i] then return cf end end
+        return out
+    end
+    -- require hands back an instance whose methods all live on the metatable's __index,
+    -- so writing to the returned table silently does nothing. Find the real method table.
+    local function methodTable(t, probe)
+        if type(t) ~= "table" then return nil end
+        if type(rawget(t, probe)) == "function" then return t end
+        local mt = getmetatable(t)
+        if type(mt) ~= "table" then return nil end
+        local idx = rawget(mt, "__index")
+        if type(idx) == "table" and type(rawget(idx, probe)) == "function" then return idx end
+        if type(rawget(mt, probe)) == "function" then return mt end
+        return nil
+    end
+    -- camCF sits at a different argument index in each of the two functions
+    local function wrapAim(tbl, name, idx)
+        local old = rawget(tbl, name)
+        if type(old) ~= "function" then return false end
+        local ok = pcall(function()
+            if setreadonly then pcall(setreadonly, tbl, false) end
+            rawset(tbl, name, function(...)
+                local n = select("#", ...)
+                local a = table.pack(...)
+                a[idx] = aimedCF(a[idx])
+                return old(table.unpack(a, 1, n))
+            end)
+        end)
+        return ok and rawget(tbl, name) ~= old
+    end
+    local function installShotHook()
+        if GU then return end
+        local mods = RS:FindFirstChild("Modules")
+        if not mods then return end
+        local inst = idRequire(mods:FindFirstChild("GameplayUtility"))
+        local tbl = methodTable(inst, "GetMouseLocationFromCameraData")
+        if not tbl or rawget(tbl, "_koffeePL") then return end
+        GU = tbl
+        rawset(tbl, "_koffeePL", true)
+        Shared._plHooked = wrapAim(tbl, "GetMouseLocationFromCameraData", 3)
+        wrapAim(tbl, "GetMousePositionFromCameraData", 5)
+    end
+    task.spawn(function()
+        while not Koffee.dead() do
+            if Shared._plAim ~= nil then installShotHook(); return end
+            task.wait(0.5)
+        end
+    end)
 
     local function installHooks()
         installFinisherHook()
