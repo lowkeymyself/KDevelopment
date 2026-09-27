@@ -1,7 +1,7 @@
--- koffee v0.92.0
+-- koffee v0.92.1
 
 local Koffee = {}
-Koffee.Version = "0.92.0"
+Koffee.Version = "0.92.1"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -111,7 +111,12 @@ pcall(function()
             if typeof(v) == "table" then
                 local det = rawget(v, "Detected")
                 local kil = rawget(v, "Kill")
-                if typeof(det) == "function" and not flagged then
+                -- v0.92.1: a bare Detected function matched ordinary game code too, and the
+                -- hook makes it always return true, which can break the game's own pipeline.
+                -- Require a second Adonis marker on the same table.
+                local adonisish = rawget(v, "Variables") ~= nil or rawget(v, "Process") ~= nil
+                    or typeof(kil) == "function"
+                if adonisish and typeof(det) == "function" and not flagged then
                     flagged = det
                     pcall(function()
                         hookfunction(flagged, function(method, info)
@@ -213,6 +218,10 @@ pcall(function()
             end
         end
 
+        -- v0.92.1: only silence the remote once the reporter we were built for was actually
+        -- found. Games move that code, and then the listener left on the pipeline is the
+        -- anticheat's own: disabling it stops it answering and the server drops your damage.
+        if #held == 0 then return end
         if not getconnections then return end
         local RS = game:GetService("ReplicatedStorage")
 
