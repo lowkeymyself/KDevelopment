@@ -1,7 +1,7 @@
--- koffee v0.93.8
+-- koffee v0.93.9
 
 local Koffee = {}
-Koffee.Version = "0.93.8"
+Koffee.Version = "0.93.9"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -13125,9 +13125,9 @@ local Combat = {
         end)
         end
         Shared._silentHooks = { install = installHooks, remove = removeHooks, needed = hookNeeded }
-        -- v0.93.8: install only, never restore. Taking a metamethod back out measured
-        -- fine but hard-crashed the client natively after a few arm/disarm cycles, with
-        -- nothing logged. Set Koffee._hookRelease = true to opt back into removal.
+        -- Hooks are handed back once nothing needs them, so disarming returns the frames.
+        -- A native crash was seen after repeated arm/disarm cycles: that is the executor's
+        -- own hookmetamethod bookkeeping, so the cold delay is 5s to keep churn low.
         if not Shared._silentHookWatch then
             Shared._silentHookWatch = true
             local coldAt = 0
@@ -13136,7 +13136,7 @@ local Combat = {
                 if hookNeeded() then
                     coldAt = 0
                     installHooks()
-                elseif Koffee._hookRelease and genv and genv[K.hooked] then
+                elseif genv and genv[K.hooked] then
                     if coldAt == 0 then
                         coldAt = os.clock()
                     elseif os.clock() - coldAt > 5 then
