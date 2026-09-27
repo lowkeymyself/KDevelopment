@@ -1,7 +1,7 @@
--- koffee v0.93.4
+-- koffee v0.93.5
 
 local Koffee = {}
-Koffee.Version = "0.93.4"
+Koffee.Version = "0.93.5"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -37383,8 +37383,12 @@ local _skinsOk, _skinsErr = pcall(function()
     end
     Shared._skinsFonts = repaintFonts
 
-    local root = new("CanvasGroup", {
-        Name = KID.name("skinwin"), GroupTransparency = 0,
+    -- v0.93.5: a plain Frame, NOT a CanvasGroup. This window creates and destroys
+    -- hundreds of children per rebuild and a group re-rasterises on every one of them,
+    -- which saturated the main thread hard enough to time out the game's own scripts.
+    -- Koffee's own notes say it: plain Frames for anything whose children churn.
+    local root = new("Frame", {
+        Name = KID.name("skinwin"),
         Position = UDim2.new(0, 120, 0, 110), Size = UDim2.new(0, W, 0, H),
         BackgroundColor3 = P.Background, BorderSizePixel = 0,
         Visible = false, ZIndex = 40, Parent = screen,
@@ -37596,7 +37600,11 @@ local _skinsOk, _skinsErr = pcall(function()
     end
 
     -- :: cards ::
+    -- Both lists build in chunks on their own thread, with a sequence number so a
+    -- newer rebuild abandons the one in flight. A click or a keystroke can never
+    -- spend a frame creating a few hundred instances.
     local rebuildGrid, rebuildWeapons
+    local rowSeq, cardSeq = 0, 0
     local function makeCard(name, order, equipped, isRandom)
         local R = Shared.RivalsSkins
         local d = (not isRandom) and R and R.info and R.info(name) or nil
@@ -37698,18 +37706,28 @@ local _skinsOk, _skinsErr = pcall(function()
             list, cur = R.wraps or { "None" }, S.Data[picked] and S.Data[picked].Wrap
         end
         local q = filter.Text:lower()
-        local order, shown = 0, 0
+        local wanted = {}
+        for _, name in ipairs(list) do
+            if q == "" or name:lower():find(q, 1, true) then
+                wanted[#wanted + 1] = name
+                if #wanted >= 150 then break end
+            end
+        end
+        local order = 0
         if q == "" then
             order += 1
             makeCard(nil, order, cur == RANDOM, true)
         end
-        for _, name in ipairs(list) do
-            if q == "" or name:lower():find(q, 1, true) then
-                if shown >= 150 then break end
-                order += 1; shown += 1
-                makeCard(name, order, cur == name, false)
+        cardSeq += 1
+        local mine = cardSeq
+        task.spawn(function()
+            for i, name in ipairs(wanted) do
+                if mine ~= cardSeq or not root.Visible then return end
+                makeCard(name, order + i, cur == name, false)
+                if i % 15 == 0 then task.wait() end
             end
-        end
+        end)
+        order += #wanted
         emptyLbl.Visible = (order == 0)
         emptyLbl.Text = "Nothing matches that filter"
         if global then
@@ -37740,9 +37758,15 @@ local _skinsOk, _skinsErr = pcall(function()
         end
         table.sort(names)
         wCount.Text = #names .. ""
+        rowSeq += 1
+        local mine = rowSeq
+        task.spawn(function()
         for i, w in ipairs(names) do
-            local d = S.Data[w] or { Skin = "Default", Wrap = "None" }
+            if mine ~= rowSeq or not root.Visible then return end
+            if i % 15 == 0 then task.wait() end
+            local d = S.Data[w] or { Skin = "Default", Wrap = "None", Charm = "None" }
             local on = (d.Skin and d.Skin ~= "Default") or (d.Wrap and d.Wrap ~= "None")
+                or (d.Charm and d.Charm ~= "None")
             local b = new("TextButton", {
                 Text = "", AutoButtonColor = false, BorderSizePixel = 0, LayoutOrder = i,
                 BackgroundColor3 = picked == w and P.PanelElevated or P.Pill,
@@ -37773,6 +37797,7 @@ local _skinsOk, _skinsErr = pcall(function()
                 showPreview(cur, w)
             end)
         end
+        end)
     end
 
     -- :: tabs ::
@@ -37844,15 +37869,12 @@ local _skinsOk, _skinsErr = pcall(function()
     local function animShow()
         root.Visible = true
         refresh()
-        root.GroupTransparency = 1
-        tween(root, Theme.Animation.Menu, { GroupTransparency = 0 })
     end
     local function animHide()
         closePreview()
-        tween(root, Theme.Animation.Menu, { GroupTransparency = 1 })
-        task.delay(Koffee.Anim.wait(0.22), function()
-            if not WM.shouldShow("skins") then root.Visible = false end
-        end)
+        rowSeq += 1                 -- cancel any in-flight chunked build
+        cardSeq += 1
+        root.Visible = false
     end
 
     WM.makeDraggable(root, bar, "skins")
