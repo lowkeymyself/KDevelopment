@@ -1,7 +1,7 @@
--- koffee v0.93.3
+-- koffee v0.93.4
 
 local Koffee = {}
-Koffee.Version = "0.93.3"
+Koffee.Version = "0.93.4"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -37336,7 +37336,10 @@ end) end
 
 -- v0.93.2: rivals skins window. Layout ported from the community changer (traffic
 -- lights, weapon rail, card grid), restyled onto the coffee palette, no settings gear.
-if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) then pcall(function()
+-- v0.93.4: the error is kept on Shared._skinsUIErr. A bare pcall here meant a build
+-- failure just silently left the dock slot with no body attached to open.
+if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) then
+local _skinsOk, _skinsErr = pcall(function()
     local WM = Koffee.Windows
     if not (WM and WM.byId and WM.byId.skins) then return end
     local S = Koffee.Skins
@@ -37854,7 +37857,9 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
 
     WM.makeDraggable(root, bar, "skins")
     WM.attachBody("skins", root, { onShow = animShow, onHide = animHide })
-end) end
+end)
+Shared._skinsUIErr = (not _skinsOk) and tostring(_skinsErr) or nil
+end
 
 -- v0.85.0: Koffee Lab dev handle. Only exists when getgenv().KoffeeDev = true is
 -- set before loading, so a normal load publishes nothing new.
