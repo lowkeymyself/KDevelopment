@@ -1,7 +1,7 @@
--- koffee v0.93.11
+-- koffee v0.93.12
 
 local Koffee = {}
-Koffee.Version = "0.93.11"
+Koffee.Version = "0.93.12"
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -13149,7 +13149,6 @@ local Combat = {
         -- v0.11.1: cleared every frame and only re-set below, so the redirect can
         -- never outlive the frame that armed it.
         plPos, plPart = nil, nil
-        Shared._plAim = nil
         -- v0.66.1: no key bound means always armed while enabled (matches silent).
         -- An unbound aim key used to wedge aimHeld false forever and kill the aimbot.
         if not Combat.Aim.Enabled or (Combat.Aim.ActivationKey and not aimHeld) then
@@ -13298,9 +13297,6 @@ local Combat = {
             -- snap (factor 1), ON = delta * 1/Smooth per axis, so it converges in a
             -- couple of frames without overshoot. Sensitivity stays ignored (perfect).
             plPos, plPart = tpos, part
-            -- v0.93.11: published for games that aim from their own camera value rather
-            -- than the real Camera. Silent aim keeps priority, so it stays nil then.
-            if not Combat.Silent.Enabled then Shared._plAim = tpos end
             if Combat.Aim.ThirdPerson or Combat.Aim.AimType == "Mouse" then
                 local sp = cam:WorldToViewportPoint(tpos)
                 if sp.Z > 0 and mousemoverel then
@@ -36893,7 +36889,7 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
     -- charms carry no ItemName, so every charm is available on every weapon. The
     -- original applied one charm globally; per weapon is a superset of that.
     local SKINS, WRAPS, CHARMS, FINISHERS = {}, { "None" }, { "None" }, { "None" }
-    local Cos, RepClass, CVM, CEnt, CamCtrl
+    local Cos, RepClass, CVM, CEnt
 
     -- ported from a community skin changer. The parts kept are the cosmetic injection
     -- and the missing-part healer; its UI, skies and hit sounds are Koffee's already.
@@ -36917,11 +36913,6 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         if mods then
             if not Cos then Cos = idRequire(mods:FindFirstChild("CosmeticLibrary")) end
             if not RepClass then RepClass = idRequire(mods:FindFirstChild("ReplicatedClass")) end
-        end
-        if not CamCtrl then
-            local ps0 = LP:FindFirstChild("PlayerScripts")
-            local ctl = ps0 and ps0:FindFirstChild("Controllers")
-            CamCtrl = ctl and idRequire(ctl:FindFirstChild("CameraController")) or nil
         end
         if not (CVM and CEnt) then
             local ps = LP:FindFirstChild("PlayerScripts")
@@ -37266,31 +37257,6 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         end)
     end
 
-    -- v0.93.11 Perfect Lock. RIVALS fires along the LookVector of CameraController's own
-    -- camera value (GameplayUtility.GetMouseLocationFromCameraData), not the real Camera,
-    -- so snapping Camera.CFrame moved the view while the shot kept the player's own aim.
-    local function installCameraHook()
-        if not CamCtrl or rawget(CamCtrl, "_koffeePL") then return end
-        local oldGet = rawget(CamCtrl, "GetCameraCFrame")
-        if type(oldGet) ~= "function" then return end
-        rawset(CamCtrl, "_koffeePL", true)
-        rawset(CamCtrl, "GetCameraCFrame", function(self, subject, ...)
-            local cf = oldGet(self, subject, ...)
-            local aim = Shared._plAim
-            if aim == nil or typeof(cf) ~= "CFrame" then return cf end
-            -- A degenerate lookAt yields a NaN CFrame, and a NaN camera crashes the
-            -- client natively with nothing logged. Never hand one back.
-            local from = cf.Position
-            local d = aim - from
-            if d.Magnitude < 0.5 or d ~= d then return cf end
-            local ok, snapped = pcall(CFrame.lookAt, from, aim)
-            if not ok or typeof(snapped) ~= "CFrame" then return cf end
-            local pp = snapped.Position
-            if pp.X ~= pp.X or pp.Y ~= pp.Y or pp.Z ~= pp.Z then return cf end
-            return snapped
-        end)
-    end
-
     local function installHooks()
         installFinisherHook()
         if not CVM or rawget(CVM, "_koffeeSkins") then return end
@@ -37383,16 +37349,6 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             return vm
         end)
     end
-
-    -- v0.93.11: the camera hook runs on every camera frame, so it is never installed
-    -- until Perfect Lock actually publishes an aim point. A normal load never touches
-    -- the camera pipeline at all.
-    task.spawn(function()
-        while not Koffee.dead() do
-            if Shared._plAim ~= nil and CamCtrl then installCameraHook(); return end
-            task.wait(0.5)
-        end
-    end)
 
     task.spawn(function()
         for _ = 1, 40 do
