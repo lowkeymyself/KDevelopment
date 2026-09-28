@@ -7437,14 +7437,26 @@ function ESP._projectAlgorithm(character, characterOnly, bodyParts, rig)
     return c, true, true
 end
 
+-- v0.93.15: the 2D path hid all 12 cube edges and 8 brackets every frame even when
+-- already hidden. A flag makes a repeat hide free; the drawing branches clear it.
+function ESP._hideCube(rig)
+    if rig._cubeHid then return end
+    rig._cubeHid = true
+    for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+end
+function ESP._hideCorners(rig)
+    if rig._cornHid then return end
+    rig._cornHid = true
+    for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+end
 local function hideRigVisuals(rig)
     -- v0.93.15: a rig that stays hidden (culled, dead, filtered) costs one check a frame
     if rig._hid then return end
     rig._hid = true
     rig.skelSt = nil
     rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
-    for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
-    for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+    ESP._hideCube(rig)
+    ESP._hideCorners(rig)
     rig.fillGroup.Visible = false
     if rig.fill3D then rig.fill3D.Visible = false end
     -- v0.0.21 overlays
@@ -8163,8 +8175,8 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                     or ESP.Indicators.HeadDot.Enabled or ESP.Tracer.Enabled
         if not need2D then
             rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
-            for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
-            for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+            ESP._hideCube(rig)
+            ESP._hideCorners(rig)
             rig.fillGroup.Visible = false
             rig.headDot.Visible = false
             rig.tracer.Visible = false
@@ -8209,8 +8221,8 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
 
         if not corners or not anyInFront or not allInFront then
             rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
-            for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
-            for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+            ESP._hideCube(rig)
+            ESP._hideCorners(rig)
             rig.fillGroup.Visible = false
             rig.headDot.Visible = false
             rig.tracer.Visible = false
@@ -8275,6 +8287,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         rig.boxRoot.Size = UDim2.new(0, tW, 0, tH)
 
         if isCube then
+            rig._cubeHid = false
             -- v0.0.20: boxRoot (a flat AABB rectangle) is NO LONGER the cube
             -- fill: that's exactly what made "Fill + Cube" read as a 2D box.
             -- The fill is now a scanline of horizontal strips spanning the
@@ -8284,7 +8297,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             -- stepping on the slanted sides.
             rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
             if rig.boxOutline then ESP._set(rig.boxOutline, "Enabled", false) end
-            for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+            ESP._hideCorners(rig)
 
             if fillOn and ESP.Boxes.Fill3D and worldCF and rig.fill3D and rig.torso and rig.torso.Parent then
                 -- v0.30.0: real 3D box fill: adornment sits on the exact world box
@@ -8430,7 +8443,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             end
         else
             -- 2D bounding box. boxRoot IS the box. cube frames + fill strips off.
-            for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
+            ESP._hideCube(rig)
             rig.fillGroup.Visible = false
             if rig.fill3D then rig.fill3D.Visible = false end   -- v0.30.0 3D fill is Cube-only
             rig.boxRoot.Visible = true
@@ -8497,25 +8510,38 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                     { UDim2.new(1, -segLen, 1, -thick), UDim2.new(0, segLen, 0, thick) },
                     { UDim2.new(1, -thick, 1, -segLen), UDim2.new(0, thick,  0, segLen) },
                 }
+                local showAll = rig._cornHid ~= false
+                rig._cornHid = false
+                local cg = rig._cornG or {}
+                rig._cornG = cg
+                local seq, gRot, gOff
+                if lineGradOn then
+                    seq = lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
+                    gRot, gOff = ESP.Config.GradientRotation, gradOffset()
+                end
                 for i = 1, 8 do
                     local f = rig.boxCorners[i]
                     if specs then
                         f.Position = specs[i][1]
                         f.Size = specs[i][2]
                     end
-                    if lineGradOn then
-                        local w = ESP._wc[f]
-                        if w then w.BackgroundColor3 = nil end
-                    else
-                        ESP._set(f, "BackgroundColor3", boxColor)
-                    end
+                    ESP._set(f, "BackgroundColor3", lineGradOn and ESP._WHITE or boxColor)
                     ESP._set(f, "BackgroundTransparency", 0)
-                    f.Visible = true
-                    applyLineOutline(f, outlineOn, outlineCol, outlineThick)
-                    applyLineGradient(f, lineGradOn)
+                    if showAll then f.Visible = true end
+                    applyLineOutline(f, outlineOn, outlineCol, outlineThick, lineGradOn)
+                    local g = cg[i]
+                    if g == nil then g = ESP._getChild(f, "KGrad") or false; cg[i] = g end
+                    if g then
+                        ESP._set(g, "Enabled", lineGradOn)
+                        if lineGradOn then
+                            ESP._set(g, "Color", seq)
+                            ESP._set(g, "Rotation", gRot)
+                            ESP._set(g, "Offset", gOff)
+                        end
+                    end
                 end
             else
-                for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+                ESP._hideCorners(rig)
             end
         end
         else
@@ -8523,8 +8549,8 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             -- hide every box element. Head dot / health bar / tracer below still
             -- render off the shared projection.
             rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
-            for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
-            for _, f in ipairs(rig.boxCorners) do f.Visible = false end
+            ESP._hideCube(rig)
+            ESP._hideCorners(rig)
             rig.fillGroup.Visible = false
             if rig.fill3D then rig.fill3D.Visible = false end
         end
@@ -21199,23 +21225,52 @@ registerConfig("chams", Koffee.Chams)
         pat.rigs[char] = r
         return r
     end
-    local function patSync(list)
+    -- v0.93.15: 28 players was ~4700 SurfaceGuis and 5 writes each a frame (10.8 ms).
+    -- Colour/alpha now write on change, off-screen rigs switch their guis off, and
+    -- only rigs big enough on screen to show the motion get the scroll.
+    local function patSync(list, cam)
         local keep = {}
         local now = os.clock()
         local pt = PAT[CH.Pattern] or PAT.Hex
         local a = math.clamp(CH.Alpha or 0.3, 0, 0.95)
+        local ox = (now * 20 * (CH.Scroll or 1)) % pt[2]
+        local oy = (now * 20 * (CH.Scroll or 1)) % pt[3]
+        local scroll = UDim2.fromOffset(-ox - pt[2], -oy - pt[3])
+        local vs = cam.ViewportSize
+        local fpx = vs.Y / (2 * math.tan(math.rad(cam.FieldOfView) * 0.5))
         for _, t in ipairs(list) do
             keep[t.char] = true
             local r = patRig(t.char)
-            local ox = (now * 20 * (CH.Scroll or 1)) % pt[2]
-            local oy = (now * 20 * (CH.Scroll or 1)) % pt[3]
-            for i, il in ipairs(r.imgs) do
-                il.Position = UDim2.fromOffset(-ox - pt[2], -oy - pt[3])
-                il.ImageColor3 = t.color:Lerp(WHITE, 0.35)
-                il.ImageTransparency = a * 0.5
-                local f = r.fills[i]
-                f.BackgroundColor3 = t.color
-                f.BackgroundTransparency = 0.45 + a * 0.5
+            local root = r.root
+            if not (root and root.Parent == t.char) then
+                root = t.char:FindFirstChild("HumanoidRootPart") or t.char:FindFirstChild("Head")
+                r.root = root
+            end
+            local sp = root and cam:WorldToViewportPoint(root.Position)
+            local on = sp ~= nil and sp.Z > 0
+            if on then
+                local m = 120 + 9000 / sp.Z
+                on = sp.X > -m and sp.Y > -m and sp.X < vs.X + m and sp.Y < vs.Y + m
+            end
+            if on ~= r.shown then
+                r.shown = on
+                for _, sg in ipairs(r.sgs) do sg.Enabled = on end
+            end
+            if on then
+                if r.col ~= t.color or r.a ~= a then
+                    r.col, r.a = t.color, a
+                    local ic = t.color:Lerp(WHITE, 0.35)
+                    for i, il in ipairs(r.imgs) do
+                        il.ImageColor3 = ic
+                        il.ImageTransparency = a * 0.5
+                        local f = r.fills[i]
+                        f.BackgroundColor3 = t.color
+                        f.BackgroundTransparency = 0.45 + a * 0.5
+                    end
+                end
+                if fpx * 6 / sp.Z >= 90 then
+                    for _, il in ipairs(r.imgs) do il.Position = scroll end
+                end
             end
         end
         for char, r in pairs(pat.rigs) do
@@ -21507,7 +21562,7 @@ registerConfig("chams", Koffee.Chams)
                 local g = groups[t.style] or groups.Pattern
                 g[#g + 1] = t
             end
-            patSync(groups.Pattern)
+            patSync(groups.Pattern, cam)
             litSync(groups.Lit, cam)
             wireSync(groups.Wireframe, cam)
         end)
