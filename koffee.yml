@@ -6,6 +6,8 @@ globals:
   getrawmetatable: { args: [{ type: any }] }
   getthreadidentity: { args: [] }
   setreadonly: { args: [{ type: any }, { type: bool }] }
+  isfunctionhooked: { args: [{ type: any }] }
+  gethiddenproperty: { args: [{ type: any }, { type: string }] }
   hookmetamethod: { args: [{ type: any }, { type: string }, { type: any }] }
   getnamecallmethod: { args: [] }
   setthreadidentity: { args: [{ type: number }] }

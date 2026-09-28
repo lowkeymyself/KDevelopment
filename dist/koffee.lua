@@ -1,7 +1,17 @@
--- koffee v0.93.13
+-- koffee v0.93.15
 
 local Koffee = {}
-Koffee.Version = "0.93.14"
+Koffee.Version = "0.93.15"
+
+-- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
+-- nothing throws. Written to the camera that dropped the client, so camera and own
+-- root writes check here first. inf and NaN both survive the sum.
+function Koffee.cfOk(cf)
+    if typeof(cf) ~= "CFrame" then return false end
+    local x, y, z, a, b, c, d, e, f, g, h, i = cf:GetComponents()
+    local s = x + y + z + a + b + c + d + e + f + g + h + i
+    return s == s and s > -1e8 and s < 1e8
+end
 
 -- v0.92.0: rivals neutra
 if game.PlaceId == 17625359962 then pcall(function()
@@ -9,8 +19,16 @@ if game.PlaceId == 17625359962 then pcall(function()
     -- so errors from outside the game never land, leaving its connection and script alone.
     local hookfn = hookfunction or replaceclosure
     if not (hookfn and getconnections and debug and debug.info) then return end
+    -- v0.93.15: hookfunction edits the AC's closure in place, so a re-exec saw it as new
+    -- and stacked another filter on top every load. Hooked closures live session-wide now.
+    local G = getgenv and getgenv()
+    local done = G and G["\6_rt_er_ctx"]
+    if G and not done then
+        done = setmetatable({}, { __mode = "k" })
+        G["\6_rt_er_ctx"] = done
+    end
     local S = { hooked = 0, passed = 0, dropped = 0, forwardErrors = 0, inForward = false,
-        windowAt = 0, windowN = 0, selfScripts = {}, originals = {} }
+        windowAt = 0, windowN = 0, selfScripts = {}, originals = done or {} }
     Koffee._acRivals = S
 
     -- resolve a closure's source back to its script, so the AC's own errors are identifiable
@@ -298,7 +316,10 @@ if game.PlaceId == 13997018456 then pcall(function()
 end) end
 
 -- dahood neutra
-if game.PlaceId == 2788229376 then
+-- v0.93.15: once per session. The original sat in a global, so a re-exec saved the first
+-- wrapper as "original", the first wrapper then called itself, and the client overflowed.
+if game.PlaceId == 2788229376 and not (getgenv and getgenv()["_rt_dh_ctx"]) then
+    if getgenv then getgenv()["_rt_dh_ctx"] = true end
     if not game:IsLoaded() then
         game.Loaded:Wait()
     end
@@ -309,7 +330,7 @@ if game.PlaceId == 2788229376 then
         local yes, err = pcall(function()
             local grm = getrawmetatable(game)
             setreadonly(grm, false)
-            old__namecall1 = grm.__namecall
+            local old__namecall1 = grm.__namecall
             grm.__namecall = newcclosure(function(self, ...)
                 local args = {...}
                 local remoteName = tostring(args[1])
@@ -7417,6 +7438,10 @@ function ESP._projectAlgorithm(character, characterOnly, bodyParts, rig)
 end
 
 local function hideRigVisuals(rig)
+    -- v0.93.15: a rig that stays hidden (culled, dead, filtered) costs one check a frame
+    if rig._hid then return end
+    rig._hid = true
+    rig.skelSt = nil
     rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
     for _, e in ipairs(rig.cubeEdges) do e.Visible = false end
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
@@ -7476,11 +7501,46 @@ textGradSeq = makeGradSeqGetter()
 lineGradSeq = makeGradSeqGetter()
 -- animated offset (Vector2) along the gradient's rotation, speed + reverse aware.
 gradOffset = function()
+    -- v0.93.15: one value per ESP pass, not one per line (hundreds a frame)
+    local now = os.clock()
+    if ESP._goT and now - ESP._goT < 0.004 and now >= ESP._goT then return ESP._goV end
     local sp = ESP.Config.GradientSpeed
-    local t = ((os.clock() * sp) % 2) - 1        -- -1 -> 1, seamless
+    local t = ((now * sp) % 2) - 1        -- -1 -> 1, seamless
     if ESP.Config.GradientReverse then t = -t end
     local r = math.rad(ESP.Config.GradientRotation)
-    return Vector2.new(math.cos(r) * t, math.sin(r) * t)
+    ESP._goT, ESP._goV = now, Vector2.new(math.cos(r) * t, math.sin(r) * t)
+    return ESP._goV
+end
+-- v0.93.15: the line gradient's colour at this moment, for renderers that take one
+-- colour (far skeletons). Same A2/B2 ramp and speed as the GUI gradient.
+function ESP._gradSample()
+    local now = os.clock()
+    if ESP._gsT and now - ESP._gsT < 0.004 then return ESP._gsV end
+    local C = ESP.Config
+    local t = (now * (C.GradientSpeed or 1) * 0.5) % 1
+    if C.GradientReverse then t = 1 - t end
+    local sp = math.clamp(C.GradientSpacing or 0.5, 0.05, 0.95)
+    local f
+    if t <= sp then f = t / sp else f = 1 - (t - sp) / (1 - sp) end
+    ESP._gsT, ESP._gsV = now, C.GradientColorA2:Lerp(C.GradientColorB2, math.clamp(f, 0, 1))
+    return ESP._gsV
+end
+-- v0.93.15: property write that skips an unchanged value. A write costs ~0.43us even
+-- when equal and a compare ~0.04us. Only for props the draw path alone writes.
+ESP._wc = setmetatable({}, { __mode = "k" })
+ESP._WHITE = Color3.new(1, 1, 1)
+function ESP._gradIsOn(g)
+    if not g then return false end
+    local w = ESP._wc[g]
+    if w and w.Enabled ~= nil then
+        return w.Enabled
+    end
+    return g.Enabled
+end
+function ESP._set(o, k, v)
+    local c = ESP._wc[o]
+    if not c then c = {}; ESP._wc[o] = c end
+    if c[k] ~= v then o[k] = v; c[k] = v end
 end
 
 -- v0.0.24: toggle/colour a line-frame's separate outline border (the KOutline
@@ -7532,23 +7592,28 @@ ESP._lookRayParams.FilterType = Enum.RaycastFilterType.Exclude
 local function pinStrokeColor(stroke, on, color)
     local g = ESP._getChildOfClass(stroke, "UIGradient")
     if not on then
-        if g then g.Enabled = false end
+        if g then ESP._set(g, "Enabled", false) end
         return
     end
     if not g then g = new("UIGradient", { Parent = stroke }) end
-    g.Enabled = true
-    g.Color = ColorSequence.new(color)
-    g.Offset = Vector2.new(0, 0)
-    g.Rotation = 0
+    ESP._set(g, "Enabled", true)
+    local c = ESP._wc[g]
+    if not (c.pin == color and c.pinSeq and c.Color == c.pinSeq) then
+        local seq = ColorSequence.new(color)
+        g.Color = seq
+        c.pin, c.pinSeq, c.Color = color, seq, seq
+    end
+    ESP._set(g, "Offset", Vector2.zero)
+    ESP._set(g, "Rotation", 0)
 end
 
 -- v0.92.0: last applied line style per frame, so unchanged styling costs one compare
 -- instead of 4 to 6 property writes per line per frame
 ESP._styleCache = setmetatable({}, { __mode = "k" })
-local function applyLineOutline(frame, on, color, thick)
+local function applyLineOutline(frame, on, color, thick, gHint)
     -- keep the outline solid even when the frame's KGrad is animating
-    local grad = ESP._getChild(frame, "KGrad")
-    local gOn = grad ~= nil and grad.Enabled
+    local gOn = gHint
+    if gOn == nil then gOn = ESP._gradIsOn(ESP._getChild(frame, "KGrad")) end
     local c = ESP._styleCache[frame]
     if c and c[1] == on and c[2] == color and c[3] == thick and c[4] == gOn then return end
     local s = ESP._getChild(frame, "KOutline")
@@ -7568,13 +7633,14 @@ end
 local function applyTextOutline(lbl, on, color, thick)
     local s = ESP._getChildOfClass(lbl, "UIStroke")
     if not s then return end
-    s.Enabled = on
+    ESP._set(s, "Enabled", on)
     if on then
-        s.Color = color
-        if thick then s.Thickness = thick end
+        ESP._set(s, "Color", color)
+        if thick then ESP._set(s, "Thickness", thick) end
     end
     local grad = ESP._getChildOfClass(lbl, "UIGradient")
-    pinStrokeColor(s, on and grad ~= nil and grad.Enabled, color)
+    local gOn = ESP._gradIsOn(grad)
+    pinStrokeColor(s, on and gOn, color)
 end
 
 -- v0.0.28: gradient that lives INSIDE a UIStroke (colours the stroke itself). The
@@ -7585,23 +7651,23 @@ end
 local function applyStrokeGradient(stroke, on, a, b)
     local g = ESP._getChildOfClass(stroke, "UIGradient")
     if not on then
-        if g then g.Enabled = false end
+        if g then ESP._set(g, "Enabled", false) end
         return
     end
     if not g then g = new("UIGradient", { Parent = stroke }) end
-    g.Enabled = true
-    g.Color = lineGradSeq(a, b, ESP.Config.GradientSpacing)
-    g.Rotation = ESP.Config.GradientRotation
-    g.Offset = gradOffset()
+    ESP._set(g, "Enabled", true)
+    ESP._set(g, "Color", lineGradSeq(a, b, ESP.Config.GradientSpacing))
+    ESP._set(g, "Rotation", ESP.Config.GradientRotation)
+    ESP._set(g, "Offset", gradOffset())
 end
 local function applyGradient(lbl, on)
     local g = ESP._getChildOfClass(lbl, "UIGradient")
     if not g then return end
-    g.Enabled = on
+    ESP._set(g, "Enabled", on)
     if on then
-        g.Color = textGradSeq(ESP.Config.GradientColorA, ESP.Config.GradientColorB, ESP.Config.GradientSpacing)
-        g.Rotation = ESP.Config.GradientRotation
-        g.Offset = gradOffset()
+        ESP._set(g, "Color", textGradSeq(ESP.Config.GradientColorA, ESP.Config.GradientColorB, ESP.Config.GradientSpacing))
+        ESP._set(g, "Rotation", ESP.Config.GradientRotation)
+        ESP._set(g, "Offset", gradOffset())
     end
 end
 -- v0.0.25: line gradient (on a feature line-frame's KGrad UIGradient). When on it
@@ -7613,13 +7679,13 @@ local function applyLineGradient(frame, on)
     if not on and ESP._gradOff[frame] then return end
     local g = ESP._getChild(frame, "KGrad")
     if not g then return end
-    g.Enabled = on
+    ESP._set(g, "Enabled", on)
     if on then ESP._gradOff[frame] = nil else ESP._gradOff[frame] = true end
     if on then
         frame.BackgroundColor3 = Color3.new(1, 1, 1)
-        g.Color = lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
-        g.Rotation = ESP.Config.GradientRotation
-        g.Offset = gradOffset()
+        ESP._set(g, "Color", lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2, ESP.Config.GradientSpacing))
+        ESP._set(g, "Rotation", ESP.Config.GradientRotation)
+        ESP._set(g, "Offset", gradOffset())
     end
 end
 
@@ -7640,12 +7706,13 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     local outlineOn  = ESP.Config.Outline                    -- v0.0.24 Outline on text
     local outlineCol = ESP.Boxes.OutlineColor
     local function styleTextBg(lbl)
-        lbl.BackgroundColor3 = bgCol
-        lbl.BackgroundTransparency = textBg
+        ESP._set(lbl, "BackgroundColor3", bgCol)
+        ESP._set(lbl, "BackgroundTransparency", textBg)
         local pad = ESP._getChildOfClass(lbl, "UIPadding")
         if pad then
-            pad.PaddingLeft  = UDim.new(0, bgPad)
-            pad.PaddingRight = UDim.new(0, bgPad)
+            local u = UDim.new(0, bgPad)
+            ESP._set(pad, "PaddingLeft", u)
+            ESP._set(pad, "PaddingRight", u)
         end
     end
 
@@ -7692,11 +7759,11 @@ local function updateBillboards(rig, plr, dist, overrideColor)
 
     -- NAME (bottom-anchored just above the head top)
     if headOn and showName then
-        rig.nameLbl.Text = nameStr
-        rig.nameLbl.TextSize = Theme.FeiOn
+        ESP._set(rig.nameLbl, "Text", nameStr)
+        ESP._set(rig.nameLbl, "TextSize", Theme.FeiOn
             and math.round((names.TextSize or 14) * Theme.FeiScale)
-            or  (names.TextSize or 14)
-        rig.nameLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or names.Color)
+            or  (names.TextSize or 14))
+        ESP._set(rig.nameLbl, "TextColor3", grad and Color3.new(1, 1, 1) or (overrideColor or names.Color))
         styleTextBg(rig.nameLbl)
         rig.nameLbl.Position = UDim2.new(0, hp.X, 0, hp.Y - 3)
         rig.nameLbl.Visible = true
@@ -7739,11 +7806,11 @@ local function updateBillboards(rig, plr, dist, overrideColor)
         end
         local fp = cam and cam:WorldToViewportPoint(feetWorld)
         if fp and fp.Z > 0 then
-            rig.distLbl.Text = math.floor(dist + 0.5) .. "m"
-            rig.distLbl.TextSize = Theme.FeiOn
+            ESP._set(rig.distLbl, "Text", math.floor(dist + 0.5) .. "m")
+            ESP._set(rig.distLbl, "TextSize", Theme.FeiOn
                 and math.round((distCfg.TextSize or 13) * Theme.FeiScale)
-                or  (distCfg.TextSize or 13)
-            rig.distLbl.TextColor3 = grad and Color3.new(1, 1, 1) or (overrideColor or distCfg.Color)
+                or  (distCfg.TextSize or 13))
+            ESP._set(rig.distLbl, "TextColor3", grad and Color3.new(1, 1, 1) or (overrideColor or distCfg.Color))
             styleTextBg(rig.distLbl)
             rig.distLbl.Position = UDim2.new(0, fp.X, 0, fp.Y + 3)
             rig.distLbl.Visible = true
@@ -7786,6 +7853,7 @@ local function updateSkeleton(rig, overrideColor, dist)
     local outlineThick = math.max(1, thick)
     local ad = rig.skelAd
     if not cfg.Enabled then
+        rig.skelSt = nil
         for _, l in ipairs(rig.skeleton) do l.Visible = false end
         if ad then ad.core.Visible = false; ad.out.Visible = false end
         return
@@ -7793,6 +7861,7 @@ local function updateSkeleton(rig, overrideColor, dist)
     local cam = ESP._cam or Workspace.CurrentCamera
     local char = rig.character
     if not cam or not char then
+        rig.skelSt = nil
         for _, l in ipairs(rig.skeleton) do l.Visible = false end
         if ad then ad.core.Visible = false; ad.out.Visible = false end
         return
@@ -7825,9 +7894,15 @@ local function updateSkeleton(rig, overrideColor, dist)
         end
         rig.skelU, rig.skelIdx = uniq, idx
     end
-    -- adornments can't render in the preview viewport or carry a UIGradient
-    if not ESP._cam and not ESP.Config.Gradient then
-        for _, l in ipairs(rig.skeleton) do if l.Visible then l.Visible = false end end
+    -- adornments can't render in the preview viewport or carry a UIGradient. v0.93.15:
+    -- far rigs take them anyway (a 1px bone shows no gradient), coloured by its current colour
+    local farGrad = ESP.Config.Gradient and rig._scrH ~= nil and rig._scrH < 110
+    if farGrad then col = ESP._gradSample() end
+    if not ESP._cam and (not ESP.Config.Gradient or farGrad) then
+        if rig.skelSt then
+            rig.skelSt = nil
+            for _, l in ipairs(rig.skeleton) do l.Visible = false end
+        end
         ad = ESP._skelAdorn(rig)
         -- parents are checked on the 2s resync, not per bone per frame (each read ~0.6us)
         local pos, pts = ad.pos or {}, ad.pts
@@ -7864,31 +7939,52 @@ local function updateSkeleton(rig, overrideColor, dist)
         end
         return
     end
-    if ad then ad.core.Visible = false; ad.out.Visible = false end
+    if ad and (ad.core.Visible or ad.out.Visible) then ad.core.Visible = false; ad.out.Visible = false end
+    -- v0.93.15: each joint projected once (was twice per bone), and colour/visibility
+    -- written only on change. Parents are checked on the 2s resync, like the adornment path.
+    local sp, st = rig.skelSP or {}, rig.skelSt or {}
+    rig.skelSP, rig.skelSt = sp, st
+    for i, p in ipairs(rig.skelU) do sp[i] = cam:WorldToViewportPoint(p.Position) end
+    local gradOn = ESP.Config.Gradient
+    local gs = rig.skelG or {}
+    rig.skelG = gs
+    local seq, gRot, gOff
+    if gradOn then
+        seq = lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2, ESP.Config.GradientSpacing)
+        gRot, gOff = ESP.Config.GradientRotation, gradOffset()
+    end
     local slot = 0
-    for _, pair in ipairs(rig.skelParts) do
-        local pa, pb = pair[1], pair[2]
-        if pa.Parent == char and pb.Parent == char then
-            local a = cam:WorldToViewportPoint(pa.Position)
-            local b = cam:WorldToViewportPoint(pb.Position)
-            if a.Z > 0 and b.Z > 0 then
-                slot = slot + 1
-                local line = rig.skeleton[slot]
-                if line then
-                    local dx, dy = b.X - a.X, b.Y - a.Y
-                    local len = math.sqrt(dx * dx + dy * dy)
-                    line.Size = UDim2.new(0, len, 0, thick)
-                    line.Position = UDim2.new(0, (a.X + b.X) * 0.5, 0, (a.Y + b.Y) * 0.5)
-                    line.Rotation = math.deg(math.atan2(dy, dx))
-                    line.BackgroundColor3 = col
-                    line.Visible = true
-                    applyLineOutline(line, outlineOn, outlineCol, outlineThick)
-                    applyLineGradient(line, ESP.Config.Gradient)
+    for _, pr in ipairs(rig.skelIdx) do
+        local a, b = sp[pr[1]], sp[pr[2]]
+        if a.Z > 0 and b.Z > 0 then
+            slot = slot + 1
+            local line = rig.skeleton[slot]
+            if line then
+                local dx, dy = b.X - a.X, b.Y - a.Y
+                local len = math.sqrt(dx * dx + dy * dy)
+                line.Size = UDim2.new(0, len, 0, thick)
+                line.Position = UDim2.new(0, (a.X + b.X) * 0.5, 0, (a.Y + b.Y) * 0.5)
+                line.Rotation = math.deg(math.atan2(dy, dx))
+                local want = gradOn and ESP._WHITE or col
+                if st[slot] ~= want then line.BackgroundColor3 = want; st[slot] = want end
+                if st[-slot] ~= true then line.Visible = true; st[-slot] = true end
+                applyLineOutline(line, outlineOn, outlineCol, outlineThick, gradOn)
+                local g = gs[slot]
+                if g == nil then g = ESP._getChild(line, "KGrad") or false; gs[slot] = g end
+                if g then
+                    ESP._set(g, "Enabled", gradOn)
+                    if gradOn then
+                        ESP._set(g, "Color", seq)
+                        ESP._set(g, "Rotation", gRot)
+                        ESP._set(g, "Offset", gOff)
+                    end
                 end
             end
         end
     end
-    for i = slot + 1, #rig.skeleton do rig.skeleton[i].Visible = false end
+    for i = slot + 1, #rig.skeleton do
+        if st[-i] ~= false then rig.skeleton[i].Visible = false; st[-i] = false end
+    end
 end
 
 -- v0.16.0 LOOK DIRECTION. Head CFrame LookVector projected as a screen-space ray.
@@ -8009,6 +8105,20 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         if dist > ESP.Config.RenderDistance and not pv then
             hideRigVisuals(rig); return
         end
+        -- v0.93.15: behind the camera, or well off screen with no tracer to draw, the rig
+        -- draws nothing visible, so skip it. The margin covers name tags and look lines.
+        if not pv then
+            local sp = cam:WorldToViewportPoint(rig.torso.Position)
+            local cull = sp.Z < -4
+            if not cull and sp.Z > 0 and not ESP.Tracer.Enabled then
+                local vs = ESP._vpSize or cam.ViewportSize
+                local m = 120 + 9000 / sp.Z
+                cull = sp.X < -m or sp.Y < -m or sp.X > vs.X + m or sp.Y > vs.Y + m
+            end
+            if cull then hideRigVisuals(rig); return end
+            rig._scrH = (sp.Z > 0 and ESP._fpx) and (ESP._fpx * 6 / sp.Z) or nil
+        end
+        rig._hid = false
 
         -- v0.0.21: shared color override, computed once per rig.
         --   team-based color (same team) wins, else Visible Check's visible/hidden
@@ -8163,7 +8273,6 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         if ESP.Boxes.Enabled and not boxHidden then
         rig.boxRoot.Position = UDim2.new(0, tX, 0, tY)
         rig.boxRoot.Size = UDim2.new(0, tW, 0, tH)
-        rig.boxRoot.BackgroundColor3 = fillColor
 
         if isCube then
             -- v0.0.20: boxRoot (a flat AABB rectangle) is NO LONGER the cube
@@ -8174,7 +8283,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             -- 0.72 transparency. Cube edges draw on top and hide the strip stair-
             -- stepping on the slanted sides.
             rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
-            if rig.boxOutline then rig.boxOutline.Enabled = false end
+            if rig.boxOutline then ESP._set(rig.boxOutline, "Enabled", false) end
             for _, f in ipairs(rig.boxCorners) do f.Visible = false end
 
             if fillOn and ESP.Boxes.Fill3D and worldCF and rig.fill3D and rig.torso and rig.torso.Parent then
@@ -8325,8 +8434,15 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             rig.fillGroup.Visible = false
             if rig.fill3D then rig.fill3D.Visible = false end   -- v0.30.0 3D fill is Cube-only
             rig.boxRoot.Visible = true
-            rig.boxRoot.BackgroundTransparency = fillOn and ESP.Boxes.FillTransparency or 1
-            rig.boxRoot.BackgroundColor3 = fillColor
+            ESP._set(rig.boxRoot, "BackgroundTransparency", fillOn and ESP.Boxes.FillTransparency or 1)
+            -- v0.93.15: a gradient fill writes the colour white itself, so the cache stands aside
+            if lineGradOn and fillOn then
+                local bw = ESP._wc[rig.boxRoot]
+                if bw then bw.BackgroundColor3 = nil end
+                rig.boxRoot.BackgroundColor3 = fillColor
+            else
+                ESP._set(rig.boxRoot, "BackgroundColor3", fillColor)
+            end
             -- v0.0.29: 2D fill obeys the Gradient toggle. boxRoot's own KGrad
             -- tints its background (the fill); off -> falls back to fillColor.
             -- The KGrad bleeds onto the KMain stroke, but that stroke carries its
@@ -8339,10 +8455,10 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             -- the stroke (a parent-frame gradient didn't tint it -> "stuck white").
             if rig.boxOutline then
                 local strokeGrad = lineGradOn and not cornersMode
-                rig.boxOutline.Color = strokeGrad and Color3.new(1, 1, 1) or boxColor
-                rig.boxOutline.Thickness = boxThick
-                rig.boxOutline.Transparency = 0
-                rig.boxOutline.Enabled = not cornersMode
+                ESP._set(rig.boxOutline, "Color", strokeGrad and Color3.new(1, 1, 1) or boxColor)
+                ESP._set(rig.boxOutline, "Thickness", boxThick)
+                ESP._set(rig.boxOutline, "Transparency", 0)
+                ESP._set(rig.boxOutline, "Enabled", not cornersMode)
                 applyStrokeGradient(rig.boxOutline, strokeGrad,
                     ESP.Config.GradientColorA2, ESP.Config.GradientColorB2)
             end
@@ -8354,8 +8470,8 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                 if showOutline then
                     rig.boxOutlineFrame.Position = UDim2.new(0, tX, 0, tY)
                     rig.boxOutlineFrame.Size = UDim2.new(0, tW, 0, tH)
-                    rig.boxOutlineStroke.Color = outlineCol
-                    rig.boxOutlineStroke.Thickness = boxThick + boxOutExtra
+                    ESP._set(rig.boxOutlineStroke, "Color", outlineCol)
+                    ESP._set(rig.boxOutlineStroke, "Thickness", boxThick + boxOutExtra)
                 end
             end
 
@@ -8364,9 +8480,14 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             -- v0.0.15: cap segment length at 28px so brackets don't dominate
             -- huge close-up boxes.
             if cornersMode then
-                local segLen = math.clamp(math.min(tW, tH) * cornerLen, 3, 28)
+                -- v0.93.15: brackets sit relative to the box, so their layout only changes with
+                -- the (whole pixel) bracket length or thickness; skip the rebuild otherwise
+                local segLen = math.floor(math.clamp(math.min(tW, tH) * cornerLen, 3, 28) + 0.5)
                 local thick = boxThick
-                local specs = {
+                local lay = rig._cornLay
+                local relayout = not lay or lay[1] ~= segLen or lay[2] ~= thick
+                if relayout then rig._cornLay = { segLen, thick } end
+                local specs = relayout and {
                     { UDim2.new(0, 0, 0, 0),            UDim2.new(0, segLen, 0, thick) },
                     { UDim2.new(0, 0, 0, 0),            UDim2.new(0, thick,  0, segLen) },
                     { UDim2.new(1, -segLen, 0, 0),      UDim2.new(0, segLen, 0, thick) },
@@ -8376,12 +8497,19 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                     { UDim2.new(1, -segLen, 1, -thick), UDim2.new(0, segLen, 0, thick) },
                     { UDim2.new(1, -thick, 1, -segLen), UDim2.new(0, thick,  0, segLen) },
                 }
-                for i, spec in ipairs(specs) do
+                for i = 1, 8 do
                     local f = rig.boxCorners[i]
-                    f.Position = spec[1]
-                    f.Size = spec[2]
-                    f.BackgroundColor3 = boxColor
-                    f.BackgroundTransparency = 0
+                    if specs then
+                        f.Position = specs[i][1]
+                        f.Size = specs[i][2]
+                    end
+                    if lineGradOn then
+                        local w = ESP._wc[f]
+                        if w then w.BackgroundColor3 = nil end
+                    else
+                        ESP._set(f, "BackgroundColor3", boxColor)
+                    end
+                    ESP._set(f, "BackgroundTransparency", 0)
                     f.Visible = true
                     applyLineOutline(f, outlineOn, outlineCol, outlineThick)
                     applyLineGradient(f, lineGradOn)
@@ -8459,11 +8587,11 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             else
                 barColor = ESP.Health.Bar.Color
             end
-            rig.healthFill.Size = UDim2.new(1, 0, frac, 0)
-            rig.healthFill.BackgroundColor3 = barColor
+            ESP._set(rig.healthFill, "Size", UDim2.new(1, 0, frac, 0))
+            ESP._set(rig.healthFill, "BackgroundColor3", barColor)
             if ESP.Health.Text and ESP.Health.TextPos == "On Health Bar" then
-                rig.healthTxt.Text = tostring(math.floor((hum and hum.Health or 0) + 0.5))
-                rig.healthTxt.TextColor3 = barColor
+                ESP._set(rig.healthTxt, "Text", tostring(math.floor((hum and hum.Health or 0) + 0.5)))
+                ESP._set(rig.healthTxt, "TextColor3", barColor)
                 rig.healthTxt.Visible = true
             else
                 rig.healthTxt.Visible = false
@@ -8694,6 +8822,8 @@ local function updateESPRigs()
     if not cam then return end
     rescanRigs(applyESP, stripESP)   -- self-throttled, see rescanRigs
     local camPos = cam.CFrame.Position
+    ESP._vpSize = cam.ViewportSize
+    ESP._fpx = ESP._vpSize.Y / (2 * math.tan(math.rad(cam.FieldOfView) * 0.5))
     for plr, entry in pairs(ESP.Rigs) do Shared.espDrawRig(plr, entry, cam, camPos, false) end
 end
 
@@ -13202,10 +13332,12 @@ local Combat = {
                 local myc = LocalPlayer.Character
                 local myroot = myc and (myc:FindFirstChild("HumanoidRootPart") or findTorso(myc))
                 if myroot then
-                    myroot.CFrame = CFrame.new(tpos + Vector3.new(0, Combat.Aim.RageYOffset, 0)) * myroot.CFrame.Rotation
+                    local cf = CFrame.new(tpos + Vector3.new(0, Combat.Aim.RageYOffset, 0)) * myroot.CFrame.Rotation
+                    if Koffee.cfOk(cf) then myroot.CFrame = cf end
                 end
             else
-                cam.CFrame = CFrame.new(tpos) * cam.CFrame.Rotation
+                local cf = CFrame.new(tpos) * cam.CFrame.Rotation
+                if Koffee.cfOk(cf) then cam.CFrame = cf end
             end
             return
         end
@@ -13243,6 +13375,8 @@ local Combat = {
         if not (plr and part) then return end
         local tpos = predicted(plr, part, Combat.Aim.Predict)
         if Combat.Misc.Resolver then tpos = dwellPos(plr, part, tpos) end
+        -- v0.93.15: NaN never equals itself; a bad point would reach the mouse and camera
+        if tpos ~= tpos then return end
 
         -- v0.50.0 legit kit. Reaction holds fire on fresh locks; jitter offsets
         -- the aim point by true angle (range independent); overshoot starts off
@@ -13319,7 +13453,9 @@ local Combat = {
             -- published for game-specific aim hooks. Silent aim keeps priority, so it
             -- stays nil while silent is on, and with the aimbot off this never runs.
             if not Combat.Silent.Enabled then Shared._plAim = tpos end
-            if Combat.Aim.ThirdPerson or Combat.Aim.AimType == "Mouse" then
+            -- v0.93.15: Aim Type no longer applies here (the dropdown already said so); a
+            -- saved Mouse config kept the damped mouse path. Only Third Person moves the cursor.
+            if Combat.Aim.ThirdPerson then
                 local sp = cam:WorldToViewportPoint(tpos)
                 if sp.Z > 0 and mousemoverel then
                     local ml = UserInputService:GetMouseLocation()
@@ -13331,7 +13467,8 @@ local Combat = {
                     pcall(mousemoverel, (sp.X - ml.X) * pfX, (sp.Y - ml.Y) * pfY)
                 end
             else
-                cam.CFrame = CFrame.new(cam.CFrame.Position, tpos)
+                local cf = CFrame.new(cam.CFrame.Position, tpos)
+                if Koffee.cfOk(cf) then cam.CFrame = cf end
             end
             return
         end
@@ -13353,7 +13490,8 @@ local Combat = {
                 pcall(mousemoverel, (sp.X - aimCenter.X) * aX, (sp.Y - aimCenter.Y) * aY)
             end
         else
-            cam.CFrame = aimCFrame(cam, cam.CFrame.Position, tpos, aX, aY)
+            local cf = aimCFrame(cam, cam.CFrame.Position, tpos, aX, aY)
+            if Koffee.cfOk(cf) then cam.CFrame = cf end
         end
     end)
 
@@ -25107,14 +25245,36 @@ registerConfig("morph", Koffee.Morph)
         setStatus("morphed into " .. M.name .. ((MO.Emotes ~= false and noEmotes) and " (they have no emotes, kept yours)" or ""))
         return true
     end
+    -- v0.93.15: morph and revert both yield mid-transplant, and a quick off/on ran them on
+    -- the same character at once (the client dropped). Revert now waits its turn, and skips
+    -- if Morph was switched back on meanwhile: every caller only reverts with it off.
     function M.revert()
-        local char = LocalPlayer.Character
-        if M.orig and char then pcall(transplant, M.orig, char) end
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if hum and M.origEmotes then pcall(writeEmotes, hum, M.origEmotes) end
-        if M.src then pcall(function() M.src:Destroy() end) end
-        M.src, M.name, M.emotes, M.target = nil, nil, nil, nil
-        setStatus("back to yourself")
+        local t0 = os.clock()
+        while M.busy and os.clock() - t0 < 15 do task.wait(0.1) end
+        if Modules.morph and Modules.morph.Enabled then return end
+        M.busy = true
+        pcall(function()
+            local char = LocalPlayer.Character
+            if M.orig and char then pcall(transplant, M.orig, char) end
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and M.origEmotes then pcall(writeEmotes, hum, M.origEmotes) end
+            if M.src then pcall(function() M.src:Destroy() end) end
+            M.src, M.name, M.emotes, M.target = nil, nil, nil, nil
+            setStatus("back to yourself")
+        end)
+        M.busy = false
+    end
+    -- an error inside morph used to leave busy stuck true, so Morph never worked again
+    local morphInner = M.morph
+    function M.morph(text)
+        if M.busy then return false, "busy" end
+        local ok, a, b = pcall(morphInner, text)
+        if not ok then
+            M.busy = false
+            setStatus("morph failed")
+            return false, a
+        end
+        return a, b
     end
 
     -- after a config load: Morph was on when it was saved, so become its target (even
@@ -34799,7 +34959,9 @@ end)()
         subscribeModule("targetlock", function(s) tlArmed.setState(s) end)
         tlPill.Text = keyLabel(Keybinds["targetlock"]) or "No Keybind"
         if tkPill then tkPill.Text = keyLabel(Keybinds["targetkeybind"]) or "No Keybind" end
-        if tkRow then tkRow.setState(TK.Enabled) end
+        -- v0.93.15: TK is declared below this function, so it was a nil global here
+        local tk = PL.persist.targetkey
+        if tkRow and tk then tkRow.setState(tk.Enabled) end
     end
     -- v0.70.3: Target Keybind. A global key that toggles whoever sits closest
     -- to the biggest FOV center into/out of Prioritize (multi-target; same
@@ -35224,7 +35386,8 @@ end)()
         end
         -- v0.82.0: all-humanoids feed appends model cards after the players.
         local nModels = 0
-        if KoffeeOptions.IncludeHumanoids and NPC.allHumanoids then
+        local NPC = Shared.NPC
+        if KoffeeOptions.IncludeHumanoids and NPC and NPC.allHumanoids then
             for _, model in ipairs(NPC.allHumanoids()) do
                 if model.Parent and (q == ""
                     or string.find(string.lower(model.Name), q, 1, true) ~= nil) then
@@ -36913,6 +37076,12 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
     -- original applied one charm globally; per weapon is a superset of that.
     local SKINS, WRAPS, CHARMS, FINISHERS = {}, { "None" }, { "None" }, { "None" }
     local Cos, RepClass, CVM, CEnt
+    -- v0.93.15: the game-side hooks install once per session, so their bodies call through
+    -- SK, which each run repoints at itself. Bound to the first run, a re-exec left them
+    -- reading dead state (Perfect Lock went vanilla) and stacked a healer layer per load.
+    local G = getgenv and getgenv()
+    local SK = (G and G["_rt_sk_ctx"]) or {}
+    if G then G["_rt_sk_ctx"] = SK end
 
     -- ported from a community skin changer. The parts kept are the cosmetic injection
     -- and the missing-part healer; its UI, skies and hit sounds are Koffee's already.
@@ -37216,11 +37385,12 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
     -- guarded on a rawget of the live metamethod, which this executor does not return
     -- as our own closure, so every weapon spawn stacked another layer until it crashed.
     -- The body is a boolean test, so one dormant layer is the whole cost.
+    SK.heal, SK.tryHeal = heal, tryHeal
     local function healArm()
         heal.at = os.clock()
-        if heal.installed then return end
+        if SK.healInstalled then return end
         if not (hookmetamethod and getnamecallmethod and newcclosure) then return end
-        heal.installed = true
+        SK.healInstalled = true
         -- the hook goes live the instant it is installed, a moment before `old` is
         -- assigned, so keep the pre-install metamethod as the fallback for that window
         local mt0 = getrawmetatable and getrawmetatable(game)
@@ -37229,21 +37399,21 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         local fn = newcclosure(function(self, ...)
             local o = old or raw
             if not o then return end
-            if not heal.active or Koffee.dead() then return o(self, ...) end
+            local h, th = SK.heal, SK.tryHeal
+            if not (h and h.active and th) then return o(self, ...) end
             local m = getnamecallmethod()
             if m == "WaitForChild" and typeof(self) == "Instance" then
                 local want = ...
                 local got
-                local okh = pcall(function() got = tryHeal(self, want) end)
+                local okh = pcall(function() got = th(self, want) end)
                 if okh and got ~= nil then return got end
             end
             return o(self, ...)
         end)
         local okh, prev = pcall(hookmetamethod, game, "__namecall", fn)
         if not okh or not prev then
-            -- never leave the flag set on a failed install, but never retry either:
-            -- a retry loop is how the stacking happened in the first place
-            heal.installed = "failed"
+            -- never retry: a retry loop is how the stacking happened in the first place
+            SK.healInstalled = "failed"
             return
         end
         old = prev
@@ -37258,13 +37428,8 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
 
     -- finishers are global, not per weapon, and are swapped by name inside the client's
     -- own play call rather than injected as viewmodel data. Plain module-table swap.
-    local function installFinisherHook()
-        if not CEnt or rawget(CEnt, "_koffeeFin") then return end
-        local oldPlay = rawget(CEnt, "_PlayFinisher")
-        if type(oldPlay) ~= "function" then return end
-        rawset(CEnt, "_koffeeFin", true)
-        rawset(CEnt, "_PlayFinisher", function(self, finisherName, ...)
-            if S.Enabled then
+    local function finisherFor(finisherName)
+        if S.Enabled and not Koffee.dead() then
                 local pick = S.Finisher
                 if pick and pick ~= "None" then
                     local ok = false
@@ -37276,6 +37441,20 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
                     if ok then finisherName = pick end
                 end
             end
+        return finisherName
+    end
+    SK.finisher = finisherFor
+    local function installFinisherHook()
+        if not CEnt or rawget(CEnt, "_koffeeFin") then return end
+        local oldPlay = rawget(CEnt, "_PlayFinisher")
+        if type(oldPlay) ~= "function" then return end
+        rawset(CEnt, "_koffeeFin", true)
+        rawset(CEnt, "_PlayFinisher", function(self, finisherName, ...)
+            local f = SK.finisher
+            if f then
+                local ok, v = pcall(f, finisherName)
+                if ok then finisherName = v end
+            end
             return oldPlay(self, finisherName, ...)
         end)
     end
@@ -37286,7 +37465,7 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
     local GU
     local function aimedCF(cf)
         local aim = Shared._plAim
-        if aim == nil or typeof(cf) ~= "CFrame" then return cf end
+        if aim == nil or typeof(cf) ~= "CFrame" or Koffee.dead() then return cf end
         local from = cf.Position
         local d = aim - from
         local m = d.Magnitude
@@ -37298,6 +37477,7 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         for i = 1, #r do if r[i] ~= r[i] then return cf end end
         return out
     end
+    SK.aimedCF = aimedCF
     -- require hands back an instance whose methods all live on the metatable's __index,
     -- so writing to the returned table silently does nothing. Find the real method table.
     local function methodTable(t, probe)
@@ -37319,7 +37499,11 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             rawset(tbl, name, function(...)
                 local n = select("#", ...)
                 local a = table.pack(...)
-                a[idx] = aimedCF(a[idx])
+                local f = SK.aimedCF
+                if f then
+                    local okf, v = pcall(f, a[idx])
+                    if okf then a[idx] = v end
+                end
                 return old(table.unpack(a, 1, n))
             end)
         end)
@@ -37331,8 +37515,9 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         if not mods then return end
         local inst = idRequire(mods:FindFirstChild("GameplayUtility"))
         local tbl = methodTable(inst, "GetMouseLocationFromCameraData")
-        if not tbl or rawget(tbl, "_koffeePL") then return end
+        if not tbl then return end
         GU = tbl
+        if rawget(tbl, "_koffeePL") then Shared._plHooked = true; return end
         rawset(tbl, "_koffeePL", true)
         Shared._plHooked = wrapAim(tbl, "GetMouseLocationFromCameraData", 3)
         wrapAim(tbl, "GetMousePositionFromCameraData", 5)
@@ -37344,34 +37529,19 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         end
     end)
 
-    local function installHooks()
-        installFinisherHook()
-        if not CVM or rawget(CVM, "_koffeeSkins") then return end
-        rawset(CVM, "_koffeeSkins", true)
-
-        local oldWrap = rawget(CVM, "GetWrap")
-        if oldWrap then
-            rawset(CVM, "GetWrap", function(self, ...)
-                if S.Enabled then
-                    local ok, res = pcall(function()
-                        local item = self and self.ClientItem
-                        local name = item and item.Name
-                        if not name then return nil end
-                        local w = pickWrap(name)
-                        if w then return cosmetic(w, "Wrap") end
-                        return nil
-                    end)
-                    if ok and res then return res end
-                end
-                return oldWrap(self, ...)
-            end)
-        end
-
-        local oldNew = rawget(CVM, "new")
-        if not oldNew then return end
-        rawset(CVM, "new", function(replicatedData, clientItem, ...)
+    -- wrap for a viewmodel, or nil to let the game pick its own
+    SK.getWrap = function(self)
+        if not S.Enabled or Koffee.dead() then return nil end
+        local item = self and self.ClientItem
+        local name = item and item.Name
+        if not name then return nil end
+        local w = pickWrap(name)
+        if w then return cosmetic(w, "Wrap") end
+        return nil
+    end
+    SK.vmNew = function(oldNew, replicatedData, clientItem, ...)
             local weapon, undo, injected
-            if S.Enabled then
+            if S.Enabled and not Koffee.dead() then
                 pcall(function()
                     if not clientItem then return end
                     weapon = clientItem.Name
@@ -37434,6 +37604,32 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
                 return nil
             end
             return vm
+    end
+
+    local function installHooks()
+        installFinisherHook()
+        if not CVM or rawget(CVM, "_koffeeSkins") then return end
+        rawset(CVM, "_koffeeSkins", true)
+        local oldWrap = rawget(CVM, "GetWrap")
+        if oldWrap then
+            rawset(CVM, "GetWrap", function(self, ...)
+                local f = SK.getWrap
+                if f then
+                    local ok, res = pcall(f, self)
+                    if ok and res then return res end
+                end
+                return oldWrap(self, ...)
+            end)
+        end
+        local oldNew = rawget(CVM, "new")
+        if not oldNew then return end
+        rawset(CVM, "new", function(...)
+            local f = SK.vmNew
+            if f then
+                local ok, vm = pcall(f, oldNew, ...)
+                if ok then return vm end
+            end
+            return oldNew(...)
         end)
     end
 
