@@ -17,8 +17,13 @@ do
     end)
     function Koffee.crumb(tag)
         pcall(function()
-            if not appendfile then return end
-            appendfile(path, ("%s +%.2fs %s\n"):format(os.date("%H:%M:%S"), os.clock() - t0, tostring(tag)))
+            local line = ("%s +%.2fs %s\n"):format(os.date("%H:%M:%S"), os.clock() - t0, tostring(tag))
+            -- appendfile refuses to create a missing file on this executor
+            if appendfile and isfile and isfile(path) then
+                appendfile(path, line)
+            elseif writefile then
+                writefile(path, line)
+            end
         end)
     end
     local g = getgenv and getgenv()
