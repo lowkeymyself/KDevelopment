@@ -1,7 +1,32 @@
--- koffee v0.93.16
+-- koffee v0.93.17
 
 local Koffee = {}
-Koffee.Version = "0.93.16"
+Koffee.Version = "0.93.17"
+
+-- v0.93.17: freeze breadcrumbs. Load stages plus a 1s heartbeat for the first minute go to
+-- Koffee/crumbs.txt, so after a freeze the last line says where it stopped.
+do
+    local path, t0 = "Koffee/crumbs.txt", os.clock()
+    pcall(function()
+        if makefolder and not (isfolder and isfolder("Koffee")) then makefolder("Koffee") end
+        -- keep roughly the last few loads
+        if isfile and readfile and writefile and isfile(path) then
+            local old = readfile(path)
+            if #old > 24000 then writefile(path, old:sub(-12000)) end
+        end
+    end)
+    function Koffee.crumb(tag)
+        pcall(function()
+            if not appendfile then return end
+            appendfile(path, ("%s +%.2fs %s\n"):format(os.date("%H:%M:%S"), os.clock() - t0, tostring(tag)))
+        end)
+    end
+    local g = getgenv and getgenv()
+    local prev = g and g["\6_rt_fx_ctx"]
+    local prevJob = type(prev) == "table" and prev.job or nil
+    Koffee.crumb(("---- load v%s place %s job %s | genv ctx: %s"):format(Koffee.Version, tostring(game.PlaceId),
+        tostring(game.JobId):sub(1, 8), prev == nil and "none" or ("from job " .. tostring(prevJob):sub(1, 8))))
+end
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -104,7 +129,9 @@ if game.PlaceId == 17625359962 then pcall(function()
         end
     end
 
+    Koffee.crumb("rivals neutra: apply")
     apply()
+    Koffee.crumb("rivals neutra: hooked " .. S.hooked)
     -- the AC may connect a fresh closure after a respawn or teleport
     task.spawn(function()
         while not (Koffee.dead and Koffee.dead()) do
@@ -318,8 +345,8 @@ end) end
 -- dahood neutra
 -- v0.93.15: once per session. The original sat in a global, so a re-exec saved the first
 -- wrapper as "original", the first wrapper then called itself, and the client overflowed.
-if game.PlaceId == 2788229376 and not (getgenv and getgenv()["_rt_dh_ctx"]) then
-    if getgenv then getgenv()["_rt_dh_ctx"] = true end
+if game.PlaceId == 2788229376 and not (getgenv and getgenv()["\6_rt_dh_ctx"]) then
+    if getgenv then getgenv()["\6_rt_dh_ctx"] = true end
     if not game:IsLoaded() then
         game.Loaded:Wait()
     end
@@ -710,6 +737,7 @@ do
 
             local function close()
                 Koffee._assetsReady = true
+                Koffee.crumb("assets ready")
                 -- v0.4.0: gentler fade: 0.22 -> 0.36, Sine easing reads softer than
                 -- Quart at these low starting-opacity values. v0.67.0: fade the
                 -- card as one (every label, fill, and stroke inside it).
@@ -1725,8 +1753,10 @@ local KID = (function()
     local ctx = genv[BOOT]
     if ctx then
         -- re-exec: destroy all tracked instances from the previous run
+        Koffee.crumb("kid: destroying " .. #(ctx.instances or {}) .. " instances of the previous run")
         for _, inst in ipairs(ctx.instances or {}) do pcall(function() inst:Destroy() end) end
         ctx.instances = {}
+        Koffee.crumb("kid: destroyed")
     else
         ctx = { instances = {}, names = {}, keys = {}, bind = rand(12) }
         genv[BOOT] = ctx
@@ -1737,6 +1767,7 @@ local KID = (function()
     ctx.keys.res    = ctx.keys.res    or ("_" .. rand(14))
     ctx.keys.hooked = ctx.keys.hooked or ("_" .. rand(14))
     ctx.keys.ctrl   = ctx.keys.ctrl   or ("_" .. rand(14))
+    ctx.job = game.JobId
     return {
         ctx   = ctx,
         name  = function(k)
@@ -13254,6 +13285,7 @@ local Combat = {
                 if rawget(mt, name) ~= live then done = false return end
                 if not pcall(hookmetamethod, game, name, orig) then done = false end
             end
+            Koffee.crumb("silent hooks: remove")
             give("__index", h.idxLive, h.oidx)
             give("__namecall", h.ncLive, h.onc)
             give("__newindex", h.wiLive, h.owi)
@@ -13262,6 +13294,7 @@ local Combat = {
         end
         local function installHooks()
         if genv and genv[K.hooked] then return end
+        Koffee.crumb("silent hooks: install")
         pcall(function()
             local hookmm   = hookmetamethod
             local ncmethod = getnamecallmethod
@@ -37218,8 +37251,8 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
     -- SK, which each run repoints at itself. Bound to the first run, a re-exec left them
     -- reading dead state (Perfect Lock went vanilla) and stacked a healer layer per load.
     local G = getgenv and getgenv()
-    local SK = (G and G["_rt_sk_ctx"]) or {}
-    if G then G["_rt_sk_ctx"] = SK end
+    local SK = (G and G["\6_rt_sk_ctx"]) or {}
+    if G then G["\6_rt_sk_ctx"] = SK end
 
     -- ported from a community skin changer. The parts kept are the cosmetic injection
     -- and the missing-part healer; its UI, skies and hit sounds are Koffee's already.
@@ -37548,7 +37581,9 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             end
             return o(self, ...)
         end)
+        Koffee.crumb("skins: healer hook")
         local okh, prev = pcall(hookmetamethod, game, "__namecall", fn)
+        Koffee.crumb("skins: healer hook " .. tostring(okh))
         if not okh or not prev then
             -- never retry: a retry loop is how the stacking happened in the first place
             SK.healInstalled = "failed"
@@ -37657,6 +37692,7 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         GU = tbl
         if rawget(tbl, "_koffeePL") then Shared._plHooked = true; return end
         rawset(tbl, "_koffeePL", true)
+        Koffee.crumb("perfect lock: shot hook")
         Shared._plHooked = wrapAim(tbl, "GetMouseLocationFromCameraData", 3)
         wrapAim(tbl, "GetMousePositionFromCameraData", 5)
     end
@@ -37777,10 +37813,13 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             if requirePass() then break end
             task.wait(0.5)
         end
-        if not (Cos and CVM and RepClass) then gcPass() end
-        if not (Cos and CVM and RepClass) then return end
+        Koffee.crumb("skins: require pass done")
+        if not (Cos and CVM and RepClass) then Koffee.crumb("skins: gc pass"); gcPass() end
+        if not (Cos and CVM and RepClass) then Koffee.crumb("skins: modules not found"); return end
         buildLists()
+        Koffee.crumb("skins: installing hooks")
         installHooks()
+        Koffee.crumb("skins: hooks in")
         Shared.RivalsSkins = { skins = SKINS, wraps = WRAPS, charms = CHARMS, finishers = FINISHERS,
             heal = heal, rebuild = buildLists,
             info = function(name)
@@ -38349,6 +38388,14 @@ if getgenv and getgenv().KoffeeDev == true then
 end
 
 task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") end end)
+Koffee.crumb("ui built")
+task.spawn(function()
+    for i = 1, 60 do
+        task.wait(1)
+        if Koffee.dead() then Koffee.crumb("heartbeat: superseded"); return end
+        Koffee.crumb("alive " .. i)
+    end
+end)
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
 -- pcall'd so a bad/locked config never blocks the UI from coming up.
@@ -38357,7 +38404,9 @@ task.spawn(function()
     local auto = Koffee.Config.autoResolve()
     if not auto then return end
     task.wait(0.25)
+    Koffee.crumb("autoload " .. tostring(auto))
     pcall(function() Koffee.Config.load(auto) end)
+    Koffee.crumb("autoload applied")
 end)
 end)()
 
