@@ -1,7 +1,7 @@
--- koffee v0.93.15
+-- koffee v0.93.16
 
 local Koffee = {}
-Koffee.Version = "0.93.15"
+Koffee.Version = "0.93.16"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -615,7 +615,7 @@ do
             for i = 1, 3 do
                 local l = cardLabel("", 9, MUTED, 0.55 + (i - 1) * 0.15)
                 l.Position = UDim2.new(0, 18, 0, 94 + (i - 1) * 13)
-                l.Size = UDim2.new(1, -36, 0, 12)
+                l.Size = UDim2.new(1, -96, 0, 12)
                 l.TextTruncate = Enum.TextTruncate.AtEnd
                 logLines[i] = l
             end
@@ -654,6 +654,51 @@ do
             end
             local retryBtn = mkBtn(0, 128, "Retry", TEXT)
             local skipBtn  = mkBtn(136, 128, "Skip", MUTED)
+
+            -- v0.93.16: Skip only skips CHECKING cached files. It fades out the moment a
+            -- download starts and back in when checking resumes; missing files still download.
+            local skipCheck = false
+            local chk = Instance.new("TextButton")
+            chk.AnchorPoint = Vector2.new(1, 1)
+            chk.Position = UDim2.new(1, -16, 1, -12)
+            chk.Size = UDim2.new(0, 58, 0, 20)
+            chk.BackgroundColor3 = Color3.fromRGB(50, 40, 34)
+            chk.BackgroundTransparency = 1
+            chk.BorderSizePixel = 0
+            chk.AutoButtonColor = false
+            chk.Text = "Skip"
+            chk.Font = Enum.Font.GothamMedium
+            chk.TextSize = 10
+            chk.TextColor3 = MUTED
+            chk.TextTransparency = 1
+            chk.Active = false
+            chk.Parent = card
+            local chkCorner = Instance.new("UICorner")
+            chkCorner.CornerRadius = UDim.new(1, 0)
+            chkCorner.Parent = chk
+            local chkShown = false
+            local CHK_FADE = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+            local function showSkip(on)
+                if skipCheck then on = false end
+                if on == chkShown then return end
+                chkShown = on
+                chk.Active = on
+                TweenService:Create(chk, CHK_FADE, {
+                    TextTransparency = on and 0.15 or 1,
+                    BackgroundTransparency = on and 0.35 or 1,
+                }):Play()
+            end
+            chk.MouseEnter:Connect(function()
+                if chkShown then TweenService:Create(chk, CHK_FADE, { TextColor3 = TEXT, BackgroundTransparency = 0.15 }):Play() end
+            end)
+            chk.MouseLeave:Connect(function()
+                if chkShown then TweenService:Create(chk, CHK_FADE, { TextColor3 = MUTED, BackgroundTransparency = 0.35 }):Play() end
+            end)
+            chk.MouseButton1Click:Connect(function()
+                if not chkShown then return end
+                skipCheck = true
+                showSkip(false)
+            end)
 
             local function setBar(done, total)
                 local pct = total > 0 and (done / total) or 1
@@ -725,13 +770,19 @@ do
             local function runList(entries, total)
                 for _, e in ipairs(entries) do
                     if isfile(e.path) then
-                        local good = 0
-                        for _, f in ipairs(MANIFEST) do
-                            if isfile(f.path) then good = good + 1 end
+                        -- v0.93.16: Skip only drops the per-file checking pass; downloads never skip
+                        if not skipCheck then
+                            showSkip(true)
+                            local good = 0
+                            for _, f in ipairs(MANIFEST) do
+                                if isfile(f.path) then good = good + 1 end
+                            end
+                            setBar(good, total)
+                            pushLog(e.name, true)
+                            task.wait()
                         end
-                        setBar(good, total)
-                        pushLog(e.name, true)
                     else
+                        showSkip(false)
                         status.Text = e.name
                         if not settle(e) then
                             table.insert(failed, e)
@@ -744,8 +795,16 @@ do
                             if isfile(f.path) then good = good + 1 end
                         end
                         setBar(good, total)
+                        task.wait()
                     end
-                    task.wait()
+                end
+                showSkip(false)
+                if skipCheck then
+                    local good = 0
+                    for _, f in ipairs(MANIFEST) do
+                        if isfile(f.path) then good = good + 1 end
+                    end
+                    setBar(good, total)
                 end
             end
 
