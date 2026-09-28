@@ -156,6 +156,7 @@ pcall(function()
     -- v0.22.0: sweep gets its OWN pcall so identity always restores. Bare, a
     -- raise mid-walk left the thread parked at identity 2 for the rest of boot.
     setthreadidentity(2)
+    Koffee.crumb("adonis sweep")
     pcall(function()
         for _, v in getgc(true) do
             if typeof(v) == "table" then
@@ -195,6 +196,7 @@ pcall(function()
         end
     end)
 
+    Koffee.crumb("adonis sweep done, found " .. tostring(flagged ~= nil))
     -- v0.45.1: only hook the global debug.info when Adonis was actually
     -- found. Good ACs watch this primitive; hooking it blind is a flag.
     if flagged then pcall(function()
@@ -245,6 +247,7 @@ pcall(function()
             end
         end)
         if not present then return end
+        Koffee.crumb("analytics scan")
         local ok, gc = pcall(getgc)
         if ok and type(gc) == "table" then
             local n = 0
@@ -268,6 +271,7 @@ pcall(function()
             end
         end
 
+        Koffee.crumb("analytics scan done, hung " .. #held)
         -- v0.92.1: only silence the remote once the reporter we were built for was actually
         -- found. Games move that code, and then the listener left on the pipeline is the
         -- anticheat's own: disabling it stops it answering and the server drops your damage.
@@ -38395,11 +38399,19 @@ end
 task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") end end)
 Koffee.crumb("ui built")
 task.spawn(function()
+    local worst, last = 0, os.clock()
+    local hb = RunService.Heartbeat:Connect(function()
+        local now = os.clock()
+        if now - last > worst then worst = now - last end
+        last = now
+    end)
     for i = 1, 60 do
         task.wait(1)
-        if Koffee.dead() then Koffee.crumb("heartbeat: superseded"); return end
-        Koffee.crumb("alive " .. i)
+        if Koffee.dead() then Koffee.crumb("heartbeat: superseded"); break end
+        Koffee.crumb(("alive %d, worst frame %.2fs"):format(i, worst))
+        worst = 0
     end
+    hb:Disconnect()
 end)
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
