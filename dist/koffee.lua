@@ -7670,7 +7670,7 @@ local function applyStrokeGradient(stroke, on, a, b)
     ESP._set(g, "Enabled", true)
     ESP._set(g, "Color", lineGradSeq(a, b, ESP.Config.GradientSpacing))
     ESP._set(g, "Rotation", ESP.Config.GradientRotation)
-    ESP._set(g, "Offset", gradOffset())
+    if ESP._animGrad ~= false then ESP._set(g, "Offset", gradOffset()) end
 end
 local function applyGradient(lbl, on)
     local g = ESP._getChildOfClass(lbl, "UIGradient")
@@ -7679,7 +7679,7 @@ local function applyGradient(lbl, on)
     if on then
         ESP._set(g, "Color", textGradSeq(ESP.Config.GradientColorA, ESP.Config.GradientColorB, ESP.Config.GradientSpacing))
         ESP._set(g, "Rotation", ESP.Config.GradientRotation)
-        ESP._set(g, "Offset", gradOffset())
+        if ESP._animGrad ~= false then ESP._set(g, "Offset", gradOffset()) end
     end
 end
 -- v0.0.25: line gradient (on a feature line-frame's KGrad UIGradient). When on it
@@ -7697,7 +7697,7 @@ local function applyLineGradient(frame, on)
         frame.BackgroundColor3 = Color3.new(1, 1, 1)
         ESP._set(g, "Color", lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2, ESP.Config.GradientSpacing))
         ESP._set(g, "Rotation", ESP.Config.GradientRotation)
-        ESP._set(g, "Offset", gradOffset())
+        if ESP._animGrad ~= false then ESP._set(g, "Offset", gradOffset()) end
     end
 end
 
@@ -7988,7 +7988,7 @@ local function updateSkeleton(rig, overrideColor, dist)
                     if gradOn then
                         ESP._set(g, "Color", seq)
                         ESP._set(g, "Rotation", gRot)
-                        ESP._set(g, "Offset", gOff)
+                        if ESP._animGrad ~= false then ESP._set(g, "Offset", gOff) end
                     end
                 end
             end
@@ -8131,6 +8131,9 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             rig._scrH = (sp.Z > 0 and ESP._fpx) and (ESP._fpx * 6 / sp.Z) or nil
         end
         rig._hid = false
+        -- v0.93.15: ~300 gradient offsets a frame cost ~3 ms of engine redraw. Far rigs keep
+        -- their gradient but stop animating it; at that size the motion does not show.
+        ESP._animGrad = pv or rig._scrH == nil or rig._scrH >= 110
 
         -- v0.0.21: shared color override, computed once per rig.
         --   team-based color (same team) wins, else Visible Check's visible/hidden
@@ -8536,7 +8539,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                         if lineGradOn then
                             ESP._set(g, "Color", seq)
                             ESP._set(g, "Rotation", gRot)
-                            ESP._set(g, "Offset", gOff)
+                            if ESP._animGrad ~= false then ESP._set(g, "Offset", gOff) end
                         end
                     end
                 end
@@ -8716,6 +8719,7 @@ RunService.RenderStepped:Connect(function()
     end
     local cam = Workspace.CurrentCamera
     if cam then Shared.updateNpcRigs(cam, cam.CFrame.Position) end
+    ESP._animGrad = nil
 end)
 
 -- v0.90.0 OFF-SCREEN ARROWS: an arrow on a ring around the screen centre for every
@@ -8851,6 +8855,7 @@ local function updateESPRigs()
     ESP._vpSize = cam.ViewportSize
     ESP._fpx = ESP._vpSize.Y / (2 * math.tan(math.rad(cam.FieldOfView) * 0.5))
     for plr, entry in pairs(ESP.Rigs) do Shared.espDrawRig(plr, entry, cam, camPos, false) end
+    ESP._animGrad = nil
 end
 
 local espModule = registerModule("esp", "ESP",
@@ -11505,8 +11510,27 @@ RunService.RenderStepped:Connect(function()
     if Koffee.dead() then return end
     if Modules.armsoffset   and Modules.armsoffset.Enabled   then pcall(applyArms) end
     if Modules.headoffset   and Modules.headoffset.Enabled   then pcall(applyHead) end
-    if Modules.charmaterial and Modules.charmaterial.Enabled then pcall(applyMaterial) end
-    if Modules.staticff     and Modules.staticff.Enabled     then pcall(applyFF) end
+    -- v0.93.15: material and forcefield walked every descendant of the character every
+    -- frame (~1 ms in RIVALS). They re-run on a new part, a setting change, or every 0.5s.
+    local matOn = Modules.charmaterial and Modules.charmaterial.Enabled
+    local ffOn = Modules.staticff and Modules.staticff.Enabled
+    if matOn or ffOn then
+        local c = char()
+        local w = Visual._walk
+        if not w or w.char ~= c then
+            if w and w.conn then pcall(function() w.conn:Disconnect() end) end
+            w = { char = c, dirty = true, at = 0 }
+            if c then w.conn = c.DescendantAdded:Connect(function() w.dirty = true end) end
+            Visual._walk = w
+        end
+        local key = tostring(matOn) .. tostring(ffOn) .. tostring(Visual.Material.Name) .. tostring(Visual.Material.Color)
+        local now = os.clock()
+        if w.dirty or w.key ~= key or now - w.at > 0.5 then
+            w.dirty, w.key, w.at = false, key, now
+            if matOn then pcall(applyMaterial) end
+            if ffOn then pcall(applyFF) end
+        end
+    end
     if Modules.bodyremoval  and Modules.bodyremoval.Enabled  then pcall(applyBodyRemoval) end
 end)
 
