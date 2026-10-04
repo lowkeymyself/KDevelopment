@@ -1,7 +1,7 @@
 -- koffee v0.96.2
 
 local Koffee = {}
-Koffee.Version = "0.96.3"
+Koffee.Version = "0.96.4"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38292,7 +38292,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         end)
                     end
                     local now = tick()
-                    if RV._rageAt ~= nil and now - RV._rageAt < gap then return end
+                    -- v0.96.4: the gap reads the live Info, so Rapid Fire and any
+                    -- cooldown mod move it automatically, and ShootFrames smooths
+                    -- to one packet per gap slice instead of bursting N per frame.
+                    local frames = math.clamp(R.Rage.ShootFrames, 1, 5)
+                    if RV._rageAt ~= nil and now - RV._rageAt < gap / frames then return end
                     RV._rageAt = now
                     local aim = CFrame.lookAt(origin, tpart.Position)
                     if not Koffee.cfOk(aim) then return end
@@ -38309,9 +38313,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         pcall(function() ray = rawget(info, "IsRaycast") == true end)
                     end
                     if ray then outer[c2] = true end
-                    for _ = 1, math.clamp(R.Rage.ShootFrames, 1, 5) do
-                        RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
-                    end
+                    RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
                 end)
             end
         else
@@ -38586,9 +38588,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- the game's own cooldown, ammo and reload guards pace every shot.
     -- v0.96.2: edge-triggered. The blind 60Hz spam re-entered during cooldown and
     -- fought the game's own queue flag; now it only knocks when the gun is ready.
+    -- v0.96.4: stands down while rage fires, so the two never stack to double
+    -- rate on the same target. Rage already paces itself off the live cooldown.
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if not R.Mods.AutoFire then return end
+        if on("rv_rage") then return end
         local uis = RV._uis or game:GetService("UserInputService")
         RV._uis = uis
         local held = false
