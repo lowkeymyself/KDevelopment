@@ -1,37 +1,9 @@
--- koffee v0.93.17
+-- koffee v0.93.18
 
 local Koffee = {}
-Koffee.Version = "0.93.17"
+Koffee.Version = "0.93.18"
 
--- v0.93.17: freeze breadcrumbs. Load stages plus a 1s heartbeat for the first minute go to
--- Koffee/crumbs.txt, so after a freeze the last line says where it stopped.
-do
-    local path, t0 = "Koffee/crumbs.txt", os.clock()
-    pcall(function()
-        if makefolder and not (isfolder and isfolder("Koffee")) then makefolder("Koffee") end
-        -- keep roughly the last few loads
-        if isfile and readfile and writefile and isfile(path) then
-            local old = readfile(path)
-            if #old > 24000 then writefile(path, old:sub(-12000)) end
-        end
-    end)
-    function Koffee.crumb(tag)
-        pcall(function()
-            local line = ("%s +%.2fs %s\n"):format(os.date("%H:%M:%S"), os.clock() - t0, tostring(tag))
-            -- appendfile refuses to create a missing file on this executor
-            if appendfile and isfile and isfile(path) then
-                appendfile(path, line)
-            elseif writefile then
-                writefile(path, line)
-            end
-        end)
-    end
-    local g = getgenv and getgenv()
-    local prev = g and g["\6_rt_fx_ctx"]
-    local prevJob = type(prev) == "table" and prev.job or nil
-    Koffee.crumb(("---- load v%s place %s job %s | genv ctx: %s"):format(Koffee.Version, tostring(game.PlaceId),
-        tostring(game.JobId):sub(1, 8), prev == nil and "none" or ("from job " .. tostring(prevJob):sub(1, 8))))
-end
+
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -43,105 +15,39 @@ function Koffee.cfOk(cf)
     return s == s and s > -1e8 and s < 1e8
 end
 
--- v0.92.0: rivals neutra
-if game.PlaceId == 17625359962 then pcall(function()
-    -- the AC reports every uncaught error through ScriptContext.Error. Filter its reporter
-    -- so errors from outside the game never land, leaving its connection and script alone.
+-- v0.93.18: rivals bypass. Scan for the AC, not place id. Detection opens rivals features.
+Koffee._isRivals = false
+pcall(function()
+    local rf = game:GetService("ReplicatedFirst")
+    if rf and rf:FindFirstChild("LocalScript3") then Koffee._isRivals = true end
+end)
+if Koffee._isRivals then pcall(function()
     local hookfn = hookfunction or replaceclosure
-    if not (hookfn and getconnections and debug and debug.info) then return end
-    -- v0.93.15: hookfunction edits the AC's closure in place, so a re-exec saw it as new
-    -- and stacked another filter on top every load. Hooked closures live session-wide now.
+    if not (hookfn and getgc and getrenv and debug and debug.info and debug.traceback) then return end
     local G = getgenv and getgenv()
-    local done = G and G["\6_rt_er_ctx"]
-    if G and not done then
-        done = setmetatable({}, { __mode = "k" })
-        G["\6_rt_er_ctx"] = done
-    end
-    local S = { hooked = 0, passed = 0, dropped = 0, forwardErrors = 0, inForward = false,
-        windowAt = 0, windowN = 0, selfScripts = {}, originals = done or {} }
-    Koffee._acRivals = S
-
-    -- resolve a closure's source back to its script, so the AC's own errors are identifiable
-    local function ownerOf(src)
-        local name = tostring(src):match("([^%.]+)$")
-        if not name then return nil end
-        local found
-        pcall(function()
-            for _, root in ipairs({ game:GetService("ReplicatedFirst"), game:GetService("Players").LocalPlayer }) do
-                for _, d in ipairs(root:GetDescendants()) do
-                    if d:IsA("LuaSourceContainer") and d.Name == name then found = d; return end
+    if G and G["\6_rt_rv_ctx"] then return end
+    if G then G["\6_rt_rv_ctx"] = true end
+    local wrap = newcclosure or function(f) return f end
+    local oldSet
+    oldSet = hookfn(getrenv().setmetatable, wrap(function(t, mt)
+        if type(mt) == "table" and rawget(mt, "__mode") == "kv" then
+            local tr = ""
+            pcall(function() tr = debug.traceback() end)
+            if tr:find("LocalScript3", 1, true) or tr:find("MiscellaneousController", 1, true) then
+                return oldSet({ 1, 2, 3 }, {})
+            end
+        end
+        return oldSet(t, mt)
+    end))
+    local gcNow = getgc
+    pcall(function()
+        for _, v in ipairs(gcNow()) do
+            if type(v) == "function" then
+                local ok3, src = pcall(debug.info, v, "s")
+                if ok3 and src and (src:find("LocalScript3", 1, true) or src:find("MiscellaneousController", 1, true)) then
+                    pcall(hookfn, v, wrap(function() return task.wait(9e9) end))
                 end
             end
-        end)
-        return found
-    end
-
-    local function wrap(target)
-        local original
-        local function filtered(message, trace, scriptArg, ...)
-            local pass = false
-            pcall(function()
-                pass = typeof(scriptArg) == "Instance" and scriptArg:IsDescendantOf(game)
-            end)
-            -- never hand the AC its own error back: that recurses to the engine's
-            -- re-entrancy cap and leaves its decoder reading garbage
-            if pass and S.selfScripts[scriptArg] then pass = false end
-            if pass and S.inForward then pass = false end
-            if pass then
-                local now = os.clock()
-                if now - S.windowAt >= 1 then S.windowAt, S.windowN = now, 0 end
-                S.windowN += 1
-                if S.windowN > 12 then pass = false end
-            end
-            if pass and original then
-                S.passed += 1
-                S.inForward = true
-                local okf = pcall(original, message, trace, scriptArg, ...)
-                S.inForward = false
-                if not okf then S.forwardErrors += 1 end
-                return nil
-            end
-            S.dropped += 1
-            return nil
-        end
-        local list = { filtered }
-        if newcclosure then
-            local okc, c = pcall(newcclosure, filtered)
-            if okc and c then table.insert(list, 1, c) end
-        end
-        for _, fn in ipairs(list) do
-            local okh, res = pcall(hookfn, target, fn)
-            if okh and res then original = res; return res end
-        end
-        return nil
-    end
-
-    local function apply()
-        local okc, conns = pcall(getconnections, game:GetService("ScriptContext").Error)
-        if not okc or type(conns) ~= "table" then return end
-        for _, c in ipairs(conns) do
-            -- skip the foreign-state CoreScript listener, it belongs to Roblox
-            if c.ForeignState ~= true and c.Function and not S.originals[c.Function] then
-                local src = ""
-                pcall(function() src = tostring(debug.info(c.Function, "s")) end)
-                if src:find("LocalScript3", 1, true) then
-                    local owner = ownerOf(src)
-                    if owner then S.selfScripts[owner] = true end
-                    local orig = wrap(c.Function)
-                    if orig then S.originals[c.Function] = orig; S.hooked += 1 end
-                end
-            end
-        end
-    end
-
-    Koffee.crumb("rivals neutra: apply")
-    apply()
-    Koffee.crumb("rivals neutra: hooked " .. S.hooked)
-    -- the AC may connect a fresh closure after a respawn or teleport
-    task.spawn(function()
-        while not (Koffee.dead and Koffee.dead()) do
-            task.wait(10)
-            pcall(apply)
         end
     end)
 end) end
@@ -156,7 +62,6 @@ pcall(function()
     -- v0.22.0: sweep gets its OWN pcall so identity always restores. Bare, a
     -- raise mid-walk left the thread parked at identity 2 for the rest of boot.
     setthreadidentity(2)
-    Koffee.crumb("adonis sweep")
     pcall(function()
         for _, v in getgc(true) do
             if typeof(v) == "table" then
@@ -196,7 +101,6 @@ pcall(function()
         end
     end)
 
-    Koffee.crumb("adonis sweep done, found " .. tostring(flagged ~= nil))
     -- v0.45.1: only hook the global debug.info when Adonis was actually
     -- found. Good ACs watch this primitive; hooking it blind is a flag.
     if flagged then pcall(function()
@@ -247,7 +151,6 @@ pcall(function()
             end
         end)
         if not present then return end
-        Koffee.crumb("analytics scan")
         local ok, gc = pcall(getgc)
         if ok and type(gc) == "table" then
             local n = 0
@@ -271,7 +174,6 @@ pcall(function()
             end
         end
 
-        Koffee.crumb("analytics scan done, hung " .. #held)
         -- v0.92.1: only silence the remote once the reporter we were built for was actually
         -- found. Games move that code, and then the listener left on the pipeline is the
         -- anticheat's own: disabling it stops it answering and the server drops your damage.
@@ -746,7 +648,6 @@ do
 
             local function close()
                 Koffee._assetsReady = true
-                Koffee.crumb("assets ready")
                 -- v0.4.0: gentler fade: 0.22 -> 0.36, Sine easing reads softer than
                 -- Quart at these low starting-opacity values. v0.67.0: fade the
                 -- card as one (every label, fill, and stroke inside it).
@@ -1762,10 +1663,8 @@ local KID = (function()
     local ctx = genv[BOOT]
     if ctx then
         -- re-exec: destroy all tracked instances from the previous run
-        Koffee.crumb("kid: destroying " .. #(ctx.instances or {}) .. " instances of the previous run")
         for _, inst in ipairs(ctx.instances or {}) do pcall(function() inst:Destroy() end) end
         ctx.instances = {}
-        Koffee.crumb("kid: destroyed")
     else
         ctx = { instances = {}, names = {}, keys = {}, bind = rand(12) }
         genv[BOOT] = ctx
@@ -13294,7 +13193,6 @@ local Combat = {
                 if rawget(mt, name) ~= live then done = false return end
                 if not pcall(hookmetamethod, game, name, orig) then done = false end
             end
-            Koffee.crumb("silent hooks: remove")
             give("__index", h.idxLive, h.oidx)
             give("__namecall", h.ncLive, h.onc)
             give("__newindex", h.wiLive, h.owi)
@@ -13303,7 +13201,6 @@ local Combat = {
         end
         local function installHooks()
         if genv and genv[K.hooked] then return end
-        Koffee.crumb("silent hooks: install")
         pcall(function()
             local hookmm   = hookmetamethod
             local ncmethod = getnamecallmethod
@@ -34536,7 +34433,8 @@ holdMouseFree(true)
     -- array list is a window but not a bar slot (its own draggable overlay added
     -- later); registered here so the framework knows it.
     -- v0.93.0: rivals only cosmetic picker, so the dock gains a slot just in that game
-    if game.PlaceId == 17625359962 then
+    -- v0.93.18: detection gated, not place id. Any place with the AC gets the slot.
+    if Koffee._isRivals then
         def{ id = "skins", icon = "package", label = "Skins", kind = "secondary", canFloat = true, bar = true }
     end
     def{ id = "arraylist", label = "Array List", kind = "secondary", canFloat = true, bar = false }
@@ -37247,7 +37145,8 @@ end)()
 -- always come up without it if it ever misbehaves in a live match.
 Koffee.Skins = { Enabled = true, Heal = true, Data = {}, Finisher = "None" }
 registerConfig("rivals_skins", Koffee.Skins)
-if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) then pcall(function()
+-- v0.93.18: detection gated. Any place with the AC gets skins by default.
+if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoSkins) then pcall(function()
     local S = Koffee.Skins
     local RS = game:GetService("ReplicatedStorage")
     local LP = LocalPlayer
@@ -37590,9 +37489,7 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             end
             return o(self, ...)
         end)
-        Koffee.crumb("skins: healer hook")
         local okh, prev = pcall(hookmetamethod, game, "__namecall", fn)
-        Koffee.crumb("skins: healer hook " .. tostring(okh))
         if not okh or not prev then
             -- never retry: a retry loop is how the stacking happened in the first place
             SK.healInstalled = "failed"
@@ -37701,7 +37598,6 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
         GU = tbl
         if rawget(tbl, "_koffeePL") then Shared._plHooked = true; return end
         rawset(tbl, "_koffeePL", true)
-        Koffee.crumb("perfect lock: shot hook")
         Shared._plHooked = wrapAim(tbl, "GetMouseLocationFromCameraData", 3)
         wrapAim(tbl, "GetMousePositionFromCameraData", 5)
     end
@@ -37822,13 +37718,10 @@ if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) the
             if requirePass() then break end
             task.wait(0.5)
         end
-        Koffee.crumb("skins: require pass done")
-        if not (Cos and CVM and RepClass) then Koffee.crumb("skins: gc pass"); gcPass() end
-        if not (Cos and CVM and RepClass) then Koffee.crumb("skins: modules not found"); return end
+        if not (Cos and CVM and RepClass) then gcPass() end
+        if not (Cos and CVM and RepClass) then return end
         buildLists()
-        Koffee.crumb("skins: installing hooks")
         installHooks()
-        Koffee.crumb("skins: hooks in")
         Shared.RivalsSkins = { skins = SKINS, wraps = WRAPS, charms = CHARMS, finishers = FINISHERS,
             heal = heal, rebuild = buildLists,
             info = function(name)
@@ -37844,7 +37737,8 @@ end) end
 -- lights, weapon rail, card grid), restyled onto the coffee palette, no settings gear.
 -- v0.93.4: the error is kept on Shared._skinsUIErr. A bare pcall here meant a build
 -- failure just silently left the dock slot with no body attached to open.
-if game.PlaceId == 17625359962 and not (getgenv and getgenv().KoffeeNoSkins) then
+-- v0.93.18: detection gated, same as the logic block above.
+if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoSkins) then
 local _skinsOk, _skinsErr = pcall(function()
     local WM = Koffee.Windows
     if not (WM and WM.byId and WM.byId.skins) then return end
@@ -38397,22 +38291,6 @@ if getgenv and getgenv().KoffeeDev == true then
 end
 
 task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") end end)
-Koffee.crumb("ui built")
-task.spawn(function()
-    local worst, last = 0, os.clock()
-    local hb = RunService.Heartbeat:Connect(function()
-        local now = os.clock()
-        if now - last > worst then worst = now - last end
-        last = now
-    end)
-    for i = 1, 60 do
-        task.wait(1)
-        if Koffee.dead() then Koffee.crumb("heartbeat: superseded"); break end
-        Koffee.crumb(("alive %d, worst frame %.2fs"):format(i, worst))
-        worst = 0
-    end
-    hb:Disconnect()
-end)
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
 -- pcall'd so a bad/locked config never blocks the UI from coming up.
@@ -38421,9 +38299,7 @@ task.spawn(function()
     local auto = Koffee.Config.autoResolve()
     if not auto then return end
     task.wait(0.25)
-    Koffee.crumb("autoload " .. tostring(auto))
     pcall(function() Koffee.Config.load(auto) end)
-    Koffee.crumb("autoload applied")
 end)
 end)()
 
