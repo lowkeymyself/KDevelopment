@@ -1,7 +1,7 @@
--- koffee v0.97.0
+-- koffee v0.98.0
 
 local Koffee = {}
-Koffee.Version = "0.97.0"
+Koffee.Version = "0.98.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -6132,11 +6132,30 @@ local ESP = {
             _pool = nil,   -- lazy: {slot, victim, total, startAt, y0}[]
             _layer = nil,  -- lazy: parent Frame
         },
+        -- v0.98.0: Hit Log, a stacking feed at the bottom centre. Same attribution
+        -- as Hit Numbers; in rivals it reads the game's own confirmed hit.
+        HitLog = {
+            Enabled   = false,
+            Format    = "Hit {NAME} in the {PART} for {DMG}",
+            Life      = 3,
+            Max       = 6,
+            Height    = 170,
+            TextSize  = 15,
+            Color     = Color3.fromRGB(217, 150, 95),
+            CritColor = Color3.fromRGB(255, 110, 90),
+            KillColor = Color3.fromRGB(255, 180, 60),
+            ShowKill  = true,
+        },
     },
     -- v0.0.21: Health: vertical bar on the character's left, full body height.
     Health = {
         Bar     = { Enabled = false, Color = Color3.fromRGB(120, 220, 130) },
         Based   = false,            -- color the bar by health % (green -> red)
+        -- v0.98.0: three-stop gradient over the whole bar (top, middle, bottom)
+        Gradient = false,
+        GradTop  = Color3.fromRGB(0, 255, 0),
+        GradMid  = Color3.fromRGB(255, 255, 0),
+        GradBot  = Color3.fromRGB(255, 0, 0),
         Text    = false,            -- show the health number
         TextPos = "Above Name",     -- "Above Name" ([hp] Name) | "On Health Bar"
     },
@@ -7605,6 +7624,43 @@ function ESP._set(o, k, v)
     if c[k] ~= v then o[k] = v; c[k] = v end
 end
 
+-- v0.98.0: health gradient sampled across the WHOLE bar, then clipped to the
+-- part the fill covers, so low health shows the bottom colour rather than all
+-- three squeezed in. Rebuilt only when the fill moves. Returns the top colour.
+function ESP._hpGrad(rig, frac, H)
+    local g = rig.healthGrad
+    if not H.Gradient then
+        if g then g.Enabled = false end
+        return nil
+    end
+    if not (g and g.Parent) then
+        g = Instance.new("UIGradient")
+        g.Rotation = 90
+        g.Parent = rig.healthFill
+        rig.healthGrad = g
+        rig._gradKey = nil
+    end
+    g.Enabled = true
+    local function at(y)
+        if y <= 0.5 then return H.GradTop:Lerp(H.GradMid, y / 0.5) end
+        return H.GradMid:Lerp(H.GradBot, (y - 0.5) / 0.5)
+    end
+    local f = math.max(frac, 0.001)
+    local y0 = 1 - f
+    local key = math.floor(f * 200) .. tostring(H.GradTop) .. tostring(H.GradMid) .. tostring(H.GradBot)
+    if rig._gradKey ~= key then
+        rig._gradKey = key
+        local kp = { ColorSequenceKeypoint.new(0, at(y0)) }
+        if y0 < 0.5 then
+            local t = (0.5 - y0) / f
+            if t > 0.001 and t < 0.999 then kp[#kp + 1] = ColorSequenceKeypoint.new(t, H.GradMid) end
+        end
+        kp[#kp + 1] = ColorSequenceKeypoint.new(1, H.GradBot)
+        g.Color = ColorSequence.new(kp)
+    end
+    return at(y0)
+end
+
 -- v0.0.24: toggle/colour a line-frame's separate outline border (the KOutline
 -- UIStroke added by lineOutline()). Called wherever a feature line is shown so
 -- the global Outline effect reaches EVERY feature, in its own colour.
@@ -8667,7 +8723,9 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                 barColor = ESP.Health.Bar.Color
             end
             ESP._set(rig.healthFill, "Size", UDim2.new(1, 0, frac, 0))
-            ESP._set(rig.healthFill, "BackgroundColor3", barColor)
+            local gradTop = ESP._hpGrad(rig, frac, ESP.Health)
+            if gradTop then barColor = gradTop end
+            ESP._set(rig.healthFill, "BackgroundColor3", gradTop and Color3.new(1, 1, 1) or barColor)
             if ESP.Health.Text and ESP.Health.TextPos == "On Health Bar" then
                 ESP._set(rig.healthTxt, "Text", tostring(math.floor((hum and hum.Health or 0) + 0.5)))
                 ESP._set(rig.healthTxt, "TextColor3", barColor)
@@ -9522,6 +9580,8 @@ registerConfig("bullets", Koffee.Bullets)
 
     local function onFire(ev, ...)
         if Koffee.dead() or not B.Enabled then return end
+        -- v0.98.0: the rivals native feed owns tracers once it has drawn a shot
+        if Shared.RV and Shared.RV._tracerLive then return end
         -- once a remote has proven itself, every other one is noise
         if pinned and pinned ~= ev then return end
         local st = stats[ev]
@@ -9585,6 +9645,7 @@ registerConfig("bullets", Koffee.Bullets)
     end
 
     local function drainOut()
+        if Shared.RV and Shared.RV._tracerLive then table.clear(outQ) return end
         while #outQ > 0 do
             local e = table.remove(outQ, 1)
             local ev, args = e.r, e.a
@@ -9677,6 +9738,16 @@ registerConfig("bullets", Koffee.Bullets)
             end
             if not pinned then setStatus("(watching " .. hookCount .. ")") end
         end)
+    end
+
+    -- v0.98.0: direct intake for a game that hands us its shots (rivals Gun._Tracers)
+    Shared.bulletNative = function(o, t, src)
+        if Koffee.dead() or not B.Enabled then return false end
+        if typeof(o) ~= "Vector3" or typeof(t) ~= "Vector3" then return false end
+        local len = (t - o).Magnitude
+        if len < 0.5 or len > 6000 then return false end
+        if not (Shared.RV and Shared.RV._tracerLive) then setStatus("(native)") end
+        return push(o, t, src, "native")
     end
 
     local function start()
@@ -9850,13 +9921,112 @@ end)()
 
 -- v0.10.0 CUSTOM SKYBOXES: 3-20MB sets download on first pick, cached thereafter.
 -- Own IIFE for register budget (not prefetched like other assets).
-World.SkyBox = { Name = "None", Celestial = false }
+World.SkyBox = { Name = "None", Celestial = false, Env = true }
 registerConfig("world_skybox", World.SkyBox)
 ;(function()
     local SKY_BASE = "https://raw.githubusercontent.com/lowkeymyself/Takurin/main/topsky/"
     local FACES = { "bk", "dn", "ft", "lf", "rt", "up" }
     Shared._skyNames = { "None", "Aurora", "Emo", "Goodnight", "Hades", "Hazy",
         "Moonlight", "Overcast", "Pink Sunrise", "Space Blue", "Spooky", "Universe", "Void Veins" }
+    -- v0.98.0: Harion's presets. Plain asset ids (no download), faces bk dn ft lf
+    -- rt up, 0 = blank. Each carries an environment bundle applied once on pick.
+    local ASSET_SKY = {
+        ["Afternoon"] = {600830446, 600831635, 600832720, 600886090, 600833862, 600835177},
+        ["Blue Space"] = {149397692, 149397686, 149397697, 149397684, 149397688, 149397702},
+        ["Classic Roblox"] = {1012890, 1012891, 1012887, 1012889, 1012888, 1014449},
+        ["Cloudy"] = {591058823, 591059876, 591058104, 591057861, 591057625, 591059642},
+        ["Dusk"] = {264908339, 264907909, 264909420, 264909758, 264908886, 264907379},
+        ["Dawn"] = {1417494030, 1417494146, 1417494253, 1417494402, 1417494499, 1417494643},
+        ["Dark Skies"] = {570557514, 570557775, 570557559, 570557620, 570557672, 570557727},
+        ["Earth"] = {6444884337, 6444884785, 6444884337, 6444884785, 6444884337, 6444884785},
+        ["Horizontal Milky Way"] = {159454299, 159454296, 159454293, 159454286, 159454300, 159454288},
+        ["Heaven"] = {591058823, 591059642, 591059876, 591057625, 591057861, 591058104},
+        ["Jungle"] = {214253616, 214253616, 214253616, 214253616, 214253616, 214253616},
+        ["Mountains"] = {452457785, 452457806, 452457839, 452457866, 452457896, 452457928},
+        ["Nebula"] = {149397697, 149397702, 149397692, 149397688, 149397684, 149397686},
+        ["Night Light"] = {12064107, 12064152, 12064121, 12063984, 12064115, 12064131},
+        ["Night"] = {12064121, 12064152, 12064107, 12064115, 12063984, 12064131},
+        ["Ocean Sky"] = {150335574, 150335585, 150335628, 150335620, 150335610, 150335642},
+        ["Redshift"] = {401664839, 401664862, 401664960, 401664881, 401664901, 401664936},
+        ["Space"] = {149397684, 149397686, 149397688, 149397692, 149397697, 149397702},
+        ["Sunset"] = {264909420, 264907909, 264908339, 264908886, 264909758, 264907379},
+        ["Storm"] = {570557514, 570557775, 570557559, 570557620, 570557672, 570557727},
+        ["SFOTH"] = {1012887, 1012891, 1012890, 1012888, 1012889, 1014449},
+        ["Solid Black"] = {0, 0, 0, 0, 0, 0},
+        ["Saturn"] = {149397688, 149397686, 149397684, 149397692, 149397702, 149397697},
+        ["Smoke"] = {570557672, 570557514, 570557727, 570557559, 570557775, 570557620},
+        ["Vertical Milky Way"] = {159454286, 159454288, 159454299, 159454300, 159454296, 159454293},
+        ["White"] = {0, 0, 0, 0, 0, 0},
+    }
+    -- stars, sun size, moon size, clock time, ambient rgb, fog rgb
+    local SKY_ENV = {
+        ["Afternoon"] = {1200, 18, 11, 14, {150, 150, 150}, {210, 220, 235}},
+        ["Blue Space"] = {4500, 4, 6, 0, {65, 80, 125}, {25, 30, 60}},
+        ["Classic Roblox"] = {1200, 21, 11, 12, {128, 128, 128}, {192, 192, 192}},
+        ["Cloudy"] = {0, 12, 0, 13, {135, 140, 145}, {180, 185, 190}},
+        ["Dusk"] = {900, 14, 8, 18.4, {145, 95, 120}, {185, 120, 130}},
+        ["Dawn"] = {600, 16, 7, 6.2, {170, 135, 115}, {230, 170, 145}},
+        ["Dark Skies"] = {2600, 0, 12, 0, {45, 50, 65}, {45, 50, 60}},
+        ["Earth"] = {3000, 8, 5, 1, {55, 80, 110}, {35, 50, 80}},
+        ["Horizontal Milky Way"] = {6000, 0, 8, 0, {65, 55, 95}, {35, 25, 60}},
+        ["Heaven"] = {0, 24, 0, 12, {205, 205, 230}, {245, 245, 255}},
+        ["Jungle"] = {200, 18, 0, 15, {75, 115, 70}, {90, 130, 95}},
+        ["Mountains"] = {600, 16, 9, 10, {125, 145, 160}, {180, 200, 215}},
+        ["Nebula"] = {7000, 0, 5, 0, {85, 45, 125}, {40, 20, 70}},
+        ["Night Light"] = {5000, 0, 14, 0, {80, 85, 120}, {35, 40, 70}},
+        ["Night"] = {3500, 0, 11, 0, {55, 60, 80}, {25, 30, 45}},
+        ["Ocean Sky"] = {400, 20, 8, 13, {120, 155, 180}, {135, 180, 210}},
+        ["Redshift"] = {1800, 18, 6, 18, {160, 70, 65}, {150, 55, 50}},
+        ["Space"] = {6500, 0, 6, 0, {50, 55, 95}, {15, 20, 45}},
+        ["Sunset"] = {700, 20, 7, 17.8, {170, 105, 95}, {235, 135, 95}},
+        ["Storm"] = {0, 0, 7, 16, {65, 70, 80}, {70, 75, 85}},
+        ["SFOTH"] = {1000, 21, 11, 14, {135, 135, 135}, {190, 190, 190}},
+        ["Solid Black"] = {0, 0, 0, 0, {0, 0, 0}, {0, 0, 0}},
+        ["Saturn"] = {5500, 0, 18, 0, {105, 85, 65}, {60, 45, 35}},
+        ["Smoke"] = {0, 0, 5, 3, {85, 85, 85}, {95, 95, 95}},
+        ["Vertical Milky Way"] = {6200, 0, 8, 0, {70, 50, 90}, {30, 20, 55}},
+        ["White"] = {0, 0, 0, 12, {255, 255, 255}, {255, 255, 255}},
+    }
+    for _, n in ipairs({ "Afternoon", "Blue Space", "Classic Roblox", "Cloudy", "Dusk", "Dawn",
+        "Dark Skies", "Earth", "Horizontal Milky Way", "Heaven", "Jungle", "Mountains", "Nebula",
+        "Night Light", "Night", "Ocean Sky", "Redshift", "Space", "Sunset", "Storm", "SFOTH",
+        "Solid Black", "Saturn", "Smoke", "Vertical Milky Way", "White" }) do
+        table.insert(Shared._skyNames, n)
+    end
+
+    -- environment writes happen once; restore only puts back a value nobody
+    -- changed since, so Custom Time / Lighting keep whatever they asserted.
+    local envSaved = nil
+    local function envSame(a, b)
+        if type(a) == "number" and type(b) == "number" then return math.abs(a - b) < 0.02 end
+        return a == b
+    end
+    local function envRestore()
+        if not envSaved then return end
+        for k, r in pairs(envSaved) do
+            pcall(function()
+                if envSame(Lighting[k], r[2]) then Lighting[k] = r[1] end
+            end)
+        end
+        envSaved = nil
+    end
+    Shared.skyEnvRestore = envRestore
+    local function envApply(name)
+        envRestore()
+        local e = SKY_ENV[name]
+        if not e or World.SkyBox.Env == false then return end
+        local amb = Color3.fromRGB(e[5][1], e[5][2], e[5][3])
+        local want = { ClockTime = e[4], Ambient = amb, OutdoorAmbient = amb,
+                       FogColor = Color3.fromRGB(e[6][1], e[6][2], e[6][3]) }
+        envSaved = {}
+        for k, v in pairs(want) do
+            pcall(function()
+                local cur = Lighting[k]
+                Lighting[k] = v
+                envSaved[k] = { cur, Lighting[k] }
+            end)
+        end
+    end
 
     local ownSky, hidden, applied, busy = nil, nil, "None|0", false
     local parked = setmetatable({}, { __mode = "k" })
@@ -9886,6 +10056,14 @@ registerConfig("world_skybox", World.SkyBox)
 
     -- download + resolve all six faces, return reason on failure (no partial skies).
     local function ensureFaces(name)
+        local preset = ASSET_SKY[name]
+        if preset then
+            local ids = {}
+            for i, f in ipairs(FACES) do
+                ids[f] = preset[i] == 0 and "" or ("rbxassetid://" .. preset[i])
+            end
+            return ids
+        end
         -- v0.88.0: built-in set, one tileable face texture fetched with the fx art
         if name == "Void Veins" then
             local ok, id = pcall(getcustomasset, "Koffee/fx/fx_sky_veins.png")
@@ -9969,6 +10147,7 @@ registerConfig("world_skybox", World.SkyBox)
             local ok = pcall(function()
             if name == "None" then
                 if ownSky then ownSky:Destroy(); ownSky = nil end
+                envRestore()
                 task.wait()
                 restoreGame()
                 local s = Lighting:FindFirstChildOfClass("Sky")
@@ -10002,6 +10181,14 @@ registerConfig("world_skybox", World.SkyBox)
             sky.StarCount       = want and 3000 or 0
             sky.SunAngularSize  = want and 21 or 0
             sky.MoonAngularSize = want and 11 or 0
+            -- v0.98.0: presets bring their own celestial sizes when that row is on
+            local env = SKY_ENV[name]
+            if env and want then
+                sky.StarCount, sky.SunAngularSize, sky.MoonAngularSize = env[1], env[2], env[3]
+                want = env[2] > 0 or env[3] > 0 or env[1] > 0
+                sky.CelestialBodiesShown = want
+            end
+            envApply(name)
             sky.Parent = Lighting
             ownSky = sky
             setStatus("")
@@ -14316,32 +14503,69 @@ local Combat = {
         if plr.Character then SR.recentDamage[plr.Character] = nil end
         plrHP[plr] = nil
     end
+    -- v0.98.0: one landing for every confirmed hit. The rivals native event and
+    -- the health-drop guess both end here; o carries crit / part / weapon if known.
+    local function landHit(char, dropped, nowZero, o)
+        o = o or {}
+        if nowZero then lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
+        else lastHitAt = playSound(hitSnd, Combat.HitSounds.Hit, lastHitAt) end
+        -- v0.5.0: hit indicators ride the same attribution gate as the sounds.
+        if Shared.spawnHitNumber then
+            local victim = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+                or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+            if victim then Shared.spawnHitNumber(victim, dropped, nowZero, o.crit) end
+        end
+        -- v0.7.0 hit / kill visual effect. Shares attribution + preset lookup.
+        if Shared.spawnHitEffect then
+            local cfg = nowZero and Combat.HitEffects.Kill or Combat.HitEffects.Hit
+            Shared.spawnHitEffect(char, cfg)
+        end
+        if Shared.pushHitLog then
+            local plr = Players:GetPlayerFromCharacter(char)
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            Shared.pushHitLog({ char = char, name = plr and plr.DisplayName or char.Name,
+                dmg = math.floor(dropped + 0.5), part = o.part, weapon = o.weapon,
+                hp = hum and math.max(0, math.floor(hum.Health + 0.5)) or nil,
+                kill = nowZero, crit = o.crit })
+        end
+    end
+    Shared.landHit = function(char, dropped, nowZero, o)
+        if Koffee.dead() or not char then return end
+        SR.recentDamage[char] = os.clock()
+        landHit(char, dropped, nowZero, o)
+    end
+
     local function onHpDropped(char, dropped, nowZero)
         -- dedup: ignore if last hit event for this char was <50ms ago (multi-source ripple)
         local last = SR.recentDamage[char]
         local now = os.clock()
-        if last and (now - last) < 0.05 then return end
+        if last and (now - last) < 0.05
+            and not (nowZero and Shared.RV and Shared.RV._nativeLive) then return end
         SR.recentDamage[char] = now
+
+        -- v0.98.0: once the rivals native hit has fired this session it owns hits.
+        -- This path then only upgrades a native hit that turned out to be the kill.
+        local RV = Shared.RV
+        if RV and RV._nativeLive then
+            local t = RV._nativeHitAt and RV._nativeHitAt[char]
+            if nowZero and t and now - t <= 0.6 then
+                RV._nativeHitAt[char] = nil
+                lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
+                if Shared.spawnHitNumber and ESP.Indicators.HitNumbers.Stack == "Merged" then
+                    local victim = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+                    if victim then Shared.spawnHitNumber(victim, 0, true) end
+                end
+                if Shared.spawnHitEffect then Shared.spawnHitEffect(char, Combat.HitEffects.Kill) end
+                if Shared.markHitLogKill then Shared.markHitLogKill(char) end
+            end
+            return
+        end
 
         -- normal attribution path (v0.0.92): check recentTargets + AttrWindow
         local at = SR.recentTargets[char]
         if at and (now - at) <= Combat.HitSounds.AttrWindow then
             SR.recentTargets[char] = nil
-            if nowZero then lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
-            else lastHitAt = playSound(hitSnd, Combat.HitSounds.Hit, lastHitAt) end
-            -- v0.5.0: hit indicators + crosshair pulse ride the same attribution
-            -- gate as the sounds. Only fires for hits YOU landed (recentTargets +
-            -- AttrWindow), not every game-wide damage event.
-            if Shared.spawnHitNumber then
-                local victim = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
-                    or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
-                if victim then Shared.spawnHitNumber(victim, dropped, nowZero) end
-            end
-            -- v0.7.0 hit / kill visual effect. Shares attribution + preset lookup.
-            if Shared.spawnHitEffect then
-                local cfg = nowZero and Combat.HitEffects.Kill or Combat.HitEffects.Hit
-                Shared.spawnHitEffect(char, cfg)
-            end
+            landHit(char, dropped, nowZero)
         end
     end
     local function bindHumanoid(plr, char)
@@ -16880,7 +17104,7 @@ end
     end
 
     -- spawn a fresh number OR add to an existing merged one for the same victim.
-    local function spawnHit(victim, dmg, isKill)
+    local function spawnHit(victim, dmg, isKill, crit)
         -- v0.14.0: feed the Custom Features Counter block
         local c = Shared._counters
         if not c then c = { Hits = 0, Kills = 0, Deaths = 0, Shots = 0 }; Shared._counters = c end
@@ -16910,6 +17134,7 @@ end
             -- that slot: every later hit it was recycled for rendered "KILL" on a
             -- target standing there at full health.
             e.isKill = false
+            e.crit = nil
             e._alive = true
             e.lbl.Visible = true
             if mc then
@@ -16928,6 +17153,8 @@ end
         end
         e.total = e.total + math.floor(dmg + 0.5)
         e.isKill = e.isKill or isKill
+        -- v0.98.0: a known headshot (rivals native) beats the damage threshold
+        if crit ~= nil then e.crit = e.crit or crit end
         -- text: "-24" or "-24 KILL"
         local tag = "-" .. e.total
         if e.isKill and hitCfg.ShowKill then tag = tag .. "  KILL" end
@@ -16935,7 +17162,8 @@ end
         e.lbl.TextSize = hitCfg.TextSize
         e.lbl.Rotation = e.rot or 0
         local col = e.isKill and hitCfg.KillColor
-            or ((hitCfg.Crits and e.total >= hitCfg.CritThreshold) and hitCfg.CritColor
+            or ((hitCfg.Crits and (e.crit or (e.crit == nil and e.total >= hitCfg.CritThreshold)))
+                and hitCfg.CritColor
                 or hitCfg.Color)
         e.lbl.TextColor3 = col
         -- v0.9.0: per-feature font. Resolved OFF this thread: loadFeiFont can
@@ -17012,6 +17240,118 @@ end
         if Koffee.dead() then return end
         drawCrosshair(dt)
         drawHitNumbers()
+    end)
+end)()
+
+-- v0.98.0 HIT LOG. Bottom-centre feed, newest at the bottom pushing older lines
+-- up. Each line is a CanvasGroup so the pill, accent bar and text fade as one.
+;(function()
+    local cfg = ESP.Indicators.HitLog
+    local host = new("Frame", {
+        Name = KID.name("hlog"), AnchorPoint = Vector2.new(0.5, 1),
+        Size = UDim2.new(0, 10, 0, 10), BackgroundTransparency = 1, ZIndex = 18, Parent = screen,
+    })
+    local live = {}
+    local ESC = { ["<"] = "&lt;", [">"] = "&gt;", ["&"] = "&amp;", ['"'] = "&quot;", ["'"] = "&apos;" }
+    local function esc(v) return (tostring(v):gsub("[<>&\"']", ESC)) end
+    local function render(info, col)
+        local hex = col:ToHex()
+        local map = { NAME = info.name, DMG = info.dmg, PART = info.part, WEAPON = info.weapon, HP = info.hp }
+        local fmt = cfg.Format or ""
+        -- unknown part (the health-drop path) drops the phrase instead of guessing
+        if info.part == nil then fmt = fmt:gsub(" in the {PART}", ""):gsub("%s*{PART}", "") end
+        local out = fmt:gsub("{(%u+)}", function(k)
+            local v = map[k]
+            if v == nil or v == "" then return "?" end
+            return '<font color="#' .. hex .. '">' .. esc(v) .. "</font>"
+        end)
+        if info.kill and cfg.ShowKill then
+            out = out .. '  <font color="#' .. cfg.KillColor:ToHex() .. '">KILL</font>'
+        end
+        return out
+    end
+
+    Shared.pushHitLog = function(info)
+        if not cfg.Enabled or Koffee.dead() or type(info) ~= "table" then return end
+        local col = (info.kill and cfg.KillColor) or (info.crit and cfg.CritColor) or cfg.Color
+        local card = new("CanvasGroup", {
+            AnchorPoint = Vector2.new(0.5, 1), AutomaticSize = Enum.AutomaticSize.X,
+            Size = UDim2.new(0, 0, 0, cfg.TextSize + 12), Position = UDim2.new(0.5, 0, 1, 14),
+            BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.18,
+            GroupTransparency = 1, ZIndex = 18, Parent = host,
+        }, {
+            corner(6), stroke(col, 1),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 12) }),
+            new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, -9, 0.5, 0),
+                Size = UDim2.new(0, 3, 0.6, 0), BackgroundColor3 = col, BorderSizePixel = 0 },
+                { corner(2) }),
+            new("TextLabel", { AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0),
+                BackgroundTransparency = 1, RichText = true, FontFace = Theme.Fonts.Bold,
+                TextSize = cfg.TextSize, TextColor3 = Theme.Palette.Text,
+                Text = render(info, col) }),
+        })
+        local st = card:FindFirstChildOfClass("UIStroke")
+        if st then st.Transparency = 0.55 end
+        table.insert(live, { card = card, t0 = os.clock(), y = 14, out = nil, info = info })
+        -- over the cap, the oldest lines start leaving now instead of popping
+        local over = #live - math.max(1, math.floor(cfg.Max or 6))
+        for i = 1, over do
+            local e = live[i]
+            if not e.out then e.out = os.clock() end
+        end
+    end
+
+    -- a native hit that the health path later sees kill gets its line upgraded
+    -- in place instead of a second line.
+    Shared.markHitLogKill = function(char)
+        for i = #live, 1, -1 do
+            local e = live[i]
+            if e.info.char == char and not e.out then
+                e.info.kill = true
+                e.info.hp = 0
+                e.t0 = os.clock()
+                pcall(function()
+                    local col = cfg.KillColor
+                    e.card:FindFirstChildOfClass("TextLabel").Text = render(e.info, col)
+                    e.card:FindFirstChildOfClass("UIStroke").Color = col
+                    for _, c in ipairs(e.card:GetChildren()) do
+                        if c:IsA("Frame") then c.BackgroundColor3 = col end
+                    end
+                end)
+                return
+            end
+        end
+    end
+
+    local IN, OUT = 0.16, 0.3
+    RunService.RenderStepped:Connect(function(dt)
+        if Koffee.dead() then
+            for _, e in ipairs(live) do pcall(function() e.card:Destroy() end) end
+            table.clear(live)
+            return
+        end
+        if #live == 0 then return end
+        host.Position = UDim2.new(0.5, 0, 1, -(cfg.Height or 170))
+        local now = os.clock()
+        local gap = (cfg.TextSize or 15) + 18
+        local k = 1 - math.exp(-dt * 14)
+        local slot = 0
+        for i = #live, 1, -1 do
+            local e = live[i]
+            if not e.out and now - e.t0 >= (cfg.Life or 3) then e.out = now end
+            local a = math.clamp((now - e.t0) / IN, 0, 1)
+            if e.out then a = math.min(a, 1 - math.clamp((now - e.out) / OUT, 0, 1)) end
+            if e.out and now - e.out >= OUT then
+                pcall(function() e.card:Destroy() end)
+                table.remove(live, i)
+            else
+                if not e.out then e.y = e.y + (-slot * gap - e.y) * k end
+                e.card.Position = UDim2.new(0.5, 0, 1, math.floor(e.y + 0.5))
+                e.card.GroupTransparency = 1 - a * a * (3 - 2 * a)
+                -- leaving lines stop holding a slot so the rest close the gap
+                if not e.out then slot = slot + 1 end
+            end
+        end
     end)
 end)()
 
@@ -22807,6 +23147,36 @@ addTab("Visuals", function(root)
         popup:toggle("Show KILL", hitCfgUI.ShowKill, function(v) hitCfgUI.ShowKill = v end)
         popup:swatch("Kill Color", hitCfgUI.KillColor, function(c) hitCfgUI.KillColor = c end)
     end)
+    -- v0.98.0: Hit Log, bottom-centre stacking feed. Right-click for the line
+    -- format, life, stack size, height and colours.
+    local hlCfg = ESP.Indicators.HitLog
+    local hlRow = configCheckbox(indPanel, "Hit Log", hlCfg.Enabled, function(v) hlCfg.Enabled = v end)
+    attachSingleSwatch(hlRow.row, hlCfg.Color, function(c) hlCfg.Color = c end)
+    rightClickSettings(hlRow.row, "Hit Log", function(popup)
+        popup:dropdown("Format", {
+            "Hit {NAME} in the {PART} for {DMG}",
+            "{NAME}  -{DMG}  {PART}",
+            "Hit {NAME} for {DMG} ({HP} hp left)",
+            "{WEAPON}  >  {NAME}  >  {DMG}",
+            "Hit {NAME} in the {PART} for {DMG} with {WEAPON}",
+        }, hlCfg.Format, function(v) hlCfg.Format = v end)
+        popup:slider("Life (s)", 0.5, 10, hlCfg.Life, 1, function(v) hlCfg.Life = v end)
+        popup:slider("Max Lines", 1, 12, hlCfg.Max, 0, function(v) hlCfg.Max = v end)
+        popup:slider("Height", 40, 600, hlCfg.Height, 0, function(v) hlCfg.Height = v end)
+        popup:slider("Text Size", 10, 28, hlCfg.TextSize, 0, function(v) hlCfg.TextSize = v end)
+        popup:swatch("Crit Color", hlCfg.CritColor, function(c) hlCfg.CritColor = c end)
+        popup:toggle("Show KILL", hlCfg.ShowKill, function(v) hlCfg.ShowKill = v end)
+        popup:swatch("Kill Color", hlCfg.KillColor, function(c) hlCfg.KillColor = c end)
+        popup:action("Preview", function()
+            if Shared.pushHitLog then
+                local was = hlCfg.Enabled
+                hlCfg.Enabled = true
+                Shared.pushHitLog({ name = "Preview", dmg = math.random(18, 64), part = "head",
+                    weapon = "Assault Rifle", hp = math.random(1, 80), crit = math.random() < 0.4 })
+                hlCfg.Enabled = was
+            end
+        end)
+    end)
 
     -- v0.90.0 off-screen arrows
     local oaCfg = ESP.Indicators.OffscreenArrows
@@ -22825,6 +23195,13 @@ addTab("Visuals", function(root)
     local hbRow = configCheckbox(healthPanel, "Health Bar", ESP.Health.Bar.Enabled, function(v) ESP.Health.Bar.Enabled = v end)
     attachSingleSwatch(hbRow.row, ESP.Health.Bar.Color, function(c) ESP.Health.Bar.Color = c end)
     configCheckbox(healthPanel, "Health Based", ESP.Health.Based, function(v) ESP.Health.Based = v end)
+    -- v0.98.0: right-click for the three stops. Overrides Health Based while on.
+    local hgRow = configCheckbox(healthPanel, "Health Gradient", ESP.Health.Gradient, function(v) ESP.Health.Gradient = v end)
+    rightClickSettings(hgRow.row, "Health Gradient", function(popup)
+        popup:swatch("Top", ESP.Health.GradTop, function(c) ESP.Health.GradTop = c end)
+        popup:swatch("Middle", ESP.Health.GradMid, function(c) ESP.Health.GradMid = c end)
+        popup:swatch("Bottom", ESP.Health.GradBot, function(c) ESP.Health.GradBot = c end)
+    end)
     configCheckbox(healthPanel, "Health Text", ESP.Health.Text, function(v) ESP.Health.Text = v end)
     dropdown(healthPanel, "Text Pos", { "Above Name", "On Health Bar" }, ESP.Health.TextPos, function(v) ESP.Health.TextPos = v end)
 
@@ -23151,6 +23528,11 @@ addTab("World", function(root)
     rightClickSettings(skyDd.frame, "Skybox", function(popup)
         popup:toggle("Sun, Moon & Stars", World.SkyBox.Celestial, function(v)
             World.SkyBox.Celestial = v
+            World.SkyBox._nonce = (World.SkyBox._nonce or 0) + 1
+        end)
+        -- v0.98.0: the preset skies also set time, ambient and fog once on pick
+        popup:toggle("Sky Environment", World.SkyBox.Env ~= false, function(v)
+            World.SkyBox.Env = v
             World.SkyBox._nonce = (World.SkyBox._nonce or 0) + 1
         end)
     end)
@@ -26424,6 +26806,7 @@ addTab("Options", function(root)
         if Shared.spinRestore then pcall(Shared.spinRestore) end
         pcall(function() RunService:UnbindFromRenderStep("KThirdPerson") end)
         if Shared.aspectRestore then pcall(Shared.aspectRestore) end
+        if Shared.skyEnvRestore then pcall(Shared.skyEnvRestore) end
         pcall(function() RunService:UnbindFromRenderStep("KAspect") end)
         pcall(function() RunService:UnbindFromRenderStep("KAspectFix") end)
         if Shared.RV and Shared.RV._tpNative then pcall(Shared.RV.thirdPerson, false) end
@@ -38832,9 +39215,99 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
         end
 
+        -- v0.98.0: the game's own hit confirmation. The local fighter receives
+        -- ReplicateFromServer("DamageNumberEffect", hitRoot, damage, headshot)
+        -- for each hit it landed, decided server side, so this replaces the
+        -- health-drop guess for sounds, numbers, effects and the hit log.
+        RV._nativeHitAt = setmetatable({}, { __mode = "k" })
+        local function weaponName()
+            local it = RV.equipped()
+            if it == nil then return nil end
+            local n
+            pcall(function() n = it.Name end)
+            if type(n) ~= "string" then pcall(function() n = it.Info.Name end) end
+            return type(n) == "string" and n or nil
+        end
+        local function onNativeHit(root, dmg, head)
+            if typeof(root) ~= "Instance" or type(dmg) ~= "number" or dmg <= 0 then return end
+            local char = root.Parent
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not hum then return end
+            local kill = hum.Health <= 0
+            RV._nativeLive = true
+            if not kill then RV._nativeHitAt[char] = os.clock() end
+            if Shared.landHit then
+                Shared.landHit(char, dmg, kill, { crit = head == true,
+                    part = head and "head" or "body", weapon = weaponName() })
+            end
+        end
+        -- v0.98.0: every rendered gun shot, local or not, goes through
+        -- ItemTypes.Gun:_Tracers(data). The ray list shape follows Harion's reader;
+        -- the remote learner only stands down once a shot here actually parses.
+        local function vec(v) return typeof(v) == "Vector3" and v or nil end
+        local function onTracers(item, data)
+            if type(data) ~= "table" or not Shared.bulletNative then return end
+            local src
+            pcall(function() src = item.ClientFighter.Player end)
+            local ch = typeof(src) == "Instance" and src.Character or nil
+            local head = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
+            local from = head and head.Position
+            local rays = data.RaycastResults or data.Rays or data.Raycasts
+            local any = false
+            if type(rays) == "table" then
+                for _, r in ipairs(rays) do
+                    if type(r) == "table" then
+                        local a = vec(r.StartPosition) or from
+                        local b = vec(r.Position) or vec(r.EndPosition)
+                        if a and b and Shared.bulletNative(a, b, src) then any = true end
+                    end
+                end
+            else
+                local b = vec(data.Position) or vec(data.EndPosition) or vec(data.HitPosition)
+                if from and b and Shared.bulletNative(from, b, src) then any = true end
+            end
+            if any then RV._tracerLive = true end
+        end
+        local function hookTracers()
+            local gun = modAt({ "Modules", "ItemTypes", "Gun" })
+            wrapOnce("tracers", RV.methodTable(gun, "_Tracers"), "_Tracers", function(old)
+                return function(self, data, ...)
+                    if not Koffee.dead() and Koffee.Bullets.Enabled then pcall(onTracers, self, data) end
+                    return old(self, data, ...)
+                end
+            end)
+        end
+
+        local hitWrapped = setmetatable({}, { __mode = "k" })
+        local nextHitCheck = 0
+        local function hookNativeHits(now)
+            if now < nextHitCheck then return end
+            nextHitCheck = now + 0.5
+            local lf = RV.localFighter()
+            if type(lf) ~= "table" then return end
+            if hitWrapped[lf] and rawget(lf, "ReplicateFromServer") == hitWrapped[lf] then return end
+            -- the true original rides on the object, so a re-exec wraps the game's
+            -- method instead of the last session's wrapper
+            local old = rawget(lf, "_koffeeHitOrig")
+            if old == nil then pcall(function() old = lf.ReplicateFromServer end) end
+            if type(old) ~= "function" then return end
+            local mine = function(self, kind, ...)
+                if kind == "DamageNumberEffect" and not Koffee.dead() then
+                    local a, b, c = ...
+                    pcall(onNativeHit, a, b, c)
+                end
+                return old(self, kind, ...)
+            end
+            if setreadonly then pcall(setreadonly, lf, false) end
+            pcall(rawset, lf, "_koffeeHitOrig", old)
+            if pcall(rawset, lf, "ReplicateFromServer", mine) then hitWrapped[lf] = mine end
+        end
+
         RunService.Heartbeat:Connect(function()
             local M = R.Mods
             if not Koffee.dead() then
+                hookNativeHits(os.clock())
+                if Koffee.Bullets.Enabled then hookTracers() end
                 if M.NoFlash then hookFlash() end
                 if M.NoSmoke then hookSmoke() end
                 if M.NoHitmarker then hookHitmarker() end
