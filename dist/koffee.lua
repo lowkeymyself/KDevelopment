@@ -1,7 +1,7 @@
--- koffee v0.93.19
+-- koffee v0.93.20
 
 local Koffee = {}
-Koffee.Version = "0.93.19"
+Koffee.Version = "0.93.20"
 
 
 
@@ -15,7 +15,8 @@ function Koffee.cfOk(cf)
     return s == s and s > -1e8 and s < 1e8
 end
 
--- v0.93.18: rivals bypass. Scan for the AC, not place id. Detection opens rivals features.
+-- v0.93.20: rivals disabler. Weak table guard plus anti kick.
+-- Detection gated, not place id. Detection opens rivals features.
 Koffee._isRivals = false
 pcall(function()
     local rf = game:GetService("ReplicatedFirst")
@@ -23,33 +24,48 @@ pcall(function()
 end)
 if Koffee._isRivals then pcall(function()
     local hookfn = hookfunction or replaceclosure
-    if not (hookfn and getgc and getrenv and debug and debug.info and debug.traceback) then return end
+    if not (hookfn and getrenv and debug and debug.traceback) then return end
     local G = getgenv and getgenv()
     if G and G["\6_rt_rv_ctx"] then return end
     if G then G["\6_rt_rv_ctx"] = true end
     local wrap = newcclosure or function(f) return f end
-    local oldSet
-    oldSet = hookfn(getrenv().setmetatable, wrap(function(t, mt)
-        if type(mt) == "table" and rawget(mt, "__mode") == "kv" then
-            local tr = ""
-            pcall(function() tr = debug.traceback() end)
-            if tr:find("LocalScript3", 1, true) or tr:find("MiscellaneousController", 1, true) then
-                return oldSet({ 1, 2, 3 }, {})
-            end
-        end
-        return oldSet(t, mt)
-    end))
-    local gcNow = getgc
+    local players = game:GetService("Players")
+    local lp = nil
     pcall(function()
-        for _, v in ipairs(gcNow()) do
-            if type(v) == "function" then
-                local ok3, src = pcall(debug.info, v, "s")
-                if ok3 and src and (src:find("LocalScript3", 1, true) or src:find("MiscellaneousController", 1, true)) then
-                    pcall(hookfn, v, wrap(function() return task.wait(9e9) end))
+        if cloneref then
+            lp = cloneref(players).LocalPlayer
+        else
+            lp = players.LocalPlayer
+        end
+    end)
+    if lp == nil then return end
+    local mtHook = nil
+    mtHook = hookfn(getrenv().setmetatable, wrap(function(t, mt)
+        if type(mt) == "table" and rawget(mt, "__mode") then
+            local mode = rawget(mt, "__mode")
+            if mode == "kv" or mode == "v" or mode == "k" then
+                local tr = ""
+                pcall(function() tr = debug.traceback() end)
+                if tr:find("MiscellaneousController", 1, true) then
+                    return mtHook({ 1, 2, 3 }, {})
+                end
+                if tr:find("CameraSecurity", 1, true) then
+                    return mtHook({ 1, 2, 3 }, {})
+                end
+                if tr:find("AnalyticsPipelineController", 1, true) then
+                    return mtHook({ 1, 2, 3 }, {})
                 end
             end
         end
-    end)
+        return mtHook(t, mt)
+    end))
+    local oldKick = nil
+    pcall(function() oldKick = lp.Kick end)
+    if oldKick == nil then return end
+    pcall(hookfn, oldKick, wrap(function(self, ...)
+        if self == lp then return end
+        return oldKick(self, ...)
+    end))
 end) end
 
 -- v0.0.70: newindex neutra
