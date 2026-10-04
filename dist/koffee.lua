@@ -1,7 +1,7 @@
--- koffee v0.99.1
+-- koffee v0.99.2
 
 local Koffee = {}
-Koffee.Version = "0.99.1"
+Koffee.Version = "0.99.2"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10810,9 +10810,9 @@ Koffee.Rivals = {
     -- v0.99.1 (Harion viewmodel): appearance, motion, offset and FOV
     VM          = {
         Weapon = { On = false, Color = Color3.fromRGB(217, 150, 95), Material = "ForceField",
-                   Opacity = 100, NoTextures = true },
+                   Opacity = 100, NoTextures = true, Wireframe = false },
         Arms   = { On = false, Color = Color3.fromRGB(242, 234, 223), Material = "ForceField",
-                   Opacity = 100, NoClothes = true },
+                   Opacity = 100, NoClothes = true, Wireframe = false },
         Motion = { On = false, Sway = true, Tilt = true, Bob = true, Jump = true, Sprint = true },
         Offset = { On = false, X = 0, Y = 0, Z = 0 },
         FOV    = { On = false, Value = 10 },
@@ -12280,6 +12280,7 @@ Koffee._characterTab = function(root)
             popup:dropdown("Material", MATS, VMC.Weapon.Material, function(v) VMC.Weapon.Material = v end)
             popup:slider("Opacity", 0, 100, VMC.Weapon.Opacity, 0, function(v) VMC.Weapon.Opacity = v end)
             popup:toggle("Disable Textures", VMC.Weapon.NoTextures, function(v) VMC.Weapon.NoTextures = v end)
+            popup:toggle("Wireframe", VMC.Weapon.Wireframe, function(v) VMC.Weapon.Wireframe = v end)
         end)
         local aRow = configCheckbox(vis, "Arm Chams", VMC.Arms.On, function(v) VMC.Arms.On = v end)
         rightClickSettings(aRow.row, "Arm Chams", function(popup)
@@ -12287,6 +12288,7 @@ Koffee._characterTab = function(root)
             popup:dropdown("Material", MATS, VMC.Arms.Material, function(v) VMC.Arms.Material = v end)
             popup:slider("Opacity", 0, 100, VMC.Arms.Opacity, 0, function(v) VMC.Arms.Opacity = v end)
             popup:toggle("Disable Clothes", VMC.Arms.NoClothes, function(v) VMC.Arms.NoClothes = v end)
+            popup:toggle("Wireframe", VMC.Arms.Wireframe, function(v) VMC.Arms.Wireframe = v end)
         end)
         local mRow = configCheckbox(vis, "Still Viewmodel", VMC.Motion.On, function(v) VMC.Motion.On = v end)
         rightClickSettings(mRow.row, "Still Viewmodel", function(popup)
@@ -39973,25 +39975,115 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             return nil
         end
+        -- v0.99.2: who got hit. Gun:_ShootEffect(results) is the server's reply to
+        -- our own shot, { [\0]=Position, [\1]=Instance, [\2]=Normal } per ray, where
+        -- the Instance is the victim's Hitbox* part (message (2)'s ground truth).
+        -- DamageEffect carries the damage; this carries the victim and the part.
+        local function onShootEffect(item, results)
+            if type(results) ~= "table" then return end
+            local mine = false
+            pcall(function() mine = item.ClientFighter.IsLocalPlayer == true end)
+            if not mine then return end
+            local hitChar, head = nil, false
+            for _, r in pairs(results) do
+                local inst = type(r) == "table" and r[K1] or nil
+                if typeof(inst) == "Instance" and string.sub(inst.Name, 1, 6) == "Hitbox" then
+                    local c = victimOf(inst)
+                    if c and c ~= LocalPlayer.Character then
+                        local isHead = string.find(string.lower(inst.Name), "head", 1, true) ~= nil
+                        if not hitChar or (c == hitChar and isHead) then
+                            hitChar = c
+                            head = head or isHead
+                        end
+                    end
+                end
+            end
+            if not hitChar then return end
+            local hum = hitChar:FindFirstChildOfClass("Humanoid")
+            local rec = { char = hitChar, head = head, at = os.clock(), hp = hum and hum.Health }
+            RV._shotHit = rec
+            -- backstop: if no DamageEffect consumed this reply, land it off the health drop
+            task.delay(0.3, function()
+                if RV._shotHit ~= rec or Koffee.dead() or not (hum and rec.hp) then return end
+                RV._shotHit = nil
+                local dmg = rec.hp - hum.Health
+                if getgenv and getgenv().KoffeeHitDebug then
+                    print("[koffee hit] shot reply without DamageEffect", hitChar.Name, "drop", dmg)
+                end
+                if dmg > 0 and Shared.landHit then
+                    RV._nativeLive = true
+                    if hum.Health > 0 then RV._nativeHitAt[hitChar] = os.clock() end
+                    Shared.landHit(hitChar, dmg, hum.Health <= 0, { crit = head, part = head and "head" or "body" })
+                end
+            end)
+        end
+        function RV.hookShootEffect()
+            local gun = modAt({ "Modules", "ItemTypes", "Gun" })
+            wrapOnce("shootEffect", RV.methodTable(gun, "_ShootEffect"), "_ShootEffect", function(old)
+                return function(self, results, ...)
+                    if not Koffee.dead() then pcall(onShootEffect, self, results) end
+                    return old(self, results, ...)
+                end
+            end)
+        end
+        -- melee and anything without a shot reply: the enemy nearest the crosshair
+        local function nearestToAim(maxDeg)
+            local cam = Workspace.CurrentCamera
+            if not cam then return nil end
+            local best, bestDot = nil, math.cos(math.rad(maxDeg))
+            local look, from = cam.CFrame.LookVector, cam.CFrame.Position
+            for _, plr in ipairs(game:GetService("Players"):GetPlayers()) do
+                local c = plr ~= LocalPlayer and plr.Character
+                local h = c and (c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart"))
+                if h then
+                    local to = h.Position - from
+                    if to.Magnitude > 0.1 then
+                        local d = look:Dot(to.Unit)
+                        if d > bestDot then best, bestDot = c, d end
+                    end
+                end
+            end
+            return best
+        end
         onNativeHit = function(data)
             if type(data) ~= "table" then return end
             local dmg = data[K0]
-            if type(dmg) ~= "number" or dmg <= 0 then return end
-            local char = victimOf(data[K2])
-            if not char then
-                for _, v in pairs(data) do
-                    char = victimOf(v)
-                    if char then break end
-                end
+            local dbg = getgenv and getgenv().KoffeeHitDebug
+            if type(dmg) ~= "number" or dmg <= 0 then
+                if dbg then print("[koffee hit] no damage in payload", typeof(dmg), tostring(dmg)) end
+                return
             end
-            -- no victim in the payload: the hit went where we were aiming
+            local char, how, head = nil, nil, nil
+            local sh = RV._shotHit
+            if sh and os.clock() - sh.at <= 0.6 and sh.char.Parent then
+                char, how, head = sh.char, "shot reply", sh.head
+                RV._shotHit = nil
+            end
+            if not char then
+                char = victimOf(data[K2])
+                if not char then
+                    for _, v in pairs(data) do
+                        char = victimOf(v)
+                        if char then break end
+                    end
+                end
+                if char then how = "payload" end
+            end
+            if not char then
+                char = nearestToAim(12)
+                if char then how = "crosshair" end
+            end
             if not char then
                 local plr = RV.pickTarget(1000)
                 char = plr and plr.Character
+                if char then how = "pick target" end
+            end
+            if dbg then
+                print("[koffee hit]", dmg, "crit", tostring(data[K1]), "victim", char and char.Name or "none", "via", tostring(how))
             end
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if not hum or char == LocalPlayer.Character then return end
-            local crit = data[K1] and true or false
+            local crit = (data[K1] and true or false) or head == true
             local kill = hum.Health <= 0
             RV._nativeLive = true
             if not kill then RV._nativeHitAt[char] = os.clock() end
@@ -40006,7 +40098,100 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- originals so turning a side off restores it. Hide Arms keeps owning the
         -- arms while it is on.
         local XV = { orig = setmetatable({}, { __mode = "k" }), sa = {}, nextPaint = 0,
-                     offSig = nil, fovSet = nil }
+                     offSig = nil, fovSet = nil, wires = {}, meshLines = {} }
+        -- v0.99.2: wireframe (Harion). Real mesh edges via EditableMesh, read once per
+        -- mesh id in the background and capped; plain parts and unreadable meshes
+        -- fall back to the 12 box edges. One adornment per part, in part space.
+        function XV.meshKey(o)
+            if o:IsA("MeshPart") then return o.MeshId end
+            local sm = o:FindFirstChildOfClass("SpecialMesh")
+            return sm and sm.MeshId or nil
+        end
+        function XV.loadMesh(id)
+            if XV.meshLines[id] ~= nil then return end
+            XV.meshLines[id] = "pending"
+            task.spawn(function()
+                local data = false
+                pcall(function()
+                    local em = game:GetService("AssetService"):CreateEditableMeshAsync(Content.fromUri(id))
+                    local lines, seen = {}, {}
+                    local size = em:GetSize()
+                    for _, f in ipairs(em:GetFaces()) do
+                        local vs = em:GetFaceVertices(f)
+                        for i = 1, #vs do
+                            local a, b = vs[i], vs[i % #vs + 1]
+                            local k = math.min(a, b) .. ":" .. math.max(a, b)
+                            if not seen[k] then
+                                seen[k] = true
+                                lines[#lines + 1] = { em:GetPosition(a), em:GetPosition(b) }
+                            end
+                        end
+                        if #lines > 1800 then break end
+                    end
+                    pcall(function() em:Destroy() end)
+                    if #lines > 0 then data = { lines = lines, size = size } end
+                end)
+                XV.meshLines[id] = data
+            end)
+        end
+        function XV.boxLines(sz)
+            local h = sz * 0.5
+            local c = {
+                Vector3.new(-h.X, -h.Y, -h.Z), Vector3.new(h.X, -h.Y, -h.Z), Vector3.new(-h.X, h.Y, -h.Z), Vector3.new(h.X, h.Y, -h.Z),
+                Vector3.new(-h.X, -h.Y, h.Z), Vector3.new(h.X, -h.Y, h.Z), Vector3.new(-h.X, h.Y, h.Z), Vector3.new(h.X, h.Y, h.Z),
+            }
+            local out = {}
+            for _, e in ipairs({ {1,2},{2,4},{4,3},{3,1},{5,6},{6,8},{8,7},{7,5},{1,5},{2,6},{3,7},{4,8} }) do
+                out[#out + 1] = { c[e[1]], c[e[2]] }
+            end
+            return out
+        end
+        function XV.wire(o, c)
+            local w = XV.wires[o]
+            local id = XV.meshKey(o)
+            local data = id and id ~= "" and XV.meshLines[id] or nil
+            if id and id ~= "" and data == nil then XV.loadMesh(id) end
+            local kind = type(data) == "table" and "mesh" or "box"
+            local key = kind .. "|" .. tostring(o.Size) .. "|" .. tostring(id)
+            if not (w and w.Parent) then
+                w = Instance.new("WireframeHandleAdornment")
+                w.Name = KID.name("vmw")
+                w.AlwaysOnTop = true
+                w.ZIndex = 9
+                w.Thickness = 1
+                w.Adornee = o
+                w.Parent = Workspace.CurrentCamera
+                KID.track(w)
+                XV.wires[o] = w
+                w:SetAttribute("k", "")
+            end
+            if w.Color3 ~= c.Color then w.Color3 = c.Color end
+            if w:GetAttribute("k") == key then return end
+            w:SetAttribute("k", key)
+            w:Clear()
+            if kind == "mesh" then
+                local sm = o:FindFirstChildOfClass("SpecialMesh")
+                local ms = data.size
+                for _, ln in ipairs(data.lines) do
+                    local a, b = ln[1], ln[2]
+                    if sm then
+                        a = Vector3.new(a.X * sm.Scale.X, a.Y * sm.Scale.Y, a.Z * sm.Scale.Z) + sm.Offset
+                        b = Vector3.new(b.X * sm.Scale.X, b.Y * sm.Scale.Y, b.Z * sm.Scale.Z) + sm.Offset
+                    elseif ms and ms.X > 1e-4 and ms.Y > 1e-4 and ms.Z > 1e-4 then
+                        local k = Vector3.new(o.Size.X / ms.X, o.Size.Y / ms.Y, o.Size.Z / ms.Z)
+                        a, b = a * k, b * k
+                    end
+                    w:AddLine(a, b)
+                end
+            else
+                for _, ln in ipairs(XV.boxLines(o.Size)) do w:AddLine(ln[1], ln[2]) end
+            end
+        end
+        function XV.dropWire(o)
+            local w = XV.wires[o]
+            if w then pcall(function() w:Destroy() end) end
+            XV.wires[o] = nil
+        end
         ORIG.vmOffsets = ORIG.vmOffsets or {}
         function XV.rig()
             local root = Workspace:FindFirstChild("ViewModels")
@@ -40083,6 +40268,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local wOn, aOn = V.Weapon.On, V.Arms.On and not R.Mods.HideArms
             local model = XV.rig()
             local keepSA = {}
+            local liveWires = {}
             if model and (wOn or aOn or next(XV.orig)) then
                 for _, o in ipairs(model:GetDescendants()) do
                     local arm = XV.isArm(o, model)
@@ -40096,6 +40282,14 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     elseif XV.orig[o] then
                         XV.restore(o)
                     end
+                    if o:IsA("BasePart") then
+                        local r = XV.orig[o]
+                        local visible = r == nil or r[3] < 0.99
+                        if on and c.Wireframe and visible then
+                            liveWires[o] = true
+                            pcall(XV.wire, o, c)
+                        end
+                    end
                 end
             end
             -- parked appearances only stay parked while their side is still on
@@ -40104,6 +40298,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             if not (wOn or aOn) then table.clear(keepSA) end
             XV.releaseSA(keepSA)
+            for o in pairs(XV.wires) do
+                if not liveWires[o] then XV.dropWire(o) end
+            end
         end
         -- motion: the viewmodel's springs are zeroed either side of its own Update,
         -- the same shape Harion uses, so nothing the frame computes survives.
@@ -40192,6 +40389,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             pcall(function() RV.CamCtrl:SetExternalFOVOffset("koffee", 0) end)
             for o in pairs(XV.orig) do XV.restore(o) end
             XV.releaseSA({})
+            for o in pairs(XV.wires) do XV.dropWire(o) end
         end
 
         -- v0.98.0: every rendered gun shot, local or not, goes through
@@ -40235,6 +40433,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local M = R.Mods
             if not Koffee.dead() then
                 hookCrosshair()
+                RV.hookShootEffect()
                 if Koffee.Bullets.Enabled then hookTracers() end
                 XV.step(os.clock())
                 if M.NoFlash then hookFlash() end
