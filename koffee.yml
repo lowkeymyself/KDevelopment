@@ -47,6 +47,7 @@ globals:
   getconnections: { args: [{ type: any }] }
   setfflag: { args: [{ type: string }, { type: string }] }
   sethiddenproperty: { args: [{ type: any }, { type: string }, { type: any }] }
+  firetouchinterest: { args: [{ type: any }, { type: any }, { type: number }] }
   debug.getupvalues: { args: [{ type: any }] }
   debug.setupvalue: { args: [{ type: any }, { type: number }, { type: any }] }
   queue_on_teleport: { args: [{ type: string }] }

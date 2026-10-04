@@ -1,7 +1,7 @@
--- koffee v0.99.2
+-- koffee v0.99.3
 
 local Koffee = {}
-Koffee.Version = "0.99.2"
+Koffee.Version = "0.99.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10797,7 +10797,7 @@ registerModule("infjump",  "Infinite Jump",    function() end, function() end)
 Koffee.Rivals = {
     SkipDeflect = true,
     LockPart    = "Head",
-    Desync      = { Mode = "Orbit", Radius = 6, Height = 1.5, Speed = 3.5,
+    Desync      = { Mode = "Orbit", Radius = 6, Height = 1.5, Speed = 3.5, Depth = 6,
                     MinY = 0, MaxY = 200, MaxFromTarget = 25 },
     Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true,
                     Status = true },   -- v0.99.1: top-centre "who is rage on" pill
@@ -10806,7 +10806,10 @@ Koffee.Rivals = {
                     NoShake = false, NoShootAnim = false, HideArms = false,
                     NoReloadAnim = false, NoEquipAnim = false,
                     NoFlash = false, NoSmoke = false, NoVignette = false,
-                    NoGameCrosshair = false, NoHitmarker = false, NoDmgNumbers = false },
+                    NoGameCrosshair = false, NoHitmarker = false, NoDmgNumbers = false,
+                    -- v0.99.3 (Harion weapons / movement)
+                    FastProjectile = false, Grenade = "Off", MaulSlam = 1,
+                    SlideBoost = 1, DJHeight = 1 },
     -- v0.99.1 (Harion viewmodel): appearance, motion, offset and FOV
     VM          = {
         Weapon = { On = false, Color = Color3.fromRGB(217, 150, 95), Material = "ForceField",
@@ -10823,6 +10826,8 @@ Koffee.Rivals = {
         BanWeapons = true, First = "None", Second = "None", FirstDelay = 0.6, SecondDelay = 1.2,
         BanMap = false, MapDelay = 0.8,
         StaffAction = "Notify",
+        Respawn = false, Drops = false,
+        Chat = false, ChatText = "gg", ChatMode = "Custom", ChatEvery = 4,
     },
 }
 registerConfig("rivals_native", Koffee.Rivals)
@@ -10863,8 +10868,22 @@ registerModule("rv_infjump",  "Infinite Jump", function() end, function()
     if RV and RV.restoreJumps then RV.restoreJumps() end
 end)
 
+-- v0.99.3 (Harion AirJump): Infinite Jump gains an Air mode that holds an upward
+-- velocity while Space is down instead of re-triggering the jump state.
+Koffee.JumpCfg = { Mode = "Jump", Velocity = 50 }
+registerConfig("jump_mode", Koffee.JumpCfg)
+RunService.Heartbeat:Connect(function()
+    if Koffee.dead() or Koffee.JumpCfg.Mode ~= "Air" then return end
+    if not (Modules.infjump and Modules.infjump.Enabled) then return end
+    if UserInputService:GetFocusedTextBox() or not UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+    local c = LocalPlayer.Character
+    local r = c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart)
+    if not r then return end
+    local v = r.AssemblyLinearVelocity
+    r.AssemblyLinearVelocity = Vector3.new(v.X, math.clamp(Koffee.JumpCfg.Velocity or 50, 10, 300), v.Z)
+end)
 UserInputService.JumpRequest:Connect(function()
-    local inf = Modules.infjump  and Modules.infjump.Enabled
+    local inf = Modules.infjump  and Modules.infjump.Enabled and Koffee.JumpCfg.Mode ~= "Air"
     local njc = Modules.nojumpcd and Modules.nojumpcd.Enabled
     if not (inf or njc) then return end
     local char = LocalPlayer.Character
@@ -12147,13 +12166,17 @@ Koffee._characterTab = function(root)
         moduleCheckbox(mv, "Infinite Jump", "rv_infjump")
     else
         moduleCheckbox(mv, "No Jump Cooldown", "nojumpcd")
-        moduleCheckbox(mv, "Infinite Jump",    "infjump")
+        local ijRow = moduleCheckbox(mv, "Infinite Jump",    "infjump")
+        rightClickSettings(ijRow.row, "Infinite Jump", function(popup)
+            popup:dropdown("Mode", { "Jump", "Air" }, Koffee.JumpCfg.Mode, function(v) Koffee.JumpCfg.Mode = v end)
+            popup:slider("Air Velocity", 10, 300, Koffee.JumpCfg.Velocity, 0, function(v) Koffee.JumpCfg.Velocity = v end)
+        end)
     end
     -- v0.95.0: rivals Desync lives here, not in Combat Misc. Module toggle plus
     -- keybind pill, same shape as 3rd Person. Modes read the shared Desync table.
     if Koffee._isRivals then
         keybindPill(moduleCheckbox(mv, "Desync", "rv_desync").row, "rv_desync", nil, "Desync")
-        dropdown(mv, "Desync Mode", { "Orbit", "Random", "Translocate", "Invisible", "Off" },
+        dropdown(mv, "Desync Mode", { "Orbit", "Random", "Translocate", "Invisible", "Underground", "Off" },
             Koffee.Rivals.Desync.Mode, function(v) Koffee.Rivals.Desync.Mode = v end)
         slider(mv, "Desync Radius", 1, 50, Koffee.Rivals.Desync.Radius, 1,
             function(v) Koffee.Rivals.Desync.Radius = v end)
@@ -12161,6 +12184,13 @@ Koffee._characterTab = function(root)
             function(v) Koffee.Rivals.Desync.Height = v end)
         slider(mv, "Orbit Speed", 0.5, 20, Koffee.Rivals.Desync.Speed, 1,
             function(v) Koffee.Rivals.Desync.Speed = v end)
+        slider(mv, "Underground Depth", 3, 8, Koffee.Rivals.Desync.Depth or 6, 1,
+            function(v) Koffee.Rivals.Desync.Depth = v end)
+        -- v0.99.3: Harion movement
+        slider(mv, "Slide Boost", 1, 5, Koffee.Rivals.Mods.SlideBoost, 1,
+            function(v) Koffee.Rivals.Mods.SlideBoost = v end)
+        slider(mv, "Double Jump Height", 1, 10, Koffee.Rivals.Mods.DJHeight, 1,
+            function(v) Koffee.Rivals.Mods.DJHeight = v end)
     end
     local function feat(label, id)
         local c = moduleCheckbox(mv, label, id)
@@ -12482,6 +12512,15 @@ local Combat = {
             Volume   = 1.0,
             Pitch    = 1.0,
             Cooldown = 200,
+        },
+        -- v0.99.3: your own shot (rivals fires it from the shoot callback)
+        Shoot = {
+            Enabled  = false,
+            Preset   = "gamesense",
+            CustomId = 0,
+            Volume   = 0.6,
+            Pitch    = 1.0,
+            Cooldown = 0,
         },
         Overlap     = true,     -- v0.0.89: true = clone-per-play (real overlap); false = stop previous then play
         -- v0.0.92 attribution window (seconds): after aiming at an enemy (LMB
@@ -14569,11 +14608,18 @@ local Combat = {
         "click 1", "click 2", "click 3",
         "glass 1", "glass 2", "glass 3",
         "moan 1", "moan 2", "moan 3", "moan 4",
+        -- v0.99.3: Harion's packs that Koffee had no file for (plain asset ids)
+        "gamesense", "osu", "tf2", "minecraft hit",
+    }
+    local SND_ASSET = {
+        gamesense = "rbxassetid://4817809188", osu = "rbxassetid://7149255551",
+        tf2 = "rbxassetid://2868331684", ["minecraft hit"] = "rbxassetid://4018616850",
     }
     local SoundService = game:GetService("SoundService")
     local hitSnd = Instance.new("Sound"); hitSnd.Name = "KHitSnd"; hitSnd.Parent = SoundService
     local killSnd = Instance.new("Sound"); killSnd.Name = "KKillSnd"; killSnd.Parent = SoundService
     local lastHitAt, lastKillAt = 0, 0
+    local shootSt = { snd = nil, at = 0 }
     local function windowIsOpen()
         return window and window.GroupTransparency < 1
     end
@@ -14581,6 +14627,7 @@ local Combat = {
         if cfg.CustomId and cfg.CustomId > 0 then
             return "rbxassetid://" .. tostring(cfg.CustomId)
         end
+        if cfg.Preset and SND_ASSET[cfg.Preset] then return SND_ASSET[cfg.Preset] end
         if cfg.Preset and cfg.Preset ~= "" and getcustomasset then
             -- v0.10.0: koffee-assets ships mp3, the Takurin pack ships ogg. Probe
             -- both, and check isfile first so a missing file doesn't hand back a
@@ -14746,6 +14793,15 @@ local Combat = {
                 hp = hum and math.max(0, math.floor(hum.Health + 0.5)) or nil,
                 kill = nowZero, crit = o.crit })
         end
+    end
+    Shared.playShootSound = function()
+        if Koffee.dead() then return end
+        if not shootSt.snd then
+            shootSt.snd = Instance.new("Sound")
+            shootSt.snd.Name = "KShootSnd"
+            shootSt.snd.Parent = SoundService
+        end
+        shootSt.at = playSound(shootSt.snd, Combat.HitSounds.Shoot, shootSt.at)
     end
     Shared.landHit = function(char, dropped, nowZero, o)
         if Koffee.dead() or not char then return end
@@ -15793,6 +15849,13 @@ local Combat = {
                 function(v) RVC.Mods.MeleePct = v end)
             configCheckbox(miscCard, "No Muzzle Flash", RVC.Mods.NoMuzzle,
                 function(v) RVC.Mods.NoMuzzle = v end)
+            -- v0.99.3: Harion's weapon extras
+            configCheckbox(miscCard, "Fast Projectile", RVC.Mods.FastProjectile,
+                function(v) RVC.Mods.FastProjectile = v end)
+            dropdown(miscCard, "Grenade Fuse", { "Off", "Explode On Throw", "Explode On Impact", "Remove Fuse" },
+                RVC.Mods.Grenade, function(v) RVC.Mods.Grenade = v end)
+            slider(miscCard, "Maul Slam", 1, 10, RVC.Mods.MaulSlam, 1,
+                function(v) RVC.Mods.MaulSlam = v end)
             configCheckbox(miscCard, "No Camera Shake", RVC.Mods.NoShake,
                 function(v) RVC.Mods.NoShake = v end)
             configCheckbox(miscCard, "Hide Viewmodel Arms", RVC.Mods.HideArms,
@@ -15835,6 +15898,14 @@ local Combat = {
         slider(soundCard, "Kill Volume",    0, 5,           Combat.HitSounds.Kill.Volume,   2, function(v) Combat.HitSounds.Kill.Volume   = v end)
         slider(soundCard, "Kill Pitch",     0.5, 2,         Combat.HitSounds.Kill.Pitch,    2, function(v) Combat.HitSounds.Kill.Pitch    = v end)
         slider(soundCard, "Kill Cooldown",  0, 1000,        Combat.HitSounds.Kill.Cooldown, 0, function(v) Combat.HitSounds.Kill.Cooldown = math.floor(v) end)
+        if Koffee._isRivals then
+            local SH = Combat.HitSounds.Shoot
+            configCheckbox(soundCard, "Shoot Sound", SH.Enabled, function(v) SH.Enabled = v end)
+            dropdown(soundCard, "Shoot Preset", SND_PRESETS_LIST, SH.Preset, function(v) SH.Preset = v end)
+            slider(soundCard, "Shoot Custom Id", 0, 9999999999, SH.CustomId, 0, function(v) SH.CustomId = math.floor(v) end)
+            slider(soundCard, "Shoot Volume", 0, 5, SH.Volume, 2, function(v) SH.Volume = v end)
+            slider(soundCard, "Shoot Pitch", 0.5, 2, SH.Pitch, 2, function(v) SH.Pitch = v end)
+        end
         configCheckbox(soundCard, "Overlap Sounds", Combat.HitSounds.Overlap, function(v) Combat.HitSounds.Overlap = v end)
         slider(soundCard, "Attr Window (s)", 0.5, 5, Combat.HitSounds.AttrWindow, 2, function(v) Combat.HitSounds.AttrWindow = v end)
         slider(soundCard, "Before Click (ms)", 1, 500, Combat.HitSounds.BeforeClick, 0, function(v) Combat.HitSounds.BeforeClick = math.floor(v) end)
@@ -35278,6 +35349,77 @@ if Koffee._isRivals then (function()
     function X.scanAll()
         for _, plr in ipairs(Plrs:GetPlayers()) do X.check(plr) end
     end
+    -- arcade (Harion): respawn on death through Duels.RespawnNow, and touch the
+    -- workspace "_drop" pickups (ammo always, health only when hurt)
+    X.drops = {}
+    function X.trackDrop(o)
+        if o.Name == "_drop" and o:IsA("BasePart") then X.drops[o] = true end
+    end
+    for _, o in ipairs(Workspace:GetChildren()) do X.trackDrop(o) end
+    Workspace.ChildAdded:Connect(X.trackDrop)
+    Workspace.ChildRemoved:Connect(function(o) X.drops[o] = nil end)
+    function X.bindRespawn(c)
+        local hum = c and c:WaitForChild("Humanoid", 10)
+        if not hum then return end
+        hum.Died:Connect(function()
+            if not A.Respawn or Koffee.dead() then return end
+            task.wait()
+            local r = RS:FindFirstChild("Remotes")
+            r = r and r:FindFirstChild("Duels")
+            r = r and r:FindFirstChild("RespawnNow")
+            if r then pcall(function() r:FireServer() end) end
+        end)
+    end
+    if LocalPlayer.Character then task.spawn(X.bindRespawn, LocalPlayer.Character) end
+    LocalPlayer.CharacterAdded:Connect(function(c) task.spawn(X.bindRespawn, c) end)
+    function X.dropStep()
+        if not A.Drops or not firetouchinterest then return end
+        local c = LocalPlayer.Character
+        local hrp = c and c:FindFirstChild("HumanoidRootPart")
+        local hum = c and c:FindFirstChildOfClass("Humanoid")
+        if not hrp then return end
+        local hurt = hum and hum.Health < hum.MaxHealth
+        for o in pairs(X.drops) do
+            if not o.Parent then
+                X.drops[o] = nil
+            elseif o:FindFirstChild("Ammo") or (hurt and o:FindFirstChild("Health")) then
+                pcall(firetouchinterest, hrp, o, 0)
+                pcall(firetouchinterest, hrp, o, 1)
+            end
+        end
+    end
+    -- chat spam (Harion), floored at 2s between lines
+    X.CHAT = {
+        Custom = nil,
+        GG = { "gg", "gg wp", "good game", "ggs", "well played" },
+        Friendly = { "nice shot", "close one", "good fight", "you're good", "fun round" },
+    }
+    X.chatAt, X.chatIdx = 0, 0
+    function X.sendChat(text)
+        if text == "" then return end
+        local ok = pcall(function()
+            local ch = game:GetService("TextChatService"):FindFirstChild("TextChannels")
+            ch = ch and ch:FindFirstChild("RBXGeneral")
+            ch:SendAsync(text)
+        end)
+        if ok then return end
+        pcall(function()
+            RS.DefaultChatSystemChatEvents.SayMessageRequest:FireServer(text, "All")
+        end)
+    end
+    function X.chatStep(now)
+        if not A.Chat or now - X.chatAt < math.max(A.ChatEvery or 4, 2) then return end
+        X.chatAt = now
+        local list = X.CHAT[A.ChatMode]
+        local text
+        if type(list) == "table" then
+            X.chatIdx = X.chatIdx % #list + 1
+            text = list[X.chatIdx]
+        else
+            text = tostring(A.ChatText or "")
+        end
+        task.spawn(X.sendChat, text)
+    end
 
     registerModule("rv_autoqueue", "Auto Queue", function() X.queued = false end, function()
         pcall(function()
@@ -35299,7 +35441,9 @@ if Koffee._isRivals then (function()
         while not Koffee.dead() do
             pcall(X.queueStep, os.clock())
             pcall(X.banStep)
-            task.wait(0.5)
+            pcall(X.dropStep)
+            pcall(X.chatStep, os.clock())
+            task.wait(0.2)
         end
     end)
 
@@ -35321,6 +35465,27 @@ if Koffee._isRivals then (function()
         ctl.st = moduleCheckbox(host, "Staff Detector", "rv_staff")
         ctl.sa = dropdown(host, "On Staff", { "Notify", "Unload", "Leave" }, A.StaffAction,
             function(v) A.StaffAction = v end)
+        ctl.rs = configCheckbox(host, "Auto Respawn", A.Respawn, function(v) A.Respawn = v end)
+        ctl.dr = configCheckbox(host, "Collect Drops", A.Drops, function(v) A.Drops = v end)
+        ctl.ch = configCheckbox(host, "Chat Spam", A.Chat, function(v) A.Chat = v end)
+        ctl.cm = dropdown(host, "Chat Mode", { "Custom", "GG", "Friendly" }, A.ChatMode,
+            function(v) A.ChatMode = v end)
+        ctl.ce = slider(host, "Chat Every (s)", 2, 30, A.ChatEvery, 1, function(v) A.ChatEvery = v end)
+        -- custom line: same row shape as HvH's Draw Weapon box
+        local msgRow = new("Frame", { Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+            ZIndex = 34, Parent = host })
+        new("TextLabel", { Text = "Custom Message", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, -170, 1, 0), ZIndex = 34, Parent = msgRow })
+        ctl.ct = new("TextBox", { Text = tostring(A.ChatText or ""), ClearTextOnFocus = false,
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Body, TextColor3 = Theme.Palette.Text,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 160, 0, 22), ZIndex = 35, Parent = msgRow },
+            { corner(7), stroke(Theme.Palette.BorderSubtle) })
+        ctl.ct.FocusLost:Connect(function()
+            A.ChatText = tostring(ctl.ct.Text or "")
+        end)
         -- Extra is not rebuilt on config load, so push the loaded values in
         Shared._rvAutoResync = function()
             for id, c in pairs({ rv_autoqueue = ctl.q, rv_autoban = ctl.b, rv_staff = ctl.st }) do
@@ -35336,6 +35501,12 @@ if Koffee._isRivals then (function()
             pcall(function() ctl.bM.setState(A.BanMap and true or false) end)
             pcall(function() ctl.mD.set(A.MapDelay) end)
             pcall(function() ctl.sa.setValue(A.StaffAction) end)
+            pcall(function() ctl.rs.setState(A.Respawn and true or false) end)
+            pcall(function() ctl.dr.setState(A.Drops and true or false) end)
+            pcall(function() ctl.ch.setState(A.Chat and true or false) end)
+            pcall(function() ctl.cm.setValue(A.ChatMode) end)
+            pcall(function() ctl.ce.set(A.ChatEvery) end)
+            pcall(function() ctl.ct.Text = tostring(A.ChatText or "") end)
         end
     end
 end)() end
@@ -39445,6 +39616,16 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         local pos
         if mode == "Translocate" then
             pos = tp + Vector3.new(0, 10000, 0)
+        elseif mode == "Underground" then
+            -- v0.99.3 (Harion): below and a little behind the target's head, where
+            -- a body cannot aim and melee cannot reach.
+            local depth = math.clamp(D.Depth or 6, 3, 8)
+            local back = Vector3.zero
+            pcall(function()
+                local root = tgt.Parent:FindFirstChild("HumanoidRootPart")
+                if root then back = -root.CFrame.LookVector * math.clamp(D.Radius, 1.25, 4) end
+            end)
+            pos = tp + back + Vector3.new(0, -depth, 0)
         elseif mode == "Random" then
             -- v0.95.0: re-rolls twice a second on RV fields, so it blinks between
             -- spots instead of vibrating every frame the way Orbit circles.
@@ -39460,7 +39641,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             -- player cannot stand still and wait for you to reappear in one spot.
             pos = tp + Vector3.new(math.cos(dsPhase) * D.Radius, D.Height, math.sin(dsPhase) * D.Radius)
         end
-        if mode ~= "Translocate" then
+        if mode ~= "Translocate" and mode ~= "Underground" then
             if pos.Y < D.MinY or pos.Y > D.MaxY then pos = tp + Vector3.new(0, 2, 2) end
             if (pos - tp).Magnitude > D.MaxFromTarget then pos = tp + Vector3.new(0, 2, 2) end
         end
@@ -39737,6 +39918,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             desyncCorrect(cd)
             rageRedirect(cd)
             redirect(cd)
+            if Shared.playShootSound then pcall(Shared.playShootSound) end
             if type(prev) == "function" then pcall(prev, cd) end
         end
         pcall(rawset, it, "_on_shoot_callback", mine)
@@ -40392,6 +40574,144 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             for o in pairs(XV.wires) do XV.dropWire(o) end
         end
 
+        -- v0.99.3 (Harion weapons / movement). Item fields keep per-table originals
+        -- (genv for the shared ItemLibrary rows), the mechanics hooks read the live
+        -- multipliers, so a slider at 1 is exactly the game.
+        local XI = { orig = setmetatable({}, { __mode = "k" }), next = 0, slideBase = setmetatable({}, { __mode = "k" }) }
+        ORIG.projReload = ORIG.projReload or {}
+        function XI.field(info, k, v)
+            local rec = XI.orig[info]
+            if not rec then rec = {}; XI.orig[info] = rec end
+            if rec[k] == nil then rec[k] = rawget(info, k) end
+            if type(rec[k]) ~= "number" then return end
+            pcall(rawset, info, k, v == nil and rec[k] or v)
+        end
+        function XI.items(now)
+            if now < XI.next then return end
+            XI.next = now + 0.25
+            local M = R.Mods
+            local it = RV.equipped()
+            local info
+            pcall(function() info = it and it.Info end)
+            if type(info) == "table" then
+                local rec = XI.orig[info]
+                local ps = rec and rec.ProjectileSpeed or rawget(info, "ProjectileSpeed")
+                if type(ps) == "number" then XI.field(info, "ProjectileSpeed", M.FastProjectile and 99999999 or nil) end
+                local slam = math.clamp(M.MaulSlam or 1, 1, 10)
+                for _, k in ipairs({ "SlamDamage", "SlamRadius" }) do
+                    local base = (rec and rec[k]) or rawget(info, k)
+                    if type(base) == "number" then XI.field(info, k, slam ~= 1 and base * slam or nil) end
+                end
+            end
+            -- bow / daggers / slingshot reload, Harion's whitelist
+            local lib = RV.ItemLib
+            local items = type(lib) == "table" and rawget(lib, "Items") or nil
+            if type(items) == "table" then
+                for key, item in pairs(items) do
+                    local n = type(item) == "table" and rawget(item, "Name")
+                    if n == "Bow" or n == "Daggers" or n == "Slingshot" then
+                        local cur = rawget(item, "ReloadLength")
+                        if type(cur) == "number" then
+                            if ORIG.projReload[key] == nil then ORIG.projReload[key] = cur end
+                            local want = M.FastProjectile and (n == "Daggers" and 0.09 or 0) or ORIG.projReload[key]
+                            if cur ~= want then pcall(rawset, item, "ReloadLength", want) end
+                        end
+                    end
+                end
+            end
+        end
+        -- grenades: the throw returns (ok, action, cameraCF, charge, fuse); the fuse
+        -- slot is rewritten on our own throws only.
+        function XI.impactFuse(item, action, cf, charge)
+            local info = item.Info
+            local lob = action == "FinishAiming"
+            local mn = lob and info.LobForceMin or info.ThrowForceMin
+            local mx = lob and info.LobForceMax or info.ThrowForceMax
+            local g = lob and info.LobGravity or info.ThrowGravity
+            if typeof(cf) ~= "CFrame" or type(mn) ~= "number" or type(mx) ~= "number" then return nil end
+            local speed = mn + (mx - mn) * math.clamp(tonumber(charge) or 1, 0, 1)
+            local vel, pos = cf.LookVector * speed, cf.Position
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Exclude
+            rp.FilterDescendantsInstances = { LocalPlayer.Character, Workspace:FindFirstChild("ViewModels") }
+            local grav, last = Vector3.new(0, -(g or Workspace.Gravity), 0), pos
+            for t = 0.03, 5, 0.03 do
+                local nxt = pos + vel * t + grav * (0.5 * t * t)
+                if Workspace:Raycast(last, nxt - last, rp) then return math.max(t - 0.015, 0) end
+                last = nxt
+            end
+            return nil
+        end
+        function XI.grenadeResult(self, res)
+            local mode = R.Mods.Grenade
+            if mode == "Off" or not res[1] or Koffee.dead() then return res end
+            local mine = false
+            pcall(function() mine = self.ClientFighter.IsLocalPlayer == true end)
+            if not mine then return res end
+            local action = res[2]
+            pcall(function() action = self:FromEnum(action) or action end)
+            if action ~= "FinishShooting" and action ~= "FinishAiming" then return res end
+            if mode == "Explode On Throw" then res[5] = 0.15
+            elseif mode == "Remove Fuse" then res[5] = 999999
+            elseif mode == "Explode On Impact" then
+                local f = XI.impactFuse(self, action, res[3], res[4])
+                if f then res[5] = f end
+            end
+            return res
+        end
+        function XI.hookGrenade()
+            local g = modAt({ "Modules", "ItemTypes", "Throwable" }) or modAt({ "Modules", "ItemTypes", "Grenade" })
+            for _, name in ipairs({ "FinishShooting", "FinishAiming" }) do
+                wrapOnce("gren" .. name, RV.methodTable(g, name), name, function(old)
+                    return function(self, ...)
+                        local res = table.pack(old(self, ...))
+                        local okR, out = pcall(XI.grenadeResult, self, res)
+                        if okR and out then res = out end
+                        return table.unpack(res, 1, res.n)
+                    end
+                end)
+            end
+        end
+        -- slide boost raises the fighter's SlidingSpeedMax right before each slide;
+        -- double jump height scales the launch the game just applied
+        function XI.hookMechanics()
+            local mech = RV.Mechanics
+            wrapOnce("mechSlide", RV.methodTable(mech, "Slide"), "Slide", function(old)
+                return function(self, ...)
+                    pcall(function()
+                        local f = self.LocalFighter
+                        if XI.slideBase[f] == nil then XI.slideBase[f] = f:Get("SlidingSpeedMax") end
+                        local base = XI.slideBase[f]
+                        if type(base) == "number" then
+                            local m = Koffee.dead() and 1 or math.clamp(R.Mods.SlideBoost or 1, 1, 5)
+                            f:Set("SlidingSpeedMax", base * m)
+                        end
+                    end)
+                    return old(self, ...)
+                end
+            end)
+            wrapOnce("mechDJ", RV.methodTable(mech, "DoubleJump"), "DoubleJump", function(old)
+                return function(self, ...)
+                    local res = table.pack(old(self, ...))
+                    local m = math.clamp(R.Mods.DJHeight or 1, 1, 10)
+                    if m ~= 1 and not Koffee.dead() then
+                        pcall(function()
+                            local root = self.LocalFighter.Entity.RootPart
+                            local v = root.AssemblyLinearVelocity
+                            root.AssemblyLinearVelocity = Vector3.new(v.X, v.Y * m, v.Z)
+                        end)
+                    end
+                    return table.unpack(res, 1, res.n)
+                end
+            end)
+        end
+        function XI.step(now)
+            local M = R.Mods
+            XI.items(now)
+            if M.Grenade ~= "Off" then XI.hookGrenade() end
+            if (M.SlideBoost or 1) ~= 1 or (M.DJHeight or 1) ~= 1 then XI.hookMechanics() end
+        end
+
         -- v0.98.0: every rendered gun shot, local or not, goes through
         -- ItemTypes.Gun:_Tracers(data). The ray list shape follows Harion's reader;
         -- the remote learner only stands down once a shot here actually parses.
@@ -40434,6 +40754,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not Koffee.dead() then
                 hookCrosshair()
                 RV.hookShootEffect()
+                pcall(XI.step, os.clock())
                 if Koffee.Bullets.Enabled then hookTracers() end
                 XV.step(os.clock())
                 if M.NoFlash then hookFlash() end
