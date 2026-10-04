@@ -1,7 +1,7 @@
--- koffee v0.98.0
+-- koffee v0.98.1
 
 local Koffee = {}
-Koffee.Version = "0.98.0"
+Koffee.Version = "0.98.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -34205,14 +34205,19 @@ RunService.Heartbeat:Connect(function()
             local hr = ch and ch:FindFirstChild("HumanoidRootPart")
             if plr and r and hr then
                 local dest = safeBall(hr.Position, HV.SpamDist or 300)
+                -- v0.98.1: face the target (yaw only, stays upright)
+                local face = r.CFrame - r.Position + dest
+                local flat = Vector3.new(hr.Position.X, dest.Y, hr.Position.Z)
+                if (flat - dest).Magnitude > 0.05 then face = CFrame.lookAt(dest, flat) end
                 if HV.SpamMethod == "Desync" then
                     if Modules.hvh_spam then
-                        Modules.hvh_spam._dsDest = r.CFrame - r.Position + dest
+                        Modules.hvh_spam._dsDest = face
+                        Modules.hvh_spam._dsTarget = hr
                     end
                 else
                     if Modules.hvh_spam then Modules.hvh_spam._dsDest = nil end
                     pcall(function()
-                        r.CFrame = r.CFrame - r.Position + dest
+                        r.CFrame = face
                         r.AssemblyLinearVelocity = Vector3.zero
                     end)
                 end
@@ -34247,9 +34252,27 @@ RunService.Heartbeat:Connect(function()
         -- v0.96.9: publish the held spot for the aim pipeline. Without this the
         -- native features measured from the real body while the server saw the
         -- spam spot, so every shot missed.
+        -- v0.98.1: re-aim at the target every frame (it moves between spam picks),
+        -- and in rivals point the replicated view angle at it on the lowest slot,
+        -- since backstabs read that angle, not the body. Aim / rage still win.
+        local tgt = s and s._dsTarget
+        if live and tgt and tgt.Parent then
+            local flat = Vector3.new(tgt.Position.X, dest.Position.Y, tgt.Position.Z)
+            if (flat - dest.Position).Magnitude > 0.05 then dest = CFrame.lookAt(dest.Position, flat) end
+        end
         local SRV = Shared.RV
         if SRV then
             if live then SRV._spamDs = dest else SRV._spamDs = nil end
+            if SRV.setAngles and SRV.slots then
+                if live and tgt and tgt.Parent and SRV.armViewAngles and SRV.armViewAngles() then
+                    local p, y = SRV.anglesTo(dest.Position + Vector3.new(0, 1.5, 0), tgt.Position)
+                    if p then SRV.setAngles(SRV.slots.Spam, p, y) end
+                    s._dsAngled = true
+                elseif s and s._dsAngled then
+                    s._dsAngled = nil
+                    SRV.clearAngles(SRV.slots.Spam)
+                end
+            end
         end
         if live then
             local r = myRoot()
@@ -38211,7 +38234,7 @@ end)()
 -- v0.94.0: RIVALS NATIVE BRIDGE. Resolves the game's own modules once and publishes
 -- them on Shared.RV, so every rivals feature reads one place instead of re-requiring.
 -- getgenv().KoffeeNoNative = true before loading skips the whole block.
-Shared.RV = { ok = false, slots = { Silent = 4, Aim = 6, PL = 7, Rage = 8, Backstab = 10 } }
+Shared.RV = { ok = false, slots = { Spam = 3, Silent = 4, Aim = 6, PL = 7, Rage = 8, Backstab = 10 } }
 if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoNative) then pcall(function()
     local RV = Shared.RV
     local RS = game:GetService("ReplicatedStorage")
@@ -38786,7 +38809,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         local plOn = SA and SA.Enabled and SA.PerfectLock
         local anyAngle = plOn or on("rv_rage") or on("rv_backstab")
         if not anyAngle then
+            -- v0.98.1: the spam desync ride keeps its own low slot while live
+            local keep = RV._spamDs ~= nil and RV.VA.slots[RV.slots.Spam] or nil
             RV.clearAllAngles()
+            if keep then RV.VA.slots[RV.slots.Spam] = keep; RV.VA.win = keep end
             return
         end
         RV.armViewAngles()
@@ -39140,15 +39166,21 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
             end)
         end
-        -- the crosshair's DamageEffect draws the hit marker and plays its tick,
-        -- so dropping it drops both. Koffee's own hit sounds are unaffected.
-        local function hookHitmarker()
+        -- v0.98.1: MouseCrosshair:DamageEffect(data, divisor) runs for every hit
+        -- the local item lands (control key 0 = damage, key 1 = crit). It is the live
+        -- confirmed-hit funnel; the DamageNumberEffect event v0.98.0 hooked is gone
+        -- from the game. It also draws the hit marker and plays its tick, so
+        -- Disable Hit Marker drops both.
+        local onNativeHit
+        local function hookCrosshair()
             local mc = modAt({ "Modules", "ClientReplicatedClasses", "ClientFighter", "ClientItem",
                                "ItemInterface", "Mouse", "MouseCrosshair" })
             wrapOnce("hitmarker", RV.methodTable(mc, "DamageEffect"), "DamageEffect", function(old)
-                return function(...)
-                    if R.Mods.NoHitmarker and not Koffee.dead() then return end
-                    return old(...)
+                return function(self, data, ...)
+                    if Koffee.dead() then return old(self, data, ...) end
+                    pcall(onNativeHit, data)
+                    if R.Mods.NoHitmarker then return end
+                    return old(self, data, ...)
                 end
             end)
         end
@@ -39215,10 +39247,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
         end
 
-        -- v0.98.0: the game's own hit confirmation. The local fighter receives
-        -- ReplicateFromServer("DamageNumberEffect", hitRoot, damage, headshot)
-        -- for each hit it landed, decided server side, so this replaces the
-        -- health-drop guess for sounds, numbers, effects and the hit log.
         RV._nativeHitAt = setmetatable({}, { __mode = "k" })
         local function weaponName()
             local it = RV.equipped()
@@ -39228,19 +39256,43 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if type(n) ~= "string" then pcall(function() n = it.Info.Name end) end
             return type(n) == "string" and n or nil
         end
-        local function onNativeHit(root, dmg, head)
-            if typeof(root) ~= "Instance" or type(dmg) ~= "number" or dmg <= 0 then return end
-            local char = root.Parent
+        -- the character a hit instance belongs to, if the data carries one
+        local function victimOf(v)
+            local at = typeof(v) == "Instance" and v or nil
+            while at and at ~= Workspace do
+                if at:IsA("Model") and at:FindFirstChildOfClass("Humanoid") then return at end
+                at = at.Parent
+            end
+            return nil
+        end
+        onNativeHit = function(data)
+            if type(data) ~= "table" then return end
+            local dmg = data[K0]
+            if type(dmg) ~= "number" or dmg <= 0 then return end
+            local char = victimOf(data[K2])
+            if not char then
+                for _, v in pairs(data) do
+                    char = victimOf(v)
+                    if char then break end
+                end
+            end
+            -- no victim in the payload: the hit went where we were aiming
+            if not char then
+                local plr = RV.pickTarget(1000)
+                char = plr and plr.Character
+            end
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not hum then return end
+            if not hum or char == LocalPlayer.Character then return end
+            local crit = data[K1] and true or false
             local kill = hum.Health <= 0
             RV._nativeLive = true
             if not kill then RV._nativeHitAt[char] = os.clock() end
             if Shared.landHit then
-                Shared.landHit(char, dmg, kill, { crit = head == true,
-                    part = head and "head" or "body", weapon = weaponName() })
+                Shared.landHit(char, dmg, kill, { crit = crit,
+                    part = crit and "head" or "body", weapon = weaponName() })
             end
         end
+
         -- v0.98.0: every rendered gun shot, local or not, goes through
         -- ItemTypes.Gun:_Tracers(data). The ray list shape follows Harion's reader;
         -- the remote learner only stands down once a shot here actually parses.
@@ -39278,39 +39330,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end)
         end
 
-        local hitWrapped = setmetatable({}, { __mode = "k" })
-        local nextHitCheck = 0
-        local function hookNativeHits(now)
-            if now < nextHitCheck then return end
-            nextHitCheck = now + 0.5
-            local lf = RV.localFighter()
-            if type(lf) ~= "table" then return end
-            if hitWrapped[lf] and rawget(lf, "ReplicateFromServer") == hitWrapped[lf] then return end
-            -- the true original rides on the object, so a re-exec wraps the game's
-            -- method instead of the last session's wrapper
-            local old = rawget(lf, "_koffeeHitOrig")
-            if old == nil then pcall(function() old = lf.ReplicateFromServer end) end
-            if type(old) ~= "function" then return end
-            local mine = function(self, kind, ...)
-                if kind == "DamageNumberEffect" and not Koffee.dead() then
-                    local a, b, c = ...
-                    pcall(onNativeHit, a, b, c)
-                end
-                return old(self, kind, ...)
-            end
-            if setreadonly then pcall(setreadonly, lf, false) end
-            pcall(rawset, lf, "_koffeeHitOrig", old)
-            if pcall(rawset, lf, "ReplicateFromServer", mine) then hitWrapped[lf] = mine end
-        end
-
         RunService.Heartbeat:Connect(function()
             local M = R.Mods
             if not Koffee.dead() then
-                hookNativeHits(os.clock())
+                hookCrosshair()
                 if Koffee.Bullets.Enabled then hookTracers() end
                 if M.NoFlash then hookFlash() end
                 if M.NoSmoke then hookSmoke() end
-                if M.NoHitmarker then hookHitmarker() end
                 if M.NoDmgNumbers then hookDmgNumbers() end
             end
             if next(hidden) or M.NoGameCrosshair or M.NoVignette then guiPass(os.clock()) end
