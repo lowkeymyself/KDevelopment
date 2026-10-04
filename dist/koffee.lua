@@ -1,7 +1,7 @@
--- koffee v0.99.5
+-- koffee v0.99.6
 
 local Koffee = {}
-Koffee.Version = "0.99.5"
+Koffee.Version = "0.99.6"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10806,7 +10806,8 @@ Koffee.Rivals = {
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
                     Adaptive = true, AdaptiveWeapons = false,
-                    AntiMelee = true, ThreatRange = 14,   -- v0.99.5: teleport-in melee answer
+                    AntiMelee = true, ThreatRange = 25,   -- v0.99.5: teleport-in answer (melee and gun)
+                    Melee = true, ChainsawHold = true,    -- v0.99.6: melee ragebot
                     Picks = { "Auto", "Auto", "Auto", "Auto" } },
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
                     Melee = false, MeleePct = 50, NoMuzzle = false,
@@ -10856,7 +10857,9 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Prediction", RG.Predict, function(v) RG.Predict = v end)
     configCheckbox(card, "Adaptive Aggression", RG.Adaptive, function(v) RG.Adaptive = v end)
     configCheckbox(card, "Anti-Melee", RG.AntiMelee, function(v) RG.AntiMelee = v end)
-    slider(card, "Threat Range", 6, 30, RG.ThreatRange, 0, function(v) RG.ThreatRange = v end)
+    slider(card, "Threat Range", 6, 60, RG.ThreatRange, 0, function(v) RG.ThreatRange = v end)
+    configCheckbox(card, "Melee Ragebot", RG.Melee, function(v) RG.Melee = v end)
+    configCheckbox(card, "Chainsaw Cut Hold", RG.ChainsawHold, function(v) RG.ChainsawHold = v end)
     configCheckbox(card, "Adaptive Weapons", RG.AdaptiveWeapons, function(v) RG.AdaptiveWeapons = v end)
     local lib
     pcall(function()
@@ -40000,11 +40003,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         function RG.threat()
             local C = cfg()
             if not C.AntiMelee then return nil, nil end
-            local mr = myRoot()
-            -- the server body only counts while hiding: on a strike spot we are
-            -- next to the target on purpose
-            local me = (RV._rageCF ~= nil and RV._rageCF == RG.hide) and RV._rageCF.Position or nil
-            local best, bp, bd = nil, nil, C.ThreatRange or 14
+            -- v0.99.6: measured from the server body only (what they teleport to),
+            -- and never on a strike spot, where we are close on purpose
+            if RV._rageCF ~= nil and RV._rageCF ~= RG.hide then return nil, nil end
+            local me = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
+            local mr = nil
+            local best, bp, bd = nil, nil, C.ThreatRange or 25
             for _, plr in ipairs(Plrs:GetPlayers()) do
                 local ch = plr ~= LocalPlayer and plr.Character
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
@@ -40067,7 +40071,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local t = RG.track[plr]
             local inVoid = t and t.sub
             local need = ((C.Lead or 35) + (C.Hold or 60)) / 1000 + 0.6
-            local r = RG.strikeDist(it)
+            local melee = it ~= nil and RG.isMelee(it)
+            local r = melee and math.max(RG.reach(it) - 1.5, 2.5) or RG.strikeDist(it)
             local look = Vector3.new(0, 0, -1)
             pcall(function() look = ch.HumanoidRootPart.CFrame.LookVector end)
             -- sticky: keep the last spot while it still sees them and sits in range
@@ -40082,7 +40087,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local best, bs = nil, -math.huge
             for i = 0, 11 do
                 local a = i / 12 * math.pi * 2
-                for _, h in ipairs({ 2.5, 6 }) do
+                for _, h in ipairs(melee and { 0, 1.5 } or { 2.5, 6 }) do
                     local pos = tp + Vector3.new(math.cos(a) * r, h, math.sin(a) * r)
                     if RG.budget(pos) > need and (inVoid or RG.los(pos, tp, ignore)) then
                         local dir = (pos - tp).Unit
@@ -40108,8 +40113,60 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return RG.hide
         end
 
+        -- v0.99.6 :: melee :: (message (2)'s method) reach from Info.AttackReach, the
+        -- swing through MechanicsController:EquippedItemInput with the camera facing
+        -- the target for that one frame, since a swing is judged on its camera cone
+        function RG.isMelee(it)
+            local info
+            pcall(function() info = it.Info end)
+            if type(info) ~= "table" then return false end
+            return rawget(info, "Type") ~= "Gun" and (rawget(info, "AttackReach") ~= nil or rawget(info, "AttackCooldown") ~= nil)
+        end
+        function RG.reach(it)
+            local r = 6
+            pcall(function() r = tonumber(rawget(it.Info, "AttackReach")) or 6 end)
+            return r
+        end
+        function RG.meleeReady(it)
+            local cd = 0.5
+            pcall(function()
+                cd = tonumber(rawget(it.Info, "AttackCooldown")) or tonumber(rawget(it.Info, "Cooldown")) or 0.5
+            end)
+            return os.clock() - (RG.swingAt or 0) >= math.max(cd, 0.05)
+        end
+        function RG.input(name)
+            local mech = RV.Mechanics
+            if type(mech) ~= "table" then return false end
+            return pcall(function() mech:EquippedItemInput(name) end)
+        end
+        function RG.swing(origin, part)
+            local cc = RV.CamCtrl
+            local rot0
+            pcall(function() rot0 = cc.Rotation end)
+            local faced = false
+            pcall(function()
+                local p, y = CFrame.lookAt(origin, part.Position):ToOrientation()
+                cc:SetRotation(Vector2.new(p, y))
+                faced = true
+            end)
+            RG.swingAt = os.clock()
+            RG.firedAt = RG.swingAt
+            local ok = RG.input("StartShooting")
+            if faced and typeof(rot0) == "Vector2" then pcall(function() cc:SetRotation(rot0) end) end
+            task.delay(0.03, function() if not Koffee.dead() then RG.input("FinishShooting") end end)
+            return ok
+        end
+        -- the Chainsaw's right-click cut: held while inside reach, let go outside
+        function RG.chainsaw(it, inReach)
+            local want = inReach and cfg().ChainsawHold and it ~= nil and tostring(it.Name) == "Chainsaw"
+            if want == (RG.sawHeld == true) then return end
+            RG.sawHeld = want
+            RG.input(want and "StartAiming" or "FinishAiming")
+        end
+
         -- :: fire :: the v0.96 packet, origin from the strike spot
         function RG.ready(it)
+            if RG.isMelee(it) then return RG.meleeReady(it) end
             local now = tick()
             local cd, rcd = 0, 0
             pcall(function() cd = it._shoot_cooldown or 0 end)
@@ -40128,6 +40185,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return RV._rageAt == nil or now - RV._rageAt >= gap / frames
         end
         function RG.fire(it, origin, part)
+            if RG.isMelee(it) then
+                if not cfg().Melee then return false end
+                return RG.swing(origin, part)
+            end
             local ammo
             pcall(function() ammo = it:Get("Ammo") end)
             if ammo ~= nil and ammo <= 0 then
@@ -40225,7 +40286,16 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
             elseif RG.phase == "hold" then
                 if live and RG.ready(it) then RG.fire(it, RG.spot.Position, part) end
-                if now - RG.phaseAt >= (C.Hold or 60) / 1000 then RG.phase = "idle" end
+                local hold = (C.Hold or 60) / 1000
+                if it ~= nil and RG.isMelee(it) then hold = math.max(hold, 0.25) end
+                if now - RG.phaseAt >= hold then RG.phase = "idle" end
+            end
+            if it ~= nil and RG.isMelee(it) then
+                local at = (RG.phase ~= "idle" and RG.spot and RG.spot.Position) or RV.serverHead()
+                local inReach = at ~= nil and (at - part.Position).Magnitude <= RG.reach(it) + 1
+                RG.chainsaw(it, live and inReach)
+            elseif RG.sawHeld then
+                RG.chainsaw(nil, false)
             end
             if RG.phase == "idle" and live and not hopping and RG.ready(it) then
                 local spot = RG.planSpot(plr, part, it)
@@ -40266,6 +40336,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         function RV.rageIdle()
             local C = cfg()
             RG.phase = "idle"
+            if RG.sawHeld then RG.chainsaw(nil, false) end
             local mr = myRoot()
             if on("rv_rage") and C.Strike and C.VoidHide and not C.Adaptive and mr and RV.inRound() then
                 RV._rageCF = RG.oobStep(os.clock(), RG.hideCF(mr, os.clock()))
@@ -40410,7 +40481,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if S and S.Enabled and S.Method == "Native" then return end
         local plr, part = RV.pickTarget(1000)
         if part == nil or RV.isDeflecting(plr) then return end
-        local ox = RV.rageOrigin(part)
+        -- v0.99.6: with a rage v2 spot live the server has us there, so build from it
+        local ox = (RV._rageCF and RV._rageCF.Position) or RV.rageOrigin(part)
         local U = RV.Utility
         if U == nil then return end
         local aim = part.Position
@@ -41226,24 +41298,25 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end)
             end
         end
-        -- slide boost raises the fighter's SlidingSpeedMax right before each slide;
-        -- double jump height scales the launch the game just applied
+        -- v0.99.6: slide boost holds the slide's opening speed x the multiplier for
+        -- the whole slide on MechanicsController._sliding_velocity (the leak's
+        -- route; SlidingSpeedMax did nothing). Double jump height scales the launch.
+        function XI.slideStep()
+            local mech = RV.Mechanics
+            local m = math.clamp(R.Mods.SlideBoost or 1, 1, 5)
+            if type(mech) ~= "table" or m == 1 then XI.slideBase0 = nil; return end
+            local sliding, bv = false, nil
+            pcall(function() sliding = mech.IsSliding == true; bv = mech._sliding_velocity end)
+            if not (sliding and bv) then XI.slideBase0 = nil; return end
+            pcall(function()
+                local v = bv.Velocity
+                if v.Magnitude < 0.5 then return end
+                if XI.slideBase0 == nil then XI.slideBase0 = v.Magnitude end
+                bv.Velocity = v.Unit * (XI.slideBase0 * m)
+            end)
+        end
         function XI.hookMechanics()
             local mech = RV.Mechanics
-            wrapOnce("mechSlide", RV.methodTable(mech, "Slide"), "Slide", function(old)
-                return function(self, ...)
-                    pcall(function()
-                        local f = self.LocalFighter
-                        if XI.slideBase[f] == nil then XI.slideBase[f] = f:Get("SlidingSpeedMax") end
-                        local base = XI.slideBase[f]
-                        if type(base) == "number" then
-                            local m = Koffee.dead() and 1 or math.clamp(R.Mods.SlideBoost or 1, 1, 5)
-                            f:Set("SlidingSpeedMax", base * m)
-                        end
-                    end)
-                    return old(self, ...)
-                end
-            end)
             wrapOnce("mechDJ", RV.methodTable(mech, "DoubleJump"), "DoubleJump", function(old)
                 return function(self, ...)
                     local res = table.pack(old(self, ...))
@@ -41263,7 +41336,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local M = R.Mods
             XI.items(now)
             if M.Grenade ~= "Off" then XI.hookGrenade() end
-            if (M.SlideBoost or 1) ~= 1 or (M.DJHeight or 1) ~= 1 then XI.hookMechanics() end
+            if (M.DJHeight or 1) ~= 1 then XI.hookMechanics() end
         end
 
         -- v0.98.0: every rendered gun shot, local or not, goes through
@@ -41309,6 +41382,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 hookCrosshair()
                 RV.hookShootEffect()
                 pcall(XI.step, os.clock())
+                pcall(XI.slideStep)
                 if Koffee.Bullets.Enabled then hookTracers() end
                 XV.step(os.clock())
                 if M.NoFlash then hookFlash() end
