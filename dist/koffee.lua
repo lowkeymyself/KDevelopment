@@ -1,7 +1,7 @@
 -- koffee v0.96.4
 
 local Koffee = {}
-Koffee.Version = "0.96.6"
+Koffee.Version = "0.96.7"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38407,6 +38407,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     local function rageRedirect(cd)
         if type(cd) ~= "table" or Koffee.dead() then return end
         if not on("rv_rage") then return end
+        -- v0.96.7: never steers outside a duel. With rage left on in the lobby
+        -- it used to hijack manual shots that could never count anyway.
+        if not RV.inRound() then return end
         local S = Shared.Combat and Shared.Combat.Silent
         if S and S.Enabled and S.Method == "Native" then return end
         local plr, part = RV.pickTarget(1000)
@@ -38639,6 +38642,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- the raycast flag, edge-triggered on the live cooldowns.
     -- v0.96.6: stripped to just the shoot remote. No rewrites, no forced
     -- reload: the game-built table goes out as built, empty gun included.
+    -- v0.96.7: reverted. The rewrites and the empty reload are back: with rage
+    -- on, the spray needs silent steering and must not dry-fire.
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if not R.Mods.AutoFire then return end
@@ -38658,9 +38663,18 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             pcall(function() rcd = it._reload_cooldown or 0 end)
             local now = tick()
             if now < cd or now < rcd then return end
+            local ammo = nil
+            pcall(function() ammo = it:Get("Ammo") end)
+            if ammo ~= nil and ammo <= 0 then
+                local inp = lf.Input
+                if type(inp) == "function" then inp(lf, "StartReloading") end
+                return
+            end
             local gcd
             local okCd = pcall(function() gcd = lf:GetCameraData() end)
             if not okCd or type(gcd) ~= "table" then return end
+            rageRedirect(gcd)
+            redirect(gcd)
             local oid
             local gotId = pcall(function() oid = it:Get("ObjectID") end)
             if not gotId or oid == nil then return end
