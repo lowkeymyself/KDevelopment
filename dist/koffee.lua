@@ -1,7 +1,7 @@
--- koffee v0.99.6
+-- koffee v0.99.7
 
 local Koffee = {}
-Koffee.Version = "0.99.6"
+Koffee.Version = "0.99.7"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -39967,6 +39967,22 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return RG.cheating(plr)
         end
 
+        -- v0.99.7: a server runs several duels in far apart arenas; only players
+        -- in our own duel are targets (DuelController:GetDuel(player))
+        function RG.sameDuel(plr)
+            if RG.dc == nil then
+                local c = LocalPlayer.PlayerScripts:FindFirstChild("Controllers")
+                RG.dc = RV.idRequire(c and c:FindFirstChild("DuelController")) or false
+            end
+            local dc = RG.dc
+            if not dc then return true end
+            local mine, theirs
+            pcall(function() mine = dc:GetDuel(LocalPlayer) end)
+            if mine == nil then return false end
+            pcall(function() theirs = dc:GetDuel(plr) end)
+            return theirs == mine
+        end
+
         -- :: target :: scored when Smart, nearest otherwise; no 1000 stud cap
         function RG.pick()
             local C = cfg()
@@ -39978,7 +39994,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ch = plr ~= LocalPlayer and plr.Character
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 and not RV.isAlly(plr) and Shared.aimAllowed(plr, true)
-                    and not RV.isDeflecting(plr) then
+                    and not RV.isDeflecting(plr) and RG.sameDuel(plr) then
                     local part = partOf(ch, R.LockPart)
                     local t = RG.track[plr]
                     if part and not (t and t.sub and not C.CounterVoid) then
@@ -40013,7 +40029,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ch = plr ~= LocalPlayer and plr.Character
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
                 local root = ch and ch:FindFirstChild("HumanoidRootPart")
-                if root and hum and hum.Health > 0 and not RV.isAlly(plr) then
+                if root and hum and hum.Health > 0 and not RV.isAlly(plr) and RG.sameDuel(plr) then
                     local d = math.huge
                     if me then d = (root.Position - me).Magnitude end
                     if mr then d = math.min(d, (root.Position - mr.Position).Magnitude) end
@@ -40101,14 +40117,17 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return CFrame.lookAt(best, tp)
         end
 
-        -- :: hide :: far above the map (outside every volume), hopping when Void Spam
+        -- :: hide :: past the map edge at map height, hopping when Void Spam
         function RG.hideCF(mr, now)
             local C = cfg()
             local hop = 1 / math.clamp(C.HopRate or 6, 1, 20)
             if RG.hide == nil or (C.VoidSpam and now - RG.hopAt > hop) then
                 RG.hopAt = now
-                RG.hide = CFrame.new(mr.Position + Vector3.new(math.random(-1500, 1500),
-                    math.random(30000, 45000), math.random(-1500, 1500)))
+                -- v0.99.7: sideways past the map at its own height (message (2)'s void
+                -- spot); straight up got us killed
+                local a = math.random() * math.pi * 2
+                local d = math.random(30000, 45000)
+                RG.hide = CFrame.new(mr.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d))
             end
             return RG.hide
         end
@@ -40247,6 +40266,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local now = os.clock()
             local mr = myRoot()
             if not mr then RV._rageCF = nil; return end
+            -- v0.99.7: lobby / between rounds the server body stays home
+            if not RV.inRound() then
+                RV._rageCF, RG.phase = nil, "idle"
+                if RG.sawHeld then RG.chainsaw(nil, false) end
+                return
+            end
             RG.refreshBounds(now)
             RG.trackAll(now, mr)
             local it = RV.equipped()
