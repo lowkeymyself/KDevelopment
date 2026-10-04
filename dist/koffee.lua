@@ -1,7 +1,7 @@
--- koffee v0.96.1
+-- koffee v0.96.2
 
 local Koffee = {}
-Koffee.Version = "0.96.2"
+Koffee.Version = "0.96.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38254,23 +38254,63 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             tplr, tpart = RV.pickTarget(1000)
         end
 
-        -- ragebot: own the angle at the highest combat slot and drive the real
-        -- input. v0.96.1: Fighter:Input routes the equipped item's StartShooting
-        -- and replicates the return tuple, so ammo, cooldowns and damage are all
-        -- real. Calling the item's Input discarded the tuple: local FX with no
-        -- damage and no ammo change. Aim comes from the chained rewrite below,
-        -- which also shoots through any animation, including inspect.
+        -- ragebot: own the angle at the highest combat slot and fire UseItem
+        -- directly. v0.96.3: read Kicia's ShootEncoded (message line 27111) for
+        -- real this time. Two things 02 got wrong: raycast shots carry
+        -- outer[char(2)] = true, and fire is paced at the gun's own cooldown with
+        -- a pipeline reload at empty instead of dry-firing. Aim still comes from
+        -- the desync-correct origin plus the chained rewrite below.
         if on("rv_rage") and tpart then
             local p, y = RV.anglesTo(origin, tpart.Position)
             if p then RV.setAngles(RV.slots.Rage, p, y) end
             if not RV.isDeflecting(tplr) and RV.inRound() then
                 pcall(function()
-                    local lf = RV.localFighter()
-                    if lf == nil then return end
-                    local inp = lf.Input
-                    if type(inp) ~= "function" then return end
+                    local it = RV.equipped()
+                    if it == nil then return end
+                    local ammo = nil
+                    pcall(function() ammo = it:Get("Ammo") end)
+                    if ammo ~= nil and ammo <= 0 then
+                        local lf = RV.localFighter()
+                        local inp = lf and lf.Input
+                        if type(inp) == "function" then inp(lf, "StartReloading") end
+                        return
+                    end
+                    local oid
+                    local gotId = pcall(function() oid = it:Get("ObjectID") end)
+                    if not gotId or oid == nil then return end
+                    local toEnum = RV.Enums and RV.Enums.ToEnum
+                    if type(toEnum) ~= "function" then return end
+                    local U = RV.Utility
+                    if U == nil or RV.UseItem == nil then return end
+                    local info
+                    pcall(function() info = it.Info end)
+                    local gap = 0.12
+                    if type(info) == "table" then
+                        pcall(function()
+                            gap = math.max(tonumber(rawget(info, "ShootCooldown")) or 0,
+                                tonumber(rawget(info, "BurstCooldown")) or 0, 0.05)
+                        end)
+                    end
+                    local now = tick()
+                    if RV._rageAt ~= nil and now - RV._rageAt < gap then return end
+                    RV._rageAt = now
+                    local aim = CFrame.lookAt(origin, tpart.Position)
+                    if not Koffee.cfOk(aim) then return end
+                    local c0, c1, c2, c3 = utf8.char(0), utf8.char(1), utf8.char(2), utf8.char(3)
+                    local inner = {}
+                    inner[c0] = U:EncodeCFrame(aim)
+                    inner[c1] = U:EncodeCFrame(tpart.CFrame)
+                    inner[c2] = tpart
+                    inner[c3] = U:EncodeCFrame(tpart.CFrame:ToObjectSpace(CFrame.new(tpart.Position)))
+                    local outer = {}
+                    outer[c1] = inner
+                    local ray = false
+                    if type(info) == "table" then
+                        pcall(function() ray = rawget(info, "IsRaycast") == true end)
+                    end
+                    if ray then outer[c2] = true end
                     for _ = 1, math.clamp(R.Rage.ShootFrames, 1, 5) do
-                        inp(lf, "StartShooting")
+                        RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
                     end
                 end)
             end
