@@ -1,7 +1,7 @@
--- koffee v0.93.22
+-- koffee v0.93.23
 
 local Koffee = {}
-Koffee.Version = "0.93.22"
+Koffee.Version = "0.93.23"
 
 
 
@@ -33025,9 +33025,9 @@ function AC.buildPanel(host)
     })
     local cbBrute = moduleCheckbox(host, "Brute-force Rubberbands", "bruteforce_rb")
     local cbAnti  = moduleCheckbox(host, "Anti-rubberbands", "anti_rb")
-    slider(host, "Snap Threshold (studs)", 4, 60, AC.SnapThreshold, 0, function(v) AC.SnapThreshold = v end)
-    slider(host, "Match Radius (studs)", 1, 75, AC.MatchRadius, 0, function(v) AC.MatchRadius = v end)
-    slider(host, "Fight Window (s)", 0.1, 2, AC.Window, 1, function(v) AC.Window = v end)
+    local sldSnap = slider(host, "Snap Threshold (studs)", 4, 60, AC.SnapThreshold, 0, function(v) AC.SnapThreshold = v end)
+    local sldRadius = slider(host, "Match Radius (studs)", 1, 75, AC.MatchRadius, 0, function(v) AC.MatchRadius = v end)
+    local sldWindow = slider(host, "Fight Window (s)", 0.1, 2, AC.Window, 1, function(v) AC.Window = v end)
     -- v0.60.2 fix: the Extra tab is built once and is NOT in rebuildConfigTabs'
     -- list, but rebuildConfigTabs wipes EVERY module's Watchers globally. That
     -- orphaned these checkboxes (a config load, e.g. an auto-load, cleared their
@@ -33040,6 +33040,10 @@ function AC.buildPanel(host)
             ctrl.setState(m and m.Enabled or false)
             subscribeModule(id, function(s) ctrl.setState(s) end)
         end
+        -- v0.93.23: same staleness as the HvH sliders one box over.
+        sldSnap.set(AC.SnapThreshold)
+        sldRadius.set(AC.MatchRadius)
+        sldWindow.set(AC.Window)
     end
 end
 end)()
@@ -33673,13 +33677,13 @@ function HV.buildPanel(host)
     local cbBlink = moduleCheckbox(host, "Blink", "hvh_blink")
     local blinkRef = actPill(cbBlink.row, BlinkK)
     -- v0.68.7: 0 means uncapped (every Heartbeat). Random escapes want max rate.
-    slider(host, "Blink Interval (s)", 0, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
+    local sldBlinkRate = slider(host, "Blink Interval (s)", 0, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
     local cbSpam = moduleCheckbox(host, "Spam TP", "hvh_spam")
     local spamRef = actPill(cbSpam.row, SpamK)
     -- v0.70.0: follow-sphere radius around the locked target, capped at 10000.
     -- Points land INSIDE the ball (volume), void-checked like shell landings.
-    slider(host, "Spam Radius", 10, 10000, HV.SpamDist or 300, 0, function(v) HV.SpamDist = v end)
-    slider(host, "Spam Interval (s)", 0, 0.6, HV.SpamRate or 0.25, 2, function(v) HV.SpamRate = v end)
+    local sldSpamDist = slider(host, "Spam Radius", 10, 10000, HV.SpamDist or 300, 0, function(v) HV.SpamDist = v end)
+    local sldSpamRate = slider(host, "Spam Interval (s)", 0, 0.6, HV.SpamRate or 0.25, 2, function(v) HV.SpamRate = v end)
     -- v0.68.9: exact entry, not a drag slider. Past 1M one slider pixel is
     -- thousands of studs, so small and huge jumps cannot share a control.
     -- Typing keeps both 500 and 8000000 settable. Clamped 10 to 10000000:
@@ -33713,8 +33717,8 @@ function HV.buildPanel(host)
     end)
     -- v0.69.1: release (or unlatch, or disarm) snaps back to the anchor saved
     -- when the key first went active. Unchecked means one-way trips only.
-    configCheckbox(host, "Return To Start", HV.BlinkReturn ~= false, function(v) HV.BlinkReturn = v end)
-    configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
+    local cbReturn = configCheckbox(host, "Return To Start", HV.BlinkReturn ~= false, function(v) HV.BlinkReturn = v end)
+    local cbFace = configCheckbox(host, "Face Target After Blink", HV.FaceTarget, function(v) HV.FaceTarget = v end)
     local cbVelo = moduleCheckbox(host, "Velocity Desync", "hvh_velo")
     local veloPill = keybindPill(cbVelo.row, "hvh_velo", nil, "Velocity Desync")
     local cbDraw = moduleCheckbox(host, "Fast Draw", "hvh_draw")
@@ -33811,6 +33815,13 @@ function HV.buildPanel(host)
         drawSpawn.setState(HV.DrawSpawn ~= false)
         drawLock.setState(HV.DrawLock ~= false)
         drawLand.setState(HV.DrawLand ~= false)
+        -- v0.93.23: Extra is never rebuilt, so these read stale after a config
+        -- load. The values did save; only the controls lied about them.
+        cbReturn.setState(HV.BlinkReturn ~= false)
+        cbFace.setState(HV.FaceTarget and true or false)
+        sldBlinkRate.set(HV.BlinkRate or 0.25)
+        sldSpamDist.set(HV.SpamDist or 300)
+        sldSpamRate.set(HV.SpamRate or 0.25)
         pcall(function()
             if distBox and not distBox:IsFocused() then
                 distBox.Text = tostring(math.floor(HV.BlinkDist or 500))
