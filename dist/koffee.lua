@@ -1,7 +1,7 @@
--- koffee v0.99.0
+-- koffee v0.99.1
 
 local Koffee = {}
-Koffee.Version = "0.99.0"
+Koffee.Version = "0.99.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -3497,6 +3497,7 @@ rebuildConfigTabs = function()
     if Shared and Shared._targetlockResync then pcall(Shared._targetlockResync) end
     -- v0.68.0: Extra is never rebuilt either. Same treatment for the HvH rows.
     if Shared and Shared._hvhResync then pcall(Shared._hvhResync) end
+    if Shared and Shared._rvAutoResync then pcall(Shared._rvAutoResync) end
     -- v0.62.0: replay the window-switcher bar drop-in on a config switch, and
     -- re-sync each slot's on/off visual to the freshly loaded open-states.
     if Koffee.Windows and Koffee.Windows.playIntro then pcall(Koffee.Windows.playIntro) end
@@ -6096,6 +6097,10 @@ local ESP = {
                            Thickness = 0, Length = 5, ThroughWalls = true,
                            UseEspColor = true, Taper = false },
         HeadDot        = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Size = 6 },       -- dot at head
+        -- v0.99.1 (Harion ESP): held weapon under the distance, and a flag when
+        -- the player's head points at you within Angle degrees.
+        Weapon         = { Enabled = false, Color = Color3.fromRGB(205, 205, 205), TextSize = 12 },
+        Staring        = { Enabled = false, Color = Color3.fromRGB(255, 95, 85), Angle = 10 },
         -- v0.0.28: right-click Profile Picture for Size / Outline Thickness / Y Offset.
         ProfilePicture = { Enabled = false, Size = 40, OutlineThickness = 1, YOffset = 0 },          -- avatar above name
         -- v0.5.0: HitNumbers: floating damage text above hit target. Merges stacked
@@ -6156,6 +6161,7 @@ local ESP = {
         GradTop  = Color3.fromRGB(0, 255, 0),
         GradMid  = Color3.fromRGB(255, 255, 0),
         GradBot  = Color3.fromRGB(255, 0, 0),
+        Lerp     = false,   -- v0.99.1: bar eases toward the new value instead of snapping
         Text    = false,            -- show the health number
         TextPos = "Above Name",     -- "Above Name" ([hp] Name) | "On Health Bar"
     },
@@ -6997,6 +7003,7 @@ local function cleanRig(rig)
     pcall(function() rig.pfp:Destroy() end)
     pcall(function() rig.nameLbl:Destroy() end)
     pcall(function() rig.distLbl:Destroy() end)
+    if rig.flagLbl then pcall(function() rig.flagLbl:Destroy() end) end
 end
 
 -- v0.59.0: OVER-SCAN. Some games (Phantom Forces, etc.) do not expose the visible
@@ -7538,6 +7545,8 @@ local function hideRigVisuals(rig)
     if rig.nameLbl then rig.nameLbl.Visible = false end
     if rig.pfp then rig.pfp.Visible = false end
     if rig.distLbl then rig.distLbl.Visible = false end
+    if rig.flagLbl then rig.flagLbl.Visible = false end
+    rig._hpShown = nil
     -- reset smoothing state so re-enable snaps rather than lerping from stale
     rig.lastBoxPos = nil
     rig.lastBoxSize = nil
@@ -7940,6 +7949,72 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     else
         rig.distLbl.Visible = false
     end
+    ESP._flags(rig, plr, cam, grad, overrideColor, outlineOn, outlineCol, styleTextBg)
+end
+
+-- v0.99.1: weapon + staring tag under the distance. Built lazily on the rig and
+-- torn down with it; the weapon read is cached per rig at 4Hz.
+function ESP._weaponOf(plr, char)
+    local RV = Shared.RV
+    if Koffee._isRivals and RV and RV.fighterFor then
+        local n
+        pcall(function()
+            local f = RV.fighterFor(plr)
+            local it = f and f.EquippedItem
+            n = it and (it.Name or (it.Info and it.Info.Name))
+        end)
+        if type(n) == "string" then return n end
+    end
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    return tool and tool.Name or nil
+end
+function ESP._flags(rig, plr, cam, grad, overrideColor, outlineOn, outlineCol, styleTextBg)
+    local W, S = ESP.Indicators.Weapon, ESP.Indicators.Staring
+    if not ((W.Enabled or S.Enabled) and plr and cam and not rig.isNPC) then
+        if rig.flagLbl then rig.flagLbl.Visible = false end
+        return
+    end
+    if not (rig.flagLbl and rig.flagLbl.Parent) then
+        rig.flagLbl = makeTextTag(ESP.BoxLayer, 0, W.TextSize or 12)
+        rig.flagLbl.RichText = true
+    end
+    local lbl = rig.flagLbl
+    local char = plr.Character
+    local now = os.clock()
+    if W.Enabled and (rig._wpnAt == nil or now - rig._wpnAt > 0.25) then
+        rig._wpnAt = now
+        rig._wpn = ESP._weaponOf(plr, char)
+    end
+    local stare = false
+    if S.Enabled then
+        local head = char and char:FindFirstChild("Head")
+        local me = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Head")
+        if head and me then
+            local to = me.Position - head.Position
+            if to.Magnitude > 0.1 then
+                stare = head.CFrame.LookVector:Dot(to.Unit) >= math.cos(math.rad(math.clamp(S.Angle or 10, 1, 45)))
+            end
+        end
+    end
+    local parts = {}
+    if W.Enabled and rig._wpn then parts[#parts + 1] = rig._wpn end
+    if stare then
+        parts[#parts + 1] = '<font color="#' .. S.Color:ToHex() .. '">STARING</font>'
+    end
+    if #parts == 0 then lbl.Visible = false; return end
+    local feet = rig.torso.Position - Vector3.new(0, 3.2, 0)
+    local fp = cam:WorldToViewportPoint(feet)
+    if fp.Z <= 0 then lbl.Visible = false; return end
+    local d = ESP.Indicators.Distance
+    local below = d.Enabled and ((d.TextSize or 13) + 6) or 0
+    ESP._set(lbl, "Text", table.concat(parts, "  "))
+    ESP._set(lbl, "TextSize", W.TextSize or 12)
+    ESP._set(lbl, "TextColor3", grad and Color3.new(1, 1, 1) or (overrideColor or W.Color))
+    styleTextBg(lbl)
+    lbl.Position = UDim2.new(0, fp.X, 0, fp.Y + 3 + below)
+    lbl.Visible = true
+    applyTextOutline(lbl, outlineOn, outlineCol, 1)
+    applyGradient(lbl, grad)
 end
 
 -- v0.92.0: skeleton as world-space lines on two WireframeHandleAdornments (outline
@@ -8703,6 +8778,10 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             local frac = 1
             if hum and hum.MaxHealth > 0 then
                 frac = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+            end
+            if ESP.Health.Lerp then
+                rig._hpShown = rig._hpShown and (rig._hpShown + (frac - rig._hpShown) * 0.18) or frac
+                frac = rig._hpShown
             end
             local hbLeft, hbTop, hbBot = minX, minY, maxY
             -- v0.0.81: bar width proportional to the ON-SCREEN body height so both
@@ -10720,13 +10799,31 @@ Koffee.Rivals = {
     LockPart    = "Head",
     Desync      = { Mode = "Orbit", Radius = 6, Height = 1.5, Speed = 3.5,
                     MinY = 0, MaxY = 200, MaxFromTarget = 25 },
-    Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true },
+    Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true,
+                    Status = true },   -- v0.99.1: top-centre "who is rage on" pill
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
                     Melee = false, MeleePct = 50, NoMuzzle = false,
                     NoShake = false, NoShootAnim = false, HideArms = false,
                     NoReloadAnim = false, NoEquipAnim = false,
                     NoFlash = false, NoSmoke = false, NoVignette = false,
                     NoGameCrosshair = false, NoHitmarker = false, NoDmgNumbers = false },
+    -- v0.99.1 (Harion viewmodel): appearance, motion, offset and FOV
+    VM          = {
+        Weapon = { On = false, Color = Color3.fromRGB(217, 150, 95), Material = "ForceField",
+                   Opacity = 100, NoTextures = true },
+        Arms   = { On = false, Color = Color3.fromRGB(242, 234, 223), Material = "ForceField",
+                   Opacity = 100, NoClothes = true },
+        Motion = { On = false, Sway = true, Tilt = true, Bob = true, Jump = true, Sprint = true },
+        Offset = { On = false, X = 0, Y = 0, Z = 0 },
+        FOV    = { On = false, Value = 10 },
+    },
+    -- v0.99.1 (Harion automation): lobby queue, vote bans, staff watch
+    Auto        = {
+        Queue = "1v1",
+        BanWeapons = true, First = "None", Second = "None", FirstDelay = 0.6, SecondDelay = 1.2,
+        BanMap = false, MapDelay = 0.8,
+        StaffAction = "Notify",
+    },
 }
 registerConfig("rivals_native", Koffee.Rivals)
 -- thin registrations: the bodies only flip state, since the engines are built with the
@@ -12172,6 +12269,41 @@ Koffee._characterTab = function(root)
         configCheckbox(vis, "Disable Game Crosshair", RM.NoGameCrosshair, function(v) RM.NoGameCrosshair = v end)
         configCheckbox(vis, "Disable Hit Marker", RM.NoHitmarker, function(v) RM.NoHitmarker = v end)
         configCheckbox(vis, "Disable Damage Numbers", RM.NoDmgNumbers, function(v) RM.NoDmgNumbers = v end)
+
+        -- v0.99.1: viewmodel (Harion). Right-click each row for its settings.
+        local VMC = Koffee.Rivals.VM
+        local MATS = { "ForceField", "Neon", "Glass", "SmoothPlastic", "Plastic", "Metal", "Foil",
+            "DiamondPlate", "Ice", "Marble", "Granite", "Slate", "Wood", "Fabric", "Sand", "CorrodedMetal" }
+        local wRow = configCheckbox(vis, "Weapon Chams", VMC.Weapon.On, function(v) VMC.Weapon.On = v end)
+        rightClickSettings(wRow.row, "Weapon Chams", function(popup)
+            popup:swatch("Color", VMC.Weapon.Color, function(c) VMC.Weapon.Color = c end)
+            popup:dropdown("Material", MATS, VMC.Weapon.Material, function(v) VMC.Weapon.Material = v end)
+            popup:slider("Opacity", 0, 100, VMC.Weapon.Opacity, 0, function(v) VMC.Weapon.Opacity = v end)
+            popup:toggle("Disable Textures", VMC.Weapon.NoTextures, function(v) VMC.Weapon.NoTextures = v end)
+        end)
+        local aRow = configCheckbox(vis, "Arm Chams", VMC.Arms.On, function(v) VMC.Arms.On = v end)
+        rightClickSettings(aRow.row, "Arm Chams", function(popup)
+            popup:swatch("Color", VMC.Arms.Color, function(c) VMC.Arms.Color = c end)
+            popup:dropdown("Material", MATS, VMC.Arms.Material, function(v) VMC.Arms.Material = v end)
+            popup:slider("Opacity", 0, 100, VMC.Arms.Opacity, 0, function(v) VMC.Arms.Opacity = v end)
+            popup:toggle("Disable Clothes", VMC.Arms.NoClothes, function(v) VMC.Arms.NoClothes = v end)
+        end)
+        local mRow = configCheckbox(vis, "Still Viewmodel", VMC.Motion.On, function(v) VMC.Motion.On = v end)
+        rightClickSettings(mRow.row, "Still Viewmodel", function(popup)
+            popup:toggle("No Sway", VMC.Motion.Sway, function(v) VMC.Motion.Sway = v end)
+            popup:toggle("No Tilt", VMC.Motion.Tilt, function(v) VMC.Motion.Tilt = v end)
+            popup:toggle("No Bobbing", VMC.Motion.Bob, function(v) VMC.Motion.Bob = v end)
+            popup:toggle("No Jump Bounce", VMC.Motion.Jump, function(v) VMC.Motion.Jump = v end)
+            popup:toggle("No Sprint Pose", VMC.Motion.Sprint, function(v) VMC.Motion.Sprint = v end)
+        end)
+        local oRow = configCheckbox(vis, "Viewmodel Offset", VMC.Offset.On, function(v) VMC.Offset.On = v end)
+        rightClickSettings(oRow.row, "Viewmodel Offset", function(popup)
+            popup:slider("X", -5, 5, VMC.Offset.X, 2, function(v) VMC.Offset.X = v end)
+            popup:slider("Y", -5, 5, VMC.Offset.Y, 2, function(v) VMC.Offset.Y = v end)
+            popup:slider("Z", -5, 5, VMC.Offset.Z, 2, function(v) VMC.Offset.Z = v end)
+        end)
+        configCheckbox(vis, "FOV Changer", VMC.FOV.On, function(v) VMC.FOV.On = v end)
+        slider(vis, "FOV Offset", -40, 60, VMC.FOV.Value, 0, function(v) VMC.FOV.Value = v end)
     end
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
@@ -15642,6 +15774,8 @@ local Combat = {
                 function(v) RVC.Rage.ShootFrames = v end)
             configCheckbox(miscCard, "Ragebot Evasion", RVC.Rage.Evasion,
                 function(v) RVC.Rage.Evasion = v end)
+            configCheckbox(miscCard, "Rage Status", RVC.Rage.Status ~= false,
+                function(v) RVC.Rage.Status = v end)
             keybindPill(moduleCheckbox(miscCard, "Always Backstab", "rv_backstab").row, "rv_backstab", nil, "Backstab")
             configCheckbox(miscCard, "Skip Deflecting", RVC.SkipDeflect,
                 function(v) RVC.SkipDeflect = v end)
@@ -17438,6 +17572,49 @@ end)()
         end
     end)
 end)()
+
+-- v0.99.1 RAGE STATUS (Harion's RagebotStatus). A pill at the top centre while the
+-- rivals ragebot is on: who it is shooting, or idle. Scales in and out.
+if Koffee._isRivals then (function()
+    local pill = new("CanvasGroup", {
+        Name = KID.name("rstat"), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 58),
+        Size = UDim2.new(0, 0, 0, 28), AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.15,
+        GroupTransparency = 1, Visible = false, ZIndex = 18, Parent = screen,
+    }, {
+        corner(7), stroke(Theme.Palette.Accent, 1),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 16), PaddingRight = UDim.new(0, 14) }),
+        new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, -9, 0.5, 0),
+            Size = UDim2.new(0, 3, 0.56, 0), BackgroundColor3 = Theme.Palette.Accent, BorderSizePixel = 0 },
+            { corner(2) }),
+        new("TextLabel", { AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0),
+            BackgroundTransparency = 1, RichText = true, FontFace = Theme.Fonts.Bold, TextSize = 14,
+            TextColor3 = Theme.Palette.Text, Text = "" }),
+    })
+    local lbl = pill:FindFirstChildOfClass("TextLabel")
+    local st = pill:FindFirstChildOfClass("UIStroke")
+    if st then st.Transparency = 0.55 end
+    local shown, lastText = 0, nil
+    RunService.RenderStepped:Connect(function(dt)
+        if Koffee.dead() then pcall(function() pill:Destroy() end); return end
+        local R = Koffee.Rivals
+        local want = R.Rage.Status ~= false and Modules.rv_rage and Modules.rv_rage.Enabled
+        shown = shown + ((want and 1 or 0) - shown) * (1 - math.exp(-dt * 14))
+        if shown < 0.01 and not want then pill.Visible = false; return end
+        pill.Visible = true
+        pill.GroupTransparency = 1 - shown
+        local RV = Shared.RV
+        local t = RV and RV._rageTarget
+        local accent = Theme.Palette.Accent:ToHex()
+        local text
+        if t and t.Parent then
+            text = 'Rage  <font color="#' .. accent .. '">' .. (t.DisplayName or t.Name) .. "</font>"
+        else
+            text = 'Rage  <font color="#' .. Theme.Palette.TextMuted:ToHex() .. '">idle</font>'
+        end
+        if text ~= lastText then lastText = text; lbl.Text = text end
+    end)
+end)() end
 
 -- v0.6.0 WORLD RULES + INSTANCE PICKER. Own IIFE so its many locals don't touch
 -- the chunk register ceiling (learned the hard way in v0.5.1). Exposes via
@@ -23365,6 +23542,18 @@ addTab("Visuals", function(root)
         popup:slider("Outline Thickness", 0, 6, ESP.Indicators.ProfilePicture.OutlineThickness, 1, function(v) ESP.Indicators.ProfilePicture.OutlineThickness = v end)
         popup:slider("Y Offset", -80, 80, ESP.Indicators.ProfilePicture.YOffset, 0, function(v) ESP.Indicators.ProfilePicture.YOffset = v end)
     end)
+    -- v0.99.1: held weapon and the staring flag share one tag under the distance
+    local wpCfg, stCfg = ESP.Indicators.Weapon, ESP.Indicators.Staring
+    local wpRow = configCheckbox(indPanel, "Weapon", wpCfg.Enabled, function(v) wpCfg.Enabled = v end)
+    attachSingleSwatch(wpRow.row, wpCfg.Color, function(c) wpCfg.Color = c end)
+    rightClickSettings(wpRow.row, "Weapon", function(popup)
+        popup:slider("Text Size", 8, 24, wpCfg.TextSize, 0, function(v) wpCfg.TextSize = v end)
+    end)
+    local stRow = configCheckbox(indPanel, "Staring", stCfg.Enabled, function(v) stCfg.Enabled = v end)
+    attachSingleSwatch(stRow.row, stCfg.Color, function(c) stCfg.Color = c end)
+    rightClickSettings(stRow.row, "Staring", function(popup)
+        popup:slider("Angle", 1, 45, stCfg.Angle, 0, function(v) stCfg.Angle = v end)
+    end)
     -- v0.5.0: Hit Numbers: floating damage text on attributed hits. Right-click
     -- for stack mode, timing, colors, crit threshold, kill tag.
     local hitCfgUI = ESP.Indicators.HitNumbers
@@ -23440,6 +23629,7 @@ addTab("Visuals", function(root)
     local hbRow = configCheckbox(healthPanel, "Health Bar", ESP.Health.Bar.Enabled, function(v) ESP.Health.Bar.Enabled = v end)
     attachSingleSwatch(hbRow.row, ESP.Health.Bar.Color, function(c) ESP.Health.Bar.Color = c end)
     configCheckbox(healthPanel, "Health Based", ESP.Health.Based, function(v) ESP.Health.Based = v end)
+    configCheckbox(healthPanel, "Health Lerp", ESP.Health.Lerp, function(v) ESP.Health.Lerp = v end)
     -- v0.98.0: right-click for the three stops. Overrides Health Based while on.
     local hgRow = configCheckbox(healthPanel, "Health Gradient", ESP.Health.Gradient, function(v) ESP.Health.Gradient = v end)
     rightClickSettings(hgRow.row, "Health Gradient", function(popup)
@@ -27100,6 +27290,7 @@ addTab("Options", function(root)
         pcall(function() RunService:UnbindFromRenderStep("KThirdPerson") end)
         if Shared.aspectRestore then pcall(Shared.aspectRestore) end
         if Shared.skyEnvRestore then pcall(Shared.skyEnvRestore) end
+        if Shared.rvViewmodelRestore then pcall(Shared.rvViewmodelRestore) end
         pcall(function() RunService:UnbindFromRenderStep("KAspect") end)
         pcall(function() RunService:UnbindFromRenderStep("KAspectFix") end)
         if Shared.RV and Shared.RV._tpNative then pcall(Shared.RV.thirdPerson, false) end
@@ -27133,6 +27324,7 @@ addTab("Options", function(root)
         Koffee._unloaded = true
         KID.ctx.gen = (KID.ctx.gen or 0) + 1
     end
+    Shared.unloadKoffee = unloadKoffee
     -- confirm popup: centered on popupScreen so it survives the window fade
     -- + can be seen even if the user closes the menu underneath.
     local function showUnloadConfirm()
@@ -34926,11 +35118,233 @@ RunService.Heartbeat:Connect(function()
 end)
 end)()
 
+-- v0.99.1 RIVALS AUTOMATION (Harion). Auto Queue joins the picked queue once per
+-- lobby visit (never on a match server, never mid round, retry at most every
+-- 60s). Auto Ban votes once per voting window, only while voting is open, after
+-- its delays. Staff Detector reads group roles of everyone in the server.
+Shared.RivalsAuto = nil
+if Koffee._isRivals then (function()
+    local A = Koffee.Rivals.Auto
+    local RS = game:GetService("ReplicatedStorage")
+    local Plrs = game:GetService("Players")
+    local X = { queued = false, lastQueue = 0, voteSeen = false, staffSeen = {}, queueMap = {} }
+    function X.req(inst)
+        if not inst then return nil end
+        local prev
+        pcall(function()
+            if getthreadidentity and setthreadidentity then prev = getthreadidentity(); setthreadidentity(2) end
+        end)
+        local ok, res = pcall(require, inst)
+        pcall(function() if setthreadidentity and prev then setthreadidentity(prev) end end)
+        return ok and res or nil
+    end
+    function X.duelLib()
+        if X.dl == nil then
+            local m = RS:FindFirstChild("Modules")
+            X.dl = X.req(m and m:FindFirstChild("DuelLibrary")) or false
+        end
+        return X.dl or nil
+    end
+    function X.queueNames()
+        local out, dl = {}, X.duelLib()
+        if dl then
+            pcall(function()
+                for _, q in ipairs(dl.MatchmakingQueueOrder or {}) do
+                    local info = dl.MatchmakingQueues and dl.MatchmakingQueues[q]
+                    local disp = (info and info.DisplayName) or q
+                    out[#out + 1] = disp
+                    X.queueMap[disp] = q
+                end
+            end)
+        end
+        if #out == 0 then out = { "1v1" }; X.queueMap["1v1"] = "1v1" end
+        return out
+    end
+    function X.weaponNames()
+        local out = { "None" }
+        pcall(function()
+            local w = LocalPlayer.PlayerScripts.Assets.ViewModels.Weapons
+            for _, folder in ipairs({ w, w:FindFirstChild("Unobtainable") }) do
+                for _, v in ipairs(folder and folder:GetChildren() or {}) do
+                    if v:IsA("Model") then out[#out + 1] = v.Name end
+                end
+            end
+        end)
+        table.sort(out, function(a, b)
+            if a == "None" then return true end
+            if b == "None" then return false end
+            return a < b
+        end)
+        return out
+    end
+    function X.onMatchServer()
+        local RV = Shared.RV
+        local ok, v = pcall(function() return RV.Consts.IS_MATCHMAKING_SERVER end)
+        return ok and v == true
+    end
+    function X.inRound()
+        local RV = Shared.RV
+        local ok, v = pcall(function() return RV.inRound() end)
+        return ok and v == true
+    end
+    function X.queueStep(now)
+        if not (Modules.rv_autoqueue and Modules.rv_autoqueue.Enabled) then X.queued = false; return end
+        if X.onMatchServer() or X.inRound() then X.queued = false; return end
+        if X.queued and now - X.lastQueue < 60 then return end
+        X.lastQueue = now
+        X.queued = true
+        local name = X.queueMap[A.Queue] or A.Queue
+        task.spawn(function()
+            local mm = X.req(LocalPlayer.PlayerScripts.Controllers:FindFirstChild("MatchmakingController"))
+            if mm and mm.QueueInto then pcall(mm.QueueInto, mm, name) end
+        end)
+    end
+    -- voting lives on the spectated duel subject's interface
+    function X.votingOpen()
+        local RV = Shared.RV
+        local ok, v = pcall(function()
+            return RV.Spectate.CurrentDuelSubject.DuelInterface.Voting:IsOpen()
+        end)
+        return ok and v == true
+    end
+    function X.vote(name)
+        local r = RS:FindFirstChild("Remotes")
+        r = r and r:FindFirstChild("Duels")
+        r = r and r:FindFirstChild("Vote")
+        if r then pcall(function() r:FireServer(name) end) end
+    end
+    function X.banStep()
+        if not (Modules.rv_autoban and Modules.rv_autoban.Enabled) then X.voteSeen = false; return end
+        local open = X.votingOpen()
+        if open and not X.voteSeen then
+            X.voteSeen = true
+            task.spawn(function()
+                if A.BanWeapons then
+                    if A.First and A.First ~= "None" then
+                        task.wait(math.max(A.FirstDelay or 0, 0)); X.vote(A.First)
+                    end
+                    if A.Second and A.Second ~= "None" then
+                        task.wait(math.max(A.SecondDelay or 0, 0)); X.vote(A.Second)
+                    end
+                end
+                if A.BanMap then
+                    task.wait(math.max(A.MapDelay or 0, 0))
+                    local maps, dl = {}, X.duelLib()
+                    pcall(function()
+                        for n, d in pairs(dl.Maps or {}) do
+                            if not d.IsHidden then maps[#maps + 1] = n end
+                        end
+                    end)
+                    if #maps > 0 then X.vote(maps[math.random(1, #maps)]) end
+                end
+            end)
+        elseif not open then
+            X.voteSeen = false
+        end
+    end
+    -- staff: role names in the owning group, checked once per player
+    local STAFF = { "mod", "admin", "staff", "dev", "owner", "manager", "contributor", "tester", "qa", "community" }
+    function X.isStaff(plr)
+        if game.CreatorType ~= Enum.CreatorType.Group then return false end
+        local ok, role = pcall(function() return plr:GetRoleInGroup(game.CreatorId) end)
+        if not ok or type(role) ~= "string" then return false end
+        local r = role:lower()
+        if r == "guest" or r == "member" then return false end
+        for _, k in ipairs(STAFF) do
+            if r:find(k, 1, true) then return true, role end
+        end
+        return false
+    end
+    function X.check(plr)
+        if plr == LocalPlayer or X.staffSeen[plr] ~= nil then return end
+        X.staffSeen[plr] = false
+        task.spawn(function()
+            local staff, role = X.isStaff(plr)
+            if not staff or Koffee.dead() then return end
+            if not (Modules.rv_staff and Modules.rv_staff.Enabled) then return end
+            X.staffSeen[plr] = true
+            local msg = plr.Name .. " (" .. tostring(role) .. ") is in your server"
+            pcall(Koffee.notify, "Staff Detected", msg, { severity = "error" })
+            if A.StaffAction == "Unload" and Shared.unloadKoffee then
+                task.wait(0.5); pcall(Shared.unloadKoffee)
+            elseif A.StaffAction == "Leave" then
+                task.wait(0.5)
+                pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer) end)
+            end
+        end)
+    end
+    function X.scanAll()
+        for _, plr in ipairs(Plrs:GetPlayers()) do X.check(plr) end
+    end
+
+    registerModule("rv_autoqueue", "Auto Queue", function() X.queued = false end, function()
+        pcall(function()
+            local mm = X.req(LocalPlayer.PlayerScripts.Controllers:FindFirstChild("MatchmakingController"))
+            if mm and mm.TryLeaveQueue then mm:TryLeaveQueue() end
+        end)
+    end)
+    registerModule("rv_autoban", "Auto Ban", function() X.voteSeen = false end, function() end)
+    registerModule("rv_staff", "Staff Detector", function()
+        table.clear(X.staffSeen)
+        X.scanAll()
+    end, function() end)
+    Plrs.PlayerAdded:Connect(function(plr)
+        if Modules.rv_staff and Modules.rv_staff.Enabled then X.check(plr) end
+    end)
+    Plrs.PlayerRemoving:Connect(function(plr) X.staffSeen[plr] = nil end)
+
+    task.spawn(function()
+        while not Koffee.dead() do
+            pcall(X.queueStep, os.clock())
+            pcall(X.banStep)
+            task.wait(0.5)
+        end
+    end)
+
+    Shared.RivalsAuto = {}
+    function Shared.RivalsAuto.buildPanel(host)
+        local ctl = {}
+        ctl.q = moduleCheckbox(host, "Auto Queue", "rv_autoqueue")
+        keybindPill(ctl.q.row, "rv_autoqueue", nil, "Auto Queue")
+        ctl.qDd = dropdown(host, "Queue", X.queueNames(), A.Queue, function(v) A.Queue = v; X.queued = false end)
+        ctl.b = moduleCheckbox(host, "Auto Ban", "rv_autoban")
+        ctl.bW = configCheckbox(host, "Ban Weapons", A.BanWeapons, function(v) A.BanWeapons = v end)
+        local weapons = X.weaponNames()
+        ctl.f = dropdown(host, "First Ban", weapons, A.First, function(v) A.First = v end)
+        ctl.fD = slider(host, "First Ban Delay (s)", 0, 10, A.FirstDelay, 1, function(v) A.FirstDelay = v end)
+        ctl.s = dropdown(host, "Second Ban", weapons, A.Second, function(v) A.Second = v end)
+        ctl.sD = slider(host, "Second Ban Delay (s)", 0, 10, A.SecondDelay, 1, function(v) A.SecondDelay = v end)
+        ctl.bM = configCheckbox(host, "Ban Random Map", A.BanMap, function(v) A.BanMap = v end)
+        ctl.mD = slider(host, "Map Ban Delay (s)", 0, 10, A.MapDelay, 1, function(v) A.MapDelay = v end)
+        ctl.st = moduleCheckbox(host, "Staff Detector", "rv_staff")
+        ctl.sa = dropdown(host, "On Staff", { "Notify", "Unload", "Leave" }, A.StaffAction,
+            function(v) A.StaffAction = v end)
+        -- Extra is not rebuilt on config load, so push the loaded values in
+        Shared._rvAutoResync = function()
+            for id, c in pairs({ rv_autoqueue = ctl.q, rv_autoban = ctl.b, rv_staff = ctl.st }) do
+                local m = Modules[id]
+                pcall(function() c.setState(m and m.Enabled or false) end)
+            end
+            pcall(function() ctl.qDd.setValue(A.Queue) end)
+            pcall(function() ctl.bW.setState(A.BanWeapons and true or false) end)
+            pcall(function() ctl.f.setValue(A.First) end)
+            pcall(function() ctl.fD.set(A.FirstDelay) end)
+            pcall(function() ctl.s.setValue(A.Second) end)
+            pcall(function() ctl.sD.set(A.SecondDelay) end)
+            pcall(function() ctl.bM.setState(A.BanMap and true or false) end)
+            pcall(function() ctl.mD.set(A.MapDelay) end)
+            pcall(function() ctl.sa.setValue(A.StaffAction) end)
+        end
+    end
+end)() end
+
 addTab("Extra", function(epanel)
     -- v0.48.3: no card title: Combat/Custom cards are titleless so the
     -- secondary bar sits at the very top of the feature box. Same here.
     local card = panel(epanel)
-    local R = Shared.subTabs and Shared.subTabs(card, { "Mods", "Anticheats", "Hvh" }) or nil
+    local tabs = Koffee._isRivals and { "Mods", "Anticheats", "Hvh", "Rivals" } or { "Mods", "Anticheats", "Hvh" }
+    local R = Shared.subTabs and Shared.subTabs(card, tabs) or nil
+    if R and R["Rivals"] and Shared.RivalsAuto then Shared.RivalsAuto.buildPanel(R["Rivals"]) end
     local host = (R and R["Mods"]) or card
     if R and R["Anticheats"] and Shared.Anticheat then Shared.Anticheat.buildPanel(R["Anticheats"]) end
     if R and R["Hvh"] and Shared.Hvh then Shared.Hvh.buildPanel(R["Hvh"]) end
@@ -39141,6 +39555,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if on("rv_rage") then
             tplr, tpart = RV.pickTarget(1000)
         end
+        RV._rageTarget = tplr
 
         -- ragebot: own the angle at the highest combat slot and fire UseItem
         -- directly. v0.96.3: read Kicia's ShootEncoded (message line 27111) for
@@ -39586,6 +40001,199 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
         end
 
+        -- v0.99.1: VIEWMODEL (Harion). Appearance repaints the first-person rig
+        -- (Workspace.ViewModels.FirstPerson, rebuilt per weapon) with per-object
+        -- originals so turning a side off restores it. Hide Arms keeps owning the
+        -- arms while it is on.
+        local XV = { orig = setmetatable({}, { __mode = "k" }), sa = {}, nextPaint = 0,
+                     offSig = nil, fovSet = nil }
+        ORIG.vmOffsets = ORIG.vmOffsets or {}
+        function XV.rig()
+            local root = Workspace:FindFirstChild("ViewModels")
+            local fp = root and root:FindFirstChild("FirstPerson")
+            if not fp then return nil end
+            for _, c in ipairs(fp:GetChildren()) do
+                if c:IsA("Model") then return c end
+            end
+            return nil
+        end
+        function XV.isArm(o, model)
+            local at = o
+            while at and at ~= model do
+                if at.Name == "LeftArm" or at.Name == "RightArm" then return true end
+                at = at.Parent
+            end
+            return false
+        end
+        function XV.restore(o)
+            local r = XV.orig[o]
+            if not r then return end
+            XV.orig[o] = nil
+            pcall(function()
+                if o:IsA("BasePart") then
+                    o.Color, o.Material, o.Transparency = r[1], r[2], r[3]
+                    if r[4] ~= nil then o.TextureID = r[4] end
+                elseif o:IsA("SpecialMesh") then
+                    o.TextureId, o.VertexColor = r[1], r[2]
+                elseif o:IsA("Decal") or o:IsA("Texture") then
+                    o.Transparency = r[1]
+                end
+            end)
+        end
+        function XV.paint(o, c, strip)
+            local r = XV.orig[o]
+            if o:IsA("BasePart") then
+                if not r then
+                    r = { o.Color, o.Material, o.Transparency, o:IsA("MeshPart") and o.TextureID or nil }
+                    XV.orig[o] = r
+                end
+                -- parts the game keeps invisible (roots, hit boxes) stay invisible
+                if r[3] >= 0.99 then return end
+                o.Color = c.Color
+                o.Material = Enum.Material[c.Material] or Enum.Material.ForceField
+                o.Transparency = 1 - math.clamp(c.Opacity or 100, 0, 100) / 100
+                if strip and o:IsA("MeshPart") then o.TextureID = "" end
+            elseif o:IsA("SpecialMesh") then
+                if not r then XV.orig[o] = { o.TextureId, o.VertexColor } end
+                if strip then o.TextureId = "" end
+                o.VertexColor = Vector3.new(c.Color.R, c.Color.G, c.Color.B)
+            elseif (o:IsA("Decal") or o:IsA("Texture")) and strip then
+                if not r then XV.orig[o] = { o.Transparency } end
+                o.Transparency = 1
+            end
+        end
+        -- SurfaceAppearance overrides a MeshPart's colour, so it is parked while painted
+        function XV.parkSA(o, on)
+            if on then
+                if not XV.sa[o] then XV.sa[o] = o.Parent; o.Parent = nil end
+            end
+        end
+        function XV.releaseSA(keep)
+            for o, parent in pairs(XV.sa) do
+                if not keep[o] then
+                    pcall(function() if o.Parent == nil and parent and parent.Parent then o.Parent = parent end end)
+                    XV.sa[o] = nil
+                end
+            end
+        end
+        function XV.appearance(now)
+            if now < XV.nextPaint then return end
+            XV.nextPaint = now + 0.1
+            local V = R.VM
+            local wOn, aOn = V.Weapon.On, V.Arms.On and not R.Mods.HideArms
+            local model = XV.rig()
+            local keepSA = {}
+            if model and (wOn or aOn or next(XV.orig)) then
+                for _, o in ipairs(model:GetDescendants()) do
+                    local arm = XV.isArm(o, model)
+                    local on = (arm and aOn) or (not arm and wOn)
+                    local c = arm and V.Arms or V.Weapon
+                    local strip = arm and c.NoClothes or (not arm and c.NoTextures)
+                    if o:IsA("SurfaceAppearance") then
+                        if on then XV.parkSA(o, true); keepSA[o] = true end
+                    elseif on then
+                        pcall(XV.paint, o, c, strip)
+                    elseif XV.orig[o] then
+                        XV.restore(o)
+                    end
+                end
+            end
+            -- parked appearances only stay parked while their side is still on
+            for o in pairs(XV.sa) do
+                if o.Parent == nil and (wOn or aOn) and not keepSA[o] then keepSA[o] = true end
+            end
+            if not (wOn or aOn) then table.clear(keepSA) end
+            XV.releaseSA(keepSA)
+        end
+        -- motion: the viewmodel's springs are zeroed either side of its own Update,
+        -- the same shape Harion uses, so nothing the frame computes survives.
+        function XV.zero(sp, v)
+            if sp == nil then return end
+            pcall(function() sp.Value = v; sp.Target = v end)
+        end
+        function XV.still(vm)
+            local M = R.VM.Motion
+            if not M.On or Koffee.dead() then return end
+            if M.Sway then XV.zero(rawget(vm, "_sway_spring"), Vector2.zero) end
+            if M.Tilt then
+                XV.zero(rawget(vm, "_tilt_spring"), Vector2.zero)
+                XV.zero(rawget(vm, "_raycast_tilt_spring"), 0)
+            end
+            if M.Bob then
+                XV.zero(rawget(vm, "_bobbing_speed_spring"), 0)
+                XV.zero(rawget(vm, "_bobbing_value_spring"), Vector2.zero)
+                pcall(rawset, vm, "_bobbing_tick", 0)
+            end
+            if M.Jump then
+                XV.zero(rawget(vm, "_jump_spring"), 0)
+                pcall(rawset, vm, "CurrentJumpValue", 0)
+            end
+            if M.Sprint then XV.zero(rawget(vm, "_sprinting_spring"), 0) end
+        end
+        function XV.hookMotion()
+            local cvm = modAt({ "Modules", "ClientReplicatedClasses", "ClientFighter", "ClientItem", "ClientViewModel" })
+            wrapOnce("vmUpdate", RV.methodTable(cvm, "Update"), "Update", function(old)
+                return function(self, ...)
+                    pcall(XV.still, self)
+                    local res = table.pack(old(self, ...))
+                    pcall(XV.still, self)
+                    return table.unpack(res, 1, res.n)
+                end
+            end)
+        end
+        -- offset: the game reads RootPartOffset off ItemLibrary.ViewModels every
+        -- frame (Splash's route). Originals live in genv so a re-exec restores
+        -- the game's value, not ours.
+        function XV.offset()
+            local O = R.VM.Offset
+            local sig = O.On and (O.X .. "|" .. O.Y .. "|" .. O.Z) or "off"
+            if sig == XV.offSig then return end
+            local lib = RV.ItemLib
+            local vms = type(lib) == "table" and rawget(lib, "ViewModels") or nil
+            if type(vms) ~= "table" then return end
+            XV.offSig = sig
+            local add = Vector3.new(O.X, O.Y, O.Z)
+            for k, v in pairs(vms) do
+                if type(v) == "table" then
+                    local cur = rawget(v, "RootPartOffset")
+                    if typeof(cur) == "CFrame" then
+                        if ORIG.vmOffsets[k] == nil then ORIG.vmOffsets[k] = cur end
+                        local base = ORIG.vmOffsets[k]
+                        pcall(rawset, v, "RootPartOffset", O.On and (base + add) or base)
+                    end
+                end
+            end
+        end
+        function XV.fov()
+            local F = R.VM.FOV
+            local want = F.On and math.clamp(F.Value, -40, 60) or 0
+            if want == XV.fovSet then return end
+            local cc = RV.CamCtrl
+            if type(cc) == "table" and pcall(function() cc:SetExternalFOVOffset("koffee", want) end) then
+                XV.fovSet = want
+            end
+        end
+        function XV.step(now)
+            XV.appearance(now)
+            if R.VM.Motion.On then XV.hookMotion() end
+            XV.offset()
+            XV.fov()
+        end
+        -- unload: hand the offsets and FOV back
+        Shared.rvViewmodelRestore = function()
+            local lib = RV.ItemLib
+            local vms = type(lib) == "table" and rawget(lib, "ViewModels") or nil
+            if type(vms) == "table" then
+                for k, base in pairs(ORIG.vmOffsets) do
+                    local v = rawget(vms, k)
+                    if type(v) == "table" then pcall(rawset, v, "RootPartOffset", base) end
+                end
+            end
+            pcall(function() RV.CamCtrl:SetExternalFOVOffset("koffee", 0) end)
+            for o in pairs(XV.orig) do XV.restore(o) end
+            XV.releaseSA({})
+        end
+
         -- v0.98.0: every rendered gun shot, local or not, goes through
         -- ItemTypes.Gun:_Tracers(data). The ray list shape follows Harion's reader;
         -- the remote learner only stands down once a shot here actually parses.
@@ -39628,6 +40236,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not Koffee.dead() then
                 hookCrosshair()
                 if Koffee.Bullets.Enabled then hookTracers() end
+                XV.step(os.clock())
                 if M.NoFlash then hookFlash() end
                 if M.NoSmoke then hookSmoke() end
                 if M.NoDmgNumbers then hookDmgNumbers() end
