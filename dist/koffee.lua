@@ -1,7 +1,7 @@
--- koffee v0.94.1
+-- koffee v0.96.1
 
 local Koffee = {}
-Koffee.Version = "0.96.1"
+Koffee.Version = "0.96.2"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10482,7 +10482,7 @@ registerModule("rv_backstab", "Always Backstab", function() end, function()
     local RV = Shared.RV
     if RV and RV.clearAngles then RV.clearAngles(RV.slots.Backstab) end
 end)
-registerModule("rv_infjump",  "Infinite Double Jumps", function() end, function()
+registerModule("rv_infjump",  "Infinite Jump", function() end, function()
     local RV = Shared.RV
     if RV and RV.restoreJumps then RV.restoreJumps() end
 end)
@@ -11735,7 +11735,7 @@ Koffee._characterTab = function(root)
     -- v0.94.0: rivals caps air jumps with Info.MaxDoubleJumps and has no jump
     -- cooldown to bypass, so both universal rows are replaced by the native one.
     if Koffee._isRivals then
-        moduleCheckbox(mv, "Infinite Double Jumps", "rv_infjump")
+        moduleCheckbox(mv, "Infinite Jump", "rv_infjump")
     else
         moduleCheckbox(mv, "No Jump Cooldown", "nojumpcd")
         moduleCheckbox(mv, "Infinite Jump",    "infjump")
@@ -38468,12 +38468,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     rawset(info, "InputSpammingEnabled", rec._spamT)
                 end
             end
-            -- the double jump counter is kept client side, so raising the cap is the
-            -- whole feature. Replaces Infinite Jump in this game.
-            if type(rec.MaxDoubleJumps) == "number" then
-                if on("rv_infjump") then rawset(info, "MaxDoubleJumps", 676767)
-                else rawset(info, "MaxDoubleJumps", rec.MaxDoubleJumps) end
-            end
+            -- v0.96.2: the cap is written even when the gun never had one
+            -- (melee carries no MaxDoubleJumps at all), and a nil original deletes
+            -- the key again on restore. The counter itself stays client side.
+            if on("rv_infjump") then rawset(info, "MaxDoubleJumps", 676767)
+            else rawset(info, "MaxDoubleJumps", rec.MaxDoubleJumps) end
             -- the gun's own local tracer path is gated on this field. v0.96.0:
             -- the No Tracers row is gone, so this only ever restores the stock
             -- value, which keeps old saves honest without touching the read.
@@ -38515,9 +38514,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
 
     function RV.restoreJumps()
         for info, rec in pairs(origInfo) do
-            if type(rec.MaxDoubleJumps) == "number" then
-                pcall(rawset, info, "MaxDoubleJumps", rec.MaxDoubleJumps)
-            end
+            pcall(rawset, info, "MaxDoubleJumps", rec.MaxDoubleJumps)
         end
     end
     function RV.restoreInfo()
@@ -38547,6 +38544,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- v0.96.1: full auto re-triggers the real input while LMB is held. The spam
     -- table zeros only restore stock buffering; repeat fire comes from here, and
     -- the game's own cooldown, ammo and reload guards pace every shot.
+    -- v0.96.2: edge-triggered. The blind 60Hz spam re-entered during cooldown and
+    -- fought the game's own queue flag; now it only knocks when the gun is ready.
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if not R.Mods.AutoFire then return end
@@ -38559,7 +38558,16 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local lf = RV.localFighter()
             if lf == nil then return end
             local inp = lf.Input
-            if type(inp) == "function" then inp(lf, "StartShooting") end
+            if type(inp) ~= "function" then return end
+            local it = RV.equipped()
+            if it ~= nil then
+                local cd, rcd = 0, 0
+                pcall(function() cd = it._shoot_cooldown or 0 end)
+                pcall(function() rcd = it._reload_cooldown or 0 end)
+                local now = tick()
+                if now < cd or now < rcd then return end
+            end
+            inp(lf, "StartShooting")
         end)
     end)
 end) end
