@@ -1,7 +1,7 @@
 -- koffee v0.96.4
 
 local Koffee = {}
-Koffee.Version = "0.96.8"
+Koffee.Version = "0.96.9"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -33769,7 +33769,15 @@ RunService.Heartbeat:Connect(function()
     do
         local s = Modules.hvh_spam
         local dest = s and s._dsDest
-        if s and s.Enabled and keyActive(SpamK) and HV.SpamMethod == "Desync" and dest ~= nil then
+        local live = s and s.Enabled and keyActive(SpamK) and HV.SpamMethod == "Desync" and dest ~= nil
+        -- v0.96.9: publish the held spot for the aim pipeline. Without this the
+        -- native features measured from the real body while the server saw the
+        -- spam spot, so every shot missed.
+        local SRV = Shared.RV
+        if SRV then
+            if live then SRV._spamDs = dest else SRV._spamDs = nil end
+        end
+        if live then
             local r = myRoot()
             if r then
                 local oldCF = r.CFrame
@@ -38150,7 +38158,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     function RV.serverHead()
         -- what the server believes we are shooting from: the desync spot when
         -- one is live. Every range and facing check measures from here.
+        -- v0.96.9: the Spam TP ride publishes its spot too, so native aim stops
+        -- measuring from the real body while spam-desynced.
         if RV._dsLast ~= nil then return RV._dsLast.Position end
+        if RV._spamDs ~= nil then return RV._spamDs.Position end
         local ch = myChar()
         local h = ch and headOf(ch)
         if h then return h.Position end
