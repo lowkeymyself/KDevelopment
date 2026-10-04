@@ -1,7 +1,7 @@
--- koffee v0.93.23
+-- koffee v0.94.0
 
 local Koffee = {}
-Koffee.Version = "0.93.23"
+Koffee.Version = "0.94.0"
 
 
 
@@ -3295,6 +3295,12 @@ function Shared.aimAllowed(plr, teamCheck)
     end
     if teamCheck and isTeammate and isTeammate(plr) then return false end
     if Shared.friendIgnored(plr, "Combat") then return false end
+    -- v0.94.0: a swinging katana reflects shots back, so rivals skips that target.
+    -- Reads a 10Hz cache, never a per-candidate walk of the fighter list.
+    local RV = Shared.RV
+    if RV and RV.ok and Koffee.Rivals and Koffee.Rivals.SkipDeflect then
+        if RV.deflecting and RV.deflecting[plr] then return false end
+    end
     return true
 end
 -- v0.65.0: the custom-graph tier of targetMark. A Custom Features "Target Status"
@@ -5279,6 +5285,13 @@ end
 function isSameTeam(plr, localPlr)
     localPlr = localPlr or LocalPlayer
     if not plr or plr == localPlr then return false end
+    -- v0.94.0: rivals ships no Team objects, so the TeamColor fallback below read every
+    -- player as an ally and Team Check refused every target. Native TeamID wins there.
+    local RV = Shared.RV
+    if RV and RV.ok and RV.sameTeam then
+        local fine, res = pcall(RV.sameTeam, plr)
+        if fine then return res end
+    end
     local a, b = localPlr.Team, plr.Team
     if a ~= nil or b ~= nil then return a == b end
     if localPlr.Neutral or plr.Neutral then return false end
@@ -10421,6 +10434,50 @@ end)()
 registerModule("nojumpcd", "No Jump Cooldown", function() end, function() end)
 registerModule("infjump",  "Infinite Jump",    function() end, function() end)
 
+-- v0.94.0: RIVALS NATIVE FEATURE STATE. Declared here, not with the bridge at the
+-- bottom, because addTab runs its builder immediately: the Combat tab reads these
+-- modules while it is being built. The engines that consume them live with the bridge.
+Koffee.Rivals = {
+    SkipDeflect = true,
+    LockPart    = "Head",
+    Freeze      = false,
+    Desync      = { Mode = "Orbit", Radius = 6, Height = 1.5, Speed = 3.5,
+                    MinY = 0, MaxY = 200, MaxFromTarget = 25 },
+    Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true },
+    Flick       = { Cooldown = 250, Duration = 110, Curvature = 12, Humanness = 30, Shoot = true },
+    Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
+                    Melee = false, MeleePct = 50, NoTracers = false, NoMuzzle = false },
+    Engine      = { Enabled = false },
+}
+registerConfig("rivals_native", Koffee.Rivals)
+-- thin registrations: the bodies only flip state, since the engines are built with the
+-- bridge and read Modules.* live. Enable order therefore never matters.
+registerModule("rv_lock",     "Native Perfect Lock", function() end, function()
+    local RV = Shared.RV
+    if RV and RV.clearAngles then RV.clearAngles(RV.slots.Aim) end
+end)
+registerModule("rv_desync",   "Desync", function() end, function()
+    local RV = Shared.RV
+    if RV and RV.restoreServerCFrame then RV.restoreServerCFrame() end
+end)
+registerModule("rv_rage",     "Native Ragebot", function() end, function()
+    local RV = Shared.RV
+    if RV and RV.clearAngles then RV.clearAngles(RV.slots.Rage) end
+end)
+registerModule("rv_backstab", "Always Backstab", function() end, function()
+    local RV = Shared.RV
+    if RV and RV.clearAngles then RV.clearAngles(RV.slots.Backstab) end
+end)
+registerModule("rv_silent",   "Native Silent Aim", function() end, function() end)
+registerModule("rv_flick",    "Flickbot", function() end, function()
+    local RV = Shared.RV
+    if RV and RV.clearAngles then RV.clearAngles(RV.slots.Flick) end
+end)
+registerModule("rv_infjump",  "Infinite Double Jumps", function() end, function()
+    local RV = Shared.RV
+    if RV and RV.restoreJumps then RV.restoreJumps() end
+end)
+
 UserInputService.JumpRequest:Connect(function()
     local inf = Modules.infjump  and Modules.infjump.Enabled
     local njc = Modules.nojumpcd and Modules.nojumpcd.Enabled
@@ -11666,8 +11723,14 @@ end
 -- :: tab builder (called by the Character addTab in normal tab order) ::
 Koffee._characterTab = function(root)
     local mv = panel(root, "Movement")
-    moduleCheckbox(mv, "No Jump Cooldown", "nojumpcd")
-    moduleCheckbox(mv, "Infinite Jump",    "infjump")
+    -- v0.94.0: rivals caps air jumps with Info.MaxDoubleJumps and has no jump
+    -- cooldown to bypass, so both universal rows are replaced by the native one.
+    if Koffee._isRivals then
+        moduleCheckbox(mv, "Infinite Double Jumps", "rv_infjump")
+    else
+        moduleCheckbox(mv, "No Jump Cooldown", "nojumpcd")
+        moduleCheckbox(mv, "Infinite Jump",    "infjump")
+    end
     local function feat(label, id)
         local c = moduleCheckbox(mv, label, id)
         activationPill(c.row, CFG[id])
@@ -12074,6 +12137,11 @@ local Combat = {
         ["Left Foot"]  = { "LeftFoot", "Left Leg" },
         ["Right Foot"] = { "RightFoot", "Right Leg" },
     }
+    -- v0.94.0: rivals rigs carry HitboxHead and HitboxHeadSmall as the real hit
+    -- volumes, so they lead there. Every other game keeps Head first.
+    if Koffee._isRivals then
+        HITMAP["Head"] = { "HitboxHead", "HitboxHeadSmall", "Head" }
+    end
     -- v0.90.0 AUTO: the first part you can actually see, in priority order (head,
     -- torso, root, arms, legs, hands, feet), by a camera ray to each part. Cached a
     -- few frames per character so the candidate loops don't ray every part each frame.
@@ -13381,6 +13449,10 @@ local Combat = {
         -- never outlive the frame that armed it.
         plPos, plPart = nil, nil
         Shared._plAim = nil
+        -- v0.94.0: the rivals native angle follows the same one-frame contract
+        if Shared.RV and Shared.RV.clearAngles then
+            Shared.RV.clearAngles(Shared.RV.slots.PL)
+        end
         -- v0.66.1: no key bound means always armed while enabled (matches silent).
         -- An unbound aim key used to wedge aimHeld false forever and kill the aimbot.
         if not Combat.Aim.Enabled or (Combat.Aim.ActivationKey and not aimHeld) then
@@ -13538,6 +13610,16 @@ local Combat = {
             if not Combat.Silent.Enabled then Shared._plAim = tpos end
             -- v0.93.15: Aim Type no longer applies here (the dropdown already said so); a
             -- saved Mouse config kept the damped mouse path. Only Third Person moves the cursor.
+            -- v0.94.0: in rivals, Perfect Lock owns the native view angle instead of
+            -- writing the camera. The server reads the angle we replicate, so the shot
+            -- lands and the viewmodel cannot desync from a camera we never moved. This
+            -- is what replaces the two-actuator camera snap in that game.
+            local RVN = Shared.RV
+            if RVN and RVN.ok and RVN.armViewAngles and RVN.armViewAngles() then
+                local pa, ya = RVN.anglesTo(RVN.serverHead() or cam.CFrame.Position, tpos)
+                if pa then RVN.setAngles(RVN.slots.PL, pa, ya) end
+                return
+            end
             if Combat.Aim.ThirdPerson then
                 local sp = cam:WorldToViewportPoint(tpos)
                 if sp.Z > 0 and mousemoverel then
@@ -15012,6 +15094,9 @@ local Combat = {
             local shown = Combat.Aim.AimType
             if pl then
                 shown = Combat.Aim.ThirdPerson and "Perfect Lock: Mouse" or "Perfect Lock: Camera"
+                -- v0.94.0: rivals drives the replicated view angle, not either of those
+                local RVN = Shared.RV
+                if RVN and RVN.ok then shown = "Perfect Lock: Native" end
             end
             aimTypeDD.setLocked(pl, shown)
         end
@@ -15109,6 +15194,59 @@ local Combat = {
                 function(v) Combat.RivalsGun.FireDelay = v end)
             configCheckbox(miscCard, "No Spread", Combat.RivalsGun.NoSpread,
                 function(v) Combat.RivalsGun.NoSpread = v end)
+        end
+        -- v0.94.0: RIVALS native combat. These own the game's own view angle
+        -- replication and shoot input instead of writing the camera, so the viewmodel
+        -- can never desync from the lock. Rapid Fire and No Spread above stay on the
+        -- v0.93.19 gun engine, which owns those Info fields.
+        if Koffee._isRivals then
+            local RVC = Koffee.Rivals
+            moduleCheckbox(miscCard, "Native Silent Aim", "rv_silent")
+            moduleCheckbox(miscCard, "Native Perfect Lock", "rv_lock")
+            dropdown(miscCard, "Lock Part", { "Head", "Torso", "Root" }, RVC.LockPart,
+                function(v) RVC.LockPart = v end)
+            moduleCheckbox(miscCard, "Native Ragebot", "rv_rage")
+            slider(miscCard, "Shoot Frames", 1, 5, RVC.Rage.ShootFrames, 0,
+                function(v) RVC.Rage.ShootFrames = v end)
+            configCheckbox(miscCard, "Ragebot Evasion", RVC.Rage.Evasion,
+                function(v) RVC.Rage.Evasion = v end)
+            moduleCheckbox(miscCard, "Always Backstab", "rv_backstab")
+            moduleCheckbox(miscCard, "Flickbot", "rv_flick")
+            slider(miscCard, "Flick Duration", 20, 400, RVC.Flick.Duration, 0,
+                function(v) RVC.Flick.Duration = v end)
+            slider(miscCard, "Flick Cooldown", 0, 1000, RVC.Flick.Cooldown, 0,
+                function(v) RVC.Flick.Cooldown = v end)
+            slider(miscCard, "Flick Curvature", 0, 40, RVC.Flick.Curvature, 0,
+                function(v) RVC.Flick.Curvature = v end)
+            slider(miscCard, "Flick Humanness", 0, 100, RVC.Flick.Humanness, 0,
+                function(v) RVC.Flick.Humanness = v end)
+            moduleCheckbox(miscCard, "Desync", "rv_desync")
+            dropdown(miscCard, "Desync Mode", { "Orbit", "Random", "Translocate", "Off" },
+                RVC.Desync.Mode, function(v) RVC.Desync.Mode = v end)
+            slider(miscCard, "Desync Radius", 1, 50, RVC.Desync.Radius, 1,
+                function(v) RVC.Desync.Radius = v end)
+            slider(miscCard, "Desync Height", -5, 10, RVC.Desync.Height, 1,
+                function(v) RVC.Desync.Height = v end)
+            slider(miscCard, "Orbit Speed", 0.5, 20, RVC.Desync.Speed, 1,
+                function(v) RVC.Desync.Speed = v end)
+            configCheckbox(miscCard, "Freeze View Angle", RVC.Freeze,
+                function(v) RVC.Freeze = v end)
+            configCheckbox(miscCard, "Skip Deflecting", RVC.SkipDeflect,
+                function(v) RVC.SkipDeflect = v end)
+            configCheckbox(miscCard, "No Recoil", RVC.Mods.Recoil,
+                function(v) RVC.Mods.Recoil = v end)
+            slider(miscCard, "Recoil Reduction", 0, 100, RVC.Mods.RecoilPct, 0,
+                function(v) RVC.Mods.RecoilPct = v end)
+            configCheckbox(miscCard, "Full Auto", RVC.Mods.AutoFire,
+                function(v) RVC.Mods.AutoFire = v end)
+            configCheckbox(miscCard, "Faster Melee", RVC.Mods.Melee,
+                function(v) RVC.Mods.Melee = v end)
+            slider(miscCard, "Melee Cooldown", 1, 100, RVC.Mods.MeleePct, 0,
+                function(v) RVC.Mods.MeleePct = v end)
+            configCheckbox(miscCard, "No Tracers", RVC.Mods.NoTracers,
+                function(v) RVC.Mods.NoTracers = v end)
+            configCheckbox(miscCard, "No Muzzle Flash", RVC.Mods.NoMuzzle,
+                function(v) RVC.Mods.NoMuzzle = v end)
         end
         configCheckbox(miscCard, "Hitbox Expander", Combat.Gun.HitboxExpander,
             function(v) Combat.Gun.HitboxExpander = v end)
@@ -15986,7 +16124,9 @@ end)();
 (function()
     local G = Shared.Combat.Gun
     local Players = game:GetService("Players")
-    local PARTS = { "HeadHB", "Head", "UpperTorso", "Torso" }
+    -- v0.94.0: HitboxHead / HitboxHeadSmall are rivals' own hit volumes. Absent
+    -- elsewhere, so the list stays universal.
+    local PARTS = { "HitboxHead", "HitboxHeadSmall", "HeadHB", "Head", "UpperTorso", "Torso" }
     local snap, conn, nextPass = {}, nil, 0
     -- v0.77.1: live grown-player set for the ESP Hitbox toggle. Cleared by
     -- forget() on every exit path, so ESP never reads a stale entry.
@@ -33682,7 +33822,8 @@ function HV.buildPanel(host)
     local spamRef = actPill(cbSpam.row, SpamK)
     -- v0.70.0: follow-sphere radius around the locked target, capped at 10000.
     -- Points land INSIDE the ball (volume), void-checked like shell landings.
-    local sldSpamDist = slider(host, "Spam Radius", 10, 10000, HV.SpamDist or 300, 0, function(v) HV.SpamDist = v end)
+    -- v0.94.0: minimum is 1, his call. 1 stud is effectively standing inside them.
+    local sldSpamDist = slider(host, "Spam Radius", 1, 10000, HV.SpamDist or 300, 0, function(v) HV.SpamDist = v end)
     local sldSpamRate = slider(host, "Spam Interval (s)", 0, 0.6, HV.SpamRate or 0.25, 2, function(v) HV.SpamRate = v end)
     -- v0.68.9: exact entry, not a drag slider. Past 1M one slider pixel is
     -- thousands of studs, so small and huge jumps cannot share a control.
@@ -37489,6 +37630,765 @@ end)()
         end)
     end
 end)()
+
+-- v0.94.0: RIVALS NATIVE BRIDGE. Resolves the game's own modules once and publishes
+-- them on Shared.RV, so every rivals feature reads one place instead of re-requiring.
+-- getgenv().KoffeeNoNative = true before loading skips the whole block.
+Shared.RV = { ok = false, slots = { Silent = 4, Aim = 6, PL = 7, Rage = 8, Backstab = 10, Flick = 12 } }
+if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoNative) then pcall(function()
+    local RV = Shared.RV
+    local RS = game:GetService("ReplicatedStorage")
+    local LP = LocalPlayer
+
+    -- the game's modules refuse a level 8 caller on some runtimes, so require at 2
+    local function idRequire(inst)
+        if not inst then return nil end
+        local prev
+        pcall(function()
+            if getthreadidentity and setthreadidentity then
+                prev = getthreadidentity(); setthreadidentity(2)
+            end
+        end)
+        local ok, res = pcall(require, inst)
+        pcall(function() if setthreadidentity and prev then setthreadidentity(prev) end end)
+        if ok then return res end
+        return nil
+    end
+    local function kid(parent, name)
+        if not parent then return nil end
+        local out
+        pcall(function() out = parent:FindFirstChild(name) end)
+        return out
+    end
+    local function deep(parent, path)
+        local at = parent
+        for _, n in ipairs(path) do
+            at = kid(at, n)
+            if at == nil then return nil end
+        end
+        return at
+    end
+    -- require hands back an instance whose methods live on the metatable's __index,
+    -- so find the table that actually owns the method before writing to it.
+    local function methodTable(t, probe)
+        if type(t) ~= "table" then return nil end
+        if type(rawget(t, probe)) == "function" then return t end
+        local mt = getmetatable(t)
+        if type(mt) ~= "table" then return nil end
+        local idx = rawget(mt, "__index")
+        if type(idx) == "table" and type(rawget(idx, probe)) == "function" then return idx end
+        if type(rawget(mt, probe)) == "function" then return mt end
+        return nil
+    end
+    RV.methodTable = methodTable
+    RV.idRequire = idRequire
+
+    local mods  = kid(RS, "Modules")
+    local ps    = kid(LP, "PlayerScripts")
+    local ctrls = kid(ps, "Controllers")
+    local cls   = kid(ps, "Modules")
+    RV.Utility   = idRequire(kid(mods, "Utility"))
+    RV.Enums     = idRequire(kid(mods, "EnumLibrary"))
+    RV.Gameplay  = idRequire(kid(mods, "GameplayUtility"))
+    RV.ItemLib   = idRequire(kid(mods, "ItemLibrary"))
+    RV.Consts    = idRequire(kid(mods, "CONSTANTS"))
+    RV.Fighters  = idRequire(kid(ctrls, "FighterController"))
+    RV.Spectate  = idRequire(kid(ctrls, "SpectateController"))
+    RV.CamCtrl   = idRequire(kid(ctrls, "CameraController"))
+    RV.Mechanics = idRequire(kid(ctrls, "MechanicsController"))
+    RV.JointsMod = deep(cls, { "ClientReplicatedClasses", "ClientFighter", "ClientFighterCharacter", "Joints" })
+    RV.UseItem = deep(RS, { "Remotes", "Replication", "Fighter", "UseItem" })
+    RV.CamRot  = deep(RS, { "Remotes", "Replication", "Fighter", "UpdateCameraRotation" })
+    RV.ok = RV.Utility ~= nil and RV.Fighters ~= nil
+
+    -- :: live state readers ::
+    function RV.localFighter()
+        local f = RV.Fighters
+        if type(f) ~= "table" then return nil end
+        local out
+        pcall(function() out = f.LocalFighter end)
+        return out
+    end
+    function RV.equipped()
+        local lf = RV.localFighter()
+        if lf == nil then return nil end
+        local out
+        pcall(function() out = lf.EquippedItem end)
+        return out
+    end
+    -- the fighter object per player, out of FighterController.Objects
+    function RV.fighterFor(plr)
+        local f = RV.Fighters
+        if type(f) ~= "table" then return nil end
+        local objs
+        pcall(function() objs = f.Objects end)
+        if type(objs) ~= "table" then return nil end
+        for _, o in pairs(objs) do
+            local who
+            pcall(function() who = o.Player end)
+            if who == plr then return o end
+        end
+        return nil
+    end
+
+    -- :: team check ::
+    -- TeamID is an attribute on the Player, with the Character as a fallback. The duel
+    -- roster is the authoritative source whenever a duel subject exists.
+    function RV.teamOf(plr)
+        if plr == nil then return nil end
+        local t
+        pcall(function() t = plr:GetAttribute("TeamID") end)
+        if t ~= nil then return t end
+        local ch
+        pcall(function() ch = plr.Character end)
+        if ch == nil then return nil end
+        pcall(function() t = ch:GetAttribute("TeamID") end)
+        return t
+    end
+    function RV.duelTeam(plr)
+        local sp = RV.Spectate
+        if type(sp) ~= "table" then return nil end
+        local duel
+        pcall(function() duel = sp.CurrentDuelSubject end)
+        if duel == nil then return nil end
+        local d
+        pcall(function() d = duel:GetDueler(plr) end)
+        if d == nil then return nil end
+        local t
+        pcall(function() t = d:Get("TeamID") end)
+        return t
+    end
+    -- true only when both sides are known and match. Unknown reads as enemy, which is
+    -- what every other Koffee team check does: never refuse a shot on missing data.
+    function RV.sameTeam(plr)
+        if plr == LocalPlayer then return true end
+        local a, b = RV.duelTeam(LocalPlayer), RV.duelTeam(plr)
+        if a ~= nil and b ~= nil then return a == b end
+        a, b = RV.teamOf(LocalPlayer), RV.teamOf(plr)
+        if a ~= nil and b ~= nil then return a == b end
+        return false
+    end
+
+    -- :: katana reflect ::
+    -- A swinging katana reflects shots. Swept at 10Hz into a set, because the only
+    -- source is a walk of FighterController.Objects and the callers are per candidate
+    -- per frame: doing it inline would be O(n^2) every frame.
+    RV.deflecting = {}
+    local function deflectOf(o)
+        local name, cd
+        pcall(function()
+            local it = o.EquippedItem
+            name = it and it.ViewModel and it.ViewModel.Name
+            cd = it and rawget(it, "_attack_cooldown")
+        end)
+        if name ~= "Katana" and name ~= "Chainsaw" then return false end
+        return type(cd) == "number" and cd > tick()
+    end
+    task.spawn(function()
+        while not Koffee.dead() do
+            local f = RV.Fighters
+            local objs
+            if type(f) == "table" then pcall(function() objs = f.Objects end) end
+            local fresh = {}
+            if type(objs) == "table" then
+                for _, o in pairs(objs) do
+                    local who
+                    pcall(function() who = o.Player end)
+                    if who ~= nil and who ~= LP then fresh[who] = deflectOf(o) end
+                end
+            end
+            RV.deflecting = fresh
+            task.wait(0.1)
+        end
+        RV.deflecting = {}
+    end)
+    function RV.isDeflecting(plr)
+        return RV.deflecting[plr] == true
+    end
+
+    -- :: angles ::
+    local TAU, PI = 6.283185307179586, 3.141592653589793
+    -- the game packs each axis as one byte, 256 steps over a full turn, and only
+    -- resends when the pair changes. Our override has to produce the same shape.
+    local function encPair(x, y)
+        local a = math.clamp(math.floor(x % TAU / PI / 2 * 256 + 0.5), 0, 255)
+        local b = math.clamp(math.floor(y % TAU / PI / 2 * 256 + 0.5), 0, 255)
+        return utf8.char(a) .. utf8.char(b)
+    end
+    RV.encPair = encPair
+    -- pitch and yaw in degrees that point from `from` at `to`
+    function RV.anglesTo(from, to)
+        local cf
+        local ok = pcall(function() cf = CFrame.lookAt(from, to) end)
+        if not ok or cf == nil then return nil end
+        if not Koffee.cfOk(cf) then return nil end
+        local p, y = cf:ToOrientation()
+        if p ~= p or y ~= y then return nil end
+        return math.deg(p), math.deg(y)
+    end
+
+    -- :: VIEW ANGLE DRIVER ::
+    -- The server's whole idea of where you are looking is those two bytes, resent at
+    -- most 10Hz and deduplicated. Owning them IS the native perfect lock: the camera
+    -- never moves, so the viewmodel can never desync from it.
+    -- Slot table, highest slot wins, so silent / aim / rage / backstab never fight.
+    local G = getgenv and getgenv()
+    local VA = (G and G["\6_rt_va_ctx"]) or { slots = {}, win = nil, freeze = false }
+    if G then G["\6_rt_va_ctx"] = VA end
+    RV.VA = VA
+
+    local function resolve()
+        local best, bv = -math.huge, nil
+        for k, v in pairs(VA.slots) do
+            if k > best then best, bv = k, v end
+        end
+        VA.win = bv
+    end
+    -- pitch and yaw in degrees. Either nil releases the slot.
+    function RV.setAngles(slot, pitch, yaw, raw)
+        if Koffee.dead() then return end
+        if pitch == nil or yaw == nil then
+            VA.slots[slot] = nil
+        else
+            VA.slots[slot] = { p = pitch, y = yaw, raw = raw and true or false }
+        end
+        resolve()
+    end
+    function RV.clearAngles(slot)
+        VA.slots[slot] = nil
+        resolve()
+    end
+    function RV.clearAllAngles()
+        for k in pairs(VA.slots) do VA.slots[k] = nil end
+        VA.win = nil
+    end
+    -- freeze stops the server learning any new angle without claiming one
+    function RV.freezeAngles(on)
+        VA.freeze = on and true or false
+    end
+
+    -- visual half: the local rig reads CameraRotationRaw to pose itself, so writing it
+    -- keeps the body and viewmodel agreeing with the angle we replicate.
+    local function hookJoints()
+        if VA.jointsHooked then return end
+        local jm = idRequire(RV.JointsMod)
+        local tbl = methodTable(jm, "Update")
+        if tbl == nil then return end
+        local old = rawget(tbl, "Update")
+        if type(old) ~= "function" then return end
+        if setreadonly then pcall(setreadonly, tbl, false) end
+        local fine = pcall(rawset, tbl, "Update", function(self, a, state)
+            local w = VA.win
+            if w ~= nil and type(state) == "table" then
+                local mine = false
+                pcall(function()
+                    local cfc = rawget(self, "ClientFighterCharacter") or self.ClientFighterCharacter
+                    local cf = cfc and (rawget(cfc, "ClientFighter") or cfc.ClientFighter)
+                    mine = cf ~= nil and (rawget(cf, "IsLocalPlayer") or cf.IsLocalPlayer) == true
+                end)
+                if mine then
+                    pcall(rawset, state, "CameraRotationRaw",
+                        Vector2.new(math.rad(w.p) % TAU, math.rad(w.y) % TAU))
+                end
+            end
+            return old(self, a, state)
+        end)
+        if fine then
+            VA.jointsHooked = true
+            VA.jointsOld = old
+        end
+    end
+
+    -- replication half: _CameraReplicationLoop holds Utility as an upvalue and uses it
+    -- for nothing but EncodeCameraRotation, so swapping that one upvalue owns the wire
+    -- value without touching the remote or any metamethod.
+    local function hookReplication()
+        if VA.repHooked then return end
+        if not (debug and debug.getupvalues and debug.setupvalue) then return end
+        local proto = methodTable(RV.Fighters, "_CameraReplicationLoop")
+        if proto == nil then return end
+        local loop = rawget(proto, "_CameraReplicationLoop")
+        if type(loop) ~= "function" then return end
+        local idx, util = nil, nil
+        local ups
+        pcall(function() ups = debug.getupvalues(loop) end)
+        if type(ups) ~= "table" then return end
+        for i, v in pairs(ups) do
+            if type(v) == "table" and methodTable(v, "EncodeCameraRotation") ~= nil then
+                idx, util = i, v
+                break
+            end
+        end
+        if idx == nil then return end
+        local fine = pcall(debug.setupvalue, loop, idx, { EncodeCameraRotation = function(_, rot)
+            local w = VA.win
+            if w ~= nil then
+                if w.raw then
+                    return utf8.char(math.clamp(math.floor(w.p), 0, 255))
+                        .. utf8.char(math.clamp(math.floor(w.y), 0, 255))
+                end
+                return encPair(math.rad(w.p), math.rad(w.y))
+            end
+            if VA.freeze then
+                local last
+                pcall(function() last = rawget(RV.Fighters, "_last_encoded_camera_rotation") end)
+                if type(last) == "string" then
+                    pcall(function() rawset(RV.Fighters, "_replication_stopped", false) end)
+                    return last
+                end
+            end
+            if rot ~= rot then return utf8.char(0) .. utf8.char(0) end
+            local out
+            local got = pcall(function() out = util:EncodeCameraRotation(rot) end)
+            if got and type(out) == "string" then return out end
+            return encPair(rot.X, rot.Y)
+        end })
+        if fine then
+            VA.repHooked = true
+            VA.repLoop, VA.repIdx, VA.repUtil = loop, idx, util
+        end
+    end
+
+    -- installed once per session: the hook bodies read the shared ctx, so a re-exec
+    -- drives the live hooks instead of stacking a second layer (the v0.93.15 trap).
+    function RV.armViewAngles()
+        if not RV.ok then return false end
+        hookJoints()
+        hookReplication()
+        VA.hooked = VA.jointsHooked == true and VA.repHooked == true
+        return VA.hooked
+    end
+    -- never unhooks: these install session wide and the newest run owns them, so a
+    -- dying run must not hand them back under a live one. It just stops claiming.
+    function RV.disarmViewAngles()
+        RV.clearAllAngles()
+        VA.freeze = false
+    end
+end) end
+
+-- v0.94.0: RIVALS NATIVE ENGINES. Everything here reads Shared.RV and Modules.rv_*,
+-- so it is inert until the bridge resolved and a module is enabled.
+if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
+    local RV = Shared.RV
+    local R = Koffee.Rivals
+    local Plrs = game:GetService("Players")
+    local TAU = 6.283185307179586
+
+    local function on(id)
+        local m = Modules[id]
+        return m ~= nil and m.Enabled == true
+    end
+    local function myChar() return LocalPlayer.Character end
+    local function myRoot()
+        local c = myChar()
+        if not c then return nil end
+        return c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart
+    end
+    local function headOf(ch)
+        if not ch then return nil end
+        return ch:FindFirstChild("HitboxHead") or ch:FindFirstChild("HitboxHeadSmall")
+            or ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart")
+    end
+
+    -- :: ENGINE ARMING ::
+    -- The server rewinds through the assembly history for lag compensation, so a bigger
+    -- buffer and a faster physics sender are what make a position desync land at all.
+    RV._fpdh = nil
+    pcall(function() RV._fpdh = Workspace.FallenPartsDestroyHeight end)
+    function RV.armEngine(want)
+        if R.Engine.Enabled == want then return end
+        R.Engine.Enabled = want
+        if sethiddenproperty then
+            local v = RV._fpdh or -500
+            if want then v = 0 / 0 end
+            pcall(sethiddenproperty, Workspace, "FallenPartsDestroyHeight", v)
+        end
+        if not setfflag then return end
+        if want then
+            pcall(setfflag, "DFIntS2PhysicsSenderRate", "120")
+            pcall(setfflag, "DFIntAssemblyHistoryBufferSize", "2147483648")
+            pcall(setfflag, "DFIntAssemblyHistorySkipSize", "1")
+        else
+            pcall(setfflag, "DFIntS2PhysicsSenderRate", "15")
+            pcall(setfflag, "DFIntAssemblyHistoryBufferSize", "15")
+            pcall(setfflag, "DFIntAssemblyHistorySkipSize", "8")
+        end
+    end
+
+    -- :: TARGET PICK ::
+    -- Own picker rather than Combat's: getBestTarget is a local of the combat block and
+    -- these engines need a world-space pick, not a screen-space one.
+    local function partOf(ch)
+        local want = R.LockPart
+        if want == "Torso" then
+            return ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso") or headOf(ch)
+        end
+        if want == "Root" then
+            return ch:FindFirstChild("HumanoidRootPart") or headOf(ch)
+        end
+        return headOf(ch)
+    end
+    function RV.pickTarget(maxDist)
+        local mr = myRoot()
+        if not mr then return nil, nil end
+        local best, bp, bd = nil, nil, maxDist or 1000
+        for _, plr in ipairs(Plrs:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local ch = plr.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                if ch and hum and hum.Health > 0 and Shared.aimAllowed(plr, true) then
+                    local p = partOf(ch)
+                    if p then
+                        local d = (p.Position - mr.Position).Magnitude
+                        if d < bd then best, bp, bd = plr, p, d end
+                    end
+                end
+            end
+        end
+        return best, bp
+    end
+    -- what the server believes we are shooting from, which is the desync spot when one
+    -- is live. Every range and facing check has to measure from here, not the camera.
+    function RV.serverHead()
+        if RV._dsLast ~= nil then return RV._dsLast.Position end
+        local ch = myChar()
+        local h = ch and headOf(ch)
+        if h then return h.Position end
+        local r = myRoot()
+        if r then return r.Position end
+        return nil
+    end
+
+    -- :: DESYNC ::
+    -- Write the root in Heartbeat, hand it back from a RenderStep bound at 101. The
+    -- restore lands before anything draws, so no frame is ever rendered out there:
+    -- that is why this does not flash the way a teleport-and-return does.
+    local DSBIND = tostring(KID.ctx.bind) .. "rvds"
+    local dsPhase = 0
+    local function dsDest(tgt, mr)
+        local D = R.Desync
+        local mode = D.Mode
+        if mode == "Off" then return nil end
+        if tgt == nil then
+            if mode == "Translocate" then
+                return CFrame.new(mr.Position + Vector3.new(0, 10000, 0))
+            end
+            return nil
+        end
+        local tp = tgt.Position
+        local pos
+        if mode == "Translocate" then
+            pos = tp + Vector3.new(0, 10000, 0)
+        elseif mode == "Random" then
+            local a = math.random() * TAU
+            pos = tp + Vector3.new(math.cos(a) * D.Radius, D.Height, math.sin(a) * D.Radius)
+        else
+            -- Orbit: the angle advances with time instead of rerolling, so a melee
+            -- player cannot stand still and wait for you to reappear in one spot.
+            pos = tp + Vector3.new(math.cos(dsPhase) * D.Radius, D.Height, math.sin(dsPhase) * D.Radius)
+        end
+        if mode ~= "Translocate" then
+            if pos.Y < D.MinY or pos.Y > D.MaxY then pos = tp + Vector3.new(0, 2, 2) end
+            if (pos - tp).Magnitude > D.MaxFromTarget then pos = tp + Vector3.new(0, 2, 2) end
+        end
+        local cf
+        local fine = pcall(function() cf = CFrame.lookAt(pos, tp) end)
+        if not fine or cf == nil or not Koffee.cfOk(cf) then return nil end
+        return cf
+    end
+    function RV.restoreServerCFrame()
+        RV._dsLast = nil
+        pcall(function() RunService:UnbindFromRenderStep(DSBIND) end)
+    end
+    pcall(function() RunService:UnbindFromRenderStep(DSBIND) end)
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then RV.restoreServerCFrame(); return end
+        local want = on("rv_desync") or (on("rv_rage") and R.Rage.Evasion)
+        RV.armEngine(want and R.Desync.Mode ~= "Off")
+        if not want then RV._dsLast = nil; return end
+        local mr = myRoot()
+        if not mr then RV._dsLast = nil; return end
+        dsPhase = (dsPhase + R.Desync.Speed * 0.0166) % TAU
+        local _, part = RV.pickTarget(1000)
+        local dest = dsDest(part, mr)
+        if dest == nil then RV._dsLast = nil; return end
+        local oldCF, oldV, oldRV = mr.CFrame, mr.Velocity, mr.RotVelocity
+        RV._dsLast = dest
+        pcall(function() mr.CFrame = dest end)
+        pcall(function()
+            RunService:BindToRenderStep(DSBIND, 101, function()
+                if mr.Parent then
+                    pcall(function()
+                        mr.CFrame = oldCF
+                        mr.Velocity = oldV
+                        mr.RotVelocity = oldRV
+                    end)
+                end
+                pcall(function() RunService:UnbindFromRenderStep(DSBIND) end)
+            end)
+        end)
+    end)
+
+    -- :: VIEW ANGLE FEATURES ::
+    -- All three claim a slot on the driver instead of writing the camera, so they can
+    -- run together and the highest slot is what the server sees.
+    local flickAt, flickTo = 0, nil
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then
+            if RV.disarmViewAngles then RV.disarmViewAngles() end
+            return
+        end
+        local anyAngle = on("rv_lock") or on("rv_rage") or on("rv_backstab") or on("rv_flick")
+        if not (anyAngle or R.Freeze) then
+            RV.clearAllAngles()
+            RV.freezeAngles(false)
+            return
+        end
+        RV.armViewAngles()
+        RV.freezeAngles(R.Freeze and not anyAngle)
+        local origin = RV.serverHead()
+        if origin == nil then RV.clearAllAngles(); return end
+
+        -- backstab: copy the enemy's own facing, so the server places you behind them
+        -- by definition. Nothing to do with where you are actually standing.
+        if on("rv_backstab") then
+            local near, nd = nil, 20
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local ch = plr.Character
+                    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                    local rt = ch and ch:FindFirstChild("HumanoidRootPart")
+                    if hum and rt and hum.Health > 0 and Shared.aimAllowed(plr, true) then
+                        local d = (rt.Position - origin).Magnitude
+                        if d < nd then near, nd = rt, d end
+                    end
+                end
+            end
+            if near then
+                local p, y = near.CFrame:ToOrientation()
+                RV.setAngles(RV.slots.Backstab, math.deg(p), math.deg(y))
+            else
+                RV.clearAngles(RV.slots.Backstab)
+            end
+        else
+            RV.clearAngles(RV.slots.Backstab)
+        end
+
+        local tplr, tpart = nil, nil
+        if on("rv_lock") or on("rv_rage") or on("rv_flick") then
+            tplr, tpart = RV.pickTarget(1000)
+        end
+
+        -- native perfect lock: claim the angle, never touch the camera
+        if on("rv_lock") and tpart then
+            local p, y = RV.anglesTo(origin, tpart.Position)
+            if p then RV.setAngles(RV.slots.Aim, p, y) else RV.clearAngles(RV.slots.Aim) end
+        else
+            RV.clearAngles(RV.slots.Aim)
+        end
+
+        -- flickbot: ease onto the target over FlickDuration with a curved path, hold
+        -- the lock for the shot, then release and sit out the cooldown.
+        if on("rv_flick") and tpart then
+            local F = R.Flick
+            local now = os.clock() * 1000
+            if flickTo ~= tpart and now - flickAt > F.Cooldown then
+                flickAt, flickTo = now, tpart
+            end
+            if flickTo == tpart and now - flickAt <= F.Duration then
+                local t = (now - flickAt) / math.max(1, F.Duration)
+                local p1, y1 = RV.anglesTo(origin, tpart.Position)
+                if p1 then
+                    -- curvature bends the approach; humanness jitters the end point so
+                    -- two flicks never trace the same line
+                    local ease = t * t * (3 - 2 * t)
+                    local bend = math.sin(t * math.pi) * F.Curvature * (1 - ease)
+                    local hum = (math.random() - 0.5) * (F.Humanness / 30)
+                    RV.setAngles(RV.slots.Flick, p1 + bend * 0.25 + hum, y1 + bend + hum)
+                end
+            elseif flickTo == tpart then
+                local p1, y1 = RV.anglesTo(origin, tpart.Position)
+                if p1 then RV.setAngles(RV.slots.Flick, p1, y1) end
+            else
+                RV.clearAngles(RV.slots.Flick)
+            end
+        else
+            flickTo = nil
+            RV.clearAngles(RV.slots.Flick)
+        end
+
+        -- ragebot: own the angle at the highest combat slot and drive the game's own
+        -- shoot input. No synthetic clicks and no camera write.
+        if on("rv_rage") and tpart then
+            local p, y = RV.anglesTo(origin, tpart.Position)
+            if p then RV.setAngles(RV.slots.Rage, p, y) end
+            local it = RV.equipped()
+            if it ~= nil and not RV.isDeflecting(tplr) then
+                for _ = 1, math.clamp(R.Rage.ShootFrames, 1, 5) do
+                    pcall(function() it:Input("StartShooting") end)
+                end
+            end
+        else
+            RV.clearAngles(RV.slots.Rage)
+        end
+    end)
+
+    -- :: NATIVE SILENT AIM ::
+    -- Guns expose a plain `_on_shoot_callback` field that is handed the CameraData
+    -- table right before the shot replicates. Rewriting it in place redirects the
+    -- bullet with no metamethod, no remote hook and no camera movement at all.
+    local K0, K1, K2, K3 = utf8.char(0), utf8.char(1), utf8.char(2), utf8.char(3)
+    local function redirect(cd)
+        if type(cd) ~= "table" or Koffee.dead() then return end
+        if not on("rv_silent") then return end
+        local plr, part = RV.pickTarget(1000)
+        if part == nil or RV.isDeflecting(plr) then return end
+        local origin = RV.serverHead()
+        if origin == nil then return end
+        local U = RV.Utility
+        if U == nil then return end
+        local aim = part.Position
+        pcall(function()
+            local look = CFrame.lookAt(origin, aim)
+            if not Koffee.cfOk(look) then return end
+            cd[K0] = U:EncodeCFrame(look)
+            cd[K1] = U:EncodeCFrame(part.CFrame)
+            cd[K2] = part
+            cd[K3] = U:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(aim)))
+        end)
+    end
+    -- chained, not clobbered: if the game or another feature already owns the field,
+    -- its callback still runs. Marked so a re-apply never stacks a second layer.
+    local function installShot(it)
+        local cur = rawget(it, "_on_shoot_callback")
+        if cur ~= nil and rawget(it, "_koffeeShot") == cur then return end
+        local prev = cur
+        local mine
+        mine = function(cd)
+            redirect(cd)
+            if type(prev) == "function" then pcall(prev, cd) end
+        end
+        pcall(rawset, it, "_on_shoot_callback", mine)
+        pcall(rawset, it, "_koffeeShot", mine)
+    end
+
+    -- :: ITEM INFO MODIFIERS ::
+    -- Percentage patches on the weapon's own Info table with per-table originals, which
+    -- is how the game reads them anyway. Beats overwriting a cooldown per shot.
+    local origInfo = setmetatable({}, { __mode = "k" })
+    -- Deliberately NOT ShootCooldown / BurstCooldown / QuickShotCooldown / ShootSpread /
+    -- QuickShotSpread: the v0.93.19 RivalsGun engine owns those. Two snapshots of one
+    -- field restore each other's patched value, so ownership stays split.
+    local FIELDS = { "ShootCameraDisplacementRecoil", "ShootCameraDisplacementRecoilWhileAiming",
+        "AttackCooldown", "Cooldown", "MaxDoubleJumps", "DisableTracerEffects" }
+    local function snapInfo(info)
+        if origInfo[info] then return origInfo[info] end
+        local rec, spam = {}, nil
+        for _, k in ipairs(FIELDS) do rec[k] = rawget(info, k) end
+        pcall(function()
+            local ise = rawget(info, "InputSpammingEnabled")
+            if type(ise) == "table" then spam = rawget(ise, "StartShooting") end
+        end)
+        rec._spam = spam
+        origInfo[info] = rec
+        return rec
+    end
+    local function applyInfo(info)
+        if type(info) ~= "table" then return end
+        local rec = snapInfo(info)
+        local M = R.Mods
+        pcall(function()
+            local rp = 1
+            if M.Recoil then rp = 1 - math.clamp(M.RecoilPct, 0, 100) / 100 end
+            for _, k in ipairs({ "ShootCameraDisplacementRecoil", "ShootCameraDisplacementRecoilWhileAiming" }) do
+                if type(rec[k]) == "number" then rawset(info, k, rec[k] * rp) end
+            end
+            local mp = 1
+            if M.Melee then mp = math.clamp(M.MeleePct, 1, 100) / 100 end
+            for _, k in ipairs({ "AttackCooldown", "Cooldown" }) do
+                if type(rec[k]) == "number" then rawset(info, k, rec[k] * mp) end
+            end
+            -- full auto rides the game's own input spam flag, a field we verified,
+            -- rather than inventing one the game never reads
+            local ise = rawget(info, "InputSpammingEnabled")
+            if type(ise) == "table" then
+                if M.AutoFire then rawset(ise, "StartShooting", true)
+                else rawset(ise, "StartShooting", rec._spam) end
+            end
+            -- the double jump counter is kept client side, so raising the cap is the
+            -- whole feature. Replaces Infinite Jump in this game.
+            if type(rec.MaxDoubleJumps) == "number" then
+                if on("rv_infjump") then rawset(info, "MaxDoubleJumps", 676767)
+                else rawset(info, "MaxDoubleJumps", rec.MaxDoubleJumps) end
+            end
+            -- the gun's own local tracer path is gated on this field
+            if M.NoTracers then rawset(info, "DisableTracerEffects", true)
+            else rawset(info, "DisableTracerEffects", rec.DisableTracerEffects) end
+        end)
+    end
+    -- muzzle flash is a ClientViewModel method, wrapped once per session and gated on
+    -- the live setting so turning it off needs no restore.
+    local function hookMuzzle()
+        if RV._muzHooked then return end
+        local vmMod
+        local cls = LocalPlayer:FindFirstChild("PlayerScripts")
+        cls = cls and cls:FindFirstChild("Modules")
+        local at = cls
+        for _, n in ipairs({ "ClientReplicatedClasses", "ClientFighter", "ClientItem", "ClientViewModel" }) do
+            if at == nil then break end
+            at = at:FindFirstChild(n)
+        end
+        vmMod = RV.idRequire(at)
+        local tbl = RV.methodTable(vmMod, "MuzzleFlash")
+        if tbl == nil then return end
+        local old = rawget(tbl, "MuzzleFlash")
+        if type(old) ~= "function" then return end
+        if setreadonly then pcall(setreadonly, tbl, false) end
+        local fine = pcall(rawset, tbl, "MuzzleFlash", function(self, ...)
+            if R.Mods.NoMuzzle then return end
+            return old(self, ...)
+        end)
+        if fine then RV._muzHooked = true end
+    end
+    task.spawn(function()
+        while not Koffee.dead() do
+            if R.Mods.NoMuzzle then hookMuzzle() end
+            task.wait(1)
+        end
+    end)
+
+    function RV.restoreJumps()
+        for info, rec in pairs(origInfo) do
+            if type(rec.MaxDoubleJumps) == "number" then
+                pcall(rawset, info, "MaxDoubleJumps", rec.MaxDoubleJumps)
+            end
+        end
+    end
+    function RV.restoreInfo()
+        for info, rec in pairs(origInfo) do
+            pcall(function()
+                for _, k in ipairs(FIELDS) do
+                    if rec[k] ~= nil then rawset(info, k, rec[k]) end
+                end
+                local ise = rawget(info, "InputSpammingEnabled")
+                if type(ise) == "table" then rawset(ise, "StartShooting", rec._spam) end
+            end)
+        end
+    end
+    task.spawn(function()
+        while not Koffee.dead() do
+            local it = RV.equipped()
+            if it ~= nil then
+                local info
+                pcall(function() info = it.Info end)
+                if info ~= nil then applyInfo(info) end
+                installShot(it)
+            end
+            task.wait(0.25)
+        end
+        RV.restoreInfo()
+    end)
+end) end
 
 -- v0.93.0: rivals skins
 -- getgenv().KoffeeNoSkins = true before loading skips this whole block, so Koffee can

@@ -46,6 +46,9 @@ globals:
   firesignal: { args: [{ type: any }] }
   getconnections: { args: [{ type: any }] }
   setfflag: { args: [{ type: string }, { type: string }] }
+  sethiddenproperty: { args: [{ type: any }, { type: string }, { type: any }] }
+  debug.getupvalues: { args: [{ type: any }] }
+  debug.setupvalue: { args: [{ type: any }, { type: number }, { type: any }] }
   queue_on_teleport: { args: [{ type: string }] }
   _KCONT: { args: [] }
   getsynasset:
