@@ -1,7 +1,7 @@
 -- koffee v0.94.1
 
 local Koffee = {}
-Koffee.Version = "0.94.1"
+Koffee.Version = "0.95.0"
 
 
 
@@ -10453,9 +10453,23 @@ Koffee.Rivals = {
 registerConfig("rivals_native", Koffee.Rivals)
 -- thin registrations: the bodies only flip state, since the engines are built with the
 -- bridge and read Modules.* live. Enable order therefore never matters.
-registerModule("rv_lock",     "Native Perfect Lock", function() end, function()
-    local RV = Shared.RV
-    if RV and RV.clearAngles then RV.clearAngles(RV.slots.Aim) end
+-- v0.95.0: Native Perfect Lock and Native Silent Aim are gone as separate
+-- modules. Perfect Lock drives the native angle itself in rivals, and silent
+-- runs the native redirect as Method Native. Rapid Fire and No Spread are
+-- modules now (they mirror the RivalsGun flags) so they can take keybinds.
+registerModule("rv_rapid", "Rapid Fire", function()
+    local C = Shared.Combat
+    if C and C.RivalsGun then C.RivalsGun.RapidFire = true end
+end, function()
+    local C = Shared.Combat
+    if C and C.RivalsGun then C.RivalsGun.RapidFire = false end
+end)
+registerModule("rv_nospread", "No Spread", function()
+    local C = Shared.Combat
+    if C and C.RivalsGun then C.RivalsGun.NoSpread = true end
+end, function()
+    local C = Shared.Combat
+    if C and C.RivalsGun then C.RivalsGun.NoSpread = false end
 end)
 registerModule("rv_desync",   "Desync", function() end, function()
     local RV = Shared.RV
@@ -10469,7 +10483,6 @@ registerModule("rv_backstab", "Always Backstab", function() end, function()
     local RV = Shared.RV
     if RV and RV.clearAngles then RV.clearAngles(RV.slots.Backstab) end
 end)
-registerModule("rv_silent",   "Native Silent Aim", function() end, function() end)
 registerModule("rv_flick",    "Flickbot", function() end, function()
     local RV = Shared.RV
     if RV and RV.clearAngles then RV.clearAngles(RV.slots.Flick) end
@@ -11732,6 +11745,19 @@ Koffee._characterTab = function(root)
         moduleCheckbox(mv, "No Jump Cooldown", "nojumpcd")
         moduleCheckbox(mv, "Infinite Jump",    "infjump")
     end
+    -- v0.95.0: rivals Desync lives here, not in Combat Misc. Module toggle plus
+    -- keybind pill, same shape as 3rd Person. Modes read the shared Desync table.
+    if Koffee._isRivals then
+        keybindPill(moduleCheckbox(mv, "Desync", "rv_desync").row, "rv_desync", nil, "Desync")
+        dropdown(mv, "Desync Mode", { "Orbit", "Random", "Translocate", "Invisible", "Off" },
+            Koffee.Rivals.Desync.Mode, function(v) Koffee.Rivals.Desync.Mode = v end)
+        slider(mv, "Desync Radius", 1, 50, Koffee.Rivals.Desync.Radius, 1,
+            function(v) Koffee.Rivals.Desync.Radius = v end)
+        slider(mv, "Desync Height", -5, 10, Koffee.Rivals.Desync.Height, 1,
+            function(v) Koffee.Rivals.Desync.Height = v end)
+        slider(mv, "Orbit Speed", 0.5, 20, Koffee.Rivals.Desync.Speed, 1,
+            function(v) Koffee.Rivals.Desync.Speed = v end)
+    end
     local function feat(label, id)
         local c = moduleCheckbox(mv, label, id)
         activationPill(c.row, CFG[id])
@@ -12939,7 +12965,9 @@ local Combat = {
             -- so the game sees 100% vanilla client behaviour: the raycast rewrite
             -- happens inside Roblox via the helper's inline hook on the raycast bound
             -- function, not here.
-            if Combat.Silent.Method == "External" then return PASS_H, PASS_V end
+            -- v0.95.0: same dormancy for Native. The CameraData rewrite owns the
+            -- shot there, so every Lua-side spoof stays off too.
+            if Combat.Silent.Method == "External" or Combat.Silent.Method == "Native" then return PASS_H, PASS_V end
             -- (A) Mouse aim reads (Hit/Target/UnitRay): safe on every game, no caller
             -- scoping needed (nothing but aim code reads these). v0.0.35 behaviour.
             if (key == "Hit" or key == "Target" or key == "UnitRay")
@@ -13072,7 +13100,8 @@ local Combat = {
             end
             -- v0.3.0: External method offloads everything to KoffeeHelper (see
             -- resolveIndex head comment). Every namecall passes through vanilla.
-            if Combat.Silent.Method == "External" then return PASS_H, PASS_V end
+            -- v0.95.0: Native also passes through here; its rewrite is not a hook.
+            if Combat.Silent.Method == "External" or Combat.Silent.Method == "Native" then return PASS_H, PASS_V end
             -- v0.0.39 fire-read universal path (always on: "Forced Magic-Bullet").
             -- CRITICAL: NOTHING in here may perform a Roblox namecall (a `:` method
             -- call). getnamecallmethod reads one shared C state, so a nested namecall
@@ -13273,11 +13302,16 @@ local Combat = {
         -- installed only while a feature needs them and handed back when none does.
         local function hookNeeded()
             local s, g, b, a = Combat.Silent, Combat.Gun, Koffee.Bullets, Combat.Aim
-            if s and s.Enabled then return true end
+            -- v0.95.0: Native silent answers through the shoot callback, never
+            -- this hook, so it must not keep the hooks installed on its own.
+            if s and s.Enabled and s.Method ~= "Native" then return true end
             -- v0.93.7: Perfect Lock answers its redirect through this hook too. Omitting
             -- it removed the hook a second after the aim writer installed it, so the
             -- camera snapped while every weapon read stayed vanilla.
-            if a and a.Enabled and a.PerfectLock then return true end
+            -- v0.95.0: in rivals the lock owns the replicated angle instead, so no
+            -- hook is needed for it there.
+            local native = Koffee._isRivals and Shared.RV and Shared.RV.ok
+            if a and a.Enabled and a.PerfectLock and not native then return true end
             if g and (g.InfiniteAmmo or g.ShootInCar) then return true end
             if b and b.Enabled then return true end
             return false
@@ -14357,6 +14391,11 @@ local Combat = {
         -- (input consumed / gpe ordering), the poll re-sets it so RequireLMB can't get
         -- stuck "not held" while you're firing. Release still comes from InputEnded.
         if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then lmbDown = true end
+        -- v0.95.0: the native redirect lives in another IIFE and cannot see these
+        -- locals, so publish them. Plain field writes, no new locals spent.
+        Shared._silHold = silentHeld
+        Shared._silLMB = lmbDown
+        Shared._silClick = lmbClickAt
         -- v0.0.39: resolve PlayerModule here (namecall-safe) so isView never has to
         -- FindFirstChild inside a hook (a nested namecall would brick the weapon).
         if not SR.pm then
@@ -15188,31 +15227,36 @@ local Combat = {
                 function(v) Combat.Gun.InfiniteAmmo = v end)
         end
         -- v0.93.19: RIVALS rows. Detection gated, so any AC place gets them.
+        -- v0.95.0: Rapid Fire and No Spread are modules (keybindable). The flags
+        -- stay the engine truth, so sync each module to a loaded config here.
         if Koffee._isRivals then
-            configCheckbox(miscCard, "Rapid Fire", Combat.RivalsGun.RapidFire,
-                function(v) Combat.RivalsGun.RapidFire = v end)
+            if (Combat.RivalsGun.RapidFire and true or false) ~= Modules.rv_rapid.Enabled then
+                toggleModule("rv_rapid")
+            end
+            if (Combat.RivalsGun.NoSpread and true or false) ~= Modules.rv_nospread.Enabled then
+                toggleModule("rv_nospread")
+            end
+            keybindPill(moduleCheckbox(miscCard, "Rapid Fire", "rv_rapid").row, "rv_rapid", nil, "Rapid Fire")
             slider(miscCard, "Fire Delay", 0.01, 0.5, Combat.RivalsGun.FireDelay or 0.05, 2,
                 function(v) Combat.RivalsGun.FireDelay = v end)
-            configCheckbox(miscCard, "No Spread", Combat.RivalsGun.NoSpread,
-                function(v) Combat.RivalsGun.NoSpread = v end)
+            keybindPill(moduleCheckbox(miscCard, "No Spread", "rv_nospread").row, "rv_nospread", nil, "No Spread")
         end
-        -- v0.94.0: RIVALS native combat. These own the game's own view angle
-        -- replication and shoot input instead of writing the camera, so the viewmodel
-        -- can never desync from the lock. Rapid Fire and No Spread above stay on the
-        -- v0.93.19 gun engine, which owns those Info fields.
+        -- v0.94.0: RIVALS native combat. Ragebot, backstab and flickbot own the
+        -- game's own view angle replication instead of writing the camera, so the
+        -- viewmodel can never desync from the lock. Perfect Lock needs no row: the
+        -- real Aimbot Perfect Lock drives the native angle in rivals. Silent aim
+        -- runs the native redirect as Method Native. Desync moved to Character.
         if Koffee._isRivals then
             local RVC = Koffee.Rivals
-            moduleCheckbox(miscCard, "Native Silent Aim", "rv_silent")
-            moduleCheckbox(miscCard, "Native Perfect Lock", "rv_lock")
             dropdown(miscCard, "Lock Part", { "Head", "Torso", "Root" }, RVC.LockPart,
                 function(v) RVC.LockPart = v end)
-            moduleCheckbox(miscCard, "Native Ragebot", "rv_rage")
+            keybindPill(moduleCheckbox(miscCard, "Native Ragebot", "rv_rage").row, "rv_rage", nil, "Ragebot")
             slider(miscCard, "Shoot Frames", 1, 5, RVC.Rage.ShootFrames, 0,
                 function(v) RVC.Rage.ShootFrames = v end)
             configCheckbox(miscCard, "Ragebot Evasion", RVC.Rage.Evasion,
                 function(v) RVC.Rage.Evasion = v end)
-            moduleCheckbox(miscCard, "Always Backstab", "rv_backstab")
-            moduleCheckbox(miscCard, "Flickbot", "rv_flick")
+            keybindPill(moduleCheckbox(miscCard, "Always Backstab", "rv_backstab").row, "rv_backstab", nil, "Backstab")
+            keybindPill(moduleCheckbox(miscCard, "Flickbot", "rv_flick").row, "rv_flick", nil, "Flickbot")
             slider(miscCard, "Flick Duration", 20, 400, RVC.Flick.Duration, 0,
                 function(v) RVC.Flick.Duration = v end)
             slider(miscCard, "Flick Cooldown", 0, 1000, RVC.Flick.Cooldown, 0,
@@ -15221,15 +15265,6 @@ local Combat = {
                 function(v) RVC.Flick.Curvature = v end)
             slider(miscCard, "Flick Humanness", 0, 100, RVC.Flick.Humanness, 0,
                 function(v) RVC.Flick.Humanness = v end)
-            moduleCheckbox(miscCard, "Desync", "rv_desync")
-            dropdown(miscCard, "Desync Mode", { "Orbit", "Random", "Translocate", "Off" },
-                RVC.Desync.Mode, function(v) RVC.Desync.Mode = v end)
-            slider(miscCard, "Desync Radius", 1, 50, RVC.Desync.Radius, 1,
-                function(v) RVC.Desync.Radius = v end)
-            slider(miscCard, "Desync Height", -5, 10, RVC.Desync.Height, 1,
-                function(v) RVC.Desync.Height = v end)
-            slider(miscCard, "Orbit Speed", 0.5, 20, RVC.Desync.Speed, 1,
-                function(v) RVC.Desync.Speed = v end)
             configCheckbox(miscCard, "Freeze View Angle", RVC.Freeze,
                 function(v) RVC.Freeze = v end)
             configCheckbox(miscCard, "Skip Deflecting", RVC.SkipDeflect,
@@ -15267,7 +15302,8 @@ local Combat = {
         -- Loader ships these files (or user copies once). See getcustomasset resolver.
         local SND_PRESETS_LIST = SND_PRESETS   -- v0.10.0: single source, see above
         -- v0.94.0: the rivals rows make Misc long, so Sounds moves to the right
-        -- column in that game instead of stacking under it.
+        -- column in that game instead of stacking under it. v0.95.0: the bottom
+        -- placement is fixed after the Trigger card (same host, re-parented).
         local soundHost = leftCol
         if Koffee._isRivals then soundHost = rightCol end
         local soundCard = panel(soundHost, "Sounds")
@@ -15349,7 +15385,11 @@ local Combat = {
         configCheckbox(R["Silent Aim"], "Sticky Aim", Combat.Silent.Sticky, function(v) Combat.Silent.Sticky = v end)
         slider(R["Silent Aim"], "Distance", 1, 5000, Combat.Silent.Distance, 0, function(v) Combat.Silent.Distance = v end, { infinite = true })
         dropdown(R["Silent Aim"], "Hit Part", HITPART_OPTIONS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
-        dropdown(R["Silent Aim"], "Method", { "Forced Camera", "Second-Camera", "Raycast", "External" }, Combat.Silent.Method,
+        -- v0.95.0: rivals adds the Native method (CameraData rewrite, no hooks).
+        -- It only functions there; anywhere else the hooks stay dormant on it.
+        dropdown(R["Silent Aim"], "Method", Koffee._isRivals
+            and { "Forced Camera", "Second-Camera", "Raycast", "External", "Native" }
+            or { "Forced Camera", "Second-Camera", "Raycast", "External" }, Combat.Silent.Method,
             function(v) Combat.Silent.Method = v; if Koffee.External then Koffee.External.onMethodChange(v) end end)
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
         -- v0.34.0: Wallbang works on every method now: Raycast + External (origin
@@ -15417,6 +15457,9 @@ local Combat = {
         slider(trigCard, "Reaction (ms)", 0, 500, Combat.Trigger.Reaction, 0, function(v) Combat.Trigger.Reaction = v end)
         slider(trigCard, "Reaction Spread (ms)", 0, 500, Combat.Trigger.Spread, 0, function(v) Combat.Trigger.Spread = v end)
         slider(trigCard, "Hit Chance (%)", 1, 100, Combat.Trigger.HitChance, 0, function(v) Combat.Trigger.HitChance = v end)
+        -- v0.95.0: Sounds is built before the right column exists, so in rivals
+        -- it was parented first and sat on top. Re-parenting moves it to the end.
+        if Koffee._isRivals then soundCard.Parent = rightCol end
     end)
     -- v0.1.0: the Options tab (built in this file's shared scope, outside this
     -- IIFE) reads Combat state + the sound instances during unload; hand them up
@@ -38035,8 +38078,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- :: TARGET PICK ::
     -- Own picker rather than Combat's: getBestTarget is a local of the combat block and
     -- these engines need a world-space pick, not a screen-space one.
-    local function partOf(ch)
-        local want = R.LockPart
+    local function partOf(ch, want)
         if want == "Torso" then
             return ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso") or headOf(ch)
         end
@@ -38045,7 +38087,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
         return headOf(ch)
     end
-    function RV.pickTarget(maxDist)
+    local function pickFor(want, maxDist)
         local mr = myRoot()
         if not mr then return nil, nil end
         local best, bp, bd = nil, nil, maxDist or 1000
@@ -38054,7 +38096,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ch = plr.Character
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
                 if ch and hum and hum.Health > 0 and Shared.aimAllowed(plr, true) then
-                    local p = partOf(ch)
+                    local p = partOf(ch, want)
                     if p then
                         local d = (p.Position - mr.Position).Magnitude
                         if d < bd then best, bp, bd = plr, p, d end
@@ -38063,6 +38105,14 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
         end
         return best, bp
+    end
+    function RV.pickTarget(maxDist)
+        return pickFor(R.LockPart, maxDist)
+    end
+    -- v0.95.0: Method Native aims with the real Silent Aim tab (Hit Part and
+    -- Distance), not the Lock Part row, so the fold keeps the user's config.
+    function RV.pickTargetFor(want, maxDist)
+        return pickFor(want, maxDist)
     end
     -- what the server believes we are shooting from, which is the desync spot when one
     -- is live. Every range and facing check has to measure from here, not the camera.
@@ -38086,6 +38136,17 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         local D = R.Desync
         local mode = D.Mode
         if mode == "Off" then return nil end
+        -- v0.95.0: Invisible parks the server copy far above and keeps it there
+        -- with no target needed. It holds until the module is toggled off.
+        if mode == "Invisible" then
+            local far = mr.Position + Vector3.new(0, 50000, 0)
+            local cf
+            local fine = pcall(function()
+                cf = CFrame.new(far) * (mr.CFrame - mr.CFrame.Position)
+            end)
+            if not fine or cf == nil or not Koffee.cfOk(cf) then return nil end
+            return cf
+        end
         if tgt == nil then
             if mode == "Translocate" then
                 return CFrame.new(mr.Position + Vector3.new(0, 10000, 0))
@@ -38097,7 +38158,14 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if mode == "Translocate" then
             pos = tp + Vector3.new(0, 10000, 0)
         elseif mode == "Random" then
-            local a = math.random() * TAU
+            -- v0.95.0: re-rolls twice a second on RV fields, so it blinks between
+            -- spots instead of vibrating every frame the way Orbit circles.
+            local now = os.clock()
+            if RV._randAt == nil or now - RV._randAt > 0.5 then
+                RV._randAt = now
+                RV._randA = math.random() * TAU
+            end
+            local a = RV._randA or 0
             pos = tp + Vector3.new(math.cos(a) * D.Radius, D.Height, math.sin(a) * D.Radius)
         else
             -- Orbit: the angle advances with time instead of rerolling, so a melee
@@ -38155,7 +38223,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if RV.disarmViewAngles then RV.disarmViewAngles() end
             return
         end
-        local anyAngle = on("rv_lock") or on("rv_rage") or on("rv_backstab") or on("rv_flick")
+        -- v0.95.0: rv_lock is gone. The real Aimbot Perfect Lock claims the PL
+        -- slot from its own render bind, and this loop must not wipe it while it
+        -- is the only claimant, so it counts here. The bind clears the slot every
+        -- frame it is disarmed, so counting it never leaves a stale claim.
+        local SA = Shared.Combat and Shared.Combat.Aim
+        local plOn = SA and SA.Enabled and SA.PerfectLock
+        local anyAngle = plOn or on("rv_rage") or on("rv_backstab") or on("rv_flick")
         if not (anyAngle or R.Freeze) then
             RV.clearAllAngles()
             RV.freezeAngles(false)
@@ -38192,16 +38266,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
 
         local tplr, tpart = nil, nil
-        if on("rv_lock") or on("rv_rage") or on("rv_flick") then
+        if on("rv_rage") or on("rv_flick") then
             tplr, tpart = RV.pickTarget(1000)
-        end
-
-        -- native perfect lock: claim the angle, never touch the camera
-        if on("rv_lock") and tpart then
-            local p, y = RV.anglesTo(origin, tpart.Position)
-            if p then RV.setAngles(RV.slots.Aim, p, y) else RV.clearAngles(RV.slots.Aim) end
-        else
-            RV.clearAngles(RV.slots.Aim)
         end
 
         -- flickbot: ease onto the target over FlickDuration with a curved path, hold
@@ -38254,11 +38320,22 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- Guns expose a plain `_on_shoot_callback` field that is handed the CameraData
     -- table right before the shot replicates. Rewriting it in place redirects the
     -- bullet with no metamethod, no remote hook and no camera movement at all.
+    -- v0.95.0: this is Silent Aim Method Native now, not its own module.
     local K0, K1, K2, K3 = utf8.char(0), utf8.char(1), utf8.char(2), utf8.char(3)
     local function redirect(cd)
         if type(cd) ~= "table" or Koffee.dead() then return end
-        if not on("rv_silent") then return end
-        local plr, part = RV.pickTarget(1000)
+        -- v0.95.0: folded into the real Silent Aim as Method Native. Aims with its
+        -- Hit Part and Distance, and honors its arm key plus Require Left-Click
+        -- through the state the combat loop publishes. No namecalls in here: this
+        -- runs inside the game's own shoot path.
+        local S = Shared.Combat and Shared.Combat.Silent
+        if not (S and S.Enabled and S.Method == "Native") then return end
+        if S.ActivationKey and not Shared._silHold then return end
+        if S.RequireLMB then
+            local clicked = Shared._silLMB or (os.clock() - (Shared._silClick or 0) < 0.12)
+            if not clicked then return end
+        end
+        local plr, part = RV.pickTargetFor(S.HitPart, S.Distance or 1000)
         if part == nil or RV.isDeflecting(plr) then return end
         local origin = RV.serverHead()
         if origin == nil then return end
