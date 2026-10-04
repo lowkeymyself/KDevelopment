@@ -1,7 +1,7 @@
--- koffee v0.93.18
+-- koffee v0.93.19
 
 local Koffee = {}
-Koffee.Version = "0.93.18"
+Koffee.Version = "0.93.19"
 
 
 
@@ -11874,6 +11874,8 @@ local Combat = {
         InfiniteAmmo = false,
         ScanScope = "Replicated",
         HitboxExpander = false, HitboxSize = 10 },
+    -- v0.93.19: RIVALS weapon extras. Detection gated, not place id.
+    RivalsGun = { RapidFire = false, FireDelay = 0.05, NoSpread = false },
     -- v0.0.88 HIT / KILL SOUNDS. Detection: universal Humanoid.Health drop watcher
     -- (A) per player. Attribution: "invisible target lock": each frame while LMB
     -- held, the enemy CLOSEST to the mouse cursor (screen-space, within MouseRadius
@@ -11982,6 +11984,7 @@ local Combat = {
     registerConfig("combat_trigger", Combat.Trigger)
     registerConfig("combat_misc",    Combat.Misc)
     registerConfig("combat_gun", Combat.Gun)
+    registerConfig("combat_rivalsgun", Combat.RivalsGun)
     registerConfig("combat_sounds",  Combat.HitSounds)
     -- v0.7.0 hit/kill visual effects. Rides HitSounds attribution.
     registerConfig("combat_hiteffects", Combat.HitEffects)
@@ -15060,6 +15063,15 @@ local Combat = {
             configCheckbox(miscCard, "Infinite Ammo", Combat.Gun.InfiniteAmmo,
                 function(v) Combat.Gun.InfiniteAmmo = v end)
         end
+        -- v0.93.19: RIVALS rows. Detection gated, so any AC place gets them.
+        if Koffee._isRivals then
+            configCheckbox(miscCard, "Rapid Fire (RIVALS)", Combat.RivalsGun.RapidFire,
+                function(v) Combat.RivalsGun.RapidFire = v end)
+            slider(miscCard, "Fire Delay (RIVALS)", 0.01, 0.5, Combat.RivalsGun.FireDelay or 0.05, 2,
+                function(v) Combat.RivalsGun.FireDelay = v end)
+            configCheckbox(miscCard, "No Spread (RIVALS)", Combat.RivalsGun.NoSpread,
+                function(v) Combat.RivalsGun.NoSpread = v end)
+        end
         configCheckbox(miscCard, "Hitbox Expander", Combat.Gun.HitboxExpander,
             function(v) Combat.Gun.HitboxExpander = v end)
         slider(miscCard, "Hitbox Size", 1, 30, Combat.Gun.HitboxSize or 10, 0,
@@ -15636,6 +15648,295 @@ end)();
         if now < nextSweep then return end
         nextSweep = now + 2
         sweep()
+    end)
+end)();
+
+-- v0.93.19: RIVALS gun engine. Fighter Info patch plus GetSpread hook.
+-- Detection gated. Originals snapshot per table, restore on toggle off.
+(function()
+    local G = Shared.Combat.RivalsGun
+    if G == nil then
+        return
+    end
+    local LP = LocalPlayer
+    local cooldownKeys = {
+        "ShootCooldown",
+        "BurstCooldown",
+        "QuickShotCooldown",
+        "GrenadeShootCooldown",
+        "AttackCooldown",
+        "Cooldown",
+        "ThrowCooldown"
+    }
+    local spreadKeys = {
+        "ShootSpread",
+        "ShootAccuracy",
+        "AimSpreadMultiplier",
+        "ShootSpreadPerVelocityUnit",
+        "ShootSpreadPerVelocityLimit"
+    }
+    local orig = setmetatable({}, { __mode = "k" })
+    local SK = { G = G }
+    pcall(function()
+        local genv = nil
+        if getgenv then
+            genv = getgenv()
+        end
+        if genv == nil then
+            return
+        end
+        local prev = genv["\6_rt_rg_ctx"]
+        if type(prev) == "table" then
+            prev.G = G
+            SK = prev
+        else
+            genv["\6_rt_rg_ctx"] = SK
+        end
+    end)
+    local function armed()
+        if not Koffee._isRivals then
+            return false
+        end
+        if SK.G.RapidFire then
+            return true
+        end
+        if SK.G.NoSpread then
+            return true
+        end
+        return false
+    end
+    local function saveOrig(info)
+        local known = orig[info]
+        if known ~= nil then
+            return known
+        end
+        local o = {}
+        for _, k in ipairs(cooldownKeys) do
+            o[k] = info[k]
+        end
+        for _, k in ipairs(spreadKeys) do
+            o[k] = info[k]
+        end
+        o.ShootSpreadConsistent = info.ShootSpreadConsistent
+        orig[info] = o
+        return o
+    end
+    local function patchInfo(info)
+        if typeof(info) ~= "table" then
+            return
+        end
+        local o = saveOrig(info)
+        local delay = SK.G.FireDelay
+        if delay == nil then
+            delay = 0.05
+        end
+        if SK.G.RapidFire then
+            for _, k in ipairs(cooldownKeys) do
+                if info[k] ~= nil then
+                    info[k] = delay
+                end
+            end
+        else
+            for _, k in ipairs(cooldownKeys) do
+                if o[k] ~= nil then
+                    info[k] = o[k]
+                end
+            end
+        end
+        if SK.G.NoSpread then
+            if info.ShootSpread ~= nil then
+                info.ShootSpread = 0
+            end
+            if info.ShootAccuracy ~= nil then
+                info.ShootAccuracy = 0
+            end
+            if info.AimSpreadMultiplier ~= nil then
+                info.AimSpreadMultiplier = 0
+            end
+            if info.ShootSpreadPerVelocityUnit ~= nil then
+                info.ShootSpreadPerVelocityUnit = 0
+            end
+            if info.ShootSpreadPerVelocityLimit ~= nil then
+                info.ShootSpreadPerVelocityLimit = 0
+            end
+            if info.ShootSpreadConsistent ~= nil then
+                info.ShootSpreadConsistent = false
+            end
+        else
+            for _, k in ipairs(spreadKeys) do
+                if o[k] ~= nil then
+                    info[k] = o[k]
+                end
+            end
+            if o.ShootSpreadConsistent ~= nil then
+                info.ShootSpreadConsistent = o.ShootSpreadConsistent
+            end
+        end
+    end
+    local function resolveFighter()
+        local mc = nil
+        pcall(function()
+            local ps = nil
+            if LP then
+                ps = LP:FindFirstChild("PlayerScripts")
+            end
+            local ct = nil
+            if ps then
+                ct = ps:FindFirstChild("Controllers")
+            end
+            local mod = nil
+            if ct then
+                mod = ct:FindFirstChild("MechanicsController")
+            end
+            if mod then
+                mc = require(mod)
+            end
+        end)
+        if mc == nil then
+            return nil
+        end
+        local f = nil
+        pcall(function()
+            f = mc:WaitForLocalFighter()
+        end)
+        return f
+    end
+    local fighter = nil
+    local hookedFighter = nil
+    local function eachWeapon(fn)
+        local f = fighter
+        if f == nil then
+            return
+        end
+        local seen = {}
+        pcall(function()
+            local items = f.Items
+            if type(items) ~= "table" then
+                return
+            end
+            for _, it in pairs(items) do
+                if typeof(it) == "table" then
+                    if it.Info and not seen[it] then
+                        seen[it] = true
+                        pcall(fn, it, f)
+                    end
+                end
+            end
+        end)
+        pcall(function()
+            local eq = f._equipped_client_items
+            if type(eq) ~= "table" then
+                return
+            end
+            for _, it in pairs(eq) do
+                if typeof(it) == "table" then
+                    if it.Info and not seen[it] then
+                        seen[it] = true
+                        pcall(fn, it, f)
+                    end
+                end
+            end
+        end)
+    end
+    local function hookSpread()
+        local GU = nil
+        pcall(function()
+            local mods = game:GetService("ReplicatedStorage"):FindFirstChild("Modules")
+            local mod = nil
+            if mods then
+                mod = mods:FindFirstChild("GameplayUtility")
+            end
+            if mod then
+                GU = require(mod)
+            end
+        end)
+        if GU == nil then
+            return
+        end
+        if GU.GetSpread == nil then
+            return
+        end
+        if rawget(GU, "_koffeeRG") then
+            return
+        end
+        local origSpread = GU.GetSpread
+        pcall(function()
+            if setreadonly then
+                setreadonly(GU, false)
+            end
+            rawset(GU, "_koffeeRG", true)
+            GU.GetSpread = function(...)
+                if SK.G.NoSpread then
+                    return CFrame.identity
+                end
+                return origSpread(...)
+            end
+            if setreadonly then
+                setreadonly(GU, true)
+            end
+        end)
+    end
+    task.spawn(function()
+        while not Koffee.dead() do
+            if Koffee._isRivals then
+                local f = resolveFighter()
+                if f ~= nil then
+                    fighter = f
+                    if hookedFighter ~= f then
+                        hookedFighter = f
+                        pcall(function()
+                            if f.ItemAdded then
+                                f.ItemAdded:Connect(function(it)
+                                    task.wait(0.1)
+                                    if Koffee.dead() then
+                                        return
+                                    end
+                                    if it and it.Info then
+                                        patchInfo(it.Info)
+                                    end
+                                end)
+                            end
+                        end)
+                    end
+                    hookSpread()
+                end
+            end
+            task.wait(2)
+        end
+    end)
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then
+            return
+        end
+        if not Koffee._isRivals then
+            return
+        end
+        if armed() then
+            eachWeapon(function(it)
+                if it.Info then
+                    patchInfo(it.Info)
+                end
+                if SK.G.RapidFire then
+                    pcall(function()
+                        it._shoot_cooldown = 0
+                        it._shoot_cooldown_no_ammo = 0
+                        it._last_shot = 0
+                        it._burst_count = 0
+                        it._attack_cooldown = 0
+                        it._throw_cooldown = 0
+                        it._use_cooldown = 0
+                    end)
+                end
+            end)
+        else
+            for info, o in pairs(orig) do
+                for k, v in pairs(o) do
+                    o[k] = nil
+                    info[k] = v
+                end
+                orig[info] = nil
+            end
+        end
     end)
 end)();
 
