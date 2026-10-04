@@ -1,7 +1,7 @@
 -- koffee v0.96.4
 
 local Koffee = {}
-Koffee.Version = "0.96.7"
+Koffee.Version = "0.96.8"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10446,7 +10446,7 @@ Koffee.Rivals = {
     Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true },
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
                     Melee = false, MeleePct = 50, NoMuzzle = false,
-                    NoShake = false, NoShootAnim = false,
+                    NoShake = false, NoShootAnim = false, HideArms = false,
                     NoReloadAnim = false, NoEquipAnim = false },
 }
 registerConfig("rivals_native", Koffee.Rivals)
@@ -15268,6 +15268,8 @@ local Combat = {
                 function(v) RVC.Mods.NoMuzzle = v end)
             configCheckbox(miscCard, "No Camera Shake", RVC.Mods.NoShake,
                 function(v) RVC.Mods.NoShake = v end)
+            configCheckbox(miscCard, "Hide Viewmodel Arms", RVC.Mods.HideArms,
+                function(v) RVC.Mods.HideArms = v end)
             -- v0.96.0: viewmodel anim gates. Same names Kicia suppresses, so the
             -- gun stops playing its shoot anim and shots flow while inspecting.
             configCheckbox(miscCard, "No Shoot Anim", RVC.Mods.NoShootAnim,
@@ -38118,7 +38120,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if plr ~= LocalPlayer then
                 local ch = plr.Character
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-                if ch and hum and hum.Health > 0 and Shared.aimAllowed(plr, true) then
+                if ch and hum and hum.Health > 0 and not RV.isAlly(plr) and Shared.aimAllowed(plr, true) then
                     local p = partOf(ch, want)
                     if p then
                         local d = (p.Position - mr.Position).Magnitude
@@ -38137,9 +38139,17 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     function RV.pickTargetFor(want, maxDist)
         return pickFor(want, maxDist)
     end
-    -- what the server believes we are shooting from, which is the desync spot when one
-    -- is live. Every range and facing check has to measure from here, not the camera.
+    -- v0.96.8: native ally check. isTeammate needs AdvancedTeam or manual Team
+    -- names, and rivals has neither, so native picks ask TeamID directly here.
+    -- Unknown reads as enemy, which keeps FFA intact.
+    function RV.isAlly(plr)
+        local ally = false
+        pcall(function() ally = RV.sameTeam(plr) == true end)
+        return ally
+    end
     function RV.serverHead()
+        -- what the server believes we are shooting from: the desync spot when
+        -- one is live. Every range and facing check measures from here.
         if RV._dsLast ~= nil then return RV._dsLast.Position end
         local ch = myChar()
         local h = ch and headOf(ch)
@@ -38278,7 +38288,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local ch = plr.Character
                     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
                     local rt = ch and ch:FindFirstChild("HumanoidRootPart")
-                    if hum and rt and hum.Health > 0 and Shared.aimAllowed(plr, true) then
+                    if hum and rt and hum.Health > 0 and not RV.isAlly(plr) and Shared.aimAllowed(plr, true) then
                         local d = (rt.Position - origin).Magnitude
                         if d < nd then near, nd = rt, d end
                     end
@@ -38504,6 +38514,53 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if Koffee.dead() then return end
         if R.Mods.NoShake then hookShake() end
     end)
+    -- v0.96.8: hide the first-person arms. The rig lives at
+    -- Workspace.ViewModels.FirstPerson (one model, rebuilt per weapon), arms are
+    -- plain Parts, so Transparency hides them and the gun stays. Decals do not
+    -- follow part transparency, so the shirt decals hide too. Originals kept on
+    -- RV, restored when toggled off.
+    local function hideArms()
+        local vmRoot
+        pcall(function() vmRoot = Workspace:FindFirstChild("ViewModels") end)
+        local fp = vmRoot and vmRoot:FindFirstChild("FirstPerson")
+        local rig
+        if fp then
+            pcall(function()
+                for _, c in ipairs(fp:GetChildren()) do
+                    if c:IsA("Model") then rig = c break end
+                end
+            end)
+        end
+        RV._armOrig = RV._armOrig or {}
+        local seen = {}
+        if rig then
+            for _, nm in ipairs({ "LeftArm", "RightArm" }) do
+                local arm
+                pcall(function() arm = rig:FindFirstChild(nm) end)
+                if arm then
+                    seen[arm] = true
+                    if RV._armOrig[arm] == nil then
+                        RV._armOrig[arm] = arm.Transparency
+                    end
+                    pcall(function()
+                        arm.Transparency = R.Mods.HideArms and 1 or RV._armOrig[arm]
+                        local dec = arm:FindFirstChildOfClass("Decal")
+                        if dec then dec.Transparency = R.Mods.HideArms and 1 or 0 end
+                    end)
+                end
+            end
+        end
+        for part, trans in pairs(RV._armOrig) do
+            if not seen[part] then
+                pcall(function()
+                    part.Transparency = trans
+                    local dec = part:FindFirstChildOfClass("Decal")
+                    if dec then dec.Transparency = 0 end
+                end)
+                RV._armOrig[part] = nil
+            end
+        end
+    end
 
     -- :: ITEM INFO MODIFIERS ::
     -- Percentage patches on the weapon's own Info table with per-table originals, which
@@ -38626,6 +38683,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if info ~= nil then applyInfo(info) end
                 installShot(it)
                 blockAnims(it)
+                hideArms()
             end
             task.wait(0.25)
         end
