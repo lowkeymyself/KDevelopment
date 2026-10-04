@@ -1,7 +1,7 @@
--- koffee v0.99.4
+-- koffee v0.99.5
 
 local Koffee = {}
-Koffee.Version = "0.99.4"
+Koffee.Version = "0.99.5"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10806,6 +10806,7 @@ Koffee.Rivals = {
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
                     Adaptive = true, AdaptiveWeapons = false,
+                    AntiMelee = true, ThreatRange = 14,   -- v0.99.5: teleport-in melee answer
                     Picks = { "Auto", "Auto", "Auto", "Auto" } },
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
                     Melee = false, MeleePct = 50, NoMuzzle = false,
@@ -10854,6 +10855,8 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Smart Targeting", RG.Smart, function(v) RG.Smart = v end)
     configCheckbox(card, "Prediction", RG.Predict, function(v) RG.Predict = v end)
     configCheckbox(card, "Adaptive Aggression", RG.Adaptive, function(v) RG.Adaptive = v end)
+    configCheckbox(card, "Anti-Melee", RG.AntiMelee, function(v) RG.AntiMelee = v end)
+    slider(card, "Threat Range", 6, 30, RG.ThreatRange, 0, function(v) RG.ThreatRange = v end)
     configCheckbox(card, "Adaptive Weapons", RG.AdaptiveWeapons, function(v) RG.AdaptiveWeapons = v end)
     local lib
     pcall(function()
@@ -39992,7 +39995,35 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             RG.lastTarget = best
             return best, bp
         end
-        function RV.rageTarget() return RG.pick() end
+        -- v0.99.5: anyone inside Threat Range of our server body or our real body.
+        -- Teleport-in melee (the chainsaw rush) is answered before anything else.
+        function RG.threat()
+            local C = cfg()
+            if not C.AntiMelee then return nil, nil end
+            local mr = myRoot()
+            -- the server body only counts while hiding: on a strike spot we are
+            -- next to the target on purpose
+            local me = (RV._rageCF ~= nil and RV._rageCF == RG.hide) and RV._rageCF.Position or nil
+            local best, bp, bd = nil, nil, C.ThreatRange or 14
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                local ch = plr ~= LocalPlayer and plr.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                if root and hum and hum.Health > 0 and not RV.isAlly(plr) then
+                    local d = math.huge
+                    if me then d = (root.Position - me).Magnitude end
+                    if mr then d = math.min(d, (root.Position - mr.Position).Magnitude) end
+                    if d < bd then best, bp, bd = plr, partOf(ch, R.LockPart), d end
+                end
+            end
+            return best, bp
+        end
+        function RV.rageTarget()
+            local tp, tpart = RG.threat()
+            RG.threatPlr = tp
+            if tp and tpart then return tp, tpart end
+            return RG.pick()
+        end
 
         -- :: weapon-aware distance :: shotguns close in, spread guns stay near
         function RG.strikeDist(it)
@@ -40161,6 +40192,24 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local live = it ~= nil and RV.inRound() and not RV.isDeflecting(plr)
             local aggr = RG.aggressive(plr)
             local t = RG.track[plr]
+            -- v0.99.5 anti-melee: they came to us, so shoot from where we stand, then
+            -- dodge to a fresh sky spot so the swing lands on air
+            if C.AntiMelee and RG.threatPlr == plr then
+                local here = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
+                if live and here and RG.ready(it) then RG.fire(it, here, part) end
+                if now >= (RG.dodgeUntil or 0) then
+                    RG.dodgeUntil = now + 0.3
+                    RG.hide = nil
+                end
+                RG.phase = "idle"
+                RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
+                local from = RV._rageCF and RV._rageCF.Position or here
+                if from then
+                    local p, y = RV.anglesTo(from, part.Position)
+                    if p then RV.setAngles(RV.slots.Rage, p, y) end
+                end
+                return
+            end
             -- counter teleport: a jump mid-approach restarts the approach at the new spot
             if C.CounterTP and t and t.jumpAt > RG.phaseAt and RG.phase == "approach" then
                 RG.phase = "idle"
