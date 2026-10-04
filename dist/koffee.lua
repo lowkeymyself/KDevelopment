@@ -1,7 +1,7 @@
--- koffee v0.94.0
+-- koffee v0.94.1
 
 local Koffee = {}
-Koffee.Version = "0.94.0"
+Koffee.Version = "0.94.1"
 
 
 
@@ -6266,6 +6266,7 @@ registerConfig("shared",         Shared)
 -- v0.93.14: runtime tables published on Shared are not settings. Loading a saved copy
 -- wrote old dock defs over live ones by index, so the Skins slot toggled Media.
 Shared._cfgSkip = { Windows = true, RivalsSkins = true, Media = true, Suspects = true,
+    RV = true,   -- v0.94.0: the rivals bridge holds game module tables and Instances
     AmbienceNames = true, HFX_NEW = true, KILL_ANIMS = true }
 
 -- v0.5.0: Crosshair: custom on-screen crosshair renderer, sits between world
@@ -10446,8 +10447,8 @@ Koffee.Rivals = {
     Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true },
     Flick       = { Cooldown = 250, Duration = 110, Curvature = 12, Humanness = 30, Shoot = true },
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
-                    Melee = false, MeleePct = 50, NoTracers = false, NoMuzzle = false },
-    Engine      = { Enabled = false },
+                    Melee = false, MeleePct = 50, NoTracers = false, NoMuzzle = false,
+                    NoShake = false, NoSway = false, NoHitsound = false },
 }
 registerConfig("rivals_native", Koffee.Rivals)
 -- thin registrations: the bodies only flip state, since the engines are built with the
@@ -15247,6 +15248,12 @@ local Combat = {
                 function(v) RVC.Mods.NoTracers = v end)
             configCheckbox(miscCard, "No Muzzle Flash", RVC.Mods.NoMuzzle,
                 function(v) RVC.Mods.NoMuzzle = v end)
+            configCheckbox(miscCard, "No Camera Shake", RVC.Mods.NoShake,
+                function(v) RVC.Mods.NoShake = v end)
+            configCheckbox(miscCard, "No Viewmodel Sway", RVC.Mods.NoSway,
+                function(v) RVC.Mods.NoSway = v end)
+            configCheckbox(miscCard, "No Game Hitsound", RVC.Mods.NoHitsound,
+                function(v) RVC.Mods.NoHitsound = v end)
         end
         configCheckbox(miscCard, "Hitbox Expander", Combat.Gun.HitboxExpander,
             function(v) Combat.Gun.HitboxExpander = v end)
@@ -15259,7 +15266,11 @@ local Combat = {
         -- v0.0.89: preset list = filenames from <exec>/Koffee/sounds/*.mp3.
         -- Loader ships these files (or user copies once). See getcustomasset resolver.
         local SND_PRESETS_LIST = SND_PRESETS   -- v0.10.0: single source, see above
-        local soundCard = panel(leftCol, "Sounds")
+        -- v0.94.0: the rivals rows make Misc long, so Sounds moves to the right
+        -- column in that game instead of stacking under it.
+        local soundHost = leftCol
+        if Koffee._isRivals then soundHost = rightCol end
+        local soundCard = panel(soundHost, "Sounds")
         configCheckbox(soundCard, "Hit Sound", Combat.HitSounds.Hit.Enabled, function(v) Combat.HitSounds.Hit.Enabled = v end)
         dropdown(soundCard, "Hit Preset", SND_PRESETS_LIST, Combat.HitSounds.Hit.Preset, function(v) Combat.HitSounds.Hit.Preset = v end)
         slider(soundCard, "Hit Custom Id", 0, 9999999999, Combat.HitSounds.Hit.CustomId, 0, function(v) Combat.HitSounds.Hit.CustomId = math.floor(v) end)
@@ -34382,7 +34393,9 @@ addTab("Extra", function(epanel)
         end
         local sid = srcId()
         local seen = {}
-        local common, rest = {}
+        -- v0.94.0: rest was never allocated, so any value whose name is not a common
+        -- gun name hit `#nil`. It only fired once a scan found one, hence the survival.
+        local common, rest = {}, {}
         local function add(rt, sub, v, isAttr, aname)
             local key = sub .. "|" .. (isAttr and ("@" .. aname) or v.Name)
             if seen[key] then return end
@@ -37995,9 +38008,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- buffer and a faster physics sender are what make a position desync land at all.
     RV._fpdh = nil
     pcall(function() RV._fpdh = Workspace.FallenPartsDestroyHeight end)
+    -- armed state lives on RV, never in Koffee.Rivals: that table is registered as a
+    -- config, so a save taken while armed would load the flag true and this would
+    -- early-return without ever applying the fflags.
+    RV._armed = false
     function RV.armEngine(want)
-        if R.Engine.Enabled == want then return end
-        R.Engine.Enabled = want
+        if RV._armed == want then return end
+        RV._armed = want
         if sethiddenproperty then
             local v = RV._fpdh or -500
             if want then v = 0 / 0 end
@@ -38271,6 +38288,79 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         pcall(rawset, it, "_on_shoot_callback", mine)
         pcall(rawset, it, "_koffeeShot", mine)
     end
+
+    -- :: NATIVE VISUAL DISABLERS ::
+    -- Each one is a single verified funnel, wrapped once per session and gated on the
+    -- live setting, so turning it back off needs no restore.
+    local function hookShake()
+        if RV._shakeHooked then return end
+        local tbl = RV.methodTable(RV.Fighters, "ShakeOnce")
+        if tbl == nil then tbl = RV.methodTable(RV.CamCtrl, "ShakeOnce") end
+        if tbl == nil then return end
+        local old = rawget(tbl, "ShakeOnce")
+        if type(old) ~= "function" then return end
+        if setreadonly then pcall(setreadonly, tbl, false) end
+        -- every shake in the game routes through CameraController:ShakeOnce, which
+        -- only forwards to the shaker, so one wrapper covers all of them.
+        local fine = pcall(rawset, tbl, "ShakeOnce", function(self, ...)
+            if R.Mods.NoShake then return end
+            return old(self, ...)
+        end)
+        if fine then RV._shakeHooked = true end
+    end
+
+    -- the hitmarker sound and the hitmarker visual share one function, so this keeps
+    -- the visual and drops only the sound. Mirrors DamageEffect minus its last line.
+    local function hookHitsound()
+        if RV._hitHooked then return end
+        local cls = LocalPlayer:FindFirstChild("PlayerScripts")
+        cls = cls and cls:FindFirstChild("Modules")
+        local at = cls
+        for _, n in ipairs({ "ClientReplicatedClasses", "ClientFighter", "ClientItem",
+                             "ItemInterface", "Mouse", "MouseCrosshair" }) do
+            if at == nil then break end
+            at = at:FindFirstChild(n)
+        end
+        local mod = RV.idRequire(at)
+        local tbl = RV.methodTable(mod, "DamageEffect")
+        if tbl == nil then return end
+        local old = rawget(tbl, "DamageEffect")
+        if type(old) ~= "function" then return end
+        if setreadonly then pcall(setreadonly, tbl, false) end
+        local fine = pcall(rawset, tbl, "DamageEffect", function(self, data, amount)
+            if not R.Mods.NoHitsound then return old(self, data, amount) end
+            if type(data) ~= "table" or data[K0] == 0 then return end
+            pcall(function()
+                local r = math.random() - 0.5
+                rawset(self, "_hitmarker_rotation", math.sign(r) * 15)
+                self._hitmarker_spring.Value = 0
+                rawset(self, "_last_damage_dealt_time", tick())
+                self.Crosshair:SetHitmarkerColor(data[K1])
+            end)
+        end)
+        if fine then RV._hitHooked = true end
+    end
+
+    -- Sway is an accumulating spring: the viewmodel adds the mouse delta to
+    -- _sway_spring.Value every frame and reads Value * 0.0003 as the offset. Zeroing
+    -- the accumulator each frame leaves one frame of delta, which is not visible.
+    local function killSway()
+        local it = RV.equipped()
+        if it == nil then return end
+        pcall(function()
+            local vm = it.ViewModel
+            if vm == nil then return end
+            local sp = rawget(vm, "_sway_spring")
+            if sp ~= nil then sp.Value = Vector2.zero end
+            rawset(vm, "CurrentSwayValue", Vector2.zero)
+        end)
+    end
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
+        if R.Mods.NoShake then hookShake() end
+        if R.Mods.NoHitsound then hookHitsound() end
+        if R.Mods.NoSway then killSway() end
+    end)
 
     -- :: ITEM INFO MODIFIERS ::
     -- Percentage patches on the weapon's own Info table with per-table originals, which
