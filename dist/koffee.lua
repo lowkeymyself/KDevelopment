@@ -1,7 +1,7 @@
 -- koffee v0.94.1
 
 local Koffee = {}
-Koffee.Version = "0.96.0"
+Koffee.Version = "0.96.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38103,6 +38103,15 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if r then return r.Position end
         return nil
     end
+    -- v0.96.1: the rage fire gate. Shots outside a duel never count, which was the
+    -- pre-round spam. A duel subject exists in every live mode including FFA.
+    function RV.inRound()
+        local sp = RV.Spectate
+        if type(sp) ~= "table" then return false end
+        local duel
+        pcall(function() duel = sp.CurrentDuelSubject end)
+        return duel ~= nil
+    end
 
     -- :: DESYNC ::
     -- Write the root in Heartbeat, hand it back from a RenderStep bound at 101. The
@@ -38245,37 +38254,23 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             tplr, tpart = RV.pickTarget(1000)
         end
 
-        -- ragebot: own the angle at the highest combat slot and fire the remote
-        -- directly with a hand-built CameraData. v0.96.0: item:Input was the wrong
-        -- receiver, so nothing ever fired. Kicia fires FighterState:Input and the
-        -- keyless rage fires UseItem itself; this follows the keyless shape, which
-        -- also shoots through any animation, including inspect.
+        -- ragebot: own the angle at the highest combat slot and drive the real
+        -- input. v0.96.1: Fighter:Input routes the equipped item's StartShooting
+        -- and replicates the return tuple, so ammo, cooldowns and damage are all
+        -- real. Calling the item's Input discarded the tuple: local FX with no
+        -- damage and no ammo change. Aim comes from the chained rewrite below,
+        -- which also shoots through any animation, including inspect.
         if on("rv_rage") and tpart then
             local p, y = RV.anglesTo(origin, tpart.Position)
             if p then RV.setAngles(RV.slots.Rage, p, y) end
-            if not RV.isDeflecting(tplr) then
+            if not RV.isDeflecting(tplr) and RV.inRound() then
                 pcall(function()
-                    local it = RV.equipped()
-                    if it == nil then return end
-                    local oid
-                    local gotId = pcall(function() oid = it:Get("ObjectID") end)
-                    if not gotId or oid == nil then return end
-                    local toEnum = RV.Enums and RV.Enums.ToEnum
-                    if type(toEnum) ~= "function" then return end
-                    local U = RV.Utility
-                    if U == nil or RV.UseItem == nil then return end
-                    local aim = CFrame.lookAt(origin, tpart.Position)
-                    if not Koffee.cfOk(aim) then return end
-                    local c0, c1, c2, c3 = utf8.char(0), utf8.char(1), utf8.char(2), utf8.char(3)
-                    local inner = {}
-                    inner[c0] = U:EncodeCFrame(aim)
-                    inner[c1] = U:EncodeCFrame(tpart.CFrame)
-                    inner[c2] = tpart
-                    inner[c3] = U:EncodeCFrame(tpart.CFrame:ToObjectSpace(CFrame.new(tpart.Position)))
-                    local outer = {}
-                    outer[c1] = inner
+                    local lf = RV.localFighter()
+                    if lf == nil then return end
+                    local inp = lf.Input
+                    if type(inp) ~= "function" then return end
                     for _ = 1, math.clamp(R.Rage.ShootFrames, 1, 5) do
-                        RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
+                        inp(lf, "StartShooting")
                     end
                 end)
             end
@@ -38319,6 +38314,30 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             cd[K3] = U:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(aim)))
         end)
     end
+    -- v0.96.1: the rage aim rewrite. The rage fire path drives the real input,
+    -- so the shot is built by the game and this steers it in the callback, the
+    -- same funnel silent uses. Silent runs second and wins ties.
+    local function rageRedirect(cd)
+        if type(cd) ~= "table" or Koffee.dead() then return end
+        if not on("rv_rage") then return end
+        local S = Shared.Combat and Shared.Combat.Silent
+        if S and S.Enabled and S.Method == "Native" then return end
+        local plr, part = RV.pickTarget(1000)
+        if part == nil or RV.isDeflecting(plr) then return end
+        local origin = RV.serverHead()
+        if origin == nil then return end
+        local U = RV.Utility
+        if U == nil then return end
+        local aim = part.Position
+        pcall(function()
+            local look = CFrame.lookAt(origin, aim)
+            if not Koffee.cfOk(look) then return end
+            cd[K0] = U:EncodeCFrame(look)
+            cd[K1] = U:EncodeCFrame(part.CFrame)
+            cd[K2] = part
+            cd[K3] = U:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(aim)))
+        end)
+    end
     -- chained, not clobbered: if the game or another feature already owns the field,
     -- its callback still runs. Marked so a re-apply never stacks a second layer.
     local function installShot(it)
@@ -38327,6 +38346,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         local prev = cur
         local mine
         mine = function(cd)
+            rageRedirect(cd)
             redirect(cd)
             if type(prev) == "function" then pcall(prev, cd) end
         end
@@ -38354,55 +38374,45 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if fine then RV._shakeHooked = true end
     end
 
-    -- v0.96.0: viewmodel anim gates. Same names Kicia suppresses: shoot anims
-    -- carry Shoot (plus QuickShot), reload anims carry Reload, equip matches the
-    -- animator's own field. Plain table wraps, not metamethods, and the game
-    -- keeps shooting while the anim is skipped, including while inspecting.
-    local function hookAnims()
-        if RV._animHooked then return end
-        local cls = LocalPlayer:FindFirstChild("PlayerScripts")
-        cls = cls and cls:FindFirstChild("Modules")
-        local at = cls
-        for _, n in ipairs({ "ClientReplicatedClasses", "ClientFighter", "ClientItem",
-                             "ClientViewModel", "ViewModelAnimator" }) do
-            if at == nil then break end
-            at = at:FindFirstChild(n)
+    -- v0.96.1: animation suppression through the game's own BlockAnimation, no
+    -- hooks at all. Names resolve live off the equipped item and unknown names
+    -- are harmless (PlayAnimation checks the block map before the track lookup).
+    -- Blocks last 5s and the item loop below re-applies every 0.25s, so turning
+    -- a toggle off restores the anim within seconds.
+    local function blockAnims(it)
+        if not (R.Mods.NoShootAnim or R.Mods.NoReloadAnim or R.Mods.NoEquipAnim) then return end
+        local vm
+        pcall(function() vm = it.ViewModel end)
+        local an
+        if vm ~= nil then pcall(function() an = vm.Animator end) end
+        if an == nil then return end
+        local function block(name)
+            if type(name) ~= "string" then return end
+            pcall(function() an:BlockAnimation(name, 5) end)
         end
-        local mod = RV.idRequire(at)
-        local tbl = RV.methodTable(mod, "PlayAnimation")
-        if tbl == nil then return end
-        local old = rawget(tbl, "PlayAnimation")
-        if type(old) ~= "function" then return end
-        if setreadonly then pcall(setreadonly, tbl, false) end
-        local fine = pcall(rawset, tbl, "PlayAnimation", function(self, name, ...)
-            if type(name) == "string" then
-                if R.Mods.NoShootAnim
-                    and (string.find(name, "Shoot", 1, true) ~= nil or name == "QuickShot") then
-                    return
-                end
-                if R.Mods.NoReloadAnim and string.find(name, "Reload", 1, true) ~= nil then return end
-                if R.Mods.NoEquipAnim then
-                    local eq
-                    pcall(function() eq = self._equip_animation end)
-                    if eq ~= nil and name == eq then return end
-                end
+        if R.Mods.NoShootAnim then
+            local prefix, n = nil, 0
+            pcall(function() prefix = it._shoot_animation_name_prefix end)
+            pcall(function() n = it._num_shooting_animations end)
+            if type(prefix) == "string" then
+                for i = 1, math.clamp(math.floor(n or 0), 0, 12) do block(prefix .. i) end
             end
-            return old(self, name, ...)
-        end)
-        -- the equip entry point plays a fixed anim, so gate it whole when asked.
-        local oldEq = rawget(tbl, "PlayEquipAnimation")
-        if type(oldEq) == "function" then
-            pcall(rawset, tbl, "PlayEquipAnimation", function(self, ...)
-                if R.Mods.NoEquipAnim then return end
-                return oldEq(self, ...)
-            end)
+            block("ShootAiming"); block("FinalShoot"); block("QuickShot"); block("FinalQuickShot")
         end
-        if fine then RV._animHooked = true end
+        if R.Mods.NoReloadAnim then
+            block("Reload"); block("Reload2"); block("Reload3")
+            block("EmptyReload"); block("EmptyReloadStart")
+        end
+        if R.Mods.NoEquipAnim then
+            block("Equip"); block("EquipEmpty")
+            local eq
+            pcall(function() eq = an._equip_animation end)
+            block(eq)
+        end
     end
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if R.Mods.NoShake then hookShake() end
-        if R.Mods.NoShootAnim or R.Mods.NoReloadAnim or R.Mods.NoEquipAnim then hookAnims() end
     end)
 
     -- :: ITEM INFO MODIFIERS ::
@@ -38528,10 +38538,29 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 pcall(function() info = it.Info end)
                 if info ~= nil then applyInfo(info) end
                 installShot(it)
+                blockAnims(it)
             end
             task.wait(0.25)
         end
         RV.restoreInfo()
+    end)
+    -- v0.96.1: full auto re-triggers the real input while LMB is held. The spam
+    -- table zeros only restore stock buffering; repeat fire comes from here, and
+    -- the game's own cooldown, ammo and reload guards pace every shot.
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then return end
+        if not R.Mods.AutoFire then return end
+        local uis = RV._uis or game:GetService("UserInputService")
+        RV._uis = uis
+        local held = false
+        pcall(function() held = uis:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) end)
+        if not held then return end
+        pcall(function()
+            local lf = RV.localFighter()
+            if lf == nil then return end
+            local inp = lf.Input
+            if type(inp) == "function" then inp(lf, "StartShooting") end
+        end)
     end)
 end) end
 
