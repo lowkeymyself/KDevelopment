@@ -1,7 +1,7 @@
--- koffee v0.93.20
+-- koffee v0.93.21
 
 local Koffee = {}
-Koffee.Version = "0.93.20"
+Koffee.Version = "0.93.21"
 
 
 
@@ -15081,11 +15081,11 @@ local Combat = {
         end
         -- v0.93.19: RIVALS rows. Detection gated, so any AC place gets them.
         if Koffee._isRivals then
-            configCheckbox(miscCard, "Rapid Fire (RIVALS)", Combat.RivalsGun.RapidFire,
+            configCheckbox(miscCard, "Rapid Fire", Combat.RivalsGun.RapidFire,
                 function(v) Combat.RivalsGun.RapidFire = v end)
-            slider(miscCard, "Fire Delay (RIVALS)", 0.01, 0.5, Combat.RivalsGun.FireDelay or 0.05, 2,
+            slider(miscCard, "Fire Delay", 0.01, 0.5, Combat.RivalsGun.FireDelay or 0.05, 2,
                 function(v) Combat.RivalsGun.FireDelay = v end)
-            configCheckbox(miscCard, "No Spread (RIVALS)", Combat.RivalsGun.NoSpread,
+            configCheckbox(miscCard, "No Spread", Combat.RivalsGun.NoSpread,
                 function(v) Combat.RivalsGun.NoSpread = v end)
         end
         configCheckbox(miscCard, "Hitbox Expander", Combat.Gun.HitboxExpander,
