@@ -1,7 +1,7 @@
 -- koffee v0.96.4
 
 local Koffee = {}
-Koffee.Version = "0.96.9"
+Koffee.Version = "0.96.10"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -11935,6 +11935,7 @@ local Combat = {
         -- and humanized pre-fire timing. Defaults preserve old behavior.
         Distance      = 2000,     -- studs
         HeadOnly      = false,
+        IgnoreKatana  = false,  -- v0.96.10: skip wielded katanas (rivals)
         Reaction      = 0,        -- ms base, added to Delay
         Spread        = 0,        -- ms extra random, added to Delay
         -- v0.51.0: HitChance gates the click itself. A failed roll still
@@ -13918,6 +13919,17 @@ local Combat = {
     -- stops at the first wall). HitboxMul widens the sample into a small ring.
     local trigParams = RaycastParams.new()
     trigParams.FilterType = Enum.RaycastFilterType.Exclude
+    -- v0.96.10: Ignore Katana gate. Reads the 10Hz wield set, never a live walk.
+    local function trigKatanaOut(plr)
+        if not Combat.Trigger.IgnoreKatana then return false end
+        if plr == nil then return false end
+        local RVN = Shared.RV
+        if RVN and RVN.ok and RVN.isKatanaOut then
+            local ok, out = pcall(RVN.isKatanaOut, plr)
+            if ok and out then return true end
+        end
+        return false
+    end
     local function crosshairEnemy()
         local cam = Workspace.CurrentCamera
         if not cam then return nil end
@@ -13936,6 +13948,7 @@ local Combat = {
             local model = res.Instance:FindFirstAncestorWhichIsA("Model")
             local plr = model and Players:GetPlayerFromCharacter(model)
             if not plr or plr == LocalPlayer then return nil end
+            if trigKatanaOut(plr) then return nil end
             local hum = model:FindFirstChildOfClass("Humanoid")
             if not healthOk(model, hum) then return nil end
             if not Shared.aimAllowed(plr, Combat.Trigger.TeamCheck) then return nil end
@@ -13979,7 +13992,8 @@ local Combat = {
                 local char = plr.Character
                 if char then
                     local hum = char:FindFirstChildOfClass("Humanoid")
-                    if healthOk(char, hum) and Shared.aimAllowed(plr, Combat.Trigger.TeamCheck) then
+                    if healthOk(char, hum) and not trigKatanaOut(plr)
+                        and Shared.aimAllowed(plr, Combat.Trigger.TeamCheck) then
                         for _, name in ipairs(parts) do
                             local part = char:FindFirstChild(name)
                             if part then
@@ -14024,15 +14038,25 @@ local Combat = {
         -- v0.50.0: Head Only scopes the silent link to head hits as well.
         local headOk = (not Combat.Trigger.HeadOnly)
             or (silentTarget and silentTarget.Name == "Head")
+        -- v0.96.10: silent target's owner, so the katana gate covers this path too.
+        local silPlr = nil
+        if silentTarget and silentTarget.Parent then
+            pcall(function()
+                local m = silentTarget:FindFirstAncestorWhichIsA("Model")
+                silPlr = m and Players:GetPlayerFromCharacter(m) or nil
+            end)
+        end
         if Combat.Trigger.VisibleCheck then
             -- silent link only fires when target is actually visible
-            if headOk and silentTarget and silentTarget.Parent and Combat.Silent.Enabled and silentHasLOS() then
+            if headOk and silentTarget and silentTarget.Parent and Combat.Silent.Enabled and silentHasLOS()
+                and not trigKatanaOut(silPlr) then
                 return true
             end
             return crosshairEnemy() ~= nil
         end
         -- through-walls mode: any locked silent target fires
-        if headOk and silentTarget and silentTarget.Parent and Combat.Silent.Enabled then return true end
+        if headOk and silentTarget and silentTarget.Parent and Combat.Silent.Enabled
+            and not trigKatanaOut(silPlr) then return true end
         return crosshairEnemyNoOcclusion() ~= nil
     end
     RunService.Heartbeat:Connect(function()
@@ -15443,6 +15467,10 @@ local Combat = {
         -- Head Only restricts to exact head hits; Reaction humanizes timing.
         slider(trigCard, "Distance", 50, 2000, Combat.Trigger.Distance, 0, function(v) Combat.Trigger.Distance = v end)
         configCheckbox(trigCard, "Head Only", Combat.Trigger.HeadOnly, function(v) Combat.Trigger.HeadOnly = v end)
+        -- v0.96.10: katana is rivals-specific, so the row is gated like the gun rows.
+        if Koffee._isRivals then
+            configCheckbox(trigCard, "Ignore Katana", Combat.Trigger.IgnoreKatana, function(v) Combat.Trigger.IgnoreKatana = v end)
+        end
         slider(trigCard, "Reaction (ms)", 0, 500, Combat.Trigger.Reaction, 0, function(v) Combat.Trigger.Reaction = v end)
         slider(trigCard, "Reaction Spread (ms)", 0, 500, Combat.Trigger.Spread, 0, function(v) Combat.Trigger.Spread = v end)
         slider(trigCard, "Hit Chance (%)", 1, 100, Combat.Trigger.HitChance, 0, function(v) Combat.Trigger.HitChance = v end)
@@ -37877,6 +37905,7 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoNative) then pcall(fu
     -- source is a walk of FighterController.Objects and the callers are per candidate
     -- per frame: doing it inline would be O(n^2) every frame.
     RV.deflecting = {}
+    RV.katanaOut = {}
     local function deflectOf(o)
         local name, cd
         pcall(function()
@@ -37887,26 +37916,45 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoNative) then pcall(fu
         if name ~= "Katana" and name ~= "Chainsaw" then return false end
         return type(cd) == "number" and cd > tick()
     end
+    -- v0.96.10: wielded (not necessarily swinging) katana, for the triggerbot
+    -- Ignore Katana toggle. Same walk, second set, no extra cost.
+    local function katanaWielded(o)
+        local name
+        pcall(function()
+            local it = o.EquippedItem
+            name = it and it.ViewModel and it.ViewModel.Name
+        end)
+        return name == "Katana"
+    end
     task.spawn(function()
         while not Koffee.dead() do
             local f = RV.Fighters
             local objs
             if type(f) == "table" then pcall(function() objs = f.Objects end) end
-            local fresh = {}
+            local fresh, wield = {}, {}
             if type(objs) == "table" then
                 for _, o in pairs(objs) do
                     local who
                     pcall(function() who = o.Player end)
-                    if who ~= nil and who ~= LP then fresh[who] = deflectOf(o) end
+                    if who ~= nil and who ~= LP then
+                        fresh[who] = deflectOf(o)
+                        wield[who] = katanaWielded(o)
+                    end
                 end
             end
             RV.deflecting = fresh
+            RV.katanaOut = wield
             task.wait(0.1)
         end
         RV.deflecting = {}
+        RV.katanaOut = {}
     end)
     function RV.isDeflecting(plr)
         return RV.deflecting[plr] == true
+    end
+    function RV.isKatanaOut(plr)
+        if RV.katanaOut == nil then return false end
+        return RV.katanaOut[plr] == true
     end
 
     -- :: angles ::
