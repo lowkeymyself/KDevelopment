@@ -1,7 +1,7 @@
 -- koffee v0.96.4
 
 local Koffee = {}
-Koffee.Version = "0.96.11"
+Koffee.Version = "0.96.12"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38223,6 +38223,15 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if r then return r.Position end
         return nil
     end
+    -- v0.96.12: close orbit origin for rage. Shots originate from a point
+    -- circling the target at melee range instead of one static spot, so angle
+    -- checks see movement. Independent of the desync spot: this is purely where
+    -- the rounds come from.
+    function RV.rageOrigin(part)
+        local tp = part.Position
+        local ph = os.clock() * 3.5
+        return tp + Vector3.new(math.cos(ph) * 7, 2, math.sin(ph) * 7)
+    end
     -- v0.96.1: the rage fire gate. Shots outside a duel never count, which was the
     -- pre-round spam. A duel subject exists in every live mode including FFA.
     function RV.inRound()
@@ -38378,10 +38387,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- directly. v0.96.3: read Kicia's ShootEncoded (message line 27111) for
         -- real this time. Two things 02 got wrong: raycast shots carry
         -- outer[char(2)] = true, and fire is paced at the gun's own cooldown with
-        -- a pipeline reload at empty instead of dry-firing. Aim still comes from
-        -- the desync-correct origin plus the chained rewrite below.
+        -- a pipeline reload at empty instead of dry-firing.
+        -- v0.96.12: rounds originate at the close orbit, not one static spot.
         if on("rv_rage") and tpart then
-            local p, y = RV.anglesTo(origin, tpart.Position)
+            local ox = RV.rageOrigin(tpart)
+            local p, y = RV.anglesTo(ox, tpart.Position)
             if p then RV.setAngles(RV.slots.Rage, p, y) end
             if not RV.isDeflecting(tplr) and RV.inRound() then
                 pcall(function()
@@ -38418,7 +38428,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local frames = math.clamp(R.Rage.ShootFrames, 1, 5)
                     if RV._rageAt ~= nil and now - RV._rageAt < gap / frames then return end
                     RV._rageAt = now
-                    local aim = CFrame.lookAt(origin, tpart.Position)
+                    local aim = CFrame.lookAt(ox, tpart.Position)
                     if not Koffee.cfOk(aim) then return end
                     local c0, c1, c2, c3 = utf8.char(0), utf8.char(1), utf8.char(2), utf8.char(3)
                     local inner = {}
@@ -38489,13 +38499,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if S and S.Enabled and S.Method == "Native" then return end
         local plr, part = RV.pickTarget(1000)
         if part == nil or RV.isDeflecting(plr) then return end
-        local origin = RV.serverHead()
-        if origin == nil then return end
+        local ox = RV.rageOrigin(part)
         local U = RV.Utility
         if U == nil then return end
         local aim = part.Position
         pcall(function()
-            local look = CFrame.lookAt(origin, aim)
+            local look = CFrame.lookAt(ox, aim)
             if not Koffee.cfOk(look) then return end
             cd[K0] = U:EncodeCFrame(look)
             cd[K1] = U:EncodeCFrame(part.CFrame)
@@ -38505,9 +38514,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     end
     -- v0.96.11: desync origin correction. When a desync is live (rivals or spam
     -- ride) and neither rage nor silent claimed the shot, the game-built table
-    -- still originates at the real camera. Shift the firing CFrame to the server
-    -- position while keeping the aim direction, so plain and full-auto shots
-    -- judge from where the server sees you. Hit data stays the game's.
+    -- still originates at the real camera.
+    -- v0.96.12: aim at the same world hit point, from the server spot. Shifting
+    -- only the origin kept the old direction, which no longer intersects the
+    -- hit part from the new spot, so the packet read inconsistent and died.
+    -- Falls back to the direction shift when the offset cannot be decoded.
     local function desyncCorrect(cd)
         if type(cd) ~= "table" or Koffee.dead() then return end
         if on("rv_rage") then return end
@@ -38519,6 +38530,18 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         local U = RV.Utility
         if U == nil then return end
         pcall(function()
+            local part = cd[K2]
+            if part ~= nil and cd[K3] ~= nil and type(U.DecodeCFrame) == "function" then
+                local off = U:DecodeCFrame(cd[K3])
+                if typeof(off) == "CFrame" then
+                    local worldHit = part.CFrame * off
+                    local look = CFrame.lookAt(origin, worldHit.Position)
+                    if Koffee.cfOk(look) then
+                        cd[K0] = U:EncodeCFrame(look)
+                        return
+                    end
+                end
+            end
             local cam = Workspace.CurrentCamera
             if cam == nil then return end
             local dir = cam.CFrame.LookVector
