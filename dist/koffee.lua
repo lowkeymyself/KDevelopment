@@ -1,7 +1,7 @@
--- koffee v0.93.21
+-- koffee v0.93.22
 
 local Koffee = {}
-Koffee.Version = "0.93.21"
+Koffee.Version = "0.93.22"
 
 
 
@@ -4514,6 +4514,9 @@ local function dropdown(parent, label, options, initial, onChange)
     })
 
     local isOpen = false
+    -- v0.93.22: real lock. Active alone does not stop MouseButton1Click on a
+    -- TextButton, so a "locked" dropdown still opened and overwrote its own label.
+    local locked = false
     -- v0.0.12: RenderStepped lock keeps popup glued below the button even when it shifts
     -- (scroll, tab-switch, drag): calculate every frame, not once at open.
     local positionConn = nil
@@ -4582,7 +4585,7 @@ local function dropdown(parent, label, options, initial, onChange)
         end
     end
     local function openList()
-        if isOpen then return end
+        if isOpen or locked then return end
         for _, entry in pairs(openDropdowns) do
             if entry.close ~= closeList then entry.close(true) end
         end
@@ -4671,6 +4674,7 @@ local function dropdown(parent, label, options, initial, onChange)
             tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 1 })
         end)
         optBtn.MouseButton1Click:Connect(function()
+            if locked then return end
             valueLbl.Text = opt
             pulse(valueLbl, 1.08)   -- v0.0.98: value ticks on pick
             Koffee.Sfx.play("select")
@@ -4680,6 +4684,7 @@ local function dropdown(parent, label, options, initial, onChange)
     end
 
     btn.MouseButton1Click:Connect(function()
+        if locked then return end
         if isOpen then closeList() else openList() end
     end)
     popFx(btn)   -- v0.0.98: dropdowns squash on press
@@ -4688,6 +4693,17 @@ local function dropdown(parent, label, options, initial, onChange)
         button = btn,
         setValue = function(v) valueLbl.Text = v end,
         close = function() closeList(true) end,
+        -- v0.93.22: locks the control out of input entirely and optionally shows an
+        -- override label. Interactable also kills hover and the press squash; the
+        -- Lua guards stay as the hard stop in case it is missing on a client.
+        setLocked = function(v, text)
+            locked = v and true or false
+            if locked then closeList(true) end
+            btn.Active = not locked
+            pcall(function() btn.Interactable = not locked end)
+            valueLbl.TextColor3 = locked and Theme.Palette.TextMuted or Theme.Palette.Text
+            if text then valueLbl.Text = text end
+        end,
         -- v0.0.47: full teardown: the popup `list` lives on popupScreen (not a
         -- child of wrap), so destroying the wrap alone leaks it. Callers that
         -- rebuild a dropdown (e.g. the config manager's live selector) use this.
@@ -14986,21 +15002,27 @@ local Combat = {
         configCheckbox(L.Aimbot, "Behind Cam", Combat.Aim.BehindCam, function(v) Combat.Aim.BehindCam = v end)
         configCheckbox(L.Aimbot, "Health Check", Combat.Aim.HealthCheck, function(v) Combat.Aim.HealthCheck = v end)
         configCheckbox(L.Aimbot, "Sticky Aim", Combat.Aim.Sticky, function(v) Combat.Aim.Sticky = v end)
-        -- v0.0.36: third-person cursor aim (move mouse, not camera). Bind aimbot to a
-        -- non-RMB key (e.g. XButton2) so it doesn't clash with the game's shift-lock.
-        configCheckbox(L.Aimbot, "Third Person", Combat.Aim.ThirdPerson, function(v) Combat.Aim.ThirdPerson = v end)
-        slider(L.Aimbot, "Distance", 1, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end, { infinite = true })
-        slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
-        -- v0.93.7: Perfect Lock ignores Aim Type entirely, so the dropdown reads
-        -- "Perfect Lock" and stops offering choices while it is on.
+        -- v0.93.7: Perfect Lock ignores Aim Type entirely, so the dropdown reads it back
+        -- instead of offering choices. v0.93.22: declared up here so Third Person can
+        -- resync it, and it reports which path the lock actually drives.
         local aimTypeDD
         local function syncAimType()
             if not aimTypeDD then return end
             local pl = Combat.Aim.PerfectLock == true
-            aimTypeDD.setValue(pl and "Perfect Lock" or Combat.Aim.AimType)
-            aimTypeDD.button.Active = not pl
-            if pl then aimTypeDD.close() end
+            local shown = Combat.Aim.AimType
+            if pl then
+                shown = Combat.Aim.ThirdPerson and "Perfect Lock: Mouse" or "Perfect Lock: Camera"
+            end
+            aimTypeDD.setLocked(pl, shown)
         end
+        -- v0.0.36: third-person cursor aim (move mouse, not camera). Bind aimbot to a
+        -- non-RMB key (e.g. XButton2) so it doesn't clash with the game's shift-lock.
+        configCheckbox(L.Aimbot, "Third Person", Combat.Aim.ThirdPerson, function(v)
+            Combat.Aim.ThirdPerson = v
+            syncAimType()
+        end)
+        slider(L.Aimbot, "Distance", 1, 5000, Combat.Aim.Distance, 0, function(v) Combat.Aim.Distance = v end, { infinite = true })
+        slider(L.Aimbot, "Sensitivity", 0.01, 1, Combat.Aim.Sensitivity, 2, function(v) Combat.Aim.Sensitivity = v end)
         configCheckbox(L.Aimbot, "Perfect Lock", Combat.Aim.PerfectLock, function(v)
             Combat.Aim.PerfectLock = v
             syncAimType()
