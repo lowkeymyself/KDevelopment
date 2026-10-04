@@ -1,7 +1,7 @@
 -- koffee v0.96.4
 
 local Koffee = {}
-Koffee.Version = "0.96.10"
+Koffee.Version = "0.96.11"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -5485,8 +5485,11 @@ local function loadSnapshot(data)
             -- v0.66.1: combat has no toggle bind. v0.69.1: the HvH box is Blink
             -- alone now. Skip stale entries from old saves.
             -- v0.96.0: flickbot plus the folded native rows left the same way.
+            -- v0.96.11: rivals binds never load outside rivals. A global
+            -- auto-load could otherwise arm them where no engine reads them.
             if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" and id ~= "hvh_flash"
-                and id ~= "rv_flick" and id ~= "rv_lock" and id ~= "rv_silent" then
+                and id ~= "rv_flick" and id ~= "rv_lock" and id ~= "rv_silent"
+                and (Koffee._isRivals or not (type(id) == "string" and id:sub(1, 3) == "rv_")) then
                 -- v0.75.0: combo binds ({mod,key} tables) decoded fine but were
                 -- dropped here, so Shift+C-style pills forgot their bind on load.
                 local isCombo = type(key) == "table" and typeof(key.mod) == "EnumItem" and typeof(key.key) == "EnumItem"
@@ -5501,7 +5504,10 @@ local function loadSnapshot(data)
         for id, state in pairs(data.modules) do
             -- v0.67.0: npc_* rows are owned by reconcile (fresh ids per load with
             -- saved on/off already applied); the old ids below no longer exist.
-            if not (type(id) == "string" and id:sub(1, 4) == "npc_") then
+            -- v0.96.11: rivals modules never restore outside rivals, same reason
+            -- as the keybind guard above.
+            if not (type(id) == "string" and id:sub(1, 4) == "npc_")
+                and (Koffee._isRivals or not (type(id) == "string" and id:sub(1, 3) == "rv_")) then
                 local m = Modules[id]
                 if m and (m.Enabled and true or false) ~= (state and true or false) then
                     toggleModule(id)
@@ -38497,6 +38503,30 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             cd[K3] = U:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(aim)))
         end)
     end
+    -- v0.96.11: desync origin correction. When a desync is live (rivals or spam
+    -- ride) and neither rage nor silent claimed the shot, the game-built table
+    -- still originates at the real camera. Shift the firing CFrame to the server
+    -- position while keeping the aim direction, so plain and full-auto shots
+    -- judge from where the server sees you. Hit data stays the game's.
+    local function desyncCorrect(cd)
+        if type(cd) ~= "table" or Koffee.dead() then return end
+        if on("rv_rage") then return end
+        local S = Shared.Combat and Shared.Combat.Silent
+        if S and S.Enabled and S.Method == "Native" then return end
+        if RV._dsLast == nil and RV._spamDs == nil then return end
+        local origin = RV.serverHead()
+        if origin == nil then return end
+        local U = RV.Utility
+        if U == nil then return end
+        pcall(function()
+            local cam = Workspace.CurrentCamera
+            if cam == nil then return end
+            local dir = cam.CFrame.LookVector
+            local look = CFrame.new(origin, origin + dir)
+            if not Koffee.cfOk(look) then return end
+            cd[K0] = U:EncodeCFrame(look)
+        end)
+    end
     -- chained, not clobbered: if the game or another feature already owns the field,
     -- its callback still runs. Marked so a re-apply never stacks a second layer.
     local function installShot(it)
@@ -38505,6 +38535,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         local prev = cur
         local mine
         mine = function(cd)
+            desyncCorrect(cd)
             rageRedirect(cd)
             redirect(cd)
             if type(prev) == "function" then pcall(prev, cd) end
@@ -38790,6 +38821,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local gcd
             local okCd = pcall(function() gcd = lf:GetCameraData() end)
             if not okCd or type(gcd) ~= "table" then return end
+            desyncCorrect(gcd)
             rageRedirect(gcd)
             redirect(gcd)
             local oid
