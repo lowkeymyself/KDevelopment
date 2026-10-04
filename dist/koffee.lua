@@ -1,7 +1,7 @@
 -- koffee v0.96.4
 
 local Koffee = {}
-Koffee.Version = "0.96.5"
+Koffee.Version = "0.96.6"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38635,8 +38635,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- v0.96.4: stands down while rage fires, so the two never stack to double
     -- rate on the same target. Rage already paces itself off the live cooldown.
     -- v0.96.5: fires the rage way. The game builds the real CameraData for the
-    -- shot (true aim, spread and raycast), the chained rewrites steer it, and
-    -- the packet goes out wrapped with the raycast flag, paced and reloaded.
+    -- shot (true aim, spread and raycast) and the packet goes out wrapped with
+    -- the raycast flag, edge-triggered on the live cooldowns.
+    -- v0.96.6: stripped to just the shoot remote. No rewrites, no forced
+    -- reload: the game-built table goes out as built, empty gun included.
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if not R.Mods.AutoFire then return end
@@ -38656,18 +38658,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             pcall(function() rcd = it._reload_cooldown or 0 end)
             local now = tick()
             if now < cd or now < rcd then return end
-            local ammo = nil
-            pcall(function() ammo = it:Get("Ammo") end)
-            if ammo ~= nil and ammo <= 0 then
-                local inp = lf.Input
-                if type(inp) == "function" then inp(lf, "StartReloading") end
-                return
-            end
             local gcd
             local okCd = pcall(function() gcd = lf:GetCameraData() end)
             if not okCd or type(gcd) ~= "table" then return end
-            rageRedirect(gcd)
-            redirect(gcd)
             local oid
             local gotId = pcall(function() oid = it:Get("ObjectID") end)
             if not gotId or oid == nil then return end
