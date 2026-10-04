@@ -1,7 +1,7 @@
--- koffee v0.99.7
+-- koffee v0.99.8
 
 local Koffee = {}
-Koffee.Version = "0.99.7"
+Koffee.Version = "0.99.8"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10804,6 +10804,7 @@ Koffee.Rivals = {
                     -- v0.99.4 rage v2: separate toggles, see the RAGE V2 block
                     Strike = true, StrikeDist = 9, Lead = 35, Hold = 60,
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
+                    HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 100M to 300M
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
                     Adaptive = true, AdaptiveWeapons = false,
                     AntiMelee = true, ThreatRange = 25,   -- v0.99.5: teleport-in answer (melee and gun)
@@ -10850,6 +10851,7 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
     slider(card, "Hop Rate", 1, 20, RG.HopRate, 0, function(v) RG.HopRate = v end)
+    dropdown(card, "Hide Distance", { "Edge", "Far" }, RG.HideDist or "Edge", function(v) RG.HideDist = v end)
     configCheckbox(card, "OOB Guard", RG.OOBGuard, function(v) RG.OOBGuard = v end)
     configCheckbox(card, "Counter Void", RG.CounterVoid, function(v) RG.CounterVoid = v end)
     configCheckbox(card, "Counter Teleport", RG.CounterTP, function(v) RG.CounterTP = v end)
@@ -40121,12 +40123,16 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         function RG.hideCF(mr, now)
             local C = cfg()
             local hop = 1 / math.clamp(C.HopRate or 6, 1, 20)
-            if RG.hide == nil or (C.VoidSpam and now - RG.hopAt > hop) then
+            if RG.hide == nil or RG.hideKind ~= C.HideDist or (C.VoidSpam and now - RG.hopAt > hop) then
                 RG.hopAt = now
+                RG.hideKind = C.HideDist
                 -- v0.99.7: sideways past the map at its own height (message (2)'s void
                 -- spot); straight up got us killed
                 local a = math.random() * math.pi * 2
                 local d = math.random(30000, 45000)
+                -- v0.99.8: Far parks where float32 steps are ~8 to 16 studs, so nothing
+                -- aimed at us lines up (the trick an opponent used on his friend)
+                if C.HideDist == "Far" then d = math.random(100, 300) * 1e6 end
                 RG.hide = CFrame.new(mr.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d))
             end
             return RG.hide
