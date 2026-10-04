@@ -1,7 +1,7 @@
--- koffee v0.96.4
+-- koffee v0.97.0
 
 local Koffee = {}
-Koffee.Version = "0.96.12"
+Koffee.Version = "0.97.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10453,7 +10453,9 @@ Koffee.Rivals = {
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
                     Melee = false, MeleePct = 50, NoMuzzle = false,
                     NoShake = false, NoShootAnim = false, HideArms = false,
-                    NoReloadAnim = false, NoEquipAnim = false },
+                    NoReloadAnim = false, NoEquipAnim = false,
+                    NoFlash = false, NoSmoke = false, NoVignette = false,
+                    NoGameCrosshair = false, NoHitmarker = false, NoDmgNumbers = false },
 }
 registerConfig("rivals_native", Koffee.Rivals)
 -- thin registrations: the bodies only flip state, since the engines are built with the
@@ -11227,6 +11229,7 @@ local Visual = {
     Arms     = { X = 0, Y = 0, Z = 0, RX = 0, RY = 0, RZ = 0 },
     Head     = { X = 0, Y = 0, Z = 0, RX = 0, RY = 0, RZ = 0 },
     Material = { Name = "Neon", Color = Color3.fromRGB(212, 145, 90) },
+    Aspect   = { X = 0.75, Y = 1 },
 }
 -- CustomAnim config reused from CFG so the pill/held system drives it
 Visual.CustomAnim = CFG.customanim
@@ -11437,6 +11440,9 @@ local TP = {
 }
 registerConfig("thirdperson_cam", TP)   -- v0.28.0: persist right-click camera settings
 local function tpOnEnable()
+    -- v0.97.0: rivals uses the game's own third person; the camera write below
+    -- is the fallback when the native bridge is off or the call fails.
+    if Koffee._isRivals and Shared.RV and Shared.RV.thirdPerson and Shared.RV.thirdPerson(true) then return end
     local cam = Workspace.CurrentCamera
     if not cam then return end
     TP._origCam = cam.CameraType
@@ -11447,12 +11453,14 @@ local function tpOnEnable()
     UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
 end
 local function tpOnDisable()
+    if Shared.RV and Shared.RV._tpNative then Shared.RV.thirdPerson(false) return end
     local cam = Workspace.CurrentCamera
     if cam then cam.CameraType = TP._origCam or Enum.CameraType.Custom end
     UserInputService.MouseBehavior = TP._origMB or Enum.MouseBehavior.Default
 end
 UserInputService.InputChanged:Connect(function(input, gpe)
     if not (Modules.thirdperson and Modules.thirdperson.Enabled) then return end
+    if Shared.RV and Shared.RV._tpNative then return end
     if input.UserInputType == Enum.UserInputType.MouseMovement then
         TP._rotY = TP._rotY - math.rad(input.Delta.X * TP.Sensitivity)
         TP._rotX = math.clamp(TP._rotX - math.rad(input.Delta.Y * TP.Sensitivity), -math.rad(80), math.rad(80))
@@ -11466,6 +11474,7 @@ end)
 pcall(function() RunService:UnbindFromRenderStep("KThirdPerson") end)
 RunService:BindToRenderStep("KThirdPerson", Enum.RenderPriority.Camera.Value, function()
     if not (Modules.thirdperson and Modules.thirdperson.Enabled) then return end
+    if Shared.RV and Shared.RV._tpNative then return end
     local char = LocalPlayer.Character; if not char then return end
     local hrp  = char:FindFirstChild("HumanoidRootPart")
     local head = char:FindFirstChild("Head")
@@ -11485,6 +11494,31 @@ RunService:BindToRenderStep("KThirdPerson", Enum.RenderPriority.Camera.Value, fu
     local tp = headPos + (rotation * shoulder) + (rotation * Vector3.new(0, 0, TP.Zoom))
     cam.CFrame = CFrame.new(tp, headPos + (rotation * shoulder))
 end)
+
+-- v0.97.0: ASPECT RATIO. A scaled camera matrix written after every other camera
+-- writer, then undone first thing next frame, so a game camera or the aimbot that
+-- reads Camera.CFrame back never compounds the stretch. Look vector is untouched.
+;(function()
+    local AR = { clean = nil, bent = nil }
+    Shared.aspectRestore = function()
+        local cam = Workspace.CurrentCamera
+        if cam and AR.bent and cam.CFrame == AR.bent then cam.CFrame = AR.clean end
+        AR.bent = nil
+    end
+    pcall(function() RunService:UnbindFromRenderStep("KAspectFix") end)
+    pcall(function() RunService:UnbindFromRenderStep("KAspect") end)
+    RunService:BindToRenderStep("KAspectFix", Enum.RenderPriority.First.Value, Shared.aspectRestore)
+    RunService:BindToRenderStep("KAspect", Enum.RenderPriority.Last.Value, function()
+        if not (Modules.aspectratio and Modules.aspectratio.Enabled) or Koffee.dead() then return end
+        local cam = Workspace.CurrentCamera; if not cam then return end
+        local x = math.clamp(tonumber(Visual.Aspect.X) or 1, 0.1, 5)
+        local y = math.clamp(tonumber(Visual.Aspect.Y) or 1, 0.1, 5)
+        if x == 1 and y == 1 then return end
+        local clean = cam.CFrame
+        cam.CFrame = clean * CFrame.new(0, 0, 0, x, 0, 0, 0, y, 0, 0, 0, 1)
+        AR.clean, AR.bent = clean, cam.CFrame
+    end)
+end)()
 
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
 registerModule("headoffset",   "Head Offset",       function() end, function() restoreHead() end)
@@ -11608,6 +11642,7 @@ end)
 registerModule("staticff",     "Static Forcefield", function() end, function() clearFF() end)  -- v0.0.97: kept registered (no UI toggle) so clearFF runs if a config still has it on
 registerModule("bodyremoval",  "Body Removal",      function() end, function() restoreBodyRemoval() end)
 registerModule("thirdperson",  "3rd Person",        function() tpOnEnable() end, function() tpOnDisable() end)
+registerModule("aspectratio",  "Aspect Ratio",      function() end, function() if Shared.aspectRestore then Shared.aspectRestore() end end)
 RunService.RenderStepped:Connect(function()
     if Koffee.dead() then return end
     if Modules.armsoffset   and Modules.armsoffset.Enabled   then pcall(applyArms) end
@@ -11849,6 +11884,24 @@ Koffee._characterTab = function(root)
         api:slider("Min Zoom",    0.5, 20, TP.MinZoom, 1, function(v) TP.MinZoom = math.min(v, TP.MaxZoom) end)
         api:slider("Max Zoom",    5,  60, TP.MaxZoom, 1, function(v) TP.MaxZoom = math.max(v, TP.MinZoom) end)
     end)
+
+    -- v0.97.0: stretched res. Below 1 widens that axis, above 1 squeezes it.
+    local arRow = moduleCheckbox(vis, "Aspect Ratio", "aspectratio")
+    keybindPill(arRow.row, "aspectratio", nil, "Aspect Ratio")
+    slider(vis, "Ratio X", 0.1, 2, Visual.Aspect.X, 2, function(v) Visual.Aspect.X = v end)
+    slider(vis, "Ratio Y", 0.1, 2, Visual.Aspect.Y, 2, function(v) Visual.Aspect.Y = v end)
+
+    -- v0.97.0: rivals screen effects, each one a single game function (see the
+    -- native visual block). Crosshair and vignette are PlayerGui name matches.
+    if Koffee._isRivals then
+        local RM = Koffee.Rivals.Mods
+        configCheckbox(vis, "Anti Flashbang", RM.NoFlash, function(v) RM.NoFlash = v end)
+        configCheckbox(vis, "Anti Smoke", RM.NoSmoke, function(v) RM.NoSmoke = v end)
+        configCheckbox(vis, "Remove Vignette", RM.NoVignette, function(v) RM.NoVignette = v end)
+        configCheckbox(vis, "Disable Game Crosshair", RM.NoGameCrosshair, function(v) RM.NoGameCrosshair = v end)
+        configCheckbox(vis, "Disable Hit Marker", RM.NoHitmarker, function(v) RM.NoHitmarker = v end)
+        configCheckbox(vis, "Disable Damage Numbers", RM.NoDmgNumbers, function(v) RM.NoDmgNumbers = v end)
+    end
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
     moduleCheckbox(vis, "Arms Offset", "armsoffset")
@@ -26370,6 +26423,10 @@ addTab("Options", function(root)
         pcall(function() RunService:UnbindFromRenderStep("KSpinbot") end)
         if Shared.spinRestore then pcall(Shared.spinRestore) end
         pcall(function() RunService:UnbindFromRenderStep("KThirdPerson") end)
+        if Shared.aspectRestore then pcall(Shared.aspectRestore) end
+        pcall(function() RunService:UnbindFromRenderStep("KAspect") end)
+        pcall(function() RunService:UnbindFromRenderStep("KAspectFix") end)
+        if Shared.RV and Shared.RV._tpNative then pcall(Shared.RV.thirdPerson, false) end
         -- 4. destroy every UI surface we own
         pcall(function() screen:Destroy() end)
         pcall(function() popupScreen:Destroy() end)
@@ -38627,6 +38684,194 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if Koffee.dead() then return end
         if R.Mods.NoShake then hookShake() end
     end)
+
+    -- v0.97.0: Harion's native set. Every wrapper passes through once Koffee is
+    -- dead, and the true originals live in genv so a re-exec wraps the game's
+    -- function instead of stacking on the old session's wrapper.
+    ;(function()
+        local G = getgenv and getgenv() or nil
+        local ORIG = (G and G["\6_rt_hv_ctx"]) or {}
+        if G then G["\6_rt_hv_ctx"] = ORIG end
+        local done = {}
+        local function wrapOnce(key, tbl, name, make)
+            if done[key] or type(tbl) ~= "table" then return end
+            local old = ORIG[key] or rawget(tbl, name)
+            if type(old) ~= "function" then return end
+            ORIG[key] = old
+            if setreadonly then pcall(setreadonly, tbl, false) end
+            if pcall(rawset, tbl, name, make(old)) then done[key] = true end
+        end
+        local function modAt(path)
+            local at = LocalPlayer:FindFirstChild("PlayerScripts")
+            for _, n in ipairs(path) do
+                if at == nil then return nil end
+                at = at:FindFirstChild(n)
+            end
+            return at and RV.idRequire(at)
+        end
+        local FI = { "Modules", "ClientReplicatedClasses", "ClientFighter", "FighterInterface" }
+        local function fiMod(name)
+            local p = table.clone(FI)
+            p[#p + 1] = name
+            return modAt(p)
+        end
+
+        -- flash: the Flashbang item applies the blind through its BlindEffect
+        -- packet, and every blind ends in FighterInterface.Flashed.Flash.
+        local function hookFlash()
+            local fl = fiMod("Flashed")
+            wrapOnce("flash", RV.methodTable(fl, "Flash"), "Flash", function(old)
+                return function(...)
+                    if R.Mods.NoFlash and not Koffee.dead() then return end
+                    return old(...)
+                end
+            end)
+            local fb = modAt({ "Modules", "Items", "Flashbang" })
+            wrapOnce("blind", RV.methodTable(fb, "ReplicateFromServer"), "ReplicateFromServer", function(old)
+                return function(self, kind, ...)
+                    if kind == "BlindEffect" and R.Mods.NoFlash and not Koffee.dead() then return nil end
+                    return old(self, kind, ...)
+                end
+            end)
+        end
+        -- smoke: the screen cover is a spring plus a cover part and a DOF, the
+        -- world cloud is a model whose Update returning true retires it.
+        local function hookSmoke()
+            local ss = fiMod("SmokeScreen")
+            wrapOnce("smokeScreen", RV.methodTable(ss, "Update"), "Update", function(old)
+                return function(self, ...)
+                    if not R.Mods.NoSmoke or Koffee.dead() then return old(self, ...) end
+                    pcall(function()
+                        if self._smoke_cloud_spring then self._smoke_cloud_spring.Target = 0 end
+                        if self._smoke_cloud_cover then self._smoke_cloud_cover.Transparency = 1 end
+                        if self._smoke_cloud_dof then self._smoke_cloud_dof.Parent = nil end
+                    end)
+                end
+            end)
+            local sc = modAt({ "Modules", "SmokeCloud" })
+            wrapOnce("smokeCloud", RV.methodTable(sc, "Update"), "Update", function(old)
+                return function(self, ...)
+                    if not R.Mods.NoSmoke or Koffee.dead() then return old(self, ...) end
+                    pcall(function() if self.Model then self.Model:Destroy() end end)
+                    return true
+                end
+            end)
+        end
+        -- the crosshair's DamageEffect draws the hit marker and plays its tick,
+        -- so dropping it drops both. Koffee's own hit sounds are unaffected.
+        local function hookHitmarker()
+            local mc = modAt({ "Modules", "ClientReplicatedClasses", "ClientFighter", "ClientItem",
+                               "ItemInterface", "Mouse", "MouseCrosshair" })
+            wrapOnce("hitmarker", RV.methodTable(mc, "DamageEffect"), "DamageEffect", function(old)
+                return function(...)
+                    if R.Mods.NoHitmarker and not Koffee.dead() then return end
+                    return old(...)
+                end
+            end)
+        end
+        -- floating numbers come off the fighter class, shared by every fighter,
+        -- so it only resolves once a local fighter exists.
+        local function hookDmgNumbers()
+            local cls = RV.methodTable(RV.localFighter(), "_DamageNumberEffect")
+            wrapOnce("dmgNumbers", cls, "_DamageNumberEffect", function(old)
+                return function(...)
+                    if R.Mods.NoDmgNumbers and not Koffee.dead() then return end
+                    return old(...)
+                end
+            end)
+        end
+
+        -- crosshair and vignette are plain name matches in PlayerGui, rescanned
+        -- every 3s and reapplied every 0.2s since the game re-shows them.
+        -- Only what Koffee hid is ever restored.
+        local hidden, found, nextScan, nextApply = {}, {}, 0, 0
+        local function wantHidden(nm)
+            nm = nm:lower()
+            if R.Mods.NoGameCrosshair and nm:find("crosshair", 1, true) then return true end
+            if R.Mods.NoVignette and nm:find("vignette", 1, true) then return true end
+            return false
+        end
+        local function setShown(o, show)
+            pcall(function()
+                if o:IsA("ScreenGui") then o.Enabled = show else o.Visible = show end
+            end)
+        end
+        local function guiPass(now)
+            local any = R.Mods.NoGameCrosshair or R.Mods.NoVignette
+            if any and now >= nextScan then
+                nextScan = now + 3
+                table.clear(found)
+                local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                if pg then
+                    for _, o in ipairs(pg:GetDescendants()) do
+                        if (o:IsA("ScreenGui") or o:IsA("GuiObject")) and wantHidden(o.Name) then
+                            found[#found + 1] = o
+                        end
+                    end
+                end
+            end
+            if now < nextApply then return end
+            nextApply = now + 0.2
+            local keep = {}
+            if any and not Koffee.dead() then
+                for _, o in ipairs(found) do
+                    if o.Parent and wantHidden(o.Name) then
+                        if hidden[o] == nil then
+                            if o:IsA("ScreenGui") then hidden[o] = o.Enabled else hidden[o] = o.Visible end
+                        end
+                        keep[o] = true
+                        setShown(o, false)
+                    end
+                end
+            end
+            for o, was in pairs(hidden) do
+                if not keep[o] then
+                    if o.Parent then setShown(o, was) end
+                    hidden[o] = nil
+                end
+            end
+        end
+
+        RunService.Heartbeat:Connect(function()
+            local M = R.Mods
+            if not Koffee.dead() then
+                if M.NoFlash then hookFlash() end
+                if M.NoSmoke then hookSmoke() end
+                if M.NoHitmarker then hookHitmarker() end
+                if M.NoDmgNumbers then hookDmgNumbers() end
+            end
+            if next(hidden) or M.NoGameCrosshair or M.NoVignette then guiPass(os.clock()) end
+        end)
+    end)()
+
+    -- v0.97.0: native third person through the game's own override, so the
+    -- camera, viewmodel and replicated angle all stay the game's. Released with
+    -- nil, which is how the game hands the camera back.
+    function RV.thirdPerson(on)
+        local cc = RV.CamCtrl
+        if type(cc) ~= "table" then return false end
+        local ok = pcall(function() cc:SetThirdPersonOverride(on and true or nil) end)
+        RV._tpNative = (ok and on) and true or false
+        return ok
+    end
+    -- the override can lapse on respawn, so nudge the POV back while it is on.
+    -- Only ever toggles out of first person, never out of spectate or menus.
+    ;(function()
+        local nextNudge = 0
+        RunService.Heartbeat:Connect(function()
+            if not RV._tpNative or Koffee.dead() then return end
+            local now = os.clock()
+            if now < nextNudge then return end
+            nextNudge = now + 0.25
+            pcall(function()
+                local st = RV.CamCtrl.CameraState
+                local cur, S = st:GetPublicState(), st.States
+                if cur ~= S.ThirdPerson and (S.FirstPerson == nil or cur == S.FirstPerson) then
+                    st:TogglePOV()
+                end
+            end)
+        end)
+    end)()
     -- v0.96.8: hide the first-person arms. The rig lives at
     -- Workspace.ViewModels.FirstPerson (one model, rebuilt per weapon), arms are
     -- plain Parts, so Transparency hides them and the gun stays. Decals do not
