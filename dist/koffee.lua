@@ -1,7 +1,7 @@
--- koffee v0.96.2
+-- koffee v0.96.4
 
 local Koffee = {}
-Koffee.Version = "0.96.4"
+Koffee.Version = "0.96.5"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -33241,7 +33241,7 @@ end)()
 local HV = {
     BlinkDist = 500, FaceTarget = true,
     BlinkKeyMode = "Hold", BlinkRate = 0.25, BlinkReturn = true,
-    SpamMode = "Hold", SpamDist = 300, SpamRate = 0.25,
+    SpamMode = "Hold", SpamDist = 300, SpamRate = 0.25, SpamMethod = "Normal",
     DrawName = "", DrawSpawn = true, DrawLock = true, DrawLand = true,
 }
 registerConfig("hvh", HV)
@@ -33729,15 +33729,23 @@ RunService.Heartbeat:Connect(function()
             local hr = ch and ch:FindFirstChild("HumanoidRootPart")
             if plr and r and hr then
                 local dest = safeBall(hr.Position, HV.SpamDist or 300)
-                pcall(function()
-                    r.CFrame = r.CFrame - r.Position + dest
-                    r.AssemblyLinearVelocity = Vector3.zero
-                end)
+                if HV.SpamMethod == "Desync" then
+                    if Modules.hvh_spam then
+                        Modules.hvh_spam._dsDest = r.CFrame - r.Position + dest
+                    end
+                else
+                    if Modules.hvh_spam then Modules.hvh_spam._dsDest = nil end
+                    pcall(function()
+                        r.CFrame = r.CFrame - r.Position + dest
+                        r.AssemblyLinearVelocity = Vector3.zero
+                    end)
+                end
                 primeAim(plr)
                 hvhDbg("spam tp")
             end
         end
         if not on and wasSpamActive then
+            if Modules.hvh_spam then Modules.hvh_spam._dsDest = nil end
             if HV.BlinkReturn ~= false then
                 local r = myRoot()
                 if r and spamAnchorCF and LocalPlayer.Character == spamAnchorChar then
@@ -33751,6 +33759,36 @@ RunService.Heartbeat:Connect(function()
             spamAnchorCF, spamAnchorChar = nil, nil
         end
         wasSpamActive = on
+    end
+    -- v0.96.5: Spam TP Desync ride. Same no-flash contract as the rivals desync:
+    -- the root is written every Heartbeat and handed back at RenderStep 101, so
+    -- the client never draws a frame at the spam spot while replication samples
+    -- it there. Own bind name so it never collides with the rivals desync.
+    do
+        local s = Modules.hvh_spam
+        local dest = s and s._dsDest
+        if s and s.Enabled and keyActive(SpamK) and HV.SpamMethod == "Desync" and dest ~= nil then
+            local r = myRoot()
+            if r then
+                local oldCF = r.CFrame
+                local oldV, oldRV = r.AssemblyLinearVelocity, r.AssemblyAngularVelocity
+                pcall(function() r.CFrame = dest end)
+                pcall(function()
+                    RunService:BindToRenderStep(tostring(KID.ctx.bind) .. "spamds", 101, function()
+                        if r.Parent then
+                            pcall(function()
+                                r.CFrame = oldCF
+                                r.AssemblyLinearVelocity = oldV
+                                r.AssemblyAngularVelocity = oldRV
+                            end)
+                        end
+                        pcall(function()
+                            RunService:UnbindFromRenderStep(tostring(KID.ctx.bind) .. "spamds")
+                        end)
+                    end)
+                end)
+            end
+        end
     end
     -- v0.74.0: velocity desync lives on its own connection (Wait interleaves
     -- render; the shared tick must never stall behind it). See registration.
@@ -33866,6 +33904,13 @@ function HV.buildPanel(host)
     local sldBlinkRate = slider(host, "Blink Interval (s)", 0, 0.6, HV.BlinkRate or 0.25, 2, function(v) HV.BlinkRate = v end)
     local cbSpam = moduleCheckbox(host, "Spam TP", "hvh_spam")
     local spamRef = actPill(cbSpam.row, SpamK)
+    -- v0.96.5: right-click picks the ride. Normal teleports and stays (flashes).
+    -- Desync writes the spot every Heartbeat and hands it back before render, so
+    -- your client never draws a frame out there while the server samples it.
+    rightClickSettings(cbSpam.row, "Spam TP", function(api)
+        api:dropdown("Method", { "Normal", "Desync" }, HV.SpamMethod or "Normal",
+            function(v) HV.SpamMethod = v end)
+    end)
     -- v0.70.0: follow-sphere radius around the locked target, capped at 10000.
     -- Points land INSIDE the ball (volume), void-checked like shell landings.
     -- v0.94.0: minimum is 1, his call. 1 stud is effectively standing inside them.
@@ -38583,13 +38628,15 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
         RV.restoreInfo()
     end)
-    -- v0.96.1: full auto re-triggers the real input while LMB is held. The spam
-    -- table zeros only restore stock buffering; repeat fire comes from here, and
-    -- the game's own cooldown, ammo and reload guards pace every shot.
+    -- v0.96.1: full auto re-triggers while LMB is held, paced by the game's own
+    -- cooldown, ammo and reload guards.
     -- v0.96.2: edge-triggered. The blind 60Hz spam re-entered during cooldown and
     -- fought the game's own queue flag; now it only knocks when the gun is ready.
     -- v0.96.4: stands down while rage fires, so the two never stack to double
     -- rate on the same target. Rage already paces itself off the live cooldown.
+    -- v0.96.5: fires the rage way. The game builds the real CameraData for the
+    -- shot (true aim, spread and raycast), the chained rewrites steer it, and
+    -- the packet goes out wrapped with the raycast flag, paced and reloaded.
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if not R.Mods.AutoFire then return end
@@ -38602,17 +38649,41 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         pcall(function()
             local lf = RV.localFighter()
             if lf == nil then return end
-            local inp = lf.Input
-            if type(inp) ~= "function" then return end
             local it = RV.equipped()
-            if it ~= nil then
-                local cd, rcd = 0, 0
-                pcall(function() cd = it._shoot_cooldown or 0 end)
-                pcall(function() rcd = it._reload_cooldown or 0 end)
-                local now = tick()
-                if now < cd or now < rcd then return end
+            if it == nil then return end
+            local cd, rcd = 0, 0
+            pcall(function() cd = it._shoot_cooldown or 0 end)
+            pcall(function() rcd = it._reload_cooldown or 0 end)
+            local now = tick()
+            if now < cd or now < rcd then return end
+            local ammo = nil
+            pcall(function() ammo = it:Get("Ammo") end)
+            if ammo ~= nil and ammo <= 0 then
+                local inp = lf.Input
+                if type(inp) == "function" then inp(lf, "StartReloading") end
+                return
             end
-            inp(lf, "StartShooting")
+            local gcd
+            local okCd = pcall(function() gcd = lf:GetCameraData() end)
+            if not okCd or type(gcd) ~= "table" then return end
+            rageRedirect(gcd)
+            redirect(gcd)
+            local oid
+            local gotId = pcall(function() oid = it:Get("ObjectID") end)
+            if not gotId or oid == nil then return end
+            local toEnum = RV.Enums and RV.Enums.ToEnum
+            if type(toEnum) ~= "function" then return end
+            if RV.UseItem == nil then return end
+            local info
+            pcall(function() info = it.Info end)
+            local outer = {}
+            outer[K1] = gcd
+            local ray = false
+            if type(info) == "table" then
+                pcall(function() ray = rawget(info, "IsRaycast") == true end)
+            end
+            if ray then outer[K2] = true end
+            RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
         end)
     end)
 end) end
