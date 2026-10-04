@@ -1,7 +1,7 @@
--- koffee v0.99.3
+-- koffee v0.99.4
 
 local Koffee = {}
-Koffee.Version = "0.99.3"
+Koffee.Version = "0.99.4"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10800,7 +10800,13 @@ Koffee.Rivals = {
     Desync      = { Mode = "Orbit", Radius = 6, Height = 1.5, Speed = 3.5, Depth = 6,
                     MinY = 0, MaxY = 200, MaxFromTarget = 25 },
     Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true,
-                    Status = true },   -- v0.99.1: top-centre "who is rage on" pill
+                    Status = true,   -- v0.99.1: top-centre "who is rage on" pill
+                    -- v0.99.4 rage v2: separate toggles, see the RAGE V2 block
+                    Strike = true, StrikeDist = 9, Lead = 35, Hold = 60,
+                    VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
+                    CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
+                    Adaptive = true, AdaptiveWeapons = false,
+                    Picks = { "Auto", "Auto", "Auto", "Auto" } },
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
                     Melee = false, MeleePct = 50, NoMuzzle = false,
                     NoShake = false, NoShootAnim = false, HideArms = false,
@@ -10831,6 +10837,45 @@ Koffee.Rivals = {
     },
 }
 registerConfig("rivals_native", Koffee.Rivals)
+-- v0.99.4: rage v2 rows, built from the Combat Misc rivals block. Weapon lists come
+-- straight from ItemLibrary (required at identity 2, like the bridge does).
+Shared.rage2UI = function(card)
+    local RG = Koffee.Rivals.Rage
+    configCheckbox(card, "Strike", RG.Strike, function(v) RG.Strike = v end)
+    slider(card, "Strike Distance", 3, 20, RG.StrikeDist, 0, function(v) RG.StrikeDist = v end)
+    slider(card, "Strike Lead (ms)", 0, 150, RG.Lead, 0, function(v) RG.Lead = v end)
+    slider(card, "Strike Hold (ms)", 0, 250, RG.Hold, 0, function(v) RG.Hold = v end)
+    configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
+    configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
+    slider(card, "Hop Rate", 1, 20, RG.HopRate, 0, function(v) RG.HopRate = v end)
+    configCheckbox(card, "OOB Guard", RG.OOBGuard, function(v) RG.OOBGuard = v end)
+    configCheckbox(card, "Counter Void", RG.CounterVoid, function(v) RG.CounterVoid = v end)
+    configCheckbox(card, "Counter Teleport", RG.CounterTP, function(v) RG.CounterTP = v end)
+    configCheckbox(card, "Smart Targeting", RG.Smart, function(v) RG.Smart = v end)
+    configCheckbox(card, "Prediction", RG.Predict, function(v) RG.Predict = v end)
+    configCheckbox(card, "Adaptive Aggression", RG.Adaptive, function(v) RG.Adaptive = v end)
+    configCheckbox(card, "Adaptive Weapons", RG.AdaptiveWeapons, function(v) RG.AdaptiveWeapons = v end)
+    local lib
+    pcall(function()
+        local prev
+        if getthreadidentity and setthreadidentity then prev = getthreadidentity(); setthreadidentity(2) end
+        lib = require(game:GetService("ReplicatedStorage").Modules.ItemLibrary)
+        if prev then setthreadidentity(prev) end
+    end)
+    for slot = 1, 4 do
+        local opts = { "Auto" }
+        pcall(function()
+            local cls = lib.SlotToClass[slot].Name
+            for _, n in ipairs(lib.ItemsAlphabetized) do
+                if lib.Items[n].Class == cls then opts[#opts + 1] = n end
+            end
+        end)
+        if #opts > 1 then
+            local label = ({ "Primary", "Secondary", "Melee", "Utility" })[slot]
+            dropdown(card, label .. " Pick", opts, RG.Picks[slot] or "Auto", function(v) RG.Picks[slot] = v end)
+        end
+    end
+end
 -- thin registrations: the bodies only flip state, since the engines are built with the
 -- bridge and read Modules.* live. Enable order therefore never matters.
 -- v0.95.0: Native Perfect Lock and Native Silent Aim are gone as separate
@@ -15834,6 +15879,7 @@ local Combat = {
                 function(v) RVC.Rage.Evasion = v end)
             configCheckbox(miscCard, "Rage Status", RVC.Rage.Status ~= false,
                 function(v) RVC.Rage.Status = v end)
+            if Shared.rage2UI then Shared.rage2UI(miscCard) end
             keybindPill(moduleCheckbox(miscCard, "Always Backstab", "rv_backstab").row, "rv_backstab", nil, "Backstab")
             configCheckbox(miscCard, "Skip Deflecting", RVC.SkipDeflect,
                 function(v) RVC.SkipDeflect = v end)
@@ -39657,14 +39703,19 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     pcall(function() RunService:UnbindFromRenderStep(DSBIND) end)
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then RV.restoreServerCFrame(); return end
-        local want = on("rv_desync") or (on("rv_rage") and R.Rage.Evasion)
-        RV.armEngine(want and R.Desync.Mode ~= "Off")
+        -- v0.99.4: a live rage v2 spot (strike / hide) beats every desync mode
+        local rcf = on("rv_rage") and RV._rageCF or nil
+        local want = rcf ~= nil or on("rv_desync") or (on("rv_rage") and R.Rage.Evasion)
+        RV.armEngine(want and (rcf ~= nil or R.Desync.Mode ~= "Off"))
         if not want then RV._dsLast = nil; return end
         local mr = myRoot()
         if not mr then RV._dsLast = nil; return end
         dsPhase = (dsPhase + R.Desync.Speed * 0.0166) % TAU
-        local _, part = RV.pickTarget(1000)
-        local dest = dsDest(part, mr)
+        local dest = rcf
+        if dest == nil then
+            local _, part = RV.pickTarget(1000)
+            dest = dsDest(part, mr)
+        end
         if dest == nil then RV._dsLast = nil; return end
         local oldCF, oldV, oldRV = mr.CFrame, mr.Velocity, mr.RotVelocity
         RV._dsLast = dest
@@ -39736,7 +39787,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
 
         local tplr, tpart = nil, nil
         if on("rv_rage") then
-            tplr, tpart = RV.pickTarget(1000)
+            if RV.rageTarget then
+                tplr, tpart = RV.rageTarget()
+            else
+                tplr, tpart = RV.pickTarget(1000)
+            end
         end
         RV._rageTarget = tplr
 
@@ -39746,7 +39801,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- outer[char(2)] = true, and fire is paced at the gun's own cooldown with
         -- a pipeline reload at empty instead of dry-firing.
         -- v0.96.12: rounds originate at the close orbit, not one static spot.
-        if on("rv_rage") and tpart then
+        if on("rv_rage") and tpart and R.Rage.Strike and RV.rageStrike then
+            RV.rageStrike(tplr, tpart)
+        elseif on("rv_rage") and tpart then
+            RV._rageCF = nil
             local ox = RV.rageOrigin(tpart)
             local p, y = RV.anglesTo(ox, tpart.Position)
             if p then RV.setAngles(RV.slots.Rage, p, y) end
@@ -39805,8 +39863,455 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
         else
             RV.clearAngles(RV.slots.Rage)
+            if RV.rageIdle then RV.rageIdle() else RV._rageCF = nil end
         end
     end)
+
+    -- v0.99.4 RAGE V2. Built to beat void spammers and teleporters (see the Koffee
+    -- note). Strike = each shot moves the server spot to a planned point by the
+    -- target, waits Lead for it to replicate, fires from there, holds, leaves.
+    ;(function()
+        local RG = { track = setmetatable({}, { __mode = "k" }), phase = "idle", phaseAt = 0,
+                     spot = nil, spotAt = 0, hide = nil, hopAt = 0, oobT = 0, lastT = os.clock(),
+                     resetUntil = 0, bounds = { parts = {}, safe = {}, at = 0 }, firedAt = 0 }
+        RV.RG = RG
+        local CS = game:GetService("CollectionService")
+        local Stats = game:GetService("Stats")
+        local function cfg() return R.Rage end
+
+        -- :: bounds :: the game's OutOfBoundsPart volumes (WarnDelay + KillDelay, -1 = never)
+        function RG.refreshBounds(now)
+            local B = RG.bounds
+            if now - B.at < 2 then return end
+            B.at = now
+            local okP, parts = pcall(CS.GetTagged, CS, "OutOfBoundsPart")
+            local okS, safe = pcall(CS.GetTagged, CS, "OutOfBoundsSafePart")
+            B.parts = okP and parts or {}
+            B.safe = okS and safe or {}
+        end
+        function RG.inside(part, pos)
+            local rel = part.CFrame:PointToObjectSpace(pos)
+            local h = part.Size * 0.5
+            return math.abs(rel.X) <= h.X and math.abs(rel.Y) <= h.Y and math.abs(rel.Z) <= h.Z
+        end
+        -- seconds we may rest at pos (math.huge = free)
+        function RG.budget(pos)
+            local B = RG.bounds
+            for _, sp in ipairs(B.safe) do
+                if sp.Parent and RG.inside(sp, pos) then return math.huge end
+            end
+            local best = math.huge
+            for _, pt in ipairs(B.parts) do
+                if pt.Parent and RG.inside(pt, pos) then
+                    local w, k = pt:GetAttribute("WarnDelay"), pt:GetAttribute("KillDelay")
+                    w = type(w) == "number" and w or 1
+                    k = type(k) == "number" and k or 4
+                    if w ~= -1 and k ~= -1 then best = math.min(best, w + k) end
+                end
+            end
+            return best
+        end
+        function RG.ping()
+            local p = 0.08
+            pcall(function() p = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() / 1000 end)
+            return math.clamp(p, 0, 0.5)
+        end
+
+        -- :: enemy tracking :: jumps (teleports) and void dips, every frame
+        function RG.submerged(pos, mr)
+            if not mr then return false end
+            if RG.budget(pos) < math.huge then return true end
+            local d = pos - mr.Position
+            return d.Y < -150 or d.Y > 300 or Vector3.new(d.X, 0, d.Z).Magnitude > 2500
+        end
+        function RG.trackAll(now, mr)
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                local ch = plr ~= LocalPlayer and plr.Character
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                if root then
+                    local t = RG.track[plr]
+                    local pos = root.Position
+                    if not t or t.char ~= ch then
+                        t = { char = ch, pos = pos, at = now, jumpAt = 0, jumps = {}, sub = false, freshAt = 0 }
+                        RG.track[plr] = t
+                    end
+                    local dt = math.max(now - t.at, 1e-3)
+                    local moved = (pos - t.pos).Magnitude
+                    if moved > math.max(25, root.AssemblyLinearVelocity.Magnitude * dt * 2) then
+                        t.jumpAt = now
+                        t.freshAt = now
+                        t.jumps[#t.jumps + 1] = now
+                    end
+                    for i = #t.jumps, 1, -1 do if now - t.jumps[i] > 5 then table.remove(t.jumps, i) end end
+                    local sub = RG.submerged(pos, mr)
+                    if t.sub and not sub then t.freshAt = now end   -- surfaced this frame
+                    t.sub = sub
+                    t.pos, t.at = pos, now
+                end
+            end
+        end
+        function RG.cheating(plr)
+            local t = RG.track[plr]
+            if t and (#t.jumps >= 2 or t.sub) then return true end
+            return Shared.Suspects ~= nil and Shared.Suspects[tostring(plr.UserId)] ~= nil
+        end
+        -- aggressive vs medium, per target
+        function RG.aggressive(plr)
+            if not cfg().Adaptive then return true end
+            return RG.cheating(plr)
+        end
+
+        -- :: target :: scored when Smart, nearest otherwise; no 1000 stud cap
+        function RG.pick()
+            local C = cfg()
+            local mr = myRoot()
+            if not mr then return nil, nil end
+            local now = os.clock()
+            local best, bp, bs = nil, nil, math.huge
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                local ch = plr ~= LocalPlayer and plr.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 and not RV.isAlly(plr) and Shared.aimAllowed(plr, true)
+                    and not RV.isDeflecting(plr) then
+                    local part = partOf(ch, R.LockPart)
+                    local t = RG.track[plr]
+                    if part and not (t and t.sub and not C.CounterVoid) then
+                        local d = (part.Position - mr.Position).Magnitude
+                        local score = d
+                        if C.Smart then
+                            score = d / 40 + hum.Health / 10
+                            if RG.cheating(plr) then score = score - 25 end
+                            if d < 22 then score = score - 15 end        -- close threat (melee)
+                            if C.CounterTP and t and now - t.freshAt < 0.35 then score = score - 30 end
+                            if plr == RG.lastTarget then score = score - 6 end   -- no flicker
+                        end
+                        if d < 6000 and score < bs then best, bp, bs = plr, part, score end
+                    end
+                end
+            end
+            RG.lastTarget = best
+            return best, bp
+        end
+        function RV.rageTarget() return RG.pick() end
+
+        -- :: weapon-aware distance :: shotguns close in, spread guns stay near
+        function RG.strikeDist(it)
+            local d = cfg().StrikeDist
+            local info
+            pcall(function() info = it.Info end)
+            if type(info) == "table" and cfg().AdaptiveWeapons then
+                local pel = tonumber(rawget(info, "ShootPellets")) or 1
+                local spr = tonumber(rawget(info, "ShootSpread")) or 0
+                if pel > 1 then d = math.min(d, 4) elseif spr > 2 then d = math.min(d, 6) end
+            end
+            return d
+        end
+
+        -- :: strike spot :: a ring around the predicted target, needs line of sight,
+        -- prefers behind them, avoids volumes that would kill inside Lead + Hold,
+        -- and sticks while it still works
+        function RG.predicted(plr, part)
+            local C = cfg()
+            local pos = part.Position
+            local t = RG.track[plr]
+            if C.Predict and not (t and os.clock() - t.jumpAt < 0.2) then
+                local v = part.AssemblyLinearVelocity
+                if v.Magnitude > 60 then v = v.Unit * 60 end
+                pos = pos + v * (RG.ping() * 0.5 + (C.Lead or 35) / 1000)
+            end
+            return pos
+        end
+        function RG.los(from, to, ignore)
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Exclude
+            rp.FilterDescendantsInstances = ignore
+            local hit = Workspace:Raycast(from, to - from, rp)
+            return hit == nil
+        end
+        function RG.planSpot(plr, part, it)
+            local C = cfg()
+            local tp = RG.predicted(plr, part)
+            local ch = plr.Character
+            local ignore = { LocalPlayer.Character, ch, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
+            local t = RG.track[plr]
+            local inVoid = t and t.sub
+            local need = ((C.Lead or 35) + (C.Hold or 60)) / 1000 + 0.6
+            local r = RG.strikeDist(it)
+            local look = Vector3.new(0, 0, -1)
+            pcall(function() look = ch.HumanoidRootPart.CFrame.LookVector end)
+            -- sticky: keep the last spot while it still sees them and sits in range
+            local last = RG.spot
+            if last and RG.spotFor == plr then
+                local lp = last.Position
+                local dist = (lp - tp).Magnitude
+                if dist > r - 3 and dist < r + 3 and (inVoid or RG.los(lp, tp, ignore)) and RG.budget(lp) > need then
+                    return CFrame.lookAt(lp, tp)
+                end
+            end
+            local best, bs = nil, -math.huge
+            for i = 0, 11 do
+                local a = i / 12 * math.pi * 2
+                for _, h in ipairs({ 2.5, 6 }) do
+                    local pos = tp + Vector3.new(math.cos(a) * r, h, math.sin(a) * r)
+                    if RG.budget(pos) > need and (inVoid or RG.los(pos, tp, ignore)) then
+                        local dir = (pos - tp).Unit
+                        local s = -look:Dot(dir) * 2 + math.random() * 0.4   -- behind them, a little noise
+                        if s > bs then best, bs = pos, s end
+                    end
+                end
+            end
+            if not best then return nil end
+            RG.spotFor = plr
+            return CFrame.lookAt(best, tp)
+        end
+
+        -- :: hide :: far above the map (outside every volume), hopping when Void Spam
+        function RG.hideCF(mr, now)
+            local C = cfg()
+            local hop = 1 / math.clamp(C.HopRate or 6, 1, 20)
+            if RG.hide == nil or (C.VoidSpam and now - RG.hopAt > hop) then
+                RG.hopAt = now
+                RG.hide = CFrame.new(mr.Position + Vector3.new(math.random(-1500, 1500),
+                    math.random(30000, 45000), math.random(-1500, 1500)))
+            end
+            return RG.hide
+        end
+
+        -- :: fire :: the v0.96 packet, origin from the strike spot
+        function RG.ready(it)
+            local now = tick()
+            local cd, rcd = 0, 0
+            pcall(function() cd = it._shoot_cooldown or 0 end)
+            pcall(function() rcd = it._reload_cooldown or 0 end)
+            if now < cd or now < rcd then return false end
+            local info
+            pcall(function() info = it.Info end)
+            local gap = 0.12
+            if type(info) == "table" then
+                pcall(function()
+                    gap = math.max(tonumber(rawget(info, "ShootCooldown")) or 0,
+                        tonumber(rawget(info, "BurstCooldown")) or 0, 0.05)
+                end)
+            end
+            local frames = math.clamp(cfg().ShootFrames, 1, 5)
+            return RV._rageAt == nil or now - RV._rageAt >= gap / frames
+        end
+        function RG.fire(it, origin, part)
+            local ammo
+            pcall(function() ammo = it:Get("Ammo") end)
+            if ammo ~= nil and ammo <= 0 then
+                local lf = RV.localFighter()
+                local inp = lf and lf.Input
+                if type(inp) == "function" then pcall(inp, lf, "StartReloading") end
+                return false
+            end
+            local oid
+            if not pcall(function() oid = it:Get("ObjectID") end) or oid == nil then return false end
+            local toEnum = RV.Enums and RV.Enums.ToEnum
+            local U = RV.Utility
+            if type(toEnum) ~= "function" or U == nil or RV.UseItem == nil then return false end
+            local aim = CFrame.lookAt(origin, part.Position)
+            if not Koffee.cfOk(aim) then return false end
+            local c0, c1, c2, c3 = utf8.char(0), utf8.char(1), utf8.char(2), utf8.char(3)
+            local inner = {}
+            inner[c0] = U:EncodeCFrame(aim)
+            inner[c1] = U:EncodeCFrame(part.CFrame)
+            inner[c2] = part
+            inner[c3] = U:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(part.Position)))
+            local outer = {}
+            outer[c1] = inner
+            local ray = false
+            pcall(function() ray = rawget(it.Info, "IsRaycast") == true end)
+            if ray then outer[c2] = true end
+            RV._rageAt = tick()
+            RG.firedAt = os.clock()
+            local ok = pcall(function()
+                RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
+            end)
+            return ok
+        end
+
+        -- :: OOB guard :: time our server spot spends in lethal volumes; before the
+        -- budget runs out, hand the real (in-bounds) body back for a beat
+        function RG.oobStep(now, cf)
+            local dt = math.clamp(now - RG.lastT, 0, 0.1)
+            RG.lastT = now
+            if not cfg().OOBGuard or cf == nil then RG.oobT = 0; return cf end
+            if now < RG.resetUntil then return nil end
+            local b = RG.budget(cf.Position)
+            if b == math.huge then RG.oobT = math.max(0, RG.oobT - dt); return cf end
+            RG.oobT = RG.oobT + dt
+            if RG.oobT > math.max(b - 0.6, 0.05) then
+                RG.oobT = 0
+                RG.resetUntil = now + 0.05
+                return nil
+            end
+            return cf
+        end
+
+        -- :: the cycle ::
+        function RV.rageStrike(plr, part)
+            local C = cfg()
+            local now = os.clock()
+            local mr = myRoot()
+            if not mr then RV._rageCF = nil; return end
+            RG.refreshBounds(now)
+            RG.trackAll(now, mr)
+            local it = RV.equipped()
+            local live = it ~= nil and RV.inRound() and not RV.isDeflecting(plr)
+            local aggr = RG.aggressive(plr)
+            local t = RG.track[plr]
+            -- counter teleport: a jump mid-approach restarts the approach at the new spot
+            if C.CounterTP and t and t.jumpAt > RG.phaseAt and RG.phase == "approach" then
+                RG.phase = "idle"
+            end
+            -- counter void: a target still hopping inside the void is not worth an approach
+            local hopping = t and t.sub and now - t.jumpAt < 0.12
+            if RG.phase == "approach" then
+                if RG.phaseFor ~= plr or not live then
+                    RG.phase = "idle"
+                elseif now - RG.phaseAt >= (C.Lead or 35) / 1000 then
+                    if RG.ready(it) then RG.fire(it, RG.spot.Position, part) end
+                    RG.phase, RG.phaseAt = "hold", now
+                end
+            elseif RG.phase == "hold" then
+                if live and RG.ready(it) then RG.fire(it, RG.spot.Position, part) end
+                if now - RG.phaseAt >= (C.Hold or 60) / 1000 then RG.phase = "idle" end
+            end
+            if RG.phase == "idle" and live and not hopping and RG.ready(it) then
+                local spot = RG.planSpot(plr, part, it)
+                if spot then
+                    local same = RG.spot and (RG.spot.Position - spot.Position).Magnitude < 0.5
+                    RG.spot = spot
+                    RG.phase, RG.phaseAt, RG.phaseFor = "approach", now, plr
+                    -- medium already standing on this spot long enough: fire now
+                    if not aggr and same and now - RG.spotAt >= (C.Lead or 35) / 1000 then
+                        RG.fire(it, spot.Position, part)
+                        RG.phase, RG.phaseAt = "hold", now
+                    end
+                    if not same then RG.spotAt = now end
+                end
+            end
+            local want
+            if RG.phase ~= "idle" then
+                want = RG.spot
+            elseif aggr and C.VoidHide then
+                want = RG.hideCF(mr, now)
+            else
+                -- medium: stand on a sticky spot between shots
+                local spot = RG.planSpot(plr, part, it or {})
+                if spot then
+                    if not (RG.spot and (RG.spot.Position - spot.Position).Magnitude < 0.5) then RG.spotAt = now end
+                    RG.spot = spot
+                end
+                want = RG.spot
+            end
+            RV._rageCF = RG.oobStep(now, want)
+            local from = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
+            if from then
+                local p, y = RV.anglesTo(from, part.Position)
+                if p then RV.setAngles(RV.slots.Rage, p, y) end
+            end
+        end
+        -- no target: aggressive users stay hidden in a round, everyone else lands
+        function RV.rageIdle()
+            local C = cfg()
+            RG.phase = "idle"
+            local mr = myRoot()
+            if on("rv_rage") and C.Strike and C.VoidHide and not C.Adaptive and mr and RV.inRound() then
+                RV._rageCF = RG.oobStep(os.clock(), RG.hideCF(mr, os.clock()))
+            else
+                RV._rageCF = nil
+            end
+        end
+
+        -- :: client OOB report :: while a rage spot is live the client's own
+        -- out-of-bounds check answers "in bounds" (the server's volumes still apply,
+        -- which is what the budget above is for)
+        local G = getgenv and getgenv() or nil
+        local ORIG = (G and G["\6_rt_rg_oob"]) or {}
+        if G then G["\6_rt_rg_oob"] = ORIG end
+        function RG.hookOob()
+            if RG.oobHooked then return end
+            local mods = game:GetService("ReplicatedStorage"):FindFirstChild("Modules")
+            local mod = RV.idRequire(mods and mods:FindFirstChild("OutOfBoundsMachine"))
+            local tbl = RV.methodTable(mod, "IsOutOfBounds")
+            if tbl == nil then return end
+            local old = ORIG.isOob or rawget(tbl, "IsOutOfBounds")
+            if type(old) ~= "function" then return end
+            ORIG.isOob = old
+            if setreadonly then pcall(setreadonly, tbl, false) end
+            local fine = pcall(rawset, tbl, "IsOutOfBounds", function(self, ...)
+                if not Koffee.dead() and RV._rageCF ~= nil and cfg().OOBGuard then return nil end
+                return old(self, ...)
+            end)
+            if fine then RG.oobHooked = true end
+        end
+
+        -- :: adaptive weapons :: the PickWeapons page picks for you when it opens
+        function RG.scoreWeapon(lib, name)
+            local v = lib.Items[name]
+            if type(v) ~= "table" then return -1 end
+            local dmg = tonumber(v.ShootDamage) or tonumber(v.AttackDamage) or tonumber(v.Damage)
+                or tonumber(v.DirectHitDamage) or 0
+            local cd = math.max(tonumber(v.ShootCooldown) or tonumber(v.AttackCooldown) or tonumber(v.Cooldown) or 1, 0.05)
+            local s = dmg / cd
+            if v.IsRaycast then s = s * 1.5 end
+            return s
+        end
+        function RG.autoPick(page)
+            if not (cfg().AdaptiveWeapons and on("rv_rage")) or Koffee.dead() then return end
+            local lib, lf = RV.ItemLib, RV.localFighter()
+            if type(lib) ~= "table" or lf == nil then return end
+            local max = 4
+            pcall(function() max = lf:GetMaxEquippableWeapons() end)
+            local free = false
+            pcall(function() free = lf:Get("WeaponClassRestrictionDisabled") == true end)
+            for slot = 1, max do
+                local cls
+                pcall(function() cls = lib.SlotToClass[slot].Name end)
+                local want = cfg().Picks[slot]
+                local pick, ps = nil, -math.huge
+                for _, n in ipairs(lib.ItemsAlphabetized or {}) do
+                    local item = lib.Items[n]
+                    local can = false
+                    pcall(function() can = lf:CanUseWeapon(n) == true end)
+                    if can and item and (free or item.Class == cls) then
+                        if want and want ~= "Auto" and n == want then pick, ps = n, math.huge end
+                        local sc = RG.scoreWeapon(lib, n)
+                        if sc > ps then pick, ps = n, sc end
+                    end
+                end
+                if pick then pcall(function() page:PickWeapon(slot, pick) end) end
+            end
+            pcall(function() page:Finish() end)
+        end
+        function RG.hookPicker()
+            if RG.pickHooked then return end
+            local pages = LocalPlayer.PlayerScripts:FindFirstChild("Modules")
+            pages = pages and pages:FindFirstChild("Pages")
+            local page = RV.idRequire(pages and pages:FindFirstChild("PickWeapons"))
+            local tbl = RV.methodTable(page, "Open")
+            if tbl == nil then return end
+            local old = ORIG.pickOpen or rawget(tbl, "Open")
+            if type(old) ~= "function" then return end
+            ORIG.pickOpen = old
+            if setreadonly then pcall(setreadonly, tbl, false) end
+            local fine = pcall(rawset, tbl, "Open", function(self, ...)
+                local res = table.pack(old(self, ...))
+                task.delay(0.15, function() pcall(RG.autoPick, self) end)
+                return table.unpack(res, 1, res.n)
+            end)
+            if fine then RG.pickHooked = true end
+        end
+
+        RunService.Heartbeat:Connect(function()
+            if Koffee.dead() then RV._rageCF = nil; return end
+            if not on("rv_rage") then RV._rageCF = nil; RG.phase = "idle"; return end
+            if cfg().OOBGuard then pcall(RG.hookOob) end
+            if cfg().AdaptiveWeapons then pcall(RG.hookPicker) end
+        end)
+    end)()
 
     -- :: NATIVE SILENT AIM ::
     -- Guns expose a plain `_on_shoot_callback` field that is handed the CameraData
