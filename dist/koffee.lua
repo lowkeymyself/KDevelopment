@@ -1,7 +1,7 @@
--- koffee v0.98.1
+-- koffee v0.99.0
 
 local Koffee = {}
-Koffee.Version = "0.98.1"
+Koffee.Version = "0.99.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -9063,7 +9063,10 @@ local World = {
                -- Ambient Color alone behaves exactly as before.
                Fog = false, FogStart = 0, FogEnd = 500,
                FogColor = Color3.fromRGB(160, 165, 175),
-               Exposure = 0, Brightness = 2 },
+               Exposure = 0, Brightness = 2,
+               -- v0.99.0 (Harion world tab): colour shift and shadows, opt-in
+               Shift = false, ShiftTop = Color3.fromRGB(255, 214, 170),
+               ShiftBottom = Color3.fromRGB(95, 115, 165), Shadows = "Game" },
     Sky    = { Saved = nil, Conn = nil },
     Clouds = { Saved = nil, Conn = nil },
     Gfx    = { Saved = nil },
@@ -9096,7 +9099,15 @@ World.FX = {
                Sway = 16, Style = "Soft", Reach = 1,   -- Style: "Soft" | "Flake"
                Color = Color3.fromRGB(255, 253, 248) },
     Rain   = { Enabled = false, Density = 500, Speed = 1.0, Streak = 14, Wind = 0,
-               Reach = 1, Color = Color3.fromRGB(180, 200, 240) },
+               Reach = 1, Color = Color3.fromRGB(180, 200, 240),
+               Sound = false, Volume = 0.4 },   -- v0.99.0: looped rain ambience
+    -- v0.99.0 (Harion weather layers): low drifting fog puffs, wind-blown leaves,
+    -- and lightning flashes on a camera colour correction.
+    Mist    = { Enabled = false, Density = 26, Speed = 1.0, Size = 1, Wind = 4, Alpha = 0.82,
+                Reach = 1, Color = Color3.fromRGB(200, 208, 218) },
+    Leaves  = { Enabled = false, Density = 16, Speed = 1.0, Size = 0.3, Wind = 30, Spin = 140,
+                Reach = 1, Color = Color3.fromRGB(170, 150, 90) },
+    Thunder = { Enabled = false, Interval = 8, Strength = 0.35, Color = Color3.fromRGB(210, 225, 255) },
     -- v0.9.0: slow, heavily tumbling petals. Sparse on purpose: at a ~20s
     -- lifetime a small rate is already a full sky.
     Sakura = { Enabled = false, Density = 40, Speed = 1.0, Size = 0.5, Wind = 0,
@@ -10096,7 +10107,7 @@ registerConfig("world_skybox", World.SkyBox)
     -- v0.10.1: park everything (Atmosphere, Clouds, Sky under Workspace). Parked
     -- (not destroyed) so "None" restores exactly. v0.16.2: dedupe to avoid unbounded growth.
     local function park(inst)
-        if inst == ownSky or parked[inst] then return end
+        if inst == ownSky or inst == Shared._ownAtmo or parked[inst] then return end
         parked[inst] = true
         hidden = hidden or {}
         table.insert(hidden, { sky = inst, parent = inst.Parent })
@@ -10214,6 +10225,53 @@ registerConfig("world_skybox", World.SkyBox)
         if ownSky.Parent ~= Lighting then ownSky.Parent = Lighting end
         for _, s in ipairs(Lighting:GetChildren()) do
             if s ~= ownSky and (s:IsA("Sky") or s:IsA("Atmosphere")) then park(s) end
+        end
+    end)
+end)()
+
+-- v0.99.0 ATMOSPHERE (Harion world tab). Our own Atmosphere in Lighting; the
+-- game's are parked while it runs and handed back on disable. The custom sky
+-- skips it when it parks foreign atmospheres.
+World.Atmo = { Density = 0.35, Offset = 0.25, Haze = 1, Glare = 0,
+               Color = Color3.fromRGB(199, 199, 199), Decay = Color3.fromRGB(106, 112, 125) }
+registerConfig("world_atmo", World.Atmo)
+;(function()
+    local parkedA = {}
+    local function release()
+        if Shared._ownAtmo then pcall(function() Shared._ownAtmo:Destroy() end) end
+        Shared._ownAtmo = nil
+        for inst, parent in pairs(parkedA) do
+            pcall(function() if inst.Parent == nil then inst.Parent = parent end end)
+        end
+        table.clear(parkedA)
+    end
+    registerModule("atmosphere", "Atmosphere", function() end, release)
+    local nextScan = 0
+    RunService.Heartbeat:Connect(function()
+        if Koffee.dead() then release(); return end
+        if not (Modules.atmosphere and Modules.atmosphere.Enabled) then return end
+        local a = Shared._ownAtmo
+        if not (a and a.Parent) then
+            a = Instance.new("Atmosphere")
+            a.Name = KID.name("atmo")
+            KID.track(a)
+            Shared._ownAtmo = a
+        end
+        local A = World.Atmo
+        pcall(function()
+            a.Density, a.Offset = math.clamp(A.Density, 0, 1), math.clamp(A.Offset, 0, 1)
+            a.Haze, a.Glare = math.clamp(A.Haze, 0, 10), math.clamp(A.Glare, 0, 10)
+            a.Color, a.Decay = A.Color, A.Decay
+            if a.Parent ~= Lighting then a.Parent = Lighting end
+        end)
+        local now = os.clock()
+        if now < nextScan then return end
+        nextScan = now + 0.5
+        for _, c in ipairs(Lighting:GetChildren()) do
+            if c ~= a and c:IsA("Atmosphere") then
+                parkedA[c] = parkedA[c] or c.Parent
+                c.Parent = nil
+            end
         end
     end)
 end)()
@@ -10377,6 +10435,8 @@ registerModule("ambientcolor", "Ambient Color",
             FogStart = Lighting.FogStart, FogEnd = Lighting.FogEnd,
             FogColor = Lighting.FogColor, Brightness = Lighting.Brightness,
             Exposure = Lighting.ExposureCompensation,
+            ShiftTop = Lighting.ColorShift_Top, ShiftBottom = Lighting.ColorShift_Bottom,
+            Shadows = Lighting.GlobalShadows,
         }
         World.Light.Conn = RunService.Heartbeat:Connect(function()
             if Koffee.dead() then return end   -- v0.85.0: superseded runs stop re-asserting
@@ -10406,6 +10466,22 @@ registerModule("ambientcolor", "Ambient Color",
                 Lighting.FogEnd   = L.FogEnd
                 Lighting.FogColor = L.FogColor
             end
+            -- v0.99.0: opt-in like fog; turning one off hands the game value back once
+            local sv = World.Light.Saved
+            if L.Shift then
+                Lighting.ColorShift_Top, Lighting.ColorShift_Bottom = L.ShiftTop, L.ShiftBottom
+                L._shiftOwned = true
+            elseif L._shiftOwned and sv then
+                Lighting.ColorShift_Top, Lighting.ColorShift_Bottom = sv.ShiftTop, sv.ShiftBottom
+                L._shiftOwned = nil
+            end
+            if L.Shadows == "On" or L.Shadows == "Off" then
+                Lighting.GlobalShadows = L.Shadows == "On"
+                L._shadowOwned = true
+            elseif L._shadowOwned and sv then
+                Lighting.GlobalShadows = sv.Shadows
+                L._shadowOwned = nil
+            end
         end)
     end,
     function()
@@ -10416,6 +10492,14 @@ registerModule("ambientcolor", "Ambient Color",
         Lighting.OutdoorAmbient = s.OutdoorAmbient
         Lighting.Brightness = s.Brightness
         Lighting.ExposureCompensation = s.Exposure
+        if World.Light._shiftOwned then
+            Lighting.ColorShift_Top, Lighting.ColorShift_Bottom = s.ShiftTop, s.ShiftBottom
+            World.Light._shiftOwned = nil
+        end
+        if World.Light._shadowOwned then
+            Lighting.GlobalShadows = s.Shadows
+            World.Light._shadowOwned = nil
+        end
         if World.Light.Fog then
             Lighting.FogStart = s.FogStart
             Lighting.FogEnd   = s.FogEnd
@@ -19035,6 +19119,126 @@ end)()
         end
     end
 
+    -- v0.99.0: Harion's extra weather layers, in one table to spare registers.
+    local XW = { snd = nil, cc = nil, t0 = nil, nextStrike = 0 }
+    function XW.kp(t, v) return NumberSequenceKeypoint.new(t, v) end
+    function XW.mist()
+        local cfg = World.FX.Mist
+        local rr = reachOf(cfg)
+        local em, h = emitterFor("mist", slab(Vector3.new(200, 24, 200), rr))
+        if not em then return end
+        if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
+        if not cfg.Enabled then return end
+        parkAbove(h, -math.min(dropToGround(Workspace.CurrentCamera), 60) + 14)
+        if not dirty("mist", table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind, cfg.Alpha,
+            rr, tostring(cfg.Color) }, "|")) then return end
+        local sp = math.max(cfg.Speed, 0.05)
+        local a = math.clamp(cfg.Alpha, 0, 1)
+        local kp = XW.kp
+        em.Texture = tex("fx_glow")
+        em.Rate = cfg.Density
+        em.Speed = NumberRange.new(0.4 * sp, 1.6 * sp)
+        em.Lifetime = NumberRange.new(7, 11)
+        em.Acceleration = Vector3.new(cfg.Wind, 0, cfg.Wind * 0.5)
+        em.Drag = 0.6
+        em.SpreadAngle = Vector2.new(180, 180)
+        em.Size = NumberSequence.new({ kp(0, cfg.Size * 7), kp(1, cfg.Size * 11) })
+        em.Color = ColorSequence.new(cfg.Color)
+        em.Transparency = NumberSequence.new({ kp(0, 1), kp(0.3, a), kp(0.7, a), kp(1, 1) })
+        em.Rotation = NumberRange.new(0, 360)
+        em.RotSpeed = NumberRange.new(-8, 8)
+        em.LightEmission = 0
+        em.LightInfluence = 0.6
+        pcall(function() em.Squash = NumberSequence.new(0) end)
+    end
+    function XW.leaves()
+        local cfg = World.FX.Leaves
+        local rr = reachOf(cfg)
+        local em, h = emitterFor("leaves", slab(Vector3.new(220, 6, 220), rr))
+        if not em then return end
+        if em.Enabled ~= cfg.Enabled then em.Enabled = cfg.Enabled end
+        if not cfg.Enabled then return end
+        parkAbove(h, 38)
+        local drop = dropToGround(Workspace.CurrentCamera)
+        if not dirty("leaves", table.concat({ cfg.Density, cfg.Speed, cfg.Size, cfg.Wind, cfg.Spin,
+            rr, drop, tostring(cfg.Color) }, "|")) then return end
+        local fall = 4 * math.max(cfg.Speed, 0.05)
+        local DRAG = 1.2
+        em.Texture = tex("fx_petal")
+        em.Rate = cfg.Density
+        em.EmissionDirection = Enum.NormalId.Bottom
+        em.Speed = NumberRange.new(fall * 0.7, fall * 1.3)
+        em.Lifetime = NumberRange.new((drop + 38) / (fall * 0.7), (drop + 38) / (fall * 0.7) * 1.1)
+        em.Acceleration = Vector3.new(cfg.Wind, -(fall * DRAG), cfg.Wind * 0.4)
+        em.Drag = DRAG
+        em.Size = NumberSequence.new(cfg.Size)
+        em.Color = ColorSequence.new(cfg.Color:Lerp(Color3.fromRGB(210, 190, 110), 0.3),
+            cfg.Color:Lerp(Color3.fromRGB(70, 50, 30), 0.35))
+        em.Transparency = FADE
+        em.SpreadAngle = Vector2.new(30, 30)
+        em.Rotation = NumberRange.new(0, 360)
+        em.RotSpeed = NumberRange.new(-cfg.Spin, cfg.Spin)
+        em.LightEmission = 0
+        em.LightInfluence = 0.8
+        pcall(function() em.Squash = NumberSequence.new(0) end)
+    end
+    -- two quick strikes and a fading afterglow, at a random spread around Interval
+    function XW.thunder()
+        local cfg = World.FX.Thunder
+        local cam = Workspace.CurrentCamera
+        if not (cfg.Enabled and cam) then
+            if XW.cc then XW.cc.Enabled = false end
+            XW.t0 = nil
+            return
+        end
+        if not (XW.cc and XW.cc.Parent) then
+            local c = Instance.new("ColorCorrectionEffect")
+            c.Name = KID.name("strike")
+            c.Enabled = false
+            c.Parent = cam
+            KID.track(c)
+            XW.cc = c
+        end
+        local now = os.clock()
+        if XW.t0 == nil and now >= XW.nextStrike then
+            XW.t0 = now
+            XW.nextStrike = now + math.max(cfg.Interval, 1) * (0.5 + math.random())
+        end
+        local c = XW.cc
+        if not XW.t0 then c.Enabled = false; return end
+        local k, b = now - XW.t0, 0
+        if k < 0.06 then b = 1
+        elseif k < 0.12 then b = 0.2
+        elseif k < 0.2 then b = 0.85
+        elseif k < 0.6 then b = 0.85 * (1 - (k - 0.2) / 0.4)
+        else XW.t0 = nil end
+        c.Enabled = b > 0
+        c.Brightness = b * cfg.Strength
+        c.TintColor = Color3.new(1, 1, 1):Lerp(cfg.Color, b)
+    end
+    -- Harion's rain ambience loop, only while Rain itself is on
+    function XW.rainSound()
+        local cfg = World.FX.Rain
+        local want = cfg.Enabled and cfg.Sound == true
+        local snd = XW.snd
+        if want and not (snd and snd.Parent) then
+            snd = Instance.new("Sound")
+            snd.Name = KID.name("rain")
+            snd.SoundId = "rbxassetid://9112854440"
+            snd.Looped = true
+            snd.Parent = Workspace.CurrentCamera
+            KID.track(snd)
+            XW.snd = snd
+        end
+        if not snd then return end
+        if want then
+            snd.Volume = math.clamp(cfg.Volume or 0.4, 0, 2)
+            if not snd.IsPlaying then snd:Play() end
+        elseif snd.IsPlaying then
+            snd:Stop()
+        end
+    end
+
     -- :: render ::
     RunService.RenderStepped:Connect(function()
         -- unlike the GUI layers, these hosts survive `screen:Destroy()`: without
@@ -19042,6 +19246,10 @@ end)()
         if Koffee.dead() then return end
         stepSnow()
         stepRain()
+        XW.mist()
+        XW.leaves()
+        XW.thunder()
+        XW.rainSound()
         stepSakura()
         stepEmbers()
         stepFireflies()
@@ -22632,13 +22840,50 @@ registerConfig("details_dock", Koffee.Details)
             cc = { 0.2, 0.05, 0.03, RGB(255, 225, 240) },
             light = { RGB(130, 100, 130), RGB(255, 200, 225), 2, 0, false, 0, 500, RGB(255, 220, 235) },
             post = { true, 1.2, 40, 0.8, true, false }, weather = { Sakura = RGB(255, 183, 210) } },
+        -- v0.99.0: Harion's weather presets, rebuilt on Koffee's layers
+        ["Rain"] = { time = 14,
+            cc = { -0.2, 0.06, 0, RGB(225, 232, 245) },
+            light = { RGB(110, 120, 135), RGB(150, 165, 185), 1.7, 0, true, 30, 650, RGB(150, 165, 185) },
+            post = { false, 0.5, 24, 1, false, false },
+            weather = { Rain = RGB(195, 215, 255), Mist = RGB(175, 185, 195) } },
+        ["Heavy Rain"] = { time = 14,
+            cc = { -0.3, 0.08, -0.03, RGB(215, 225, 240) },
+            light = { RGB(95, 105, 120), RGB(120, 135, 155), 1.4, -0.1, true, 15, 450, RGB(120, 135, 155) },
+            post = { false, 0.5, 24, 1, false, false },
+            weather = { Rain = RGB(185, 205, 255), Mist = RGB(150, 160, 170) } },
+        ["Heavy Rain Night"] = { time = 0,
+            cc = { -0.2, 0.12, -0.04, RGB(200, 215, 255) },
+            light = { RGB(40, 50, 70), RGB(60, 75, 105), 0.65, -0.2, true, 10, 360, RGB(45, 55, 75) },
+            post = { true, 0.6, 24, 1, false, false },
+            weather = { Rain = RGB(120, 150, 200), Mist = RGB(55, 65, 85) } },
+        ["Forest Rain Night"] = { time = 0,
+            cc = { -0.1, 0.1, -0.03, RGB(205, 240, 225) },
+            light = { RGB(30, 55, 50), RGB(55, 95, 80), 0.75, -0.15, true, 10, 420, RGB(30, 55, 50) },
+            post = { true, 0.6, 24, 1, false, false },
+            weather = { Rain = RGB(130, 170, 170), Mist = RGB(45, 85, 70), Leaves = RGB(55, 115, 65) } },
+        ["City Rain"] = { time = 16,
+            cc = { -0.25, 0.1, -0.02, RGB(220, 225, 235) },
+            light = { RGB(100, 105, 115), RGB(125, 130, 140), 1.5, 0, true, 20, 500, RGB(115, 120, 130) },
+            post = { true, 0.7, 24, 0.95, false, false },
+            weather = { Rain = RGB(180, 190, 210), Mist = RGB(125, 130, 135) } },
+        ["Windy Day"] = { time = 13,
+            cc = { 0.05, 0.05, 0.02, RGB(250, 250, 240) },
+            light = { RGB(140, 145, 150), RGB(200, 205, 210), 2.4, 0, true, 60, 900, RGB(190, 200, 205) },
+            post = { false, 0.5, 24, 1, false, true },
+            weather = { Mist = RGB(220, 220, 220), Leaves = RGB(165, 150, 95) } },
+        ["Thunderstorm"] = { time = 17,
+            cc = { -0.25, 0.12, -0.03, RGB(210, 220, 245) },
+            light = { RGB(80, 90, 110), RGB(110, 120, 145), 1.25, -0.05, true, 20, 560, RGB(95, 105, 125) },
+            post = { true, 0.6, 24, 1, false, false },
+            weather = { Rain = RGB(195, 210, 255), Mist = RGB(130, 140, 155), Thunder = RGB(210, 225, 255) } },
     }
     local NAMES = { "Off" }
-    for _, n in ipairs({ "Night Blue", "Mint Ghost", "Void Purple", "Void Veins", "Blood Fog", "Golden Hour", "Snow Day", "Dreamy" }) do
+    for _, n in ipairs({ "Night Blue", "Mint Ghost", "Void Purple", "Void Veins", "Blood Fog", "Golden Hour", "Snow Day", "Dreamy",
+        "Rain", "Heavy Rain", "Heavy Rain Night", "Forest Rain Night", "City Rain", "Windy Day", "Thunderstorm" }) do
         NAMES[#NAMES + 1] = n
     end
     Shared.AmbienceNames = NAMES
-    local WEATHER = { "Snow", "Rain", "Sakura", "Embers", "Fireflies", "Stars" }
+    local WEATHER = { "Snow", "Rain", "Sakura", "Embers", "Fireflies", "Stars", "Mist", "Leaves", "Thunder" }
     local function ensure(id, on)
         local m = Modules[id]
         if m and m.Enabled ~= on then toggleModule(id) end
@@ -23504,6 +23749,11 @@ addTab("World", function(root)
         popup:swatch("Outdoor Ambient", World.Light.Outdoor, function(c) World.Light.Outdoor = c end)
         popup:slider("Brightness", 0, 10, World.Light.Brightness, 1, function(v) World.Light.Brightness = v end)
         popup:slider("Exposure", -3, 3, World.Light.Exposure, 2, function(v) World.Light.Exposure = v end)
+        popup:toggle("Color Shift", World.Light.Shift, function(v) World.Light.Shift = v end)
+        popup:swatch("Shift Top", World.Light.ShiftTop, function(c) World.Light.ShiftTop = c end)
+        popup:swatch("Shift Bottom", World.Light.ShiftBottom, function(c) World.Light.ShiftBottom = c end)
+        popup:dropdown("Shadows", { "Game", "On", "Off" }, World.Light.Shadows or "Game",
+            function(v) World.Light.Shadows = v end)
         popup:toggle("Custom Fog", World.Light.Fog, function(v) World.Light.Fog = v end)
         popup:swatch("Fog Color", World.Light.FogColor, function(c) World.Light.FogColor = c end)
         popup:slider("Fog Start", 0, 2000, World.Light.FogStart, 0, function(v) World.Light.FogStart = v end)
@@ -23537,6 +23787,17 @@ addTab("World", function(root)
         end)
     end)
     moduleCheckbox(fx, "Remove Sky",     "removesky")
+    -- v0.99.0: Atmosphere, right-click for density / offset / haze / glare / decay
+    local atRow = moduleCheckbox(fx, "Atmosphere", "atmosphere")
+    attachSingleSwatch(atRow.row, World.Atmo.Color, function(c) World.Atmo.Color = c end)
+    rightClickSettings(atRow.row, "Atmosphere", function(popup)
+        local A = World.Atmo
+        popup:slider("Density", 0, 1, A.Density, 2, function(v) A.Density = v end)
+        popup:slider("Offset", 0, 1, A.Offset, 2, function(v) A.Offset = v end)
+        popup:slider("Haze", 0, 10, A.Haze, 1, function(v) A.Haze = v end)
+        popup:slider("Glare", 0, 10, A.Glare, 1, function(v) A.Glare = v end)
+        popup:swatch("Decay", A.Decay, function(c) A.Decay = c end)
+    end)
     moduleCheckbox(fx, "Disable Clouds", "noclouds")
     moduleCheckbox(fx, "Low Graphics",   "lowgfx")
 
@@ -23589,8 +23850,40 @@ addTab("World", function(root)
         popup:slider("Streak",  1, 40,    World.FX.Rain.Streak,  1, function(v) World.FX.Rain.Streak = v end)
         popup:slider("Wind",   -12, 12,   World.FX.Rain.Wind,    1, function(v) World.FX.Rain.Wind = v end)
         popup:slider("Reach",   0.25, 6,  World.FX.Rain.Reach,   2, function(v) World.FX.Rain.Reach = v end)
+        popup:toggle("Rain Sound", World.FX.Rain.Sound == true, function(v) World.FX.Rain.Sound = v end)
+        popup:slider("Sound Volume", 0, 2, World.FX.Rain.Volume or 0.4, 2, function(v) World.FX.Rain.Volume = v end)
     end)
     -- v0.9.0
+    -- v0.99.0: Harion's layers
+    local mistRow = configCheckbox(fx2, "Mist", World.FX.Mist.Enabled, function(v) World.FX.Mist.Enabled = v end)
+    attachSingleSwatch(mistRow.row, World.FX.Mist.Color, function(c) World.FX.Mist.Color = c end)
+    rightClickSettings(mistRow.row, "Mist", function(popup)
+        local M = World.FX.Mist
+        popup:slider("Density", 2, 120, M.Density, 0, function(v) M.Density = math.floor(v) end)
+        popup:slider("Speed", 0.1, 3, M.Speed, 2, function(v) M.Speed = v end)
+        popup:slider("Size", 0.2, 4, M.Size, 2, function(v) M.Size = v end)
+        popup:slider("Wind", -40, 40, M.Wind, 1, function(v) M.Wind = v end)
+        popup:slider("Thinness", 0.3, 0.98, M.Alpha, 2, function(v) M.Alpha = v end)
+        popup:slider("Reach", 0.25, 6, M.Reach, 2, function(v) M.Reach = v end)
+    end)
+    local leafRow = configCheckbox(fx2, "Leaves", World.FX.Leaves.Enabled, function(v) World.FX.Leaves.Enabled = v end)
+    attachSingleSwatch(leafRow.row, World.FX.Leaves.Color, function(c) World.FX.Leaves.Color = c end)
+    rightClickSettings(leafRow.row, "Leaves", function(popup)
+        local F = World.FX.Leaves
+        popup:slider("Density", 2, 200, F.Density, 0, function(v) F.Density = math.floor(v) end)
+        popup:slider("Speed", 0.2, 3, F.Speed, 2, function(v) F.Speed = v end)
+        popup:slider("Size", 0.1, 2, F.Size, 2, function(v) F.Size = v end)
+        popup:slider("Wind", -120, 120, F.Wind, 0, function(v) F.Wind = v end)
+        popup:slider("Spin", 0, 400, F.Spin, 0, function(v) F.Spin = v end)
+        popup:slider("Reach", 0.25, 6, F.Reach, 2, function(v) F.Reach = v end)
+    end)
+    local thRow = configCheckbox(fx2, "Thunder", World.FX.Thunder.Enabled, function(v) World.FX.Thunder.Enabled = v end)
+    attachSingleSwatch(thRow.row, World.FX.Thunder.Color, function(c) World.FX.Thunder.Color = c end)
+    rightClickSettings(thRow.row, "Thunder", function(popup)
+        local T = World.FX.Thunder
+        popup:slider("Interval (s)", 1, 40, T.Interval, 1, function(v) T.Interval = v end)
+        popup:slider("Strength", 0.05, 1, T.Strength, 2, function(v) T.Strength = v end)
+    end)
     local sakRow = configCheckbox(fx2, "Sakura", World.FX.Sakura.Enabled,
         function(v) World.FX.Sakura.Enabled = v end)
     attachSingleSwatch(sakRow.row, World.FX.Sakura.Color, function(c) World.FX.Sakura.Color = c end)
