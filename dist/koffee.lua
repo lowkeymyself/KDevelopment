@@ -1,7 +1,7 @@
--- koffee v0.99.26
+-- koffee v0.99.27
 
 local Koffee = {}
-Koffee.Version = "0.99.26"
+Koffee.Version = "0.99.27"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -40055,10 +40055,15 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 -- v0.99.25: the first shots of a rage start / new lock wait for the spot
                 -- to reach the server (a cold start missed a lot)
                 if os.clock() < (RG.warmUntil or 0) then v = math.max(v, 70) end
+                -- v0.99.27: every Long Range shot is a 40 to 200 stud jump; with no lead
+                -- the server never has us at the claimed origin and drops the round
+                if (C.ScatterArea or "Target") == "Long Range" then v = math.max(v, 60) end
                 return v
             elseif key == "Hold" then
                 local b = C.Hold or 25
-                return on and math.clamp(b + A.hold, 8, 120) or b
+                local v = on and math.clamp(b + A.hold, 8, 120) or b
+                if (C.ScatterArea or "Target") == "Long Range" then v = math.max(v, 30) end
+                return v
             elseif key == "ScatterRate" then
                 local b = C.ScatterRate or 20
                 return on and math.clamp(b * A.rate, 4, 50) or b
