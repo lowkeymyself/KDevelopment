@@ -1,7 +1,7 @@
--- koffee v0.99.10
+-- koffee v0.99.11
 
 local Koffee = {}
-Koffee.Version = "0.99.10"
+Koffee.Version = "0.99.11"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10805,6 +10805,7 @@ Koffee.Rivals = {
                     Strike = true, StrikeDist = 9, Lead = 20, Hold = 25,
                     Scatter = true, ScatterRate = 20, ScatterMode = "Random",   -- v0.99.9
                     ScatterArea = "Target", ScatterRadius = 60, InstantFire = false,  -- v0.99.10
+                    AutoAdapt = false,                                          -- v0.99.11
                     MeleeVertical = true,                                       -- v0.99.9
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 100M to 300M
@@ -10857,6 +10858,7 @@ Shared.rage2UI = function(card)
     dropdown(card, "Scatter Area", { "Target", "Map" }, RG.ScatterArea or "Target", function(v) RG.ScatterArea = v end)
     slider(card, "Scatter Radius", 15, 150, RG.ScatterRadius or 60, 0, function(v) RG.ScatterRadius = v end)
     configCheckbox(card, "Instant Fire", RG.InstantFire == true, function(v) RG.InstantFire = v end)
+    configCheckbox(card, "Auto Adapt", RG.AutoAdapt == true, function(v) RG.AutoAdapt = v end)
     configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
     configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
@@ -14868,6 +14870,7 @@ local Combat = {
     end
     Shared.landHit = function(char, dropped, nowZero, o)
         if Koffee.dead() or not char then return end
+        if Shared.rgOnHit then pcall(Shared.rgOnHit) end
         SR.recentDamage[char] = os.clock()
         landHit(char, dropped, nowZero, o)
     end
@@ -17748,6 +17751,10 @@ if Koffee._isRivals then (function()
             text = 'Rage  <font color="#' .. accent .. '">' .. (t.DisplayName or t.Name) .. "</font>"
         else
             text = 'Rage  <font color="#' .. Theme.Palette.TextMuted:ToHex() .. '">idle</font>'
+        end
+        local ad = R.Rage.AutoAdapt and RV and RV.RG and RV.RG.ad and RV.RG.ad.lastText
+        if ad then
+            text = text .. '  <font color="#' .. Theme.Palette.TextMuted:ToHex() .. '">' .. ad .. "</font>"
         end
         if text ~= lastText then lastText = text; lbl.Text = text end
     end)
@@ -39897,6 +39904,102 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         local Stats = game:GetService("Stats")
         local function cfg() return R.Rage end
 
+        -- v0.99.11 AUTO ADAPT. The toggles decide what may happen; this tunes the
+        -- numbers from the fight: confirmed hit rate, damage we take, OOB resets.
+        -- Offsets drift back to the user's values when the fight calms down.
+        RG.ad = { lead = 0, hold = 0, rate = 1, radius = 0, map = false, shots = {}, hits = {},
+                  taken = {}, oob = {}, at = 0, hp = nil }
+        function RG.v(key)
+            local C = cfg()
+            local A = RG.ad
+            local on = C.AutoAdapt == true
+            if key == "Lead" then
+                local b = C.Lead or 20
+                return on and math.clamp(b + A.lead, 5, 90) or b
+            elseif key == "Hold" then
+                local b = C.Hold or 25
+                return on and math.clamp(b + A.hold, 8, 120) or b
+            elseif key == "ScatterRate" then
+                local b = C.ScatterRate or 20
+                return on and math.clamp(b * A.rate, 4, 50) or b
+            elseif key == "ScatterRadius" then
+                local b = C.ScatterRadius or 60
+                return on and math.clamp(b + A.radius, 15, 150) or b
+            elseif key == "ScatterArea" then
+                return (on and A.map) and "Map" or (C.ScatterArea or "Target")
+            elseif key == "HopRate" then
+                local b = C.HopRate or 6
+                return on and math.clamp(b * A.rate, 1, 20) or b
+            end
+            return C[key]
+        end
+        local function count(list, now, win)
+            local n = 0
+            for i = #list, 1, -1 do
+                local e = list[i]
+                local t = type(e) == "table" and e[1] or e
+                if now - t > 8 then table.remove(list, i) elseif now - t <= win then n = n + 1 end
+            end
+            return n
+        end
+        function RG.adaptStep(now)
+            local A = RG.ad
+            if now - A.at < 1 then return end
+            A.at = now
+            local shots, hits = count(A.shots, now, 4), count(A.hits, now, 4)
+            local dmg = 0
+            for _, e in ipairs(A.taken) do if now - e[1] <= 4 then dmg = dmg + e[2] end end
+            count(A.taken, now, 4)
+            local resets = count(A.oob, now, 4)
+            -- shots the server does not confirm: it saw us move too late
+            if shots >= 4 then
+                local rate = hits / shots
+                if rate < 0.35 then
+                    A.lead = A.lead + 8
+                    A.rate = A.rate * 0.85
+                elseif rate > 0.7 then
+                    A.lead = A.lead - 4
+                    A.rate = A.rate * 1.08
+                end
+            end
+            -- they are tracking us: move more, wider, and across the map
+            if dmg >= 20 then
+                A.rate = A.rate * 1.15
+                A.radius = A.radius + 10
+                A.hold = A.hold - 5
+                A.map = true
+                A.calmAt = now
+            elseif now - (A.calmAt or 0) > 6 then
+                A.radius = A.radius * 0.85
+                A.hold = A.hold * 0.85
+                if math.abs(A.radius) < 3 then A.map = false end
+            end
+            if resets >= 2 then A.radius = A.radius - 10 end
+            -- drift every offset back toward the user's values
+            A.lead = A.lead * 0.95
+            A.rate = 1 + (math.clamp(A.rate, 0.3, 2.5) - 1) * 0.95
+            A.lastText = string.format("L%d R%d %s", math.floor(RG.v("Lead") + 0.5),
+                math.floor(RG.v("ScatterRate") + 0.5), RG.v("ScatterArea") == "Map" and "map" or "near")
+        end
+        -- feedback: our confirmed hits (from landHit) and damage we take
+        Shared.rgOnHit = function()
+            local A = RG.ad
+            A.hits[#A.hits + 1] = os.clock()
+        end
+        function RG.watchHealth()
+            local ch = LocalPlayer.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            local A = RG.ad
+            if not hum then A.hp = nil; return end
+            local h = hum.Health
+            if A.hp and h < A.hp then
+                A.taken[#A.taken + 1] = { os.clock(), A.hp - h }
+                -- a death is the loudest "they found us" there is
+                if h <= 0 then A.taken[#A.taken + 1] = { os.clock(), 60 } end
+            end
+            A.hp = h
+        end
+
         -- :: bounds :: the game's OutOfBoundsPart volumes (WarnDelay + KillDelay, -1 = never)
         function RG.refreshBounds(now)
             local B = RG.bounds
@@ -40080,7 +40183,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if C.Predict and not (t and os.clock() - t.jumpAt < 0.2) then
                 local v = part.AssemblyLinearVelocity
                 if v.Magnitude > 60 then v = v.Unit * 60 end
-                pos = pos + v * (RG.ping() * 0.5 + (C.Lead or 35) / 1000)
+                pos = pos + v * (RG.ping() * 0.5 + RG.v("Lead") / 1000)
             end
             return pos
         end
@@ -40098,7 +40201,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local ignore = { LocalPlayer.Character, ch, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
             local t = RG.track[plr]
             local inVoid = t and t.sub
-            local need = ((C.Lead or 35) + (C.Hold or 60)) / 1000 + 0.6
+            local need = (RG.v("Lead") + RG.v("Hold")) / 1000 + 0.6
             local melee = it ~= nil and RG.isMelee(it)
             local r = melee and math.max(RG.reach(it) - 1.5, 2.5) or RG.strikeDist(it)
             -- v0.99.9: melee goes under them (inside the floor, nobody sees it) or
@@ -40180,7 +40283,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local ignore = { LocalPlayer.Character, ch, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
             local t = RG.track[plr]
             local inVoid = t and t.sub
-            local need = ((C.Lead or 20) + 60) / 1000 + 0.6
+            local need = (RG.v("Lead") + 60) / 1000 + 0.6
             local rmax = math.max(RG.strikeDist(it) * 1.6, 8)
             for _ = 1, 10 do
                 local a
@@ -40204,15 +40307,14 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- target. A ray dropped from above lands on ground, so the spot is inside the
         -- map by construction; line of sight and bounds still checked.
         function RG.mapSpot(plr, part, it)
-            local C = cfg()
             local tp = RG.predicted(plr, part)
             local ignore = { LocalPlayer.Character, plr.Character, Workspace.CurrentCamera,
                 Workspace:FindFirstChild("ViewModels") }
             local rp = RaycastParams.new()
             rp.FilterType = Enum.RaycastFilterType.Exclude
             rp.FilterDescendantsInstances = ignore
-            local need = ((C.Lead or 20) + 60) / 1000 + 0.6
-            local maxR = math.clamp(C.ScatterRadius or 60, 15, 150)
+            local need = (RG.v("Lead") + 60) / 1000 + 0.6
+            local maxR = math.clamp(RG.v("ScatterRadius"), 15, 150)
             for _ = 1, 14 do
                 local a = math.random() * math.pi * 2
                 local r = 6 + math.random() * (maxR - 6)
@@ -40240,7 +40342,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- :: hide :: past the map edge at map height, hopping when Void Spam
         function RG.hideCF(mr, now)
             local C = cfg()
-            local hop = 1 / math.clamp(C.HopRate or 6, 1, 20)
+            local hop = 1 / math.clamp(RG.v("HopRate"), 1, 20)
             if RG.hide == nil or RG.hideKind ~= C.HideDist or (C.VoidSpam and now - RG.hopAt > hop) then
                 RG.hopAt = now
                 RG.hideKind = C.HideDist
@@ -40294,6 +40396,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end)
             RG.swingAt = os.clock()
             RG.firedAt = RG.swingAt
+            RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
             local ok = RG.input("StartShooting")
             if faced and typeof(rot0) == "Vector2" then pcall(function() cc:SetRotation(rot0) end) end
             task.delay(0.03, function() if not Koffee.dead() then RG.input("FinishShooting") end end)
@@ -40360,6 +40463,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if ray then outer[c2] = true end
             RV._rageAt = tick()
             RG.firedAt = os.clock()
+            RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
             local ok = pcall(function()
                 RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
             end)
@@ -40379,6 +40483,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if RG.oobT > math.max(b - 0.6, 0.05) then
                 RG.oobT = 0
                 RG.resetUntil = now + 0.05
+                RG.ad.oob[#RG.ad.oob + 1] = now
                 return nil
             end
             return cf
@@ -40424,12 +40529,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             -- a spot the server has held for Lead, so nobody gets a still target
             if C.Scatter and not (it ~= nil and RG.isMelee(it)) then
                 local hopping = t and t.sub and now - t.jumpAt < 0.12
-                local rate = math.clamp(C.ScatterRate or 20, 2, 60)
+                local rate = math.clamp(RG.v("ScatterRate"), 2, 60)
                 if not aggr then rate = rate * 0.5 end
                 if hopping and C.VoidHide then
                     RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
                 else
-                    local pick = C.ScatterArea == "Map" and RG.mapSpot or RG.scatterSpot
+                    local pick = RG.v("ScatterArea") == "Map" and RG.mapSpot or RG.scatterSpot
                     if C.InstantFire and live and RG.ready(it) then
                         -- v0.99.10: new spot, placed and fired in the same frame
                         local sp = pick(plr, part, it)
@@ -40442,7 +40547,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         local sp = pick(plr, part, it)
                         if sp then RG.spot, RG.scAt = sp, now end
                     end
-                    if not C.InstantFire and live and RG.spot and now - (RG.scAt or 0) >= (C.Lead or 20) / 1000
+                    if not C.InstantFire and live and RG.spot and now - (RG.scAt or 0) >= RG.v("Lead") / 1000
                         and RG.ready(it) then
                         RG.fire(it, RG.spot.Position, part)
                     end
@@ -40465,13 +40570,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if RG.phase == "approach" then
                 if RG.phaseFor ~= plr or not live then
                     RG.phase = "idle"
-                elseif now - RG.phaseAt >= (C.Lead or 35) / 1000 then
+                elseif now - RG.phaseAt >= RG.v("Lead") / 1000 then
                     if RG.ready(it) then RG.fire(it, RG.spot.Position, part) end
                     RG.phase, RG.phaseAt = "hold", now
                 end
             elseif RG.phase == "hold" then
                 if live and RG.ready(it) then RG.fire(it, RG.spot.Position, part) end
-                local hold = (C.Hold or 60) / 1000
+                local hold = RG.v("Hold") / 1000
                 if it ~= nil and RG.isMelee(it) then hold = math.max(hold, 0.25) end
                 if now - RG.phaseAt >= hold then RG.phase = "idle" end
             end
@@ -40493,7 +40598,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         RG.phase, RG.phaseAt = "hold", now
                     end
                     -- medium already standing on this spot long enough: fire now
-                    if not aggr and same and now - RG.spotAt >= (C.Lead or 35) / 1000 then
+                    if not aggr and same and now - RG.spotAt >= RG.v("Lead") / 1000 then
                         RG.fire(it, spot.Position, part)
                         RG.phase, RG.phaseAt = "hold", now
                     end
@@ -40617,6 +40722,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         RunService.Heartbeat:Connect(function()
             if Koffee.dead() then RV._rageCF = nil; return end
             if not on("rv_rage") then RV._rageCF = nil; RG.phase = "idle"; return end
+            pcall(RG.watchHealth)
+            if cfg().AutoAdapt then pcall(RG.adaptStep, os.clock()) end
             if cfg().OOBGuard then pcall(RG.hookOob) end
             if cfg().AdaptiveWeapons then pcall(RG.hookPicker) end
         end)
