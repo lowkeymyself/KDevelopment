@@ -1,7 +1,7 @@
--- koffee v0.99.9
+-- koffee v0.99.10
 
 local Koffee = {}
-Koffee.Version = "0.99.9"
+Koffee.Version = "0.99.10"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10804,6 +10804,7 @@ Koffee.Rivals = {
                     -- v0.99.4 rage v2: separate toggles, see the RAGE V2 block
                     Strike = true, StrikeDist = 9, Lead = 20, Hold = 25,
                     Scatter = true, ScatterRate = 20, ScatterMode = "Random",   -- v0.99.9
+                    ScatterArea = "Target", ScatterRadius = 60, InstantFire = false,  -- v0.99.10
                     MeleeVertical = true,                                       -- v0.99.9
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 100M to 300M
@@ -10853,6 +10854,9 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Scatter", RG.Scatter, function(v) RG.Scatter = v end)
     slider(card, "Scatter Rate", 2, 60, RG.ScatterRate or 20, 0, function(v) RG.ScatterRate = v end)
     dropdown(card, "Scatter Mode", { "Random", "Orbit" }, RG.ScatterMode or "Random", function(v) RG.ScatterMode = v end)
+    dropdown(card, "Scatter Area", { "Target", "Map" }, RG.ScatterArea or "Target", function(v) RG.ScatterArea = v end)
+    slider(card, "Scatter Radius", 15, 150, RG.ScatterRadius or 60, 0, function(v) RG.ScatterRadius = v end)
+    configCheckbox(card, "Instant Fire", RG.InstantFire == true, function(v) RG.InstantFire = v end)
     configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
     configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
@@ -40196,6 +40200,43 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return RG.planSpot(plr, part, it)
         end
 
+        -- v0.99.10 map scatter: anywhere on real floor within Scatter Radius of the
+        -- target. A ray dropped from above lands on ground, so the spot is inside the
+        -- map by construction; line of sight and bounds still checked.
+        function RG.mapSpot(plr, part, it)
+            local C = cfg()
+            local tp = RG.predicted(plr, part)
+            local ignore = { LocalPlayer.Character, plr.Character, Workspace.CurrentCamera,
+                Workspace:FindFirstChild("ViewModels") }
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Exclude
+            rp.FilterDescendantsInstances = ignore
+            local need = ((C.Lead or 20) + 60) / 1000 + 0.6
+            local maxR = math.clamp(C.ScatterRadius or 60, 15, 150)
+            for _ = 1, 14 do
+                local a = math.random() * math.pi * 2
+                local r = 6 + math.random() * (maxR - 6)
+                local x = tp + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+                local hit = Workspace:Raycast(x + Vector3.new(0, 120, 0), Vector3.new(0, -260, 0), rp)
+                if hit and hit.Normal.Y > 0.6 then
+                    local pos = hit.Position + Vector3.new(0, 2.5 + math.random() * 3, 0)
+                    if RG.budget(pos) > need and RG.los(pos, tp, ignore) then
+                        RG.spotFor = plr
+                        return CFrame.lookAt(pos, tp)
+                    end
+                end
+            end
+            return RG.scatterSpot(plr, part, it)
+        end
+        -- Instant Fire: write the spot to the body in this same frame, so the position
+        -- and the shot leave together. Needs the desync restore bound this frame.
+        function RG.placeNow(cf)
+            local mr = myRoot()
+            if not (mr and RV._dsLast ~= nil) then return false end
+            RV._dsLast = cf
+            return pcall(function() mr.CFrame = cf end)
+        end
+
         -- :: hide :: past the map edge at map height, hopping when Void Spam
         function RG.hideCF(mr, now)
             local C = cfg()
@@ -40388,12 +40429,21 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if hopping and C.VoidHide then
                     RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
                 else
-                    if RG.spot == nil or RG.spotFor ~= plr or now - (RG.scAt or 0) >= 1 / rate
+                    local pick = C.ScatterArea == "Map" and RG.mapSpot or RG.scatterSpot
+                    if C.InstantFire and live and RG.ready(it) then
+                        -- v0.99.10: new spot, placed and fired in the same frame
+                        local sp = pick(plr, part, it)
+                        if sp and RG.placeNow(sp) then
+                            RG.spot, RG.scAt = sp, now
+                            RG.fire(it, sp.Position, part)
+                        end
+                    elseif RG.spot == nil or RG.spotFor ~= plr or now - (RG.scAt or 0) >= 1 / rate
                         or (t and t.jumpAt > (RG.scAt or 0)) then
-                        local sp = RG.scatterSpot(plr, part, it)
+                        local sp = pick(plr, part, it)
                         if sp then RG.spot, RG.scAt = sp, now end
                     end
-                    if live and RG.spot and now - (RG.scAt or 0) >= (C.Lead or 20) / 1000 and RG.ready(it) then
+                    if not C.InstantFire and live and RG.spot and now - (RG.scAt or 0) >= (C.Lead or 20) / 1000
+                        and RG.ready(it) then
                         RG.fire(it, RG.spot.Position, part)
                     end
                     RV._rageCF = RG.oobStep(now, RG.spot)
@@ -40438,6 +40488,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local same = RG.spot and (RG.spot.Position - spot.Position).Magnitude < 0.5
                     RG.spot = spot
                     RG.phase, RG.phaseAt, RG.phaseFor = "approach", now, plr
+                    if C.InstantFire and RG.placeNow(spot) then
+                        RG.fire(it, spot.Position, part)
+                        RG.phase, RG.phaseAt = "hold", now
+                    end
                     -- medium already standing on this spot long enough: fire now
                     if not aggr and same and now - RG.spotAt >= (C.Lead or 35) / 1000 then
                         RG.fire(it, spot.Position, part)
