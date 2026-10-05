@@ -1,7 +1,7 @@
--- koffee v0.99.18
+-- koffee v0.99.19
 
 local Koffee = {}
-Koffee.Version = "0.99.18"
+Koffee.Version = "0.99.19"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -6101,6 +6101,9 @@ local ESP = {
         -- the player's head points at you within Angle degrees.
         Weapon         = { Enabled = false, Color = Color3.fromRGB(205, 205, 205), TextSize = 12 },
         Staring        = { Enabled = false, Color = Color3.fromRGB(255, 95, 85), Angle = 10 },
+        -- v0.99.19: rivals projectiles in flight (rockets, grenades, arrows...)
+        Projectiles    = { Enabled = false, Color = Color3.fromRGB(255, 120, 60), ShowOwn = false,
+                           Path = true, Blast = true, Labels = true },
         -- v0.0.28: right-click Profile Picture for Size / Outline Thickness / Y Offset.
         ProfilePicture = { Enabled = false, Size = 40, OutlineThickness = 1, YOffset = 0 },          -- avatar above name
         -- v0.5.0: HitNumbers: floating damage text above hit target. Merges stacked
@@ -10839,6 +10842,11 @@ Koffee.Rivals = {
         Offset = { On = false, X = 0, Y = 0, Z = 0 },
         FOV    = { On = false, Value = 10 },
     },
+    -- v0.99.19: your own throw / lob / projectile gun arcs before you fire
+    Traj        = {
+        On = false, Throw = Color3.fromRGB(217, 150, 95), Lob = Color3.fromRGB(120, 180, 255),
+        Guns = true,
+    },
     -- v0.99.1 (Harion automation): lobby queue, vote bans, staff watch
     Auto        = {
         Queue = "1v1",
@@ -12426,6 +12434,14 @@ Koffee._characterTab = function(root)
         end)
         configCheckbox(vis, "FOV Changer", VMC.FOV.On, function(v) VMC.FOV.On = v end)
         slider(vis, "FOV Offset", -40, 60, VMC.FOV.Value, 0, function(v) VMC.FOV.Value = v end)
+        -- v0.99.19: throw / lob / projectile gun arcs, right-click for colours
+        local TJ = Koffee.Rivals.Traj
+        local tjRow = configCheckbox(vis, "Trajectories", TJ.On, function(v) TJ.On = v end)
+        rightClickSettings(tjRow.row, "Trajectories", function(popup)
+            popup:swatch("Throw", TJ.Throw, function(c) TJ.Throw = c end)
+            popup:swatch("Lob", TJ.Lob, function(c) TJ.Lob = c end)
+            popup:toggle("Projectile Guns", TJ.Guns ~= false, function(v) TJ.Guns = v end)
+        end)
     end
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
@@ -23733,6 +23749,18 @@ addTab("Visuals", function(root)
     rightClickSettings(stRow.row, "Staring", function(popup)
         popup:slider("Angle", 1, 45, stCfg.Angle, 0, function(v) stCfg.Angle = v end)
     end)
+    -- v0.99.19: rivals projectiles in flight; right-click for what to draw
+    if Koffee._isRivals then
+        local pjCfg = ESP.Indicators.Projectiles
+        local pjRow = configCheckbox(indPanel, "Projectile ESP", pjCfg.Enabled, function(v) pjCfg.Enabled = v end)
+        attachSingleSwatch(pjRow.row, pjCfg.Color, function(c) pjCfg.Color = c end)
+        rightClickSettings(pjRow.row, "Projectile ESP", function(popup)
+            popup:toggle("Path", pjCfg.Path ~= false, function(v) pjCfg.Path = v end)
+            popup:toggle("Blast Radius", pjCfg.Blast ~= false, function(v) pjCfg.Blast = v end)
+            popup:toggle("Labels", pjCfg.Labels ~= false, function(v) pjCfg.Labels = v end)
+            popup:toggle("Show Own", pjCfg.ShowOwn == true, function(v) pjCfg.ShowOwn = v end)
+        end)
+    end
     -- v0.5.0: Hit Numbers: floating damage text on attributed hits. Right-click
     -- for stack mode, timing, colors, crit threshold, kill tag.
     local hitCfgUI = ESP.Indicators.HitNumbers
@@ -42104,6 +42132,230 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if (M.DJHeight or 1) ~= 1 then XI.hookMechanics() end
         end
 
+        -- v0.99.19 TRAJECTORIES + PROJECTILE ESP. Arcs use the game's own TrajectoryVisual
+        -- maths: pos = origin + v*t - up * (Gravity * 0.5 * mult) * t^2, stopping at the
+        -- first hit or the fuse. Live projectiles are measured, not assumed.
+        local XP = { live = setmetatable({}, { __mode = "k" }), pool = {}, at = 0 }
+        function XP.adorn(class)
+            local a = Instance.new(class)
+            a.Name = KID.name("pj")
+            a.Adornee = Workspace.Terrain
+            a.AlwaysOnTop = true
+            a.ZIndex = 8
+            a.Parent = Workspace.CurrentCamera
+            KID.track(a)
+            return a
+        end
+        function XP.arc(origin, vel, accel, maxT, ignore)
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Exclude
+            rp.FilterDescendantsInstances = ignore
+            local pts, last = { origin }, origin
+            local t, dt = 0, 0.03
+            while t < maxT do
+                t = t + dt
+                local nxt = origin + vel * t + accel * (0.5 * t * t)
+                local hit = Workspace:Raycast(last, nxt - last, rp)
+                if hit then
+                    pts[#pts + 1] = hit.Position
+                    return pts, hit.Position
+                end
+                pts[#pts + 1] = nxt
+                last = nxt
+                if #pts > 200 then break end
+            end
+            return pts, last
+        end
+        function XP.lines(w, pts, color)
+            w.Color3 = color
+            for i = 2, #pts do w:AddLine(pts[i - 1], pts[i]) end
+        end
+        function XP.ball(key, pos, size, color, alpha)
+            local b = XP.pool[key]
+            if not (b and b.Parent) then
+                b = XP.adorn("SphereHandleAdornment")
+                XP.pool[key] = b
+            end
+            b.CFrame = CFrame.new(pos)
+            b.Radius = size
+            b.Color3 = color
+            b.Transparency = alpha
+            b.Visible = true
+            XP.used[key] = true
+            return b
+        end
+        -- own arcs: the equipped throwable (full charge, or the live charge while
+        -- winding up) or a projectile gun with gravity
+        function XP.own(w)
+            local TJ = R.Traj
+            if not (TJ and TJ.On) then return end
+            local it = RV.equipped()
+            local info
+            pcall(function() info = it.Info end)
+            if type(info) ~= "table" then return end
+            local ch = LocalPlayer.Character
+            local ignore = { ch, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
+            local g = Workspace.Gravity
+            if info.ThrowForceMin ~= nil then
+                local cf
+                pcall(function()
+                    local wl = it.ClientFighter:GetRaycastWhitelist(true)
+                    cf = it:_GetThrowCameraCFrame(wl, nil, true)
+                end)
+                if typeof(cf) ~= "CFrame" then return end
+                local fuse = tonumber(info.DetonateDelay) or 4
+                local throwing = rawget(it, "_is_throwing")
+                local kind = rawget(it, "_throw_type")
+                local function draw(key, fmin, fmax, grav, color, charge)
+                    if type(fmin) ~= "number" or type(fmax) ~= "number" then return end
+                    local vel = cf.LookVector * (fmin + (fmax - fmin) * charge)
+                    local pts, land = XP.arc(cf.Position, vel, Vector3.new(0, -g * (grav or 1), 0), math.min(fuse, 6), ignore)
+                    XP.lines(w, pts, color)
+                    XP.ball(key, land, 1.2, color, 0.2)
+                end
+                if type(throwing) == "number" and kind then
+                    local lob = kind == "Lob"
+                    local maxC = lob and info.LobMaxChargeTime or info.ThrowMaxChargeTime
+                    local charge = math.clamp((tick() - throwing) / math.max(tonumber(maxC) or 1, 0.01), 0, 1)
+                    if lob then
+                        draw("ownLob", info.LobForceMin, info.LobForceMax, info.LobGravity, TJ.Lob, charge)
+                    else
+                        draw("ownThrow", info.ThrowForceMin, info.ThrowForceMax, info.ThrowGravity, TJ.Throw, charge)
+                    end
+                else
+                    draw("ownThrow", info.ThrowForceMin, info.ThrowForceMax, info.ThrowGravity, TJ.Throw, 1)
+                    draw("ownLob", info.LobForceMin, info.LobForceMax, info.LobGravity, TJ.Lob, 1)
+                end
+            elseif TJ.Guns ~= false and info.IsProjectile and (tonumber(info.ProjectileGravity) or 0) > 0 then
+                local cam = Workspace.CurrentCamera
+                if not cam then return end
+                local origin = (cam.CFrame * (info.ProjectileSpawnOffset or CFrame.new(0, 0, -3))).Position
+                local vel = cam.CFrame.LookVector * (tonumber(info.ProjectileSpeed) or 300)
+                local pts, land = XP.arc(origin, vel, Vector3.new(0, -g * info.ProjectileGravity, 0), 6, ignore)
+                XP.lines(w, pts, TJ.Throw)
+                XP.ball("ownGun", land, 1.2, TJ.Throw, 0.2)
+            end
+        end
+        -- every projectile arrives through one of these two
+        function XP.record(item, part, kind)
+            if typeof(part) ~= "Instance" or not part:IsA("BasePart") then return end
+            local owner, name, fuse, radius
+            pcall(function() owner = item.ClientFighter.Player end)
+            pcall(function() name = item.Name end)
+            pcall(function() fuse = tonumber(item.Info.DetonateDelay) end)
+            pcall(function()
+                radius = tonumber(item.Info.ExplosionRadius) or tonumber(item.Info.ShootExplosionRadius)
+            end)
+            XP.live[part] = { owner = owner, name = name or kind, t0 = os.clock(), fuse = fuse,
+                              radius = radius, lastV = part.AssemblyLinearVelocity, lastT = os.clock(), ay = 0 }
+        end
+        function XP.hook()
+            local gun = modAt({ "Modules", "ItemTypes", "Gun" })
+            wrapOnce("pjGun", RV.methodTable(gun, "_ProjectileEffect"), "_ProjectileEffect", function(old)
+                return function(self, part, ...)
+                    if not Koffee.dead() then pcall(XP.record, self, part, "projectile") end
+                    return old(self, part, ...)
+                end
+            end)
+            local thr = modAt({ "Modules", "ItemTypes", "Throwable" })
+            wrapOnce("pjThrow", RV.methodTable(thr, "ReplicateFromServer"), "ReplicateFromServer", function(old)
+                return function(self, kind, ...)
+                    if kind == "ThrowEffect" and not Koffee.dead() then
+                        local part = ...
+                        pcall(XP.record, self, part, "throwable")
+                    end
+                    return old(self, kind, ...)
+                end
+            end)
+        end
+        function XP.esp(w)
+            local P = ESP.Indicators.Projectiles
+            if not (P and P.Enabled) then return end
+            local now = os.clock()
+            for part, rec in pairs(XP.live) do
+                if not part:IsDescendantOf(Workspace) then
+                    XP.live[part] = nil
+                    if rec.label then pcall(function() rec.label:Destroy() end) end
+                else
+                    local mine = rec.owner == LocalPlayer
+                    local ally = rec.owner and not mine and RV.isAlly(rec.owner)
+                    if (mine and P.ShowOwn) or (not mine and not ally) then
+                        -- gravity measured from the projectile's own motion
+                        local v = part.AssemblyLinearVelocity
+                        local dt = now - rec.lastT
+                        if dt > 0.01 then
+                            local ay = (v.Y - rec.lastV.Y) / dt
+                            rec.ay = rec.ay * 0.7 + math.clamp(ay, -600, 0) * 0.3
+                            rec.lastV, rec.lastT = v, now
+                        end
+                        local left = rec.fuse and math.max(rec.fuse - (now - rec.t0), 0) or 4
+                        local key = tostring(part)
+                        XP.ball(key .. "m", part.Position, 0.6, P.Color, 0)
+                        local ignore = { part, rec.owner and rec.owner.Character, Workspace.CurrentCamera,
+                            Workspace:FindFirstChild("ViewModels") }
+                        local pts, land = XP.arc(part.Position, v, Vector3.new(0, rec.ay, 0), math.min(left, 5), ignore)
+                        if P.Path ~= false then XP.lines(w, pts, P.Color) end
+                        if P.Blast ~= false then
+                            XP.ball(key .. "b", land, math.max(rec.radius or 3, 1.5), P.Color, 0.75)
+                        end
+                        if P.Labels ~= false then
+                            if not (rec.label and rec.label.Parent) then
+                                local bb = Instance.new("BillboardGui")
+                                bb.Name = KID.name("pjl")
+                                bb.AlwaysOnTop = true
+                                bb.Size = UDim2.fromOffset(160, 18)
+                                bb.StudsOffset = Vector3.new(0, 1.6, 0)
+                                bb.Adornee = part
+                                local t = Instance.new("TextLabel")
+                                t.BackgroundTransparency = 1
+                                t.Size = UDim2.fromScale(1, 1)
+                                t.FontFace = Theme.Fonts.Bold
+                                t.TextSize = 13
+                                t.TextStrokeTransparency = 0.4
+                                t.Parent = bb
+                                bb.Parent = Workspace.CurrentCamera
+                                KID.track(bb)
+                                rec.label = bb
+                            end
+                            local t = rec.label:FindFirstChildOfClass("TextLabel")
+                            if t then
+                                t.TextColor3 = P.Color
+                                t.Text = tostring(rec.name) .. (rec.fuse and string.format("  %.1fs", left) or "")
+                            end
+                        elseif rec.label then
+                            rec.label.Enabled = false
+                        end
+                    end
+                end
+            end
+        end
+        XP.wire = nil
+        RunService.RenderStepped:Connect(function()
+            XP.used = {}
+            if not Koffee.dead() then
+                local w = XP.wire
+                if not (w and w.Parent) then
+                    w = XP.adorn("WireframeHandleAdornment")
+                    w.Thickness = 2
+                    XP.wire = w
+                end
+                w:Clear()
+                pcall(XP.own, w)
+                pcall(XP.esp, w)
+            elseif XP.wire then
+                pcall(function() XP.wire:Clear() end)
+            end
+            for key, b in pairs(XP.pool) do
+                if not XP.used[key] then
+                    if b.Parent then b.Visible = false end
+                    if not string.find(key, "^own") then
+                        pcall(function() b:Destroy() end)
+                        XP.pool[key] = nil
+                    end
+                end
+            end
+        end)
+
         -- v0.98.0: every rendered gun shot, local or not, goes through
         -- ItemTypes.Gun:_Tracers(data). The ray list shape follows Harion's reader;
         -- the remote learner only stands down once a shot here actually parses.
@@ -42158,6 +42410,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not Koffee.dead() then
                 hookCrosshair()
                 RV.hookShootEffect()
+                if ESP.Indicators.Projectiles and ESP.Indicators.Projectiles.Enabled then pcall(XP.hook) end
                 pcall(XI.step, os.clock())
                 pcall(XI.slideStep)
                 if Koffee.Bullets.Enabled then hookTracers() end
