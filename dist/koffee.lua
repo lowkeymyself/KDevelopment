@@ -1,7 +1,7 @@
--- koffee v0.99.24
+-- koffee v0.99.25
 
 local Koffee = {}
-Koffee.Version = "0.99.24"
+Koffee.Version = "0.99.25"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -39862,6 +39862,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- every spot change flipped the physics FFlags several times a second.
         local armNow = os.clock()
         if on("rv_rage") or (on("rv_desync") and R.Desync.Mode ~= "Off") then RV._armHold = armNow + 3 end
+        -- v0.99.25: a rage keybind keeps it armed for the whole live round, so the
+        -- first teleports after the key press already replicate fast
+        if Keybinds.rv_rage ~= nil and RV.RG and RV.RG.live and RV.RG.live() then RV._armHold = armNow + 3 end
         RV.armEngine(armNow < (RV._armHold or 0))
         if not want then RV._dsLast = nil; return end
         local mr = myRoot()
@@ -40046,7 +40049,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local on = C.AutoAdapt == true
             if key == "Lead" then
                 local b = C.Lead or 20
-                return on and math.clamp(b + A.lead, 5, 90) or b
+                local v = on and math.clamp(b + A.lead, 5, 90) or b
+                -- v0.99.25: the first shots of a rage start / new lock wait for the spot
+                -- to reach the server (a cold start missed a lot)
+                if os.clock() < (RG.warmUntil or 0) then v = math.max(v, 70) end
+                return v
             elseif key == "Hold" then
                 local b = C.Hold or 25
                 return on and math.clamp(b + A.hold, 8, 120) or b
@@ -41000,6 +41007,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local now = os.clock()
             local mr = myRoot()
             if not mr then RV._rageCF = nil; return end
+            -- v0.99.25: warm-up window on a rage start (0.4s) or a new lock (0.25s)
+            if RG.lastTick == nil or now - RG.lastTick > 0.5 then RG.warmUntil = now + 0.4 end
+            RG.lastTick = now
+            if plr ~= RG.warmFor then
+                RG.warmFor = plr
+                RG.warmUntil = math.max(RG.warmUntil or 0, now + 0.25)
+            end
             -- v0.99.7: lobby / between rounds the server body stays home
             -- v0.99.14: and while frozen by the countdown or in the review
             if not RV.inRound() or not RG.live() then
@@ -41082,7 +41096,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 else
                     RG.action = RG.v("ScatterArea") == "Map" and "scatter (map)" or "scatter"
                     local pick = RG.v("ScatterArea") == "Map" and RG.mapSpot or RG.scatterSpot
-                    if C.InstantFire and live and RG.ready(it) then
+                    if C.InstantFire and live and RG.ready(it) and now >= (RG.warmUntil or 0) then
                         -- v0.99.10: new spot, placed and fired in the same frame
                         local sp = pick(plr, part, it)
                         if sp and RG.placeNow(sp) then
@@ -41094,7 +41108,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         local sp = pick(plr, part, it)
                         if sp then RG.spot, RG.scAt = sp, now end
                     end
-                    if not C.InstantFire and live and RG.spot and now - (RG.scAt or 0) >= RG.v("Lead") / 1000
+                    if (not C.InstantFire or now < (RG.warmUntil or 0)) and live and RG.spot
+                        and now - (RG.scAt or 0) >= RG.v("Lead") / 1000
                         and RG.ready(it) then
                         RG.fire(it, RG.spot.Position, part)
                     end
@@ -41140,7 +41155,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local same = RG.spot and (RG.spot.Position - spot.Position).Magnitude < 0.5
                     RG.spot = spot
                     RG.phase, RG.phaseAt, RG.phaseFor = "approach", now, plr
-                    if C.InstantFire and RG.placeNow(spot) then
+                    if C.InstantFire and now >= (RG.warmUntil or 0) and RG.placeNow(spot) then
                         RG.fire(it, spot.Position, part)
                         RG.phase, RG.phaseAt = "hold", now
                     end
