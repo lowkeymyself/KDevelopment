@@ -1,7 +1,7 @@
--- koffee v0.99.23
+-- koffee v0.99.24
 
 local Koffee = {}
-Koffee.Version = "0.99.23"
+Koffee.Version = "0.99.24"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10809,7 +10809,7 @@ Koffee.Rivals = {
                     Scatter = true, ScatterRate = 20, ScatterMode = "Random",   -- v0.99.9
                     ScatterArea = "Target", ScatterRadius = 60, InstantFire = false,  -- v0.99.10
                     LongMin = 60, LongMax = 250,                                -- v0.99.21
-                    LongTune = true,                                            -- v0.99.23
+                    LongTune = false,                                           -- v0.99.23
                     AutoAdapt = false,                                          -- v0.99.11
                     PlayerAdapt = false, SwapEmpty = false,                     -- v0.99.12
                     Pickups = false, PickupAmmoPct = 30,                        -- v0.99.15
@@ -10864,34 +10864,24 @@ registerConfig("rivals_native", Koffee.Rivals)
 -- straight from ItemLibrary (required at identity 2, like the bridge does).
 Shared.rage2UI = function(card)
     local RG = Koffee.Rivals.Rage
+    -- v0.99.24: grouped, every toggle with its own sliders right under it
     configCheckbox(card, "Strike", RG.Strike, function(v) RG.Strike = v end)
     slider(card, "Strike Distance", 3, 20, RG.StrikeDist, 0, function(v) RG.StrikeDist = v end)
     slider(card, "Strike Lead (ms)", 0, 150, RG.Lead, 0, function(v) RG.Lead = v end)
     slider(card, "Strike Hold (ms)", 0, 250, RG.Hold, 0, function(v) RG.Hold = v end)
+    configCheckbox(card, "Instant Fire", RG.InstantFire == true, function(v) RG.InstantFire = v end)
+
     configCheckbox(card, "Scatter", RG.Scatter, function(v) RG.Scatter = v end)
     slider(card, "Scatter Rate", 2, 60, RG.ScatterRate or 20, 0, function(v) RG.ScatterRate = v end)
     dropdown(card, "Scatter Mode", { "Random", "Orbit", "Spiral", "Figure 8", "Vertical", "Sphere", "Blind Spot",
         "Jitter", "Chaos" }, RG.ScatterMode or "Random", function(v) RG.ScatterMode = v end)
     dropdown(card, "Scatter Area", { "Target", "Map", "Long Range" }, RG.ScatterArea or "Target", function(v) RG.ScatterArea = v end)
+    slider(card, "Scatter Radius", 15, 150, RG.ScatterRadius or 60, 0, function(v) RG.ScatterRadius = v end)
     slider(card, "Long Range Min", 20, 500, RG.LongMin or 60, 0, function(v) RG.LongMin = v end)
     slider(card, "Long Range Max", 40, 1000, RG.LongMax or 250, 0, function(v) RG.LongMax = v end)
-    configCheckbox(card, "Long Range Auto Tune", RG.LongTune ~= false, function(v) RG.LongTune = v end)
-    slider(card, "Scatter Radius", 15, 150, RG.ScatterRadius or 60, 0, function(v) RG.ScatterRadius = v end)
-    configCheckbox(card, "Instant Fire", RG.InstantFire == true, function(v) RG.InstantFire = v end)
-    configCheckbox(card, "Auto Adapt", RG.AutoAdapt == true, function(v) RG.AutoAdapt = v end)
-    configCheckbox(card, "Player Adapt", RG.PlayerAdapt == true, function(v) RG.PlayerAdapt = v end)
-    configCheckbox(card, "Swap On Empty", RG.SwapEmpty == true, function(v) RG.SwapEmpty = v end)
-    configCheckbox(card, "Grab Pickups", RG.Pickups == true, function(v) RG.Pickups = v end)
-    slider(card, "Ammo Grab Below %", 5, 90, RG.PickupAmmoPct or 30, 0, function(v) RG.PickupAmmoPct = v end)
-    dropdown(card, "Swap Order", { "Primary > Secondary > Melee", "Secondary > Primary > Melee",
-        "Primary > Melee", "Secondary > Melee", "Primary > Secondary" },
-        RG.SwapOrder or "Primary > Secondary > Melee", function(v) RG.SwapOrder = v end)
-    configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
-    slider(card, "Melee Keep-Out", 0, 30, RG.MeleeKeepOut or 10, 0, function(v) RG.MeleeKeepOut = v end)
+    configCheckbox(card, "Long Range Auto Tune", RG.LongTune == true, function(v) RG.LongTune = v end)
+
     configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
-    configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
-    slider(card, "Max Hide (s)", 0.3, 5, RG.HideMax or 1.5, 1, function(v) RG.HideMax = v end)
-    slider(card, "Hop Rate", 1, 20, RG.HopRate, 0, function(v) RG.HopRate = v end)
     local hdDd = dropdown(card, "Hide Distance", { "Edge", "Far" }, RG.HideDist or "Edge", function(v) RG.HideDist = v end)
     -- v0.99.14: right-click Far for Unsafe (the original 100M to 300M); rebuilt on open
     if hdDd and hdDd.frame then
@@ -10903,16 +10893,32 @@ Shared.rage2UI = function(card)
             end
         end, nil, true)
     end
+    slider(card, "Max Hide (s)", 0.3, 5, RG.HideMax or 1.5, 1, function(v) RG.HideMax = v end)
+    configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
+    slider(card, "Hop Rate", 1, 20, RG.HopRate, 0, function(v) RG.HopRate = v end)
     configCheckbox(card, "OOB Guard", RG.OOBGuard, function(v) RG.OOBGuard = v end)
-    configCheckbox(card, "Counter Void", RG.CounterVoid, function(v) RG.CounterVoid = v end)
-    configCheckbox(card, "Counter Teleport", RG.CounterTP, function(v) RG.CounterTP = v end)
-    configCheckbox(card, "Smart Targeting", RG.Smart, function(v) RG.Smart = v end)
-    configCheckbox(card, "Prediction", RG.Predict, function(v) RG.Predict = v end)
-    configCheckbox(card, "Adaptive Aggression", RG.Adaptive, function(v) RG.Adaptive = v end)
+
     configCheckbox(card, "Anti-Melee", RG.AntiMelee, function(v) RG.AntiMelee = v end)
     slider(card, "Threat Range", 6, 60, RG.ThreatRange, 0, function(v) RG.ThreatRange = v end)
+    slider(card, "Melee Keep-Out", 0, 30, RG.MeleeKeepOut or 10, 0, function(v) RG.MeleeKeepOut = v end)
     configCheckbox(card, "Melee Ragebot", RG.Melee, function(v) RG.Melee = v end)
     configCheckbox(card, "Chainsaw Cut Hold", RG.ChainsawHold, function(v) RG.ChainsawHold = v end)
+    configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
+
+    configCheckbox(card, "Smart Targeting", RG.Smart, function(v) RG.Smart = v end)
+    configCheckbox(card, "Prediction", RG.Predict, function(v) RG.Predict = v end)
+    configCheckbox(card, "Counter Void", RG.CounterVoid, function(v) RG.CounterVoid = v end)
+    configCheckbox(card, "Counter Teleport", RG.CounterTP, function(v) RG.CounterTP = v end)
+    configCheckbox(card, "Adaptive Aggression", RG.Adaptive, function(v) RG.Adaptive = v end)
+    configCheckbox(card, "Player Adapt", RG.PlayerAdapt == true, function(v) RG.PlayerAdapt = v end)
+    configCheckbox(card, "Auto Adapt", RG.AutoAdapt == true, function(v) RG.AutoAdapt = v end)
+
+    configCheckbox(card, "Swap On Empty", RG.SwapEmpty == true, function(v) RG.SwapEmpty = v end)
+    dropdown(card, "Swap Order", { "Primary > Secondary > Melee", "Secondary > Primary > Melee",
+        "Primary > Melee", "Secondary > Melee", "Primary > Secondary" },
+        RG.SwapOrder or "Primary > Secondary > Melee", function(v) RG.SwapOrder = v end)
+    configCheckbox(card, "Grab Pickups", RG.Pickups == true, function(v) RG.Pickups = v end)
+    slider(card, "Ammo Grab Below %", 5, 90, RG.PickupAmmoPct or 30, 0, function(v) RG.PickupAmmoPct = v end)
     configCheckbox(card, "Adaptive Weapons", RG.AdaptiveWeapons, function(v) RG.AdaptiveWeapons = v end)
     local lib
     pcall(function()
@@ -40140,7 +40146,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             for _, list in ipairs({ L.shots, L.hits }) do
                 for i = #list, 1, -1 do if now - list[i][1] > 6 then table.remove(list, i) end end
             end
-            if cfg().LongTune == false then L.scale = 1; return end
+            if cfg().LongTune ~= true then L.scale = 1; return end
             if not RG.live() then return end
             local shots, hits, dmg = 0, 0, 0
             for _, e in ipairs(L.shots) do if now - e[1] <= 4 then shots = shots + 1 end end
@@ -40615,7 +40621,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local need = (RG.v("Lead") + RG.v("Hold")) / 1000 + 0.6
             local lo = math.clamp(C.LongMin or 60, 20, 500)
             local hi = math.clamp(C.LongMax or 250, lo + 10, 1000)
-            local sc = (C.LongTune ~= false and RG.lr) and RG.lr.scale or 1
+            local sc = (C.LongTune == true and RG.lr) and RG.lr.scale or 1
             hi = lo + (hi - lo) * sc
             if sc < 0.35 then lo = math.max(lo * sc / 0.35, 15) end
             hi = math.max(hi, lo + 5)
