@@ -1,7 +1,7 @@
--- koffee v0.99.15
+-- koffee v0.99.16
 
 local Koffee = {}
-Koffee.Version = "0.99.15"
+Koffee.Version = "0.99.16"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10812,6 +10812,7 @@ Koffee.Rivals = {
                     MeleeVertical = true,                                       -- v0.99.9
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 20M to 50M
+                    HideMax = 1.5,       -- v0.99.16: longest unbroken hide, then home for 0.2s
                     FarUnsafe = false,   -- v0.99.14: Far at 100M to 300M (crashed his client)
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
                     Adaptive = true, AdaptiveWeapons = false,
@@ -10873,6 +10874,7 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
     configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
+    slider(card, "Max Hide (s)", 0.3, 5, RG.HideMax or 1.5, 1, function(v) RG.HideMax = v end)
     slider(card, "Hop Rate", 1, 20, RG.HopRate, 0, function(v) RG.HopRate = v end)
     local hdDd = dropdown(card, "Hide Distance", { "Edge", "Far" }, RG.HideDist or "Edge", function(v) RG.HideDist = v end)
     -- v0.99.14: right-click Far for Unsafe (the original 100M to 300M); rebuilt on open
@@ -39359,30 +39361,31 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoNative) then pcall(fu
     end
 
     -- :: katana reflect ::
-    -- A swinging katana reflects shots. Swept at 10Hz into a set, because the only
+    -- A deflecting katana (right-click) reflects shots. Swept at 10Hz into a set, because the only
     -- source is a walk of FighterController.Objects and the callers are per candidate
     -- per frame: doing it inline would be O(n^2) every frame.
     RV.deflecting = {}
     RV.katanaOut = {}
     local function deflectOf(o)
-        local name, cd
+        -- v0.99.16: StartAiming sets _deflect_cooldown = now + Duration + Cooldown, so it
+        -- deflects while now < _deflect_cooldown - DeflectCooldown. Swings only set
+        -- _attack_cooldown, which flagged every spam-swinging katana as deflecting.
+        local on = false
         pcall(function()
             local it = o.EquippedItem
-            name = it and it.ViewModel and it.ViewModel.Name
-            cd = it and rawget(it, "_attack_cooldown")
+            local info = it and it.Info
+            local dc = it and rawget(it, "_deflect_cooldown")
+            local cd = info and info.DeflectCooldown
+            if type(dc) == "number" and type(cd) == "number" then on = tick() < dc - cd end
         end)
-        if name ~= "Katana" and name ~= "Chainsaw" then return false end
-        return type(cd) == "number" and cd > tick()
+        return on
     end
     -- v0.96.10: wielded (not necessarily swinging) katana, for the triggerbot
     -- Ignore Katana toggle. Same walk, second set, no extra cost.
     local function katanaWielded(o)
-        local name
-        pcall(function()
-            local it = o.EquippedItem
-            name = it and it.ViewModel and it.ViewModel.Name
-        end)
-        return name == "Katana"
+        local has = false
+        pcall(function() has = o.EquippedItem.Info.DeflectDuration ~= nil end)
+        return has
     end
     task.spawn(function()
         while not Koffee.dead() do
@@ -40739,6 +40742,20 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         function RG.oobStep(now, cf)
             local dt = math.clamp(now - RG.lastT, 0, 0.1)
             RG.lastT = now
+            -- v0.99.16: no hide lasts longer than Max Hide; the body comes home for
+            -- 0.2s to reset any server-side timer (message (2) caps it at 3s too)
+            if now < (RG.surfaceUntil or 0) then return nil end
+            if cf ~= nil and cf == RG.hide then
+                RG.hideSince = RG.hideSince or now
+                if now - RG.hideSince > math.clamp(cfg().HideMax or 1.5, 0.3, 5) then
+                    RG.hideSince = nil
+                    RG.surfaceUntil = now + 0.2
+                    RG.hide = nil   -- a fresh spot next time
+                    return nil
+                end
+            else
+                RG.hideSince = nil
+            end
             if not cfg().OOBGuard or cf == nil then RG.oobT = 0; return cf end
             if now < RG.resetUntil then return nil end
             local b = RG.budget(cf.Position)
@@ -40775,7 +40792,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if pk then
                     RV._rageCF = RG.oobStep(now, pk)
                     RG.phase = "idle"
-                    if itp ~= nil and RV.inRound() and RG.ready(itp)
+                    if itp ~= nil and RV.inRound() and RG.ready(itp) and not RV.isDeflecting(plr)
                         and RG.los(pk.Position, part.Position, { LocalPlayer.Character, plr.Character }) then
                         RG.fire(itp, pk.Position, part)
                     end
@@ -40794,7 +40811,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             -- dodge to a fresh sky spot so the swing lands on air
             if C.AntiMelee and RG.threatPlr == plr then
                 local here = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
-                if live and here and RG.ready(it) then RG.fire(it, here, part) end
+                -- a live deflect sends rounds back: dodge only
+                if live and here and RG.ready(it) and not RV.isDeflecting(plr) then RG.fire(it, here, part) end
                 if now >= (RG.dodgeUntil or 0) then
                     RG.dodgeUntil = now + 0.3
                     RG.hide = nil
