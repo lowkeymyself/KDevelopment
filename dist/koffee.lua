@@ -1,7 +1,7 @@
--- koffee v0.99.11
+-- koffee v0.99.12
 
 local Koffee = {}
-Koffee.Version = "0.99.11"
+Koffee.Version = "0.99.12"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10806,6 +10806,8 @@ Koffee.Rivals = {
                     Scatter = true, ScatterRate = 20, ScatterMode = "Random",   -- v0.99.9
                     ScatterArea = "Target", ScatterRadius = 60, InstantFire = false,  -- v0.99.10
                     AutoAdapt = false,                                          -- v0.99.11
+                    PlayerAdapt = false, SwapEmpty = false,                     -- v0.99.12
+                    SwapOrder = "Primary > Secondary > Melee",
                     MeleeVertical = true,                                       -- v0.99.9
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 100M to 300M
@@ -10859,6 +10861,11 @@ Shared.rage2UI = function(card)
     slider(card, "Scatter Radius", 15, 150, RG.ScatterRadius or 60, 0, function(v) RG.ScatterRadius = v end)
     configCheckbox(card, "Instant Fire", RG.InstantFire == true, function(v) RG.InstantFire = v end)
     configCheckbox(card, "Auto Adapt", RG.AutoAdapt == true, function(v) RG.AutoAdapt = v end)
+    configCheckbox(card, "Player Adapt", RG.PlayerAdapt == true, function(v) RG.PlayerAdapt = v end)
+    configCheckbox(card, "Swap On Empty", RG.SwapEmpty == true, function(v) RG.SwapEmpty = v end)
+    dropdown(card, "Swap Order", { "Primary > Secondary > Melee", "Secondary > Primary > Melee",
+        "Primary > Melee", "Secondary > Melee", "Primary > Secondary" },
+        RG.SwapOrder or "Primary > Secondary > Melee", function(v) RG.SwapOrder = v end)
     configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
     configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
@@ -39731,7 +39738,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- v0.99.4: a live rage v2 spot (strike / hide) beats every desync mode
         local rcf = on("rv_rage") and RV._rageCF or nil
         local want = rcf ~= nil or on("rv_desync") or (on("rv_rage") and R.Rage.Evasion)
-        RV.armEngine(want and (rcf ~= nil or R.Desync.Mode ~= "Off"))
+        -- v0.99.12: armed for as long as rage or desync is on (3s grace). Re-arming on
+        -- every spot change flipped the physics FFlags several times a second.
+        local armNow = os.clock()
+        if on("rv_rage") or (on("rv_desync") and R.Desync.Mode ~= "Off") then RV._armHold = armNow + 3 end
+        RV.armEngine(armNow < (RV._armHold or 0))
         if not want then RV._dsLast = nil; return end
         local mr = myRoot()
         if not mr then RV._dsLast = nil; return end
@@ -39946,6 +39957,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local A = RG.ad
             if now - A.at < 1 then return end
             A.at = now
+            -- v0.99.12: a spawn opens the intermission countdown and any death in the
+            -- duel opens the kill review; nothing in those windows is a real signal
+            if now < (A.pauseUntil or 0) or not RV.inRound() then
+                table.clear(A.shots); table.clear(A.hits); table.clear(A.taken)
+                A.lastText = "paused"
+                return
+            end
             local shots, hits = count(A.shots, now, 4), count(A.hits, now, 4)
             local dmg = 0
             for _, e in ipairs(A.taken) do if now - e[1] <= 4 then dmg = dmg + e[2] end end
@@ -39995,9 +40013,31 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if A.hp and h < A.hp then
                 A.taken[#A.taken + 1] = { os.clock(), A.hp - h }
                 -- a death is the loudest "they found us" there is
-                if h <= 0 then A.taken[#A.taken + 1] = { os.clock(), 60 } end
+                if h <= 0 and os.clock() >= (A.pauseUntil or 0) then A.taken[#A.taken + 1] = { os.clock(), 60 } end
             end
             A.hp = h
+        end
+        function RG.pauseAdapt(sec)
+            RG.ad.pauseUntil = math.max(RG.ad.pauseUntil or 0, os.clock() + sec)
+        end
+        LocalPlayer.CharacterAdded:Connect(function(c)
+            RG.pauseAdapt(6)
+            local hum = c:WaitForChild("Humanoid", 10)
+            if hum then hum.Died:Connect(function() RG.pauseAdapt(9) end) end
+        end)
+        -- the enemy dying also starts the review + next intermission
+        RG.deathHooked = setmetatable({}, { __mode = "k" })
+        function RG.hookDeaths()
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                local ch = plr ~= LocalPlayer and plr.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                if hum and not RG.deathHooked[hum] then
+                    RG.deathHooked[hum] = true
+                    hum.Died:Connect(function()
+                        if RG.sameDuel(plr) then RG.pauseAdapt(9) end
+                    end)
+                end
+            end
         end
 
         -- :: bounds :: the game's OutOfBoundsPart volumes (WarnDelay + KillDelay, -1 = never)
@@ -40066,6 +40106,21 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     for i = #t.jumps, 1, -1 do if now - t.jumps[i] > 5 then table.remove(t.jumps, i) end end
                     local sub = RG.submerged(pos, mr)
                     if t.sub and not sub then t.freshAt = now end   -- surfaced this frame
+                    -- v0.99.12: hovering high with no fall is flying (checked 4x a second)
+                    if now - (t.flyChk or 0) > 0.25 then
+                        t.flyChk = now
+                        local rp = RaycastParams.new()
+                        rp.FilterType = Enum.RaycastFilterType.Exclude
+                        rp.FilterDescendantsInstances = { ch, LocalPlayer.Character }
+                        local g = Workspace:Raycast(pos, Vector3.new(0, -14, 0), rp)
+                        local hover = g == nil and math.abs(root.AssemblyLinearVelocity.Y) < 6
+                        if hover then
+                            t.airSince = t.airSince or now
+                            if now - t.airSince > 1.2 then t.flyAt = now end
+                        else
+                            t.airSince = nil
+                        end
+                    end
                     t.sub = sub
                     t.pos, t.at = pos, now
                 end
@@ -40073,7 +40128,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
         function RG.cheating(plr)
             local t = RG.track[plr]
-            if t and (#t.jumps >= 2 or t.sub) then return true end
+            if t and (#t.jumps >= 2 or t.sub or (t.flyAt and os.clock() - t.flyAt < 10)) then return true end
             return Shared.Suspects ~= nil and Shared.Suspects[tostring(plr.UserId)] ~= nil
         end
         -- aggressive vs medium, per target
@@ -40352,7 +40407,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local d = math.random(30000, 45000)
                 -- v0.99.8: Far parks where float32 steps are ~8 to 16 studs, so nothing
                 -- aimed at us lines up (the trick an opponent used on his friend)
-                if C.HideDist == "Far" then d = math.random(100, 300) * 1e6 end
+                if C.HideDist == "Far" then d = math.random(20, 50) * 1e6 end   -- v0.99.12: 100M+ crashed the client
                 RG.hide = CFrame.new(mr.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d))
             end
             return RG.hide
@@ -40430,6 +40485,49 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local frames = math.clamp(cfg().ShootFrames, 1, 5)
             return RV._rageAt == nil or now - RV._rageAt >= gap / frames
         end
+        -- v0.99.12 swap on empty (message (2)'s shape): an empty gun swaps to the next
+        -- slot in the order that can still fight; with nothing left, the first slot
+        -- comes back out and reloads. LocalFighter:EquipItem takes the slot number.
+        RG.SWAP = {
+            ["Primary > Secondary > Melee"] = { 1, 2, 3 }, ["Secondary > Primary > Melee"] = { 2, 1, 3 },
+            ["Primary > Melee"] = { 1, 3 }, ["Secondary > Melee"] = { 2, 3 }, ["Primary > Secondary"] = { 1, 2 },
+        }
+        function RG.swapEmpty(it)
+            local now = os.clock()
+            if now - (RG.swapAt or 0) < 0.6 then return true end
+            local lf = RV.localFighter()
+            local items
+            pcall(function() items = lf.Items end)
+            if type(items) ~= "table" then return false end
+            local order = RG.SWAP[cfg().SwapOrder] or RG.SWAP["Primary > Secondary > Melee"]
+            for _, slot in ipairs(order) do
+                local other = items[slot]
+                if other ~= nil and other ~= it then
+                    local usable = false
+                    pcall(function()
+                        if RG.isMelee(other) then
+                            usable = true
+                        else
+                            local a = other:Get("Ammo")
+                            usable = a == nil or a > 0
+                        end
+                    end)
+                    if usable then
+                        RG.swapAt = now
+                        pcall(function() lf:EquipItem(slot) end)
+                        return true
+                    end
+                end
+            end
+            -- nothing loaded: bring the first slot back and let it reload there
+            local first = items[order[1]]
+            if first ~= nil and first ~= it then
+                RG.swapAt = now
+                pcall(function() lf:EquipItem(order[1]) end)
+                return true
+            end
+            return false
+        end
         function RG.fire(it, origin, part)
             if RG.isMelee(it) then
                 if not cfg().Melee then return false end
@@ -40438,6 +40536,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local ammo
             pcall(function() ammo = it:Get("Ammo") end)
             if ammo ~= nil and ammo <= 0 then
+                if cfg().SwapEmpty and RG.swapEmpty(it) then return false end
                 local lf = RV.localFighter()
                 local inp = lf and lf.Input
                 if type(inp) == "function" then pcall(inp, lf, "StartReloading") end
@@ -40524,6 +40623,24 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     if p then RV.setAngles(RV.slots.Rage, p, y) end
                 end
                 return
+            end
+            -- v0.99.12 player adapt: a target with no teleport, void or fly evidence is a
+            -- normal player. Shoot from where we really stand when we can see them;
+            -- only fall back to a strike spot when we cannot.
+            if C.PlayerAdapt and not RG.cheating(plr) and not (it ~= nil and RG.isMelee(it)) then
+                local head = RV.serverHead()
+                local ch = LocalPlayer.Character
+                local h = ch and ch:FindFirstChild("Head")
+                local ignore = { ch, plr.Character, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
+                if h and RG.los(h.Position, part.Position, ignore) then
+                    RV._rageCF, RG.phase = nil, "idle"
+                    if live and RG.ready(it) and RV._dsLast == nil then RG.fire(it, h.Position, part) end
+                    local p, y = RV.anglesTo(h.Position, part.Position)
+                    if p then RV.setAngles(RV.slots.Rage, p, y) end
+                    return
+                end
+                aggr = false
+                if head == nil then return end
             end
             -- v0.99.9 scatter (guns): a new spot around them every hop, every shot from
             -- a spot the server has held for Lead, so nobody gets a still target
@@ -40723,7 +40840,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if Koffee.dead() then RV._rageCF = nil; return end
             if not on("rv_rage") then RV._rageCF = nil; RG.phase = "idle"; return end
             pcall(RG.watchHealth)
-            if cfg().AutoAdapt then pcall(RG.adaptStep, os.clock()) end
+            if cfg().AutoAdapt then
+                pcall(RG.hookDeaths)
+                pcall(RG.adaptStep, os.clock())
+            end
             if cfg().OOBGuard then pcall(RG.hookOob) end
             if cfg().AdaptiveWeapons then pcall(RG.hookPicker) end
         end)
@@ -40840,7 +40960,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             desyncCorrect(cd)
             rageRedirect(cd)
             redirect(cd)
-            if Shared.playShootSound then pcall(Shared.playShootSound) end
+            RV._shootSnd = (RV._shootSnd or 0) + 1   -- v0.99.12: played from our loop
             if type(prev) == "function" then pcall(prev, cd) end
         end
         pcall(rawset, it, "_on_shoot_callback", mine)
@@ -41114,10 +41234,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if getgenv and getgenv().KoffeeHitDebug then
                     print("[koffee hit] shot reply without DamageEffect", hitChar.Name, "drop", dmg)
                 end
-                if dmg > 0 and Shared.landHit then
+                if dmg > 0 then
                     RV._nativeLive = true
                     if hum.Health > 0 then RV._nativeHitAt[hitChar] = os.clock() end
-                    Shared.landHit(hitChar, dmg, hum.Health <= 0, { crit = head, part = head and "head" or "body" })
+                    RV._hitQ = RV._hitQ or {}
+                    table.insert(RV._hitQ, { hitChar, dmg, hum.Health <= 0, { crit = head, part = head and "head" or "body" } })
                 end
             end)
         end
@@ -41191,10 +41312,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local kill = hum.Health <= 0
             RV._nativeLive = true
             if not kill then RV._nativeHitAt[char] = os.clock() end
-            if Shared.landHit then
-                Shared.landHit(char, dmg, kill, { crit = crit,
-                    part = crit and "head" or "body", weapon = weaponName() })
-            end
+            -- v0.99.12: queued, never called here: this runs on the game's thread,
+            -- which may not touch Koffee's own UI (sounds read the window)
+            RV._hitQ = RV._hitQ or {}
+            table.insert(RV._hitQ, { char, dmg, kill, { crit = crit,
+                part = crit and "head" or "body", weapon = weaponName() } })
         end
 
         -- v0.99.1: VIEWMODEL (Harion). Appearance repaints the first-person rig
@@ -41742,6 +41864,18 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
 
         RunService.Heartbeat:Connect(function()
             local M = R.Mods
+            -- v0.99.12: drain what the game threads queued, on Koffee's own thread
+            local q = RV._hitQ
+            if q and #q > 0 then
+                RV._hitQ = {}
+                for _, h in ipairs(q) do
+                    if Shared.landHit then pcall(Shared.landHit, h[1], h[2], h[3], h[4]) end
+                end
+            end
+            if (RV._shootSnd or 0) > 0 then
+                RV._shootSnd = 0
+                if Shared.playShootSound then pcall(Shared.playShootSound) end
+            end
             if not Koffee.dead() then
                 hookCrosshair()
                 RV.hookShootEffect()
