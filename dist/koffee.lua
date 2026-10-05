@@ -1,7 +1,7 @@
--- koffee v0.99.16
+-- koffee v0.99.17
 
 local Koffee = {}
-Koffee.Version = "0.99.16"
+Koffee.Version = "0.99.17"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -40121,8 +40121,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             B.at = now
             local okP, parts = pcall(CS.GetTagged, CS, "OutOfBoundsPart")
             local okS, safe = pcall(CS.GetTagged, CS, "OutOfBoundsSafePart")
+            -- v0.99.17: map Barriers also hold "KillBrick" parts (instant death), the
+            -- reason the Edge hide spot insta-killed on some maps
+            local okK, kill = pcall(CS.GetTagged, CS, "KillBrick")
             B.parts = okP and parts or {}
             B.safe = okS and safe or {}
+            B.kill = okK and kill or {}
         end
         function RG.inside(part, pos)
             local rel = part.CFrame:PointToObjectSpace(pos)
@@ -40132,6 +40136,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- seconds we may rest at pos (math.huge = free)
         function RG.budget(pos)
             local B = RG.bounds
+            for _, kb in ipairs(B.kill or {}) do
+                if kb.Parent and RG.inside(kb, pos) then return 0 end
+            end
             for _, sp in ipairs(B.safe) do
                 if sp.Parent and RG.inside(sp, pos) then return math.huge end
             end
@@ -40558,15 +40565,24 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 RG.hideKind = kind
                 -- v0.99.7: sideways past the map at its own height (message (2)'s void
                 -- spot); straight up got us killed
-                local a = math.random() * math.pi * 2
-                local d = math.random(30000, 45000)
-                -- v0.99.8: Far parks where float32 steps are ~8 to 16 studs, so nothing
-                -- aimed at us lines up (the trick an opponent used on his friend)
+                -- v0.99.17: walk outward until the spot is clear of every OOB volume and
+                -- KillBrick (some maps kill instantly until REALLY far). Far parks where
+                -- float32 steps are 2 to 16 studs; Unsafe is the original 100M to 300M.
+                local rings = { 35e3, 1e5, 3e5, 1e6, 3e6 }
                 if C.HideDist == "Far" then
-                    -- v0.99.12: 100M+ crashed his client; Unsafe brings it back on purpose
-                    d = C.FarUnsafe and math.random(100, 300) * 1e6 or math.random(20, 50) * 1e6
+                    rings = C.FarUnsafe and { math.random(100, 300) * 1e6 } or { math.random(20, 50) * 1e6 }
                 end
-                RG.hide = CFrame.new(mr.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d))
+                RG.refreshBounds(now)
+                local pick
+                for _, d in ipairs(rings) do
+                    for _ = 1, 6 do
+                        local a = math.random() * math.pi * 2
+                        local pos = mr.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d)
+                        if RG.budget(pos) == math.huge then pick = pos; break end
+                    end
+                    if pick then break end
+                end
+                RG.hide = CFrame.new(pick or (mr.Position + Vector3.new(3e6, 0, 0)))
             end
             return RG.hide
         end
