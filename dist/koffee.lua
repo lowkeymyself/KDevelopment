@@ -1,7 +1,7 @@
--- koffee v0.99.19
+-- koffee v0.99.20
 
 local Koffee = {}
-Koffee.Version = "0.99.19"
+Koffee.Version = "0.99.20"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -12256,6 +12256,72 @@ local function openMaterialPreview()
 end
 
 -- :: tab builder (called by the Character addTab in normal tab order) ::
+-- v0.99.20: built for Visuals > Screen (moved out of Character > Visual). Lives here
+-- because Aspect Ratio reads the Visual table, which is local to this block.
+Shared.buildMovedVisuals = function(sub)
+    local cam = panel(sub, "Camera")
+    -- v0.97.0: stretched res. Below 1 widens that axis, above 1 squeezes it.
+    local arRow = moduleCheckbox(cam, "Aspect Ratio", "aspectratio")
+    keybindPill(arRow.row, "aspectratio", nil, "Aspect Ratio")
+    slider(cam, "Ratio X", 0.1, 2, Visual.Aspect.X, 2, function(v) Visual.Aspect.X = v end)
+    slider(cam, "Ratio Y", 0.1, 2, Visual.Aspect.Y, 2, function(v) Visual.Aspect.Y = v end)
+    if Koffee._isRivals then
+        -- v0.99.19: throw / lob / projectile gun arcs, right-click for colours
+        local TJ = Koffee.Rivals.Traj
+        local tjRow = configCheckbox(cam, "Trajectories", TJ.On, function(v) TJ.On = v end)
+        rightClickSettings(tjRow.row, "Trajectories", function(popup)
+            popup:swatch("Throw", TJ.Throw, function(c) TJ.Throw = c end)
+            popup:swatch("Lob", TJ.Lob, function(c) TJ.Lob = c end)
+            popup:toggle("Projectile Guns", TJ.Guns ~= false, function(v) TJ.Guns = v end)
+        end)
+        local hud = panel(sub, "Game HUD")
+        local RM = Koffee.Rivals.Mods
+        configCheckbox(hud, "Anti Flashbang", RM.NoFlash, function(v) RM.NoFlash = v end)
+        configCheckbox(hud, "Anti Smoke", RM.NoSmoke, function(v) RM.NoSmoke = v end)
+        configCheckbox(hud, "Remove Vignette", RM.NoVignette, function(v) RM.NoVignette = v end)
+        configCheckbox(hud, "Disable Game Crosshair", RM.NoGameCrosshair, function(v) RM.NoGameCrosshair = v end)
+        configCheckbox(hud, "Disable Hit Marker", RM.NoHitmarker, function(v) RM.NoHitmarker = v end)
+        configCheckbox(hud, "Disable Damage Numbers", RM.NoDmgNumbers, function(v) RM.NoDmgNumbers = v end)
+        local vmp = panel(sub, "Viewmodel")
+        -- v0.99.1: viewmodel (Harion). Right-click each row for its settings.
+        local VMC = Koffee.Rivals.VM
+        local MATS = { "ForceField", "Neon", "Glass", "SmoothPlastic", "Plastic", "Metal", "Foil",
+            "DiamondPlate", "Ice", "Marble", "Granite", "Slate", "Wood", "Fabric", "Sand", "CorrodedMetal" }
+        local wRow = configCheckbox(vmp, "Weapon Chams", VMC.Weapon.On, function(v) VMC.Weapon.On = v end)
+        rightClickSettings(wRow.row, "Weapon Chams", function(popup)
+            popup:swatch("Color", VMC.Weapon.Color, function(c) VMC.Weapon.Color = c end)
+            popup:dropdown("Material", MATS, VMC.Weapon.Material, function(v) VMC.Weapon.Material = v end)
+            popup:slider("Opacity", 0, 100, VMC.Weapon.Opacity, 0, function(v) VMC.Weapon.Opacity = v end)
+            popup:toggle("Disable Textures", VMC.Weapon.NoTextures, function(v) VMC.Weapon.NoTextures = v end)
+            popup:toggle("Wireframe", VMC.Weapon.Wireframe, function(v) VMC.Weapon.Wireframe = v end)
+        end)
+        local aRow = configCheckbox(vmp, "Arm Chams", VMC.Arms.On, function(v) VMC.Arms.On = v end)
+        rightClickSettings(aRow.row, "Arm Chams", function(popup)
+            popup:swatch("Color", VMC.Arms.Color, function(c) VMC.Arms.Color = c end)
+            popup:dropdown("Material", MATS, VMC.Arms.Material, function(v) VMC.Arms.Material = v end)
+            popup:slider("Opacity", 0, 100, VMC.Arms.Opacity, 0, function(v) VMC.Arms.Opacity = v end)
+            popup:toggle("Disable Clothes", VMC.Arms.NoClothes, function(v) VMC.Arms.NoClothes = v end)
+            popup:toggle("Wireframe", VMC.Arms.Wireframe, function(v) VMC.Arms.Wireframe = v end)
+        end)
+        local mRow = configCheckbox(vmp, "Still Viewmodel", VMC.Motion.On, function(v) VMC.Motion.On = v end)
+        rightClickSettings(mRow.row, "Still Viewmodel", function(popup)
+            popup:toggle("No Sway", VMC.Motion.Sway, function(v) VMC.Motion.Sway = v end)
+            popup:toggle("No Tilt", VMC.Motion.Tilt, function(v) VMC.Motion.Tilt = v end)
+            popup:toggle("No Bobbing", VMC.Motion.Bob, function(v) VMC.Motion.Bob = v end)
+            popup:toggle("No Jump Bounce", VMC.Motion.Jump, function(v) VMC.Motion.Jump = v end)
+            popup:toggle("No Sprint Pose", VMC.Motion.Sprint, function(v) VMC.Motion.Sprint = v end)
+        end)
+        local oRow = configCheckbox(vmp, "Viewmodel Offset", VMC.Offset.On, function(v) VMC.Offset.On = v end)
+        rightClickSettings(oRow.row, "Viewmodel Offset", function(popup)
+            popup:slider("X", -5, 5, VMC.Offset.X, 2, function(v) VMC.Offset.X = v end)
+            popup:slider("Y", -5, 5, VMC.Offset.Y, 2, function(v) VMC.Offset.Y = v end)
+            popup:slider("Z", -5, 5, VMC.Offset.Z, 2, function(v) VMC.Offset.Z = v end)
+        end)
+        configCheckbox(vmp, "FOV Changer", VMC.FOV.On, function(v) VMC.FOV.On = v end)
+        slider(vmp, "FOV Offset", -40, 60, VMC.FOV.Value, 0, function(v) VMC.FOV.Value = v end)
+    end
+end
+
 Koffee._characterTab = function(root)
     local mv = panel(root, "Movement")
     -- v0.94.0: rivals caps air jumps with Info.MaxDoubleJumps and has no jump
@@ -12380,69 +12446,6 @@ Koffee._characterTab = function(root)
         api:slider("Min Zoom",    0.5, 20, TP.MinZoom, 1, function(v) TP.MinZoom = math.min(v, TP.MaxZoom) end)
         api:slider("Max Zoom",    5,  60, TP.MaxZoom, 1, function(v) TP.MaxZoom = math.max(v, TP.MinZoom) end)
     end)
-
-    -- v0.97.0: stretched res. Below 1 widens that axis, above 1 squeezes it.
-    local arRow = moduleCheckbox(vis, "Aspect Ratio", "aspectratio")
-    keybindPill(arRow.row, "aspectratio", nil, "Aspect Ratio")
-    slider(vis, "Ratio X", 0.1, 2, Visual.Aspect.X, 2, function(v) Visual.Aspect.X = v end)
-    slider(vis, "Ratio Y", 0.1, 2, Visual.Aspect.Y, 2, function(v) Visual.Aspect.Y = v end)
-
-    -- v0.97.0: rivals screen effects, each one a single game function (see the
-    -- native visual block). Crosshair and vignette are PlayerGui name matches.
-    if Koffee._isRivals then
-        local RM = Koffee.Rivals.Mods
-        configCheckbox(vis, "Anti Flashbang", RM.NoFlash, function(v) RM.NoFlash = v end)
-        configCheckbox(vis, "Anti Smoke", RM.NoSmoke, function(v) RM.NoSmoke = v end)
-        configCheckbox(vis, "Remove Vignette", RM.NoVignette, function(v) RM.NoVignette = v end)
-        configCheckbox(vis, "Disable Game Crosshair", RM.NoGameCrosshair, function(v) RM.NoGameCrosshair = v end)
-        configCheckbox(vis, "Disable Hit Marker", RM.NoHitmarker, function(v) RM.NoHitmarker = v end)
-        configCheckbox(vis, "Disable Damage Numbers", RM.NoDmgNumbers, function(v) RM.NoDmgNumbers = v end)
-
-        -- v0.99.1: viewmodel (Harion). Right-click each row for its settings.
-        local VMC = Koffee.Rivals.VM
-        local MATS = { "ForceField", "Neon", "Glass", "SmoothPlastic", "Plastic", "Metal", "Foil",
-            "DiamondPlate", "Ice", "Marble", "Granite", "Slate", "Wood", "Fabric", "Sand", "CorrodedMetal" }
-        local wRow = configCheckbox(vis, "Weapon Chams", VMC.Weapon.On, function(v) VMC.Weapon.On = v end)
-        rightClickSettings(wRow.row, "Weapon Chams", function(popup)
-            popup:swatch("Color", VMC.Weapon.Color, function(c) VMC.Weapon.Color = c end)
-            popup:dropdown("Material", MATS, VMC.Weapon.Material, function(v) VMC.Weapon.Material = v end)
-            popup:slider("Opacity", 0, 100, VMC.Weapon.Opacity, 0, function(v) VMC.Weapon.Opacity = v end)
-            popup:toggle("Disable Textures", VMC.Weapon.NoTextures, function(v) VMC.Weapon.NoTextures = v end)
-            popup:toggle("Wireframe", VMC.Weapon.Wireframe, function(v) VMC.Weapon.Wireframe = v end)
-        end)
-        local aRow = configCheckbox(vis, "Arm Chams", VMC.Arms.On, function(v) VMC.Arms.On = v end)
-        rightClickSettings(aRow.row, "Arm Chams", function(popup)
-            popup:swatch("Color", VMC.Arms.Color, function(c) VMC.Arms.Color = c end)
-            popup:dropdown("Material", MATS, VMC.Arms.Material, function(v) VMC.Arms.Material = v end)
-            popup:slider("Opacity", 0, 100, VMC.Arms.Opacity, 0, function(v) VMC.Arms.Opacity = v end)
-            popup:toggle("Disable Clothes", VMC.Arms.NoClothes, function(v) VMC.Arms.NoClothes = v end)
-            popup:toggle("Wireframe", VMC.Arms.Wireframe, function(v) VMC.Arms.Wireframe = v end)
-        end)
-        local mRow = configCheckbox(vis, "Still Viewmodel", VMC.Motion.On, function(v) VMC.Motion.On = v end)
-        rightClickSettings(mRow.row, "Still Viewmodel", function(popup)
-            popup:toggle("No Sway", VMC.Motion.Sway, function(v) VMC.Motion.Sway = v end)
-            popup:toggle("No Tilt", VMC.Motion.Tilt, function(v) VMC.Motion.Tilt = v end)
-            popup:toggle("No Bobbing", VMC.Motion.Bob, function(v) VMC.Motion.Bob = v end)
-            popup:toggle("No Jump Bounce", VMC.Motion.Jump, function(v) VMC.Motion.Jump = v end)
-            popup:toggle("No Sprint Pose", VMC.Motion.Sprint, function(v) VMC.Motion.Sprint = v end)
-        end)
-        local oRow = configCheckbox(vis, "Viewmodel Offset", VMC.Offset.On, function(v) VMC.Offset.On = v end)
-        rightClickSettings(oRow.row, "Viewmodel Offset", function(popup)
-            popup:slider("X", -5, 5, VMC.Offset.X, 2, function(v) VMC.Offset.X = v end)
-            popup:slider("Y", -5, 5, VMC.Offset.Y, 2, function(v) VMC.Offset.Y = v end)
-            popup:slider("Z", -5, 5, VMC.Offset.Z, 2, function(v) VMC.Offset.Z = v end)
-        end)
-        configCheckbox(vis, "FOV Changer", VMC.FOV.On, function(v) VMC.FOV.On = v end)
-        slider(vis, "FOV Offset", -40, 60, VMC.FOV.Value, 0, function(v) VMC.FOV.Value = v end)
-        -- v0.99.19: throw / lob / projectile gun arcs, right-click for colours
-        local TJ = Koffee.Rivals.Traj
-        local tjRow = configCheckbox(vis, "Trajectories", TJ.On, function(v) TJ.On = v end)
-        rightClickSettings(tjRow.row, "Trajectories", function(popup)
-            popup:swatch("Throw", TJ.Throw, function(c) TJ.Throw = c end)
-            popup:swatch("Lob", TJ.Lob, function(c) TJ.Lob = c end)
-            popup:toggle("Projectile Guns", TJ.Guns ~= false, function(v) TJ.Guns = v end)
-        end)
-    end
 
     -- Arms Offset: enable toggle + X/Y/Z sliders (+-50)
     moduleCheckbox(vis, "Arms Offset", "armsoffset")
@@ -23336,9 +23339,11 @@ addTab("Visuals", function(root)
     -- their visual density and headers stay intact; only the pill bar changes.
     -- Crosshair sub-tab is new (built at the end of this tab).
     local leftCard = panel(leftCol)
-    local Lsub = Shared.subTabs and Shared.subTabs(leftCard, { "ESP", "Crosshair", "Effects" })
-        or { ESP = leftCol, Crosshair = leftCol, Effects = leftCol }
+    local Lsub = Shared.subTabs and Shared.subTabs(leftCard, { "ESP", "Crosshair", "Effects", "Screen" })
+        or { ESP = leftCol, Crosshair = leftCol, Effects = leftCol, Screen = leftCol }
     local espSub, crosshairSub = Lsub["ESP"], Lsub["Crosshair"]
+    -- v0.99.20: camera, game HUD and viewmodel rows (built by the Character block)
+    if Shared.buildMovedVisuals and Lsub["Screen"] then Shared.buildMovedVisuals(Lsub["Screen"]) end
     -- v0.85.0 Effects: self + target visuals. Own function scope for registers.
     ;(function(fxSub)
         local F = Koffee.SelfFX
