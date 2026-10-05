@@ -1,7 +1,7 @@
--- koffee v0.99.14
+-- koffee v0.99.15
 
 local Koffee = {}
-Koffee.Version = "0.99.14"
+Koffee.Version = "0.99.15"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10807,6 +10807,7 @@ Koffee.Rivals = {
                     ScatterArea = "Target", ScatterRadius = 60, InstantFire = false,  -- v0.99.10
                     AutoAdapt = false,                                          -- v0.99.11
                     PlayerAdapt = false, SwapEmpty = false,                     -- v0.99.12
+                    Pickups = false, PickupAmmoPct = 30,                        -- v0.99.15
                     SwapOrder = "Primary > Secondary > Melee",
                     MeleeVertical = true,                                       -- v0.99.9
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
@@ -10864,6 +10865,8 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Auto Adapt", RG.AutoAdapt == true, function(v) RG.AutoAdapt = v end)
     configCheckbox(card, "Player Adapt", RG.PlayerAdapt == true, function(v) RG.PlayerAdapt = v end)
     configCheckbox(card, "Swap On Empty", RG.SwapEmpty == true, function(v) RG.SwapEmpty = v end)
+    configCheckbox(card, "Grab Pickups", RG.Pickups == true, function(v) RG.Pickups = v end)
+    slider(card, "Ammo Grab Below %", 5, 90, RG.PickupAmmoPct or 30, 0, function(v) RG.PickupAmmoPct = v end)
     dropdown(card, "Swap Order", { "Primary > Secondary > Melee", "Secondary > Primary > Melee",
         "Primary > Melee", "Secondary > Melee", "Primary > Secondary" },
         RG.SwapOrder or "Primary > Secondary > Melee", function(v) RG.SwapOrder = v end)
@@ -17767,12 +17770,19 @@ if Koffee._isRivals then (function()
         local RV = Shared.RV
         local t = RV and RV._rageTarget
         local accent = Theme.Palette.Accent:ToHex()
+        local muted = Theme.Palette.TextMuted:ToHex()
+        local RGs = RV and RV.RG
         local text
         if t and t.Parent then
             text = 'Rage  <font color="#' .. accent .. '">' .. (t.DisplayName or t.Name) .. "</font>"
+            -- v0.99.15: what they are doing, then what we are doing
+            local st = RGs and RGs.targetState and RGs.targetState(t)
+            if st then text = text .. '  <font color="#' .. muted .. '">' .. st .. "</font>" end
         else
-            text = 'Rage  <font color="#' .. Theme.Palette.TextMuted:ToHex() .. '">idle</font>'
+            text = 'Rage  <font color="#' .. muted .. '">no target</font>'
         end
+        local act = RGs and RGs.action
+        if act then text = text .. '  ·  ' .. act end
         local ad = R.Rage.AutoAdapt and RV and RV.RG and RV.RG.ad and RV.RG.ad.lastText
         if ad then
             text = text .. '  <font color="#' .. Theme.Palette.TextMuted:ToHex() .. '">' .. ad .. "</font>"
@@ -35464,6 +35474,13 @@ if Koffee._isRivals then (function()
     end
     if LocalPlayer.Character then task.spawn(X.bindRespawn, LocalPlayer.Character) end
     LocalPlayer.CharacterAdded:Connect(function(c) task.spawn(X.bindRespawn, c) end)
+    -- v0.99.15: the ammo pickup's model is "AmmoBalanced" in FFA (seen live)
+    function X.isAmmoDrop(o)
+        for _, c in ipairs(o:GetChildren()) do
+            if string.sub(c.Name, 1, 4) == "Ammo" then return true end
+        end
+        return false
+    end
     function X.dropStep()
         if not A.Drops or not firetouchinterest then return end
         local c = LocalPlayer.Character
@@ -35474,7 +35491,7 @@ if Koffee._isRivals then (function()
         for o in pairs(X.drops) do
             if not o.Parent then
                 X.drops[o] = nil
-            elseif o:FindFirstChild("Ammo") or (hurt and o:FindFirstChild("Health")) then
+            elseif X.isAmmoDrop(o) or (hurt and o:FindFirstChild("Health")) then
                 pcall(firetouchinterest, hrp, o, 0)
                 pcall(firetouchinterest, hrp, o, 1)
             end
@@ -40448,6 +40465,86 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return pcall(function() mr.CFrame = cf end)
         end
 
+        -- v0.99.15 :: pickups :: workspace "_drop" parts carrying a Health or Ammo*
+        -- model. A trip parks the server body on one for a beat and fires its touch,
+        -- still shooting when the target is visible from there.
+        RG.drops = setmetatable({}, { __mode = "k" })
+        RG.dropCd = setmetatable({}, { __mode = "k" })
+        RG.maxAmmo = setmetatable({}, { __mode = "k" })
+        local function trackDrop(o)
+            if o.Name == "_drop" and o:IsA("BasePart") then RG.drops[o] = true end
+        end
+        for _, o in ipairs(Workspace:GetChildren()) do trackDrop(o) end
+        Workspace.ChildAdded:Connect(trackDrop)
+        function RG.dropKind(d)
+            if d:FindFirstChild("Health") then return "health" end
+            for _, c in ipairs(d:GetChildren()) do
+                if string.sub(c.Name, 1, 4) == "Ammo" then return "ammo" end
+            end
+            return nil
+        end
+        function RG.ammoLow(it)
+            if it == nil or RG.isMelee(it) then return false end
+            local a
+            pcall(function() a = it:Get("Ammo") end)
+            if type(a) ~= "number" then return false end
+            local mx = math.max(RG.maxAmmo[it] or 0, a)
+            RG.maxAmmo[it] = mx
+            if mx <= 0 then return false end
+            return a <= mx * math.clamp(cfg().PickupAmmoPct or 30, 5, 90) / 100
+        end
+        function RG.pickupStep(now, mr, part, it)
+            if not cfg().Pickups then RG.trip = nil; return nil end
+            local T = RG.trip
+            if T then
+                if not T.drop.Parent or now - T.at > 0.3 then
+                    RG.dropCd[T.drop] = now + 0.6
+                    RG.trip = nil
+                else
+                    if now - T.at >= RG.v("Lead") / 1000 and firetouchinterest then
+                        pcall(firetouchinterest, mr, T.drop, 0)
+                        pcall(firetouchinterest, mr, T.drop, 1)
+                    end
+                    RG.action = "grabbing " .. T.kind
+                    return T.cf
+                end
+            end
+            local hum = mr.Parent and mr.Parent:FindFirstChildOfClass("Humanoid")
+            local wantHealth = hum ~= nil and hum.Health > 0 and hum.Health < hum.MaxHealth
+            local wantAmmo = RG.ammoLow(it)
+            if not (wantHealth or wantAmmo) then return nil end
+            local best, bd, bk = nil, 600, nil
+            for d in pairs(RG.drops) do
+                if not d.Parent then
+                    RG.drops[d] = nil
+                elseif now >= (RG.dropCd[d] or 0) then
+                    local k = RG.dropKind(d)
+                    if (k == "health" and wantHealth) or (k == "ammo" and wantAmmo) then
+                        local dist = (d.Position - mr.Position).Magnitude
+                        if dist < bd and RG.budget(d.Position) == math.huge then best, bd, bk = d, dist, k end
+                    end
+                end
+            end
+            if not best then return nil end
+            local at = best.Position + Vector3.new(0, 2.5, 0)
+            local cf = CFrame.new(at)
+            if part then pcall(function() cf = CFrame.lookAt(at, part.Position) end) end
+            RG.trip = { drop = best, at = now, cf = cf, kind = bk }
+            RG.action = "grabbing " .. bk
+            return cf
+        end
+        -- what the target is doing, for the status pill
+        function RG.targetState(plr)
+            local t = plr and RG.track[plr]
+            if not t then return nil end
+            local now = os.clock()
+            if t.sub then return "in void" end
+            if now - t.jumpAt < 1.5 then return "teleporting" end
+            if t.flyAt and now - t.flyAt < 3 then return "flying" end
+            if RG.cheating(plr) then return "cheating" end
+            return "legit"
+        end
+
         -- :: hide :: past the map edge at map height, hopping when Void Spam
         function RG.hideCF(mr, now)
             local C = cfg()
@@ -40667,7 +40764,25 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not RV.inRound() or not RG.live() then
                 RV._rageCF, RG.phase = nil, "idle"
                 if RG.sawHeld then RG.chainsaw(nil, false) end
+                RG.action = "paused"
                 return
+            end
+            RG.statusFor = plr
+            -- v0.99.15 pickups: a trip beats every other spot, shooting from it if we can
+            do
+                local itp = RV.equipped()
+                local pk = RG.pickupStep(now, mr, part, itp)
+                if pk then
+                    RV._rageCF = RG.oobStep(now, pk)
+                    RG.phase = "idle"
+                    if itp ~= nil and RV.inRound() and RG.ready(itp)
+                        and RG.los(pk.Position, part.Position, { LocalPlayer.Character, plr.Character }) then
+                        RG.fire(itp, pk.Position, part)
+                    end
+                    local p, y = RV.anglesTo(pk.Position, part.Position)
+                    if p then RV.setAngles(RV.slots.Rage, p, y) end
+                    return
+                end
             end
             RG.refreshBounds(now)
             RG.trackAll(now, mr)
@@ -40685,6 +40800,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     RG.hide = nil
                 end
                 RG.phase = "idle"
+                RG.action = "dodging"
                 RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
                 local from = RV._rageCF and RV._rageCF.Position or here
                 if from then
@@ -40703,6 +40819,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ignore = { ch, plr.Character, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
                 if h and RG.los(h.Position, part.Position, ignore) then
                     RV._rageCF, RG.phase = nil, "idle"
+                    RG.action = "normal shots"
                     if live and RG.ready(it) and RV._dsLast == nil then RG.fire(it, h.Position, part) end
                     local p, y = RV.anglesTo(h.Position, part.Position)
                     if p then RV.setAngles(RV.slots.Rage, p, y) end
@@ -40718,8 +40835,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local rate = math.clamp(RG.v("ScatterRate"), 2, 60)
                 if not aggr then rate = rate * 0.5 end
                 if hopping and C.VoidHide then
+                    RG.action = "hiding (waiting out the void)"
                     RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
                 else
+                    RG.action = RG.v("ScatterArea") == "Map" and "scatter (map)" or "scatter"
                     local pick = RG.v("ScatterArea") == "Map" and RG.mapSpot or RG.scatterSpot
                     if C.InstantFire and live and RG.ready(it) then
                         -- v0.99.10: new spot, placed and fired in the same frame
@@ -40792,11 +40911,18 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
             end
             local want
+            local melee = it ~= nil and RG.isMelee(it)
             if RG.phase ~= "idle" then
                 want = RG.spot
+                RG.action = melee and "melee strike" or "striking"
+                if melee and C.MeleeVertical ~= false and RG.spot then
+                    RG.action = RG.spot.Position.Y < part.Position.Y and "melee under" or "melee over"
+                end
             elseif aggr and C.VoidHide then
                 want = RG.hideCF(mr, now)
+                RG.action = "hiding"
             else
+                RG.action = "holding spot"
                 -- medium: stand on a sticky spot between shots
                 local spot = RG.planSpot(plr, part, it or {})
                 if spot then
@@ -40816,8 +40942,15 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         function RV.rageIdle()
             local C = cfg()
             RG.phase = "idle"
+            RG.statusFor = nil
             if RG.sawHeld then RG.chainsaw(nil, false) end
             local mr = myRoot()
+            -- v0.99.15: no target is the best time for a pickup
+            if mr and C.Pickups and RV.inRound() and RG.live() then
+                local pk = RG.pickupStep(os.clock(), mr, nil, RV.equipped())
+                if pk then RV._rageCF = RG.oobStep(os.clock(), pk); return end
+            end
+            RG.action = "idle"
             if on("rv_rage") and C.Strike and C.VoidHide and not C.Adaptive and mr and RV.inRound() then
                 RV._rageCF = RG.oobStep(os.clock(), RG.hideCF(mr, os.clock()))
             else
