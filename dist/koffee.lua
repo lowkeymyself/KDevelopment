@@ -1,7 +1,7 @@
--- koffee v0.99.21
+-- koffee v0.99.22
 
 local Koffee = {}
-Koffee.Version = "0.99.21"
+Koffee.Version = "0.99.22"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -14920,7 +14920,7 @@ local Combat = {
     end
     Shared.landHit = function(char, dropped, nowZero, o)
         if Koffee.dead() or not char then return end
-        if Shared.rgOnHit then pcall(Shared.rgOnHit) end
+        if Shared.rgOnHit then pcall(Shared.rgOnHit, dropped) end
         SR.recentDamage[char] = os.clock()
         landHit(char, dropped, nowZero, o)
     end
@@ -40116,11 +40116,45 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             A.rate = 1 + (math.clamp(A.rate, 0.3, 2.5) - 1) * 0.95
             A.lastText = string.format("L%d R%d %s", math.floor(RG.v("Lead") + 0.5),
                 math.floor(RG.v("ScatterRate") + 0.5), RG.v("ScatterArea") == "Map" and "map" or "near")
+            if RG.v("ScatterArea") == "Long Range" then
+                local C = cfg()
+                local lo = C.LongMin or 60
+                A.lastText = A.lastText:gsub("near$", "far " .. math.floor(lo + ((C.LongMax or 250) - lo) * RG.lr.scale))
+            end
         end
         -- feedback: our confirmed hits (from landHit) and damage we take
-        Shared.rgOnHit = function()
+        Shared.rgOnHit = function(dmg)
             local A = RG.ad
             A.hits[#A.hits + 1] = os.clock()
+            RG.lr.hits[#RG.lr.hits + 1] = { os.clock(), tonumber(dmg) or 0 }
+        end
+        -- v0.99.22 long range self-tune: if long shots stop landing, or land for little
+        -- damage, the far end shrinks quietly; once they land clean it eases back out
+        RG.lr = { scale = 1, shots = {}, hits = {}, at = 0 }
+        function RG.lrStep(now)
+            local L = RG.lr
+            if now - L.at < 1 then return end
+            L.at = now
+            for _, list in ipairs({ L.shots, L.hits }) do
+                for i = #list, 1, -1 do if now - list[i][1] > 6 then table.remove(list, i) end end
+            end
+            if not RG.live() then return end
+            local shots, hits, dmg = 0, 0, 0
+            for _, e in ipairs(L.shots) do if now - e[1] <= 4 then shots = shots + 1 end end
+            for _, e in ipairs(L.hits) do
+                if now - e[1] <= 4 then hits = hits + 1; dmg = dmg + e[2] end
+            end
+            if shots < 4 then return end
+            local expected
+            pcall(function() expected = tonumber(rawget(RV.equipped().Info, "ShootDamage")) end)
+            local rate = hits / shots
+            local ratio = (expected and expected > 0 and hits > 0) and (dmg / hits) / expected or 1
+            if rate < 0.3 or ratio < 0.6 then
+                L.scale = math.max(L.scale * 0.8, 0.1)
+                table.clear(L.shots); table.clear(L.hits)
+            elseif rate > 0.6 and ratio > 0.85 then
+                L.scale = math.min(L.scale * 1.05, 1)
+            end
         end
         function RG.watchHealth()
             local ch = LocalPlayer.Character
@@ -40578,6 +40612,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local need = (RG.v("Lead") + RG.v("Hold")) / 1000 + 0.6
             local lo = math.clamp(C.LongMin or 60, 20, 500)
             local hi = math.clamp(C.LongMax or 250, lo + 10, 1000)
+            local sc = RG.lr and RG.lr.scale or 1
+            hi = lo + (hi - lo) * sc
+            if sc < 0.35 then lo = math.max(lo * sc / 0.35, 15) end
+            hi = math.max(hi, lo + 5)
             pcall(function()
                 local d = tonumber(rawget(it.Info, "RaycastDamageDropoffStartDistance"))
                 if d and d > lo + 10 then hi = math.min(hi, d) end
@@ -40904,6 +40942,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             RV._rageAt = tick()
             RG.firedAt = os.clock()
             RG.stampShot(part)
+            if RG.v("ScatterArea") == "Long Range" then
+                RG.lr.shots[#RG.lr.shots + 1] = { RG.firedAt, (origin - part.Position).Magnitude }
+            end
             RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
             local ok = pcall(function()
                 RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
@@ -41235,6 +41276,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if Koffee.dead() then RV._rageCF = nil; return end
             if not on("rv_rage") then RV._rageCF = nil; RG.phase = "idle"; return end
             pcall(RG.watchHealth)
+            pcall(RG.lrStep, os.clock())
             if cfg().AutoAdapt then
                 pcall(RG.hookDeaths)
                 pcall(RG.adaptStep, os.clock())
