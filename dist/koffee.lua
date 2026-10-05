@@ -1,7 +1,7 @@
--- koffee v0.99.13
+-- koffee v0.99.14
 
 local Koffee = {}
-Koffee.Version = "0.99.13"
+Koffee.Version = "0.99.14"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10810,7 +10810,8 @@ Koffee.Rivals = {
                     SwapOrder = "Primary > Secondary > Melee",
                     MeleeVertical = true,                                       -- v0.99.9
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
-                    HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 100M to 300M
+                    HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 20M to 50M
+                    FarUnsafe = false,   -- v0.99.14: Far at 100M to 300M (crashed his client)
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
                     Adaptive = true, AdaptiveWeapons = false,
                     AntiMelee = true, ThreatRange = 25,   -- v0.99.5: teleport-in answer (melee and gun)
@@ -10870,7 +10871,17 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
     slider(card, "Hop Rate", 1, 20, RG.HopRate, 0, function(v) RG.HopRate = v end)
-    dropdown(card, "Hide Distance", { "Edge", "Far" }, RG.HideDist or "Edge", function(v) RG.HideDist = v end)
+    local hdDd = dropdown(card, "Hide Distance", { "Edge", "Far" }, RG.HideDist or "Edge", function(v) RG.HideDist = v end)
+    -- v0.99.14: right-click Far for Unsafe (the original 100M to 300M); rebuilt on open
+    if hdDd and hdDd.frame then
+        rightClickSettings(hdDd.frame, "Hide Distance", function(popup)
+            if RG.HideDist == "Far" then
+                popup:toggle("Unsafe (100M to 300M)", RG.FarUnsafe == true, function(v) RG.FarUnsafe = v end)
+            else
+                popup:action("Pick Far to unlock Unsafe", function() end)
+            end
+        end, nil, true)
+    end
     configCheckbox(card, "OOB Guard", RG.OOBGuard, function(v) RG.OOBGuard = v end)
     configCheckbox(card, "Counter Void", RG.CounterVoid, function(v) RG.CounterVoid = v end)
     configCheckbox(card, "Counter Teleport", RG.CounterTP, function(v) RG.CounterTP = v end)
@@ -39962,11 +39973,15 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             A.at = now
             -- v0.99.12: a spawn opens the intermission countdown and any death in the
             -- duel opens the kill review; nothing in those windows is a real signal
-            if now < (A.pauseUntil or 0) or not RV.inRound() then
+            if now < (A.pauseUntil or 0) or not RV.inRound() or not RG.live() then
                 table.clear(A.shots); table.clear(A.hits); table.clear(A.taken)
                 A.lastText = "paused"
+                A.liveSince = nil
                 return
             end
+            -- one settle second after the fight goes live before trusting signals
+            A.liveSince = A.liveSince or now
+            if now - A.liveSince < 1 then return end
             local shots, hits = count(A.shots, now, 4), count(A.hits, now, 4)
             local dmg = 0
             for _, e in ipairs(A.taken) do if now - e[1] <= 4 then dmg = dmg + e[2] end end
@@ -40020,13 +40035,49 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             A.hp = h
         end
+        -- v0.99.14: is the fight actually on? Read from the game, not timed (message
+        -- (2)'s gate): in a duel, not frozen by the round countdown, alive, and not
+        -- waiting / spectating (the review). Cached for 0.1s.
+        function RG.live()
+            local now = os.clock()
+            if RG.liveAt and now - RG.liveAt < 0.1 then return RG.liveNow end
+            RG.liveAt = now
+            local live = true
+            local lf = RV.localFighter()
+            if lf == nil then
+                live = false
+            else
+                local ok, inDuel = pcall(function() return lf:Get("IsInDuel") end)
+                if ok and inDuel == false then live = false end
+            end
+            if live then
+                local frozen = false
+                pcall(function() frozen = RV.Mechanics:IsFrozen() == true end)
+                if frozen then live = false end
+            end
+            if live then
+                local ch = LocalPlayer.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                if not hum or hum.Health <= 0 then live = false end
+            end
+            if live then
+                local waiting = false
+                pcall(function()
+                    local subj = RV.CamCtrl._current_duel_subject
+                    waiting = type(subj) == "table" and subj.LocalDueler == nil
+                end)
+                if waiting then live = false end
+            end
+            RG.liveNow = live
+            return live
+        end
         function RG.pauseAdapt(sec)
             RG.ad.pauseUntil = math.max(RG.ad.pauseUntil or 0, os.clock() + sec)
         end
         LocalPlayer.CharacterAdded:Connect(function(c)
-            RG.pauseAdapt(6)
+            RG.pauseAdapt(1.5)
             local hum = c:WaitForChild("Humanoid", 10)
-            if hum then hum.Died:Connect(function() RG.pauseAdapt(9) end) end
+            if hum then hum.Died:Connect(function() RG.pauseAdapt(1.5) end) end
         end)
         -- the enemy dying also starts the review + next intermission
         RG.deathHooked = setmetatable({}, { __mode = "k" })
@@ -40037,7 +40088,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if hum and not RG.deathHooked[hum] then
                     RG.deathHooked[hum] = true
                     hum.Died:Connect(function()
-                        if RG.sameDuel(plr) then RG.pauseAdapt(9) end
+                        if RG.sameDuel(plr) then RG.pauseAdapt(1.5) end
                     end)
                 end
             end
@@ -40401,16 +40452,20 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         function RG.hideCF(mr, now)
             local C = cfg()
             local hop = 1 / math.clamp(RG.v("HopRate"), 1, 20)
-            if RG.hide == nil or RG.hideKind ~= C.HideDist or (C.VoidSpam and now - RG.hopAt > hop) then
+            local kind = tostring(C.HideDist) .. tostring(C.FarUnsafe)
+            if RG.hide == nil or RG.hideKind ~= kind or (C.VoidSpam and now - RG.hopAt > hop) then
                 RG.hopAt = now
-                RG.hideKind = C.HideDist
+                RG.hideKind = kind
                 -- v0.99.7: sideways past the map at its own height (message (2)'s void
                 -- spot); straight up got us killed
                 local a = math.random() * math.pi * 2
                 local d = math.random(30000, 45000)
                 -- v0.99.8: Far parks where float32 steps are ~8 to 16 studs, so nothing
                 -- aimed at us lines up (the trick an opponent used on his friend)
-                if C.HideDist == "Far" then d = math.random(20, 50) * 1e6 end   -- v0.99.12: 100M+ crashed the client
+                if C.HideDist == "Far" then
+                    -- v0.99.12: 100M+ crashed his client; Unsafe brings it back on purpose
+                    d = C.FarUnsafe and math.random(100, 300) * 1e6 or math.random(20, 50) * 1e6
+                end
                 RG.hide = CFrame.new(mr.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d))
             end
             return RG.hide
@@ -40608,7 +40663,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local mr = myRoot()
             if not mr then RV._rageCF = nil; return end
             -- v0.99.7: lobby / between rounds the server body stays home
-            if not RV.inRound() then
+            -- v0.99.14: and while frozen by the countdown or in the review
+            if not RV.inRound() or not RG.live() then
                 RV._rageCF, RG.phase = nil, "idle"
                 if RG.sawHeld then RG.chainsaw(nil, false) end
                 return
