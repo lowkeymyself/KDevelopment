@@ -1,7 +1,7 @@
--- koffee v0.99.20
+-- koffee v0.99.21
 
 local Koffee = {}
-Koffee.Version = "0.99.20"
+Koffee.Version = "0.99.21"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10800,7 +10800,7 @@ registerModule("infjump",  "Infinite Jump",    function() end, function() end)
 Koffee.Rivals = {
     SkipDeflect = true,
     LockPart    = "Head",
-    Desync      = { Mode = "Orbit", Radius = 6, Height = 1.5, Speed = 3.5, Depth = 6,
+    Desync      = { Mode = "Orbit", Style = "Orbit", Radius = 6, Height = 1.5, Speed = 3.5, Depth = 6,
                     MinY = 0, MaxY = 200, MaxFromTarget = 25 },
     Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true,
                     Status = true,   -- v0.99.1: top-centre "who is rage on" pill
@@ -10808,6 +10808,7 @@ Koffee.Rivals = {
                     Strike = true, StrikeDist = 9, Lead = 20, Hold = 25,
                     Scatter = true, ScatterRate = 20, ScatterMode = "Random",   -- v0.99.9
                     ScatterArea = "Target", ScatterRadius = 60, InstantFire = false,  -- v0.99.10
+                    LongMin = 60, LongMax = 250,                                -- v0.99.21
                     AutoAdapt = false,                                          -- v0.99.11
                     PlayerAdapt = false, SwapEmpty = false,                     -- v0.99.12
                     Pickups = false, PickupAmmoPct = 30,                        -- v0.99.15
@@ -10868,8 +10869,11 @@ Shared.rage2UI = function(card)
     slider(card, "Strike Hold (ms)", 0, 250, RG.Hold, 0, function(v) RG.Hold = v end)
     configCheckbox(card, "Scatter", RG.Scatter, function(v) RG.Scatter = v end)
     slider(card, "Scatter Rate", 2, 60, RG.ScatterRate or 20, 0, function(v) RG.ScatterRate = v end)
-    dropdown(card, "Scatter Mode", { "Random", "Orbit" }, RG.ScatterMode or "Random", function(v) RG.ScatterMode = v end)
-    dropdown(card, "Scatter Area", { "Target", "Map" }, RG.ScatterArea or "Target", function(v) RG.ScatterArea = v end)
+    dropdown(card, "Scatter Mode", { "Random", "Orbit", "Spiral", "Figure 8", "Vertical", "Sphere", "Blind Spot",
+        "Jitter", "Chaos" }, RG.ScatterMode or "Random", function(v) RG.ScatterMode = v end)
+    dropdown(card, "Scatter Area", { "Target", "Map", "Long Range" }, RG.ScatterArea or "Target", function(v) RG.ScatterArea = v end)
+    slider(card, "Long Range Min", 20, 500, RG.LongMin or 60, 0, function(v) RG.LongMin = v end)
+    slider(card, "Long Range Max", 40, 1000, RG.LongMax or 250, 0, function(v) RG.LongMax = v end)
     slider(card, "Scatter Radius", 15, 150, RG.ScatterRadius or 60, 0, function(v) RG.ScatterRadius = v end)
     configCheckbox(card, "Instant Fire", RG.InstantFire == true, function(v) RG.InstantFire = v end)
     configCheckbox(card, "Auto Adapt", RG.AutoAdapt == true, function(v) RG.AutoAdapt = v end)
@@ -12342,6 +12346,8 @@ Koffee._characterTab = function(root)
         keybindPill(moduleCheckbox(mv, "Desync", "rv_desync").row, "rv_desync", nil, "Desync")
         dropdown(mv, "Desync Mode", { "Orbit", "Random", "Translocate", "Invisible", "Underground", "Off" },
             Koffee.Rivals.Desync.Mode, function(v) Koffee.Rivals.Desync.Mode = v end)
+        dropdown(mv, "Orbit Style", { "Orbit", "Spiral", "Figure 8", "Vertical", "Sphere", "Blind Spot", "Jitter", "Chaos" },
+            Koffee.Rivals.Desync.Style or "Orbit", function(v) Koffee.Rivals.Desync.Style = v end)
         slider(mv, "Desync Radius", 1, 50, Koffee.Rivals.Desync.Radius, 1,
             function(v) Koffee.Rivals.Desync.Radius = v end)
         slider(mv, "Desync Height", -5, 10, Koffee.Rivals.Desync.Height, 1,
@@ -39738,6 +39744,41 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- that is why this does not flash the way a teleport-and-return does.
     local DSBIND = tostring(KID.ctx.bind) .. "rvds"
     local dsPhase = 0
+    -- v0.99.21 orbit styles, shared by Desync Orbit and rage Scatter. Offset from the
+    -- target for phase a at radius r; look is the target's facing (Blind Spot,
+    -- Vertical). A plain circle at constant speed was easy to read.
+    RV.ORBITS = { "Orbit", "Spiral", "Figure 8", "Vertical", "Sphere", "Blind Spot", "Jitter", "Chaos" }
+    function RV.orbitOffset(style, a, r, look)
+        look = (look and look.Magnitude > 0.01) and look or Vector3.new(0, 0, -1)
+        local flat = Vector3.new(look.X, 0, look.Z)
+        flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
+        if style == "Chaos" then
+            local pick = { "Orbit", "Spiral", "Figure 8", "Vertical", "Sphere", "Blind Spot", "Jitter" }
+            style = pick[math.floor(os.clock() * 2) % #pick + 1]
+        end
+        if style == "Spiral" then
+            local rr = r * (0.55 + 0.45 * math.sin(a * 0.37))
+            return Vector3.new(math.cos(a) * rr, math.sin(a * 0.5) * 1.5, math.sin(a) * rr)
+        elseif style == "Figure 8" then
+            return Vector3.new(math.sin(a) * r, 0, math.sin(a) * math.cos(a) * r)
+        elseif style == "Vertical" then
+            local side = flat:Cross(Vector3.new(0, 1, 0))
+            return side * (math.cos(a) * r) + Vector3.new(0, math.max(math.sin(a) * r * 0.8, -1.5), 0)
+        elseif style == "Sphere" then
+            local ph = 0.6 + 0.4 * math.sin(a * 0.61)
+            return Vector3.new(math.cos(a) * math.sin(ph * math.pi) * r, math.cos(ph * math.pi) * r * 0.6,
+                math.sin(a) * math.sin(ph * math.pi) * r)
+        elseif style == "Blind Spot" then
+            local back = -flat
+            local ang = math.atan2(back.Z, back.X) + math.sin(a) * 1.2
+            return Vector3.new(math.cos(ang) * r, 0, math.sin(ang) * r)
+        elseif style == "Jitter" then
+            local ang = a + (math.random() - 0.5) * 3
+            local rr = r * (0.6 + math.random() * 0.6)
+            return Vector3.new(math.cos(ang) * rr, 0, math.sin(ang) * rr)
+        end
+        return Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+    end
     local function dsDest(tgt, mr)
         local D = R.Desync
         local mode = D.Mode
@@ -39786,7 +39827,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         else
             -- Orbit: the angle advances with time instead of rerolling, so a melee
             -- player cannot stand still and wait for you to reappear in one spot.
-            pos = tp + Vector3.new(math.cos(dsPhase) * D.Radius, D.Height, math.sin(dsPhase) * D.Radius)
+            local look
+            pcall(function() look = tgt.Parent.HumanoidRootPart.CFrame.LookVector end)
+            pos = tp + RV.orbitOffset(D.Style or "Orbit", dsPhase, D.Radius, look) + Vector3.new(0, D.Height, 0)
         end
         if mode ~= "Translocate" and mode ~= "Underground" then
             if pos.Y < D.MinY or pos.Y > D.MaxY then pos = tp + Vector3.new(0, 2, 2) end
@@ -40006,7 +40049,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local b = C.ScatterRadius or 60
                 return on and math.clamp(b + A.radius, 15, 150) or b
             elseif key == "ScatterArea" then
-                return (on and A.map) and "Map" or (C.ScatterArea or "Target")
+                -- v0.99.21: the adapter only upgrades Target to Map, never overrides Long Range
+                local base = C.ScatterArea or "Target"
+                return (on and A.map and base == "Target") and "Map" or base
             elseif key == "HopRate" then
                 local b = C.HopRate or 6
                 return on and math.clamp(b * A.rate, 1, 20) or b
@@ -40374,6 +40419,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local inVoid = t and t.sub
             local need = (RG.v("Lead") + RG.v("Hold")) / 1000 + 0.6
             local melee = it ~= nil and RG.isMelee(it)
+            if not melee and RG.v("ScatterArea") == "Long Range" then
+                local sp = RG.longSpot(plr, part, it)
+                if sp then return sp end
+            end
             local r = melee and math.max(RG.reach(it) - 1.5, 2.5) or RG.strikeDist(it)
             local keep = RG.keepOut(it)
             if keep > 0 and RG.enemyMelee(plr) then r = math.max(r, keep + 2) end
@@ -40495,22 +40544,55 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 rmin = keep + 1
                 rmax = math.max(rmax, rmin + 6)
             end
+            local look
+            pcall(function() look = ch.HumanoidRootPart.CFrame.LookVector end)
+            local mode = C.ScatterMode or "Random"
             for _ = 1, 10 do
-                local a
-                if C.ScatterMode == "Orbit" then
-                    RG.orbA = ((RG.orbA or 0) + 1.9 + (math.random() - 0.5) * 0.6) % (math.pi * 2)
-                    a = RG.orbA
+                local pos
+                if mode == "Random" then
+                    local a = math.random() * math.pi * 2
+                    local r = rmin + math.random() * (rmax - rmin)
+                    pos = tp + Vector3.new(math.cos(a) * r, 0.5 + math.random() * 7.5, math.sin(a) * r)
                 else
-                    a = math.random() * math.pi * 2
+                    -- v0.99.21: a style walks its shape hop by hop, never a plain circle
+                    RG.orbA = ((RG.orbA or 0) + 1.9 + (math.random() - 0.5) * 0.6) % (math.pi * 2)
+                    local r = (rmin + rmax) * 0.5 + (math.random() - 0.5) * (rmax - rmin) * 0.3
+                    pos = tp + RV.orbitOffset(mode, RG.orbA, r, look) + Vector3.new(0, 1.5 + math.random() * 2, 0)
                 end
-                local r = rmin + math.random() * (rmax - rmin)
-                local pos = tp + Vector3.new(math.cos(a) * r, 0.5 + math.random() * 7.5, math.sin(a) * r)
                 if RG.budget(pos) > need and RG.meleeSafe(pos, keep) and (inVoid or RG.los(pos, tp, ignore)) then
                     RG.spotFor = plr
                     return CFrame.lookAt(pos, tp)
                 end
             end
             return RG.planSpot(plr, part, it)
+        end
+
+        -- v0.99.21 long range: park far between shots, and every shot comes from a new
+        -- spot Long Range Min..Max away (capped at the gun's falloff start so the hit
+        -- still lands at full damage), up to 30 studs high, with line of sight
+        function RG.longSpot(plr, part, it)
+            local C = cfg()
+            local tp = RG.predicted(plr, part)
+            local ignore = { LocalPlayer.Character, plr.Character, Workspace.CurrentCamera,
+                Workspace:FindFirstChild("ViewModels") }
+            local need = (RG.v("Lead") + RG.v("Hold")) / 1000 + 0.6
+            local lo = math.clamp(C.LongMin or 60, 20, 500)
+            local hi = math.clamp(C.LongMax or 250, lo + 10, 1000)
+            pcall(function()
+                local d = tonumber(rawget(it.Info, "RaycastDamageDropoffStartDistance"))
+                if d and d > lo + 10 then hi = math.min(hi, d) end
+            end)
+            local keep = RG.keepOut(it)
+            for _ = 1, 16 do
+                local a = math.random() * math.pi * 2
+                local d = lo + math.random() * (hi - lo)
+                local pos = tp + Vector3.new(math.cos(a) * d, 2 + math.random() * 28, math.sin(a) * d)
+                if RG.budget(pos) > need and RG.meleeSafe(pos, keep) and RG.los(pos, tp, ignore) then
+                    RG.spotFor = plr
+                    return CFrame.lookAt(pos, tp)
+                end
+            end
+            return nil
         end
 
         -- v0.99.10 map scatter: anywhere on real floor within Scatter Radius of the
@@ -40940,7 +41022,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             -- v0.99.9 scatter (guns): a new spot around them every hop, every shot from
             -- a spot the server has held for Lead, so nobody gets a still target
-            if C.Scatter and not (it ~= nil and RG.isMelee(it)) then
+            if C.Scatter and RG.v("ScatterArea") ~= "Long Range" and not (it ~= nil and RG.isMelee(it)) then
                 local hopping = t and t.sub and now - t.jumpAt < 0.12
                 local rate = math.clamp(RG.v("ScatterRate"), 2, 60)
                 if not aggr then rate = rate * 0.5 end
@@ -41022,15 +41104,16 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             local want
             local melee = it ~= nil and RG.isMelee(it)
+            local longRange = RG.v("ScatterArea") == "Long Range" and not melee
             if RG.phase ~= "idle" then
                 want = RG.spot
-                RG.action = melee and "melee strike" or "striking"
+                RG.action = melee and "melee strike" or (longRange and "long range shot" or "striking")
                 if melee and C.MeleeVertical ~= false and RG.spot then
                     RG.action = RG.spot.Position.Y < part.Position.Y and "melee under" or "melee over"
                 end
-            elseif aggr and C.VoidHide then
+            elseif (aggr and C.VoidHide) or (RG.v("ScatterArea") == "Long Range" and not melee) then
                 want = RG.hideCF(mr, now)
-                RG.action = "hiding"
+                RG.action = longRange and "parked far" or "hiding"
             else
                 RG.action = "holding spot"
                 -- medium: stand on a sticky spot between shots
