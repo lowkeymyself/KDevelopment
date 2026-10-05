@@ -1,7 +1,7 @@
--- koffee v0.99.27
+-- koffee v0.99.28
 
 local Koffee = {}
-Koffee.Version = "0.99.27"
+Koffee.Version = "0.99.28"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -39880,6 +39880,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if dest == nil then RV._dsLast = nil; return end
         local oldCF, oldV, oldRV = mr.CFrame, mr.Velocity, mr.RotVelocity
         RV._dsLast = dest
+        if RV.RG and RV.RG.noteSpot then RV.RG.noteSpot(dest.Position) end
         pcall(function() mr.CFrame = dest end)
         pcall(function()
             RunService:BindToRenderStep(DSBIND, 101, function()
@@ -40407,6 +40408,34 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         function RG.threat()
             local C = cfg()
             if not C.AntiMelee then return nil, nil end
+            -- v0.99.28: someone inside any spot the server had us at in the last half
+            -- second came for us; answered from that exact spot (no lead needed)
+            local it = RV.equipped()
+            if not (it ~= nil and RG.isMelee(it)) then
+                local now = os.clock()
+                local spots = {}
+                for _, e in ipairs(RG.recent) do
+                    if now - e[1] <= 0.5 then spots[#spots + 1] = e[2] end
+                end
+                local sh = RV.serverHead()
+                if sh then spots[#spots + 1] = sh end
+                local best, bp, bd, from = nil, nil, 4.5, nil
+                for _, plr in ipairs(Plrs:GetPlayers()) do
+                    local ch = plr ~= LocalPlayer and plr.Character
+                    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                    local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                    if root and hum and hum.Health > 0 and not RV.isAlly(plr) and RG.sameDuel(plr) then
+                        for _, sp in ipairs(spots) do
+                            local d = (root.Position - sp).Magnitude
+                            if d < bd then best, bp, bd, from = plr, partOf(ch, R.LockPart), d, sp end
+                        end
+                    end
+                end
+                if best then
+                    RG.threatFrom = from
+                    return best, bp
+                end
+            end
             -- v0.99.6: measured from the server body only (what they teleport to),
             -- and never on a strike spot, where we are close on purpose
             if RV._rageCF ~= nil and RV._rageCF ~= RG.hide then return nil, nil end
@@ -40424,6 +40453,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     if d < bd then best, bp, bd = plr, partOf(ch, R.LockPart), d end
                 end
             end
+            RG.threatFrom = me
             return best, bp
         end
         function RV.rageTarget()
@@ -40868,6 +40898,41 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
 
         -- :: fire :: the v0.96 packet, origin from the strike spot
+        -- v0.99.28: seconds until the item can fire again (0 = now), so the approach can
+        -- run during the cooldown and land exactly Lead before it ends
+        function RG.readyIn(it)
+            if it == nil then return math.huge end
+            if RG.isMelee(it) then
+                local cd = 0.5
+                pcall(function()
+                    cd = tonumber(rawget(it.Info, "AttackCooldown")) or tonumber(rawget(it.Info, "Cooldown")) or 0.5
+                end)
+                return math.max((RG.swingAt or 0) + math.max(cd, 0.05) - os.clock(), 0)
+            end
+            local now = tick()
+            local cd, rcd = 0, 0
+            pcall(function() cd = it._shoot_cooldown or 0 end)
+            pcall(function() rcd = it._reload_cooldown or 0 end)
+            local gap = 0.12
+            pcall(function()
+                gap = math.max(tonumber(rawget(it.Info, "ShootCooldown")) or 0,
+                    tonumber(rawget(it.Info, "BurstCooldown")) or 0, 0.05)
+            end)
+            local frames = math.clamp(cfg().ShootFrames, 1, 5)
+            local pace = RV._rageAt and (RV._rageAt + gap / frames) or 0
+            return math.max(cd - now, rcd - now, pace - now, 0)
+        end
+        -- the last half second of spots the server had us at: what enemies see, and
+        -- so what a teleport-in attacker lands on
+        RG.recent = {}
+        function RG.noteSpot(pos)
+            local now = os.clock()
+            local r = RG.recent
+            local last = r[#r]
+            if last and (last[2] - pos).Magnitude < 0.5 then last[1] = now; return end
+            r[#r + 1] = { now, pos }
+            while #r > 0 and now - r[1][1] > 0.5 do table.remove(r, 1) end
+        end
         function RG.ready(it)
             if RG.isMelee(it) then return RG.meleeReady(it) end
             local now = tick()
@@ -41055,7 +41120,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             -- v0.99.5 anti-melee: they came to us, so shoot from where we stand, then
             -- dodge to a fresh sky spot so the swing lands on air
             if C.AntiMelee and RG.threatPlr == plr then
-                local here = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
+                local here = RG.threatFrom or (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
                 -- a live deflect sends rounds back: dodge only
                 if live and here and RG.ready(it) and not RV.isDeflecting(plr) then RG.fire(it, here, part) end
                 if now >= (RG.dodgeUntil or 0) then
@@ -41110,7 +41175,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                             RG.spot, RG.scAt = sp, now
                             RG.fire(it, sp.Position, part)
                         end
-                    elseif RG.spot == nil or RG.spotFor ~= plr or now - (RG.scAt or 0) >= 1 / rate
+                    elseif RG.spot == nil or RG.spotFor ~= plr
+                        or now - (RG.scAt or 0) >= math.max(1 / rate, RG.v("Lead") / 1000 + 0.01)
                         or (t and t.jumpAt > (RG.scAt or 0)) then
                         local sp = pick(plr, part, it)
                         if sp then RG.spot, RG.scAt = sp, now end
@@ -41140,8 +41206,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if RG.phaseFor ~= plr or not live then
                     RG.phase = "idle"
                 elseif now - RG.phaseAt >= RG.v("Lead") / 1000 then
-                    if RG.ready(it) then RG.fire(it, RG.spot.Position, part) end
-                    RG.phase, RG.phaseAt = "hold", now
+                    -- v0.99.28: arrived during the cooldown; fire on its edge, never later
+                    if RG.ready(it) then
+                        RG.fire(it, RG.spot.Position, part)
+                        RG.phase, RG.phaseAt = "hold", now
+                    elseif now - RG.phaseAt > 0.6 then
+                        RG.phase = "idle"
+                    end
                 end
             elseif RG.phase == "hold" then
                 if live and RG.ready(it) then RG.fire(it, RG.spot.Position, part) end
@@ -41156,18 +41227,18 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             elseif RG.sawHeld then
                 RG.chainsaw(nil, false)
             end
-            if RG.phase == "idle" and live and not hopping and RG.ready(it) then
+            if RG.phase == "idle" and live and not hopping and RG.readyIn(it) <= RG.v("Lead") / 1000 then
                 local spot = RG.planSpot(plr, part, it)
                 if spot then
                     local same = RG.spot and (RG.spot.Position - spot.Position).Magnitude < 0.5
                     RG.spot = spot
                     RG.phase, RG.phaseAt, RG.phaseFor = "approach", now, plr
-                    if C.InstantFire and now >= (RG.warmUntil or 0) and RG.placeNow(spot) then
+                    if C.InstantFire and now >= (RG.warmUntil or 0) and RG.ready(it) and RG.placeNow(spot) then
                         RG.fire(it, spot.Position, part)
                         RG.phase, RG.phaseAt = "hold", now
                     end
                     -- medium already standing on this spot long enough: fire now
-                    if not aggr and same and now - RG.spotAt >= RG.v("Lead") / 1000 then
+                    if not aggr and same and now - RG.spotAt >= RG.v("Lead") / 1000 and RG.ready(it) then
                         RG.fire(it, spot.Position, part)
                         RG.phase, RG.phaseAt = "hold", now
                     end
