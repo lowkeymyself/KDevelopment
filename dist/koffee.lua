@@ -1,7 +1,7 @@
--- koffee v0.99.25
+-- koffee v0.99.26
 
 local Koffee = {}
-Koffee.Version = "0.99.25"
+Koffee.Version = "0.99.26"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10810,6 +10810,7 @@ Koffee.Rivals = {
                     ScatterArea = "Target", ScatterRadius = 60, InstantFire = false,  -- v0.99.10
                     LongMin = 60, LongMax = 250,                                -- v0.99.21
                     LongTune = false,                                           -- v0.99.23
+                    PreArm = true,                                              -- v0.99.26
                     AutoAdapt = false,                                          -- v0.99.11
                     PlayerAdapt = false, SwapEmpty = false,                     -- v0.99.12
                     Pickups = false, PickupAmmoPct = 30,                        -- v0.99.15
@@ -10866,6 +10867,7 @@ Shared.rage2UI = function(card)
     local RG = Koffee.Rivals.Rage
     -- v0.99.24: grouped, every toggle with its own sliders right under it
     configCheckbox(card, "Strike", RG.Strike, function(v) RG.Strike = v end)
+    configCheckbox(card, "Pre-Arm", RG.PreArm ~= false, function(v) RG.PreArm = v end)
     slider(card, "Strike Distance", 3, 20, RG.StrikeDist, 0, function(v) RG.StrikeDist = v end)
     slider(card, "Strike Lead (ms)", 0, 150, RG.Lead, 0, function(v) RG.Lead = v end)
     slider(card, "Strike Hold (ms)", 0, 250, RG.Hold, 0, function(v) RG.Hold = v end)
@@ -39862,9 +39864,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- every spot change flipped the physics FFlags several times a second.
         local armNow = os.clock()
         if on("rv_rage") or (on("rv_desync") and R.Desync.Mode ~= "Off") then RV._armHold = armNow + 3 end
-        -- v0.99.25: a rage keybind keeps it armed for the whole live round, so the
-        -- first teleports after the key press already replicate fast
-        if Keybinds.rv_rage ~= nil and RV.RG and RV.RG.live and RV.RG.live() then RV._armHold = armNow + 3 end
+        -- v0.99.26: Pre-Arm (on by default) keeps it armed for every live round, so the
+        -- first teleports of a rage start already replicate fast
+        if R.Rage.PreArm ~= false and RV.RG and RV.RG.live and RV.RG.live() then RV._armHold = armNow + 3 end
         RV.armEngine(armNow < (RV._armHold or 0))
         if not want then RV._dsLast = nil; return end
         local mr = myRoot()
