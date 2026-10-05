@@ -1,7 +1,7 @@
--- koffee v0.99.8
+-- koffee v0.99.9
 
 local Koffee = {}
-Koffee.Version = "0.99.8"
+Koffee.Version = "0.99.9"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10802,7 +10802,9 @@ Koffee.Rivals = {
     Rage        = { ShootFrames = 1, Stability = 0.15, Reload = true, Evasion = true,
                     Status = true,   -- v0.99.1: top-centre "who is rage on" pill
                     -- v0.99.4 rage v2: separate toggles, see the RAGE V2 block
-                    Strike = true, StrikeDist = 9, Lead = 35, Hold = 60,
+                    Strike = true, StrikeDist = 9, Lead = 20, Hold = 25,
+                    Scatter = true, ScatterRate = 20, ScatterMode = "Random",   -- v0.99.9
+                    MeleeVertical = true,                                       -- v0.99.9
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 100M to 300M
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
@@ -10848,6 +10850,10 @@ Shared.rage2UI = function(card)
     slider(card, "Strike Distance", 3, 20, RG.StrikeDist, 0, function(v) RG.StrikeDist = v end)
     slider(card, "Strike Lead (ms)", 0, 150, RG.Lead, 0, function(v) RG.Lead = v end)
     slider(card, "Strike Hold (ms)", 0, 250, RG.Hold, 0, function(v) RG.Hold = v end)
+    configCheckbox(card, "Scatter", RG.Scatter, function(v) RG.Scatter = v end)
+    slider(card, "Scatter Rate", 2, 60, RG.ScatterRate or 20, 0, function(v) RG.ScatterRate = v end)
+    dropdown(card, "Scatter Mode", { "Random", "Orbit" }, RG.ScatterMode or "Random", function(v) RG.ScatterMode = v end)
+    configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
     configCheckbox(card, "Void Hide", RG.VoidHide, function(v) RG.VoidHide = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
     slider(card, "Hop Rate", 1, 20, RG.HopRate, 0, function(v) RG.HopRate = v end)
@@ -40091,6 +40097,17 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local need = ((C.Lead or 35) + (C.Hold or 60)) / 1000 + 0.6
             local melee = it ~= nil and RG.isMelee(it)
             local r = melee and math.max(RG.reach(it) - 1.5, 2.5) or RG.strikeDist(it)
+            -- v0.99.9: melee goes under them (inside the floor, nobody sees it) or
+            -- above them when fire burns at their feet or they hold a blade
+            if melee and C.MeleeVertical ~= false then
+                local over = RG.hazardNear(tp, 14) or RG.enemyMelee(plr)
+                local dy = over and 4.5 or -math.min(math.max(RG.reach(it) - 1.5, 2.5), 4)
+                local pos = tp + Vector3.new(0, dy, 0)
+                if RG.budget(pos) > need then
+                    RG.spotFor = plr
+                    return CFrame.lookAt(pos, tp, Vector3.new(0, 0, 1))
+                end
+            end
             local look = Vector3.new(0, 0, -1)
             pcall(function() look = ch.HumanoidRootPart.CFrame.LookVector end)
             -- sticky: keep the last spot while it still sees them and sits in range
@@ -40117,6 +40134,66 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not best then return nil end
             RG.spotFor = plr
             return CFrame.lookAt(best, tp)
+        end
+
+        -- v0.99.9 :: hazards :: molotov fire is a clone of
+        -- Assets.Misc.MolotovExplosionEffects.<skin> dropped in Workspace for its life
+        RG.hazards = setmetatable({}, { __mode = "k" })
+        RG.fireNames = {}
+        pcall(function()
+            for _, c in ipairs(LocalPlayer.PlayerScripts.Assets.Misc.MolotovExplosionEffects:GetChildren()) do
+                RG.fireNames[c.Name] = true
+            end
+        end)
+        Workspace.ChildAdded:Connect(function(c)
+            if RG.fireNames[c.Name] and c:IsA("BasePart") then RG.hazards[c] = true end
+        end)
+        function RG.hazardNear(pos, r)
+            for h in pairs(RG.hazards) do
+                if not h.Parent then
+                    RG.hazards[h] = nil
+                else
+                    local d = h.Position - pos
+                    if Vector3.new(d.X, 0, d.Z).Magnitude < r and math.abs(d.Y) < 10 then return true end
+                end
+            end
+            return false
+        end
+        -- they hold a blade: being level with them is how backstabs land
+        function RG.enemyMelee(plr)
+            local is = false
+            pcall(function()
+                local info = RV.fighterFor(plr).EquippedItem.Info
+                is = info.Type ~= "Gun" and info.AttackReach ~= nil
+            end)
+            return is
+        end
+        -- scatter: a fresh valid spot around the target every hop, random or a fast orbit
+        function RG.scatterSpot(plr, part, it)
+            local C = cfg()
+            local tp = RG.predicted(plr, part)
+            local ch = plr.Character
+            local ignore = { LocalPlayer.Character, ch, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
+            local t = RG.track[plr]
+            local inVoid = t and t.sub
+            local need = ((C.Lead or 20) + 60) / 1000 + 0.6
+            local rmax = math.max(RG.strikeDist(it) * 1.6, 8)
+            for _ = 1, 10 do
+                local a
+                if C.ScatterMode == "Orbit" then
+                    RG.orbA = ((RG.orbA or 0) + 1.9 + (math.random() - 0.5) * 0.6) % (math.pi * 2)
+                    a = RG.orbA
+                else
+                    a = math.random() * math.pi * 2
+                end
+                local r = 5 + math.random() * (rmax - 5)
+                local pos = tp + Vector3.new(math.cos(a) * r, 0.5 + math.random() * 7.5, math.sin(a) * r)
+                if RG.budget(pos) > need and (inVoid or RG.los(pos, tp, ignore)) then
+                    RG.spotFor = plr
+                    return CFrame.lookAt(pos, tp)
+                end
+            end
+            return RG.planSpot(plr, part, it)
         end
 
         -- :: hide :: past the map edge at map height, hopping when Void Spam
@@ -40296,6 +40373,33 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 RG.phase = "idle"
                 RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
                 local from = RV._rageCF and RV._rageCF.Position or here
+                if from then
+                    local p, y = RV.anglesTo(from, part.Position)
+                    if p then RV.setAngles(RV.slots.Rage, p, y) end
+                end
+                return
+            end
+            -- v0.99.9 scatter (guns): a new spot around them every hop, every shot from
+            -- a spot the server has held for Lead, so nobody gets a still target
+            if C.Scatter and not (it ~= nil and RG.isMelee(it)) then
+                local hopping = t and t.sub and now - t.jumpAt < 0.12
+                local rate = math.clamp(C.ScatterRate or 20, 2, 60)
+                if not aggr then rate = rate * 0.5 end
+                if hopping and C.VoidHide then
+                    RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
+                else
+                    if RG.spot == nil or RG.spotFor ~= plr or now - (RG.scAt or 0) >= 1 / rate
+                        or (t and t.jumpAt > (RG.scAt or 0)) then
+                        local sp = RG.scatterSpot(plr, part, it)
+                        if sp then RG.spot, RG.scAt = sp, now end
+                    end
+                    if live and RG.spot and now - (RG.scAt or 0) >= (C.Lead or 20) / 1000 and RG.ready(it) then
+                        RG.fire(it, RG.spot.Position, part)
+                    end
+                    RV._rageCF = RG.oobStep(now, RG.spot)
+                end
+                RG.phase = "idle"
+                local from = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
                 if from then
                     local p, y = RV.anglesTo(from, part.Position)
                     if p then RV.setAngles(RV.slots.Rage, p, y) end
@@ -41050,6 +41154,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return false
         end
         function XV.restore(o)
+            if XV.proxies and XV.proxies[o] then XV.dropProxy(o) end
             local r = XV.orig[o]
             if not r then return end
             XV.orig[o] = nil
@@ -41064,8 +41169,74 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
             end)
         end
+        -- v0.99.9: arms (and some weapon parts) are box Parts wearing a SpecialMesh,
+        -- which renders colour but never material. A real MeshPart of the same mesh
+        -- (CreateMeshPartAsync, cached per id) is welded on and painted instead.
+        XV.proxies = setmetatable({}, { __mode = "k" })
+        XV.isProxy = setmetatable({}, { __mode = "k" })
+        XV.tmpl = {}
+        function XV.proxy(o, c)
+            local sm = o:FindFirstChildOfClass("SpecialMesh")
+            if not sm or sm.MeshType ~= Enum.MeshType.FileMesh or sm.MeshId == "" then return false end
+            local id = sm.MeshId
+            local t = XV.tmpl[id]
+            if t == nil then
+                XV.tmpl[id] = "pending"
+                task.spawn(function()
+                    local ok, mp = pcall(function()
+                        return game:GetService("AssetService"):CreateMeshPartAsync(Content.fromUri(id))
+                    end)
+                    if not ok then
+                        ok, mp = pcall(function() return game:GetService("AssetService"):CreateMeshPartAsync(id) end)
+                    end
+                    XV.tmpl[id] = (ok and typeof(mp) == "Instance") and mp or false
+                end)
+                return false
+            end
+            if typeof(t) ~= "Instance" then return false end
+            local p = XV.proxies[o]
+            if not (p and p.Parent) then
+                p = t:Clone()
+                p.Name = KID.name("vmp")
+                p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch = false, false, false, false
+                p.Massless, p.CastShadow = true, false
+                p.Size = t.Size * sm.Scale
+                p.CFrame = o.CFrame * CFrame.new(sm.Offset)
+                local w = Instance.new("WeldConstraint")
+                w.Part0, w.Part1 = o, p
+                w.Parent = p
+                p.Parent = o
+                XV.proxies[o] = p
+                XV.isProxy[p] = true
+            end
+            p.Color = c.Color
+            p.Material = Enum.Material[c.Material] or Enum.Material.ForceField
+            p.Transparency = 1 - math.clamp(c.Opacity or 100, 0, 100) / 100
+            pcall(function() p.TextureID = "" end)
+            return true
+        end
+        function XV.dropProxy(o)
+            local p = XV.proxies[o]
+            if p then pcall(function() p:Destroy() end) end
+            XV.proxies[o] = nil
+        end
         function XV.paint(o, c, strip)
             local r = XV.orig[o]
+            if o:IsA("BasePart") and XV.proxy(o, c) then
+                -- the proxy shows the mesh; the box and its shirt decals go invisible
+                if not r then
+                    r = { o.Color, o.Material, o.Transparency, nil }
+                    XV.orig[o] = r
+                end
+                if r[3] < 0.99 then o.Transparency = 1 end
+                for _, d in ipairs(o:GetChildren()) do
+                    if d:IsA("Decal") then
+                        if not XV.orig[d] then XV.orig[d] = { d.Transparency } end
+                        d.Transparency = 1
+                    end
+                end
+                return
+            end
             if o:IsA("BasePart") then
                 if not r then
                     r = { o.Color, o.Material, o.Transparency, o:IsA("MeshPart") and o.TextureID or nil }
@@ -41110,6 +41281,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local liveWires = {}
             if model and (wOn or aOn or next(XV.orig)) then
                 for _, o in ipairs(model:GetDescendants()) do
+                    if XV.isProxy[o] then continue end
                     local arm = XV.isArm(o, model)
                     local on = (arm and aOn) or (not arm and wOn)
                     local c = arm and V.Arms or V.Weapon
