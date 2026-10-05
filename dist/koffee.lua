@@ -1,7 +1,7 @@
--- koffee v0.99.12
+-- koffee v0.99.13
 
 local Koffee = {}
-Koffee.Version = "0.99.12"
+Koffee.Version = "0.99.13"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -14890,12 +14890,13 @@ local Combat = {
             and not (nowZero and Shared.RV and Shared.RV._nativeLive) then return end
         SR.recentDamage[char] = now
 
-        -- v0.98.0: once the rivals native hit has fired this session it owns hits.
-        -- This path then only upgrades a native hit that turned out to be the kill.
+        -- v0.99.13: the native path no longer owns hits for the session (it missed
+        -- most of them). A drop the native path already counted in the last 0.35s is
+        -- skipped (or upgraded to the kill); every other drop is judged below.
         local RV = Shared.RV
-        if RV and RV._nativeLive then
-            local t = RV._nativeHitAt and RV._nativeHitAt[char]
-            if nowZero and t and now - t <= 0.6 then
+        local t = RV and RV._nativeHitAt and RV._nativeHitAt[char]
+        if t and now - t <= 0.35 then
+            if nowZero then
                 RV._nativeHitAt[char] = nil
                 lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
                 if Shared.spawnHitNumber and ESP.Indicators.HitNumbers.Stack == "Merged" then
@@ -14908,9 +14909,11 @@ local Combat = {
             return
         end
 
-        -- normal attribution path (v0.0.92): check recentTargets + AttrWindow
+        -- normal attribution path (v0.0.92): check recentTargets + AttrWindow.
+        -- v0.99.13: a native rage shot at this body in the last 0.8s counts too.
         local at = SR.recentTargets[char]
-        if at and (now - at) <= Combat.HitSounds.AttrWindow then
+        local shotAt = Shared._rageShotAt and Shared._rageShotAt[char]
+        if (at and (now - at) <= Combat.HitSounds.AttrWindow) or (shotAt and now - shotAt <= 0.8) then
             SR.recentTargets[char] = nil
             landHit(char, dropped, nowZero)
         end
@@ -40434,6 +40437,14 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end)
             return os.clock() - (RG.swingAt or 0) >= math.max(cd, 0.05)
         end
+        -- v0.99.13: the health-drop hit path credits bodies we just fired at
+        function RG.stampShot(part)
+            local ch = part and part.Parent
+            if ch and not ch:FindFirstChildOfClass("Humanoid") then ch = ch.Parent end
+            if not ch then return end
+            Shared._rageShotAt = Shared._rageShotAt or setmetatable({}, { __mode = "k" })
+            Shared._rageShotAt[ch] = os.clock()
+        end
         function RG.input(name)
             local mech = RV.Mechanics
             if type(mech) ~= "table" then return false end
@@ -40451,6 +40462,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end)
             RG.swingAt = os.clock()
             RG.firedAt = RG.swingAt
+            RG.stampShot(part)
             RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
             local ok = RG.input("StartShooting")
             if faced and typeof(rot0) == "Vector2" then pcall(function() cc:SetRotation(rot0) end) end
@@ -40562,6 +40574,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if ray then outer[c2] = true end
             RV._rageAt = tick()
             RG.firedAt = os.clock()
+            RG.stampShot(part)
             RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
             local ok = pcall(function()
                 RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
@@ -41311,7 +41324,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local crit = (data[K1] and true or false) or head == true
             local kill = hum.Health <= 0
             RV._nativeLive = true
-            if not kill then RV._nativeHitAt[char] = os.clock() end
+            RV._nativeHitAt[char] = os.clock()
             -- v0.99.12: queued, never called here: this runs on the game's thread,
             -- which may not touch Koffee's own UI (sounds read the window)
             RV._hitQ = RV._hitQ or {}
