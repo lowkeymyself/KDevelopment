@@ -1,7 +1,7 @@
--- koffee v0.99.22
+-- koffee v0.99.23
 
 local Koffee = {}
-Koffee.Version = "0.99.22"
+Koffee.Version = "0.99.23"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10809,6 +10809,7 @@ Koffee.Rivals = {
                     Scatter = true, ScatterRate = 20, ScatterMode = "Random",   -- v0.99.9
                     ScatterArea = "Target", ScatterRadius = 60, InstantFire = false,  -- v0.99.10
                     LongMin = 60, LongMax = 250,                                -- v0.99.21
+                    LongTune = true,                                            -- v0.99.23
                     AutoAdapt = false,                                          -- v0.99.11
                     PlayerAdapt = false, SwapEmpty = false,                     -- v0.99.12
                     Pickups = false, PickupAmmoPct = 30,                        -- v0.99.15
@@ -10874,6 +10875,7 @@ Shared.rage2UI = function(card)
     dropdown(card, "Scatter Area", { "Target", "Map", "Long Range" }, RG.ScatterArea or "Target", function(v) RG.ScatterArea = v end)
     slider(card, "Long Range Min", 20, 500, RG.LongMin or 60, 0, function(v) RG.LongMin = v end)
     slider(card, "Long Range Max", 40, 1000, RG.LongMax or 250, 0, function(v) RG.LongMax = v end)
+    configCheckbox(card, "Long Range Auto Tune", RG.LongTune ~= false, function(v) RG.LongTune = v end)
     slider(card, "Scatter Radius", 15, 150, RG.ScatterRadius or 60, 0, function(v) RG.ScatterRadius = v end)
     configCheckbox(card, "Instant Fire", RG.InstantFire == true, function(v) RG.InstantFire = v end)
     configCheckbox(card, "Auto Adapt", RG.AutoAdapt == true, function(v) RG.AutoAdapt = v end)
@@ -40138,6 +40140,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             for _, list in ipairs({ L.shots, L.hits }) do
                 for i = #list, 1, -1 do if now - list[i][1] > 6 then table.remove(list, i) end end
             end
+            if cfg().LongTune == false then L.scale = 1; return end
             if not RG.live() then return end
             local shots, hits, dmg = 0, 0, 0
             for _, e in ipairs(L.shots) do if now - e[1] <= 4 then shots = shots + 1 end end
@@ -40612,7 +40615,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local need = (RG.v("Lead") + RG.v("Hold")) / 1000 + 0.6
             local lo = math.clamp(C.LongMin or 60, 20, 500)
             local hi = math.clamp(C.LongMax or 250, lo + 10, 1000)
-            local sc = RG.lr and RG.lr.scale or 1
+            local sc = (C.LongTune ~= false and RG.lr) and RG.lr.scale or 1
             hi = lo + (hi - lo) * sc
             if sc < 0.35 then lo = math.max(lo * sc / 0.35, 15) end
             hi = math.max(hi, lo + 5)
