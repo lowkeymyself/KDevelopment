@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.36"
+Koffee.Version = "0.99.37"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10819,7 +10819,7 @@ Koffee.Rivals = {
                     MeleeKeepOut = 10,                                          -- v0.99.18
                     SwapOrder = "Primary > Secondary > Melee",
                     MeleeVertical = true,                                       -- v0.99.9
-                    KnifeStab = true,                                           -- v0.99.35
+                    KnifeStab = true, KnifeStay = 300, KnifeArrive = 120,       -- v0.99.35 / .37
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 20M to 50M
                     HideMax = 1.5,       -- v0.99.16: longest unbroken hide, then home for 0.2s
@@ -10916,6 +10916,8 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Chainsaw Cut Hold", RG.ChainsawHold, function(v) RG.ChainsawHold = v end)
     configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
     configCheckbox(card, "Knife Backstab", RG.KnifeStab ~= false, function(v) RG.KnifeStab = v end)
+    slider(card, "Knife Arrive (ms)", 30, 400, RG.KnifeArrive or 120, 0, function(v) RG.KnifeArrive = v end)
+    slider(card, "Knife Stay (ms)", 100, 1000, RG.KnifeStay or 300, 0, function(v) RG.KnifeStay = v end)
 
     configCheckbox(card, "Smart Targeting", RG.Smart, function(v) RG.Smart = v end)
     configCheckbox(card, "Prediction", RG.Predict, function(v) RG.Predict = v end)
@@ -41044,9 +41046,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 and RG.meleePacket(it, origin, part, "StartAiming") then
                 RG.heavyAt = now
                 RG.meleeNext = now + heavyCd + 0.05
+                pcall(function() it:StartAiming(true) end)   -- v0.99.37: local animation only
                 return true
             end
-            return RG.swing(origin, part, it)
+            local ok = RG.swing(origin, part, it)
+            if ok then pcall(function() it:StartShooting(true) end) end
+            return ok
         end
         -- the Chainsaw's right-click cut: held while inside reach, let go outside
         function RG.chainsaw(it, inReach)
@@ -41385,18 +41390,24 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
                     local pos = tp - flat * 0.75
                     local spot = CFrame.lookAt(pos, pos + flat)
-                    local lead = RG.v("Lead") / 1000
+                    -- v0.99.37: the server judges a melee hit AttackDelay after the packet,
+                    -- against where it has our body, so arrive early (Knife Arrive, at least
+                    -- half a ping) and stay through the delay plus a ping (Knife Stay floor).
+                    -- No Instant Fire here: the stab must never beat the position.
+                    local ping = RG.ping()
+                    local arrive = math.max((C.KnifeArrive or 120) / 1000, RG.v("Lead") / 1000, ping * 0.5)
+                    local delay = 0
+                    pcall(function() delay = tonumber(rawget(it.Info, "AttackDelay")) or 0 end)
+                    local stay = math.max((C.KnifeStay or 300) / 1000, delay + ping + 0.1, RG.v("Hold") / 1000)
                     local inside = RG.knifeIn ~= nil and RG.knifeFor == plr
                     local want
-                    if live and RG.budget(pos) > lead + 0.3 and RG.readyIn(it) <= lead then
+                    if live and RG.budget(pos) > arrive + stay + 0.3 and RG.readyIn(it) <= arrive then
                         if not inside then RG.knifeIn, RG.knifeFor = now, plr end
                         want = spot
                         RG.action = "knife: inside"
-                        local held = now - RG.knifeIn >= lead
-                        local instant = C.InstantFire and now >= (RG.warmUntil or 0) and RG.placeNow(spot)
-                        if RG.meleeReady(it) and (held or instant) then
+                        if RG.meleeReady(it) and now - RG.knifeIn >= arrive then
                             RG.knifeSwing(it, pos, part, flat)
-                            RG.knifeHold = now + math.max(RG.v("Hold") / 1000, 0.05)
+                            RG.knifeHold = now + stay
                         end
                     elseif now < (RG.knifeHold or 0) and RG.knifeFor == plr then
                         want = spot
