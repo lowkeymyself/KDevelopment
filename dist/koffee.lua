@@ -1,7 +1,7 @@
--- koffee v0.99.31
+-- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.31"
+Koffee.Version = "0.99.32"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10900,7 +10900,6 @@ Shared.rage2UI = function(card)
     end
     slider(card, "Max Hide (s)", 0.3, 5, RG.HideMax or 1.5, 1, function(v) RG.HideMax = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
-    slider(card, "Hop Rate", 1, 20, RG.HopRate, 0, function(v) RG.HopRate = v end)
     configCheckbox(card, "OOB Guard", RG.OOBGuard, function(v) RG.OOBGuard = v end)
 
     configCheckbox(card, "Anti-Melee", RG.AntiMelee, function(v) RG.AntiMelee = v end)
@@ -40919,7 +40918,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- :: hide :: past the map edge at map height, hopping when Void Spam
         function RG.hideCF(mr, now)
             local C = cfg()
-            local hop = 1 / math.clamp(RG.v("HopRate"), 1, 20)
+            -- v0.99.32: Void Spam rerolls the spot every frame (Hop Rate removed)
+            local hop = 0
             local kind = tostring(C.HideDist) .. tostring(C.FarUnsafe)
             if RG.hide == nil or RG.hideKind ~= kind or (C.VoidSpam and now - RG.hopAt > hop) then
                 RG.hopAt = now
@@ -40931,7 +40931,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 -- float32 steps are 2 to 16 studs; Unsafe is the original 100M to 300M.
                 local rings = { 35e3, 1e5, 3e5, 1e6, 3e6 }
                 if C.HideDist == "Far" then
-                    rings = C.FarUnsafe and { math.random(100, 300) * 1e6 } or { math.random(20, 50) * 1e6 }
+                    -- v0.99.32: as far as the setting allows (top of each range)
+                    rings = C.FarUnsafe and { math.random(250, 300) * 1e6 } or { math.random(45, 50) * 1e6 }
                 end
                 RG.refreshBounds(now)
                 local pick
