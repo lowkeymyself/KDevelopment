@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.33"
+Koffee.Version = "0.99.34"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10823,6 +10823,7 @@ Koffee.Rivals = {
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 20M to 50M
                     HideMax = 1.5,       -- v0.99.16: longest unbroken hide, then home for 0.2s
                     FarUnsafe = false,   -- v0.99.14: Far at 100M to 300M (crashed his client)
+                    UnsafeExp = 8.5,     -- v0.99.34: Unsafe distance as 10^x studs (8 to 38)
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
                     Adaptive = true, AdaptiveWeapons = false,
                     AntiMelee = true, ThreatRange = 25,   -- v0.99.5: teleport-in answer (melee and gun)
@@ -10893,7 +10894,10 @@ Shared.rage2UI = function(card)
     if hdDd and hdDd.frame then
         rightClickSettings(hdDd.frame, "Hide Distance", function(popup)
             if RG.HideDist == "Far" then
-                popup:toggle("Unsafe (100M to 300M)", RG.FarUnsafe == true, function(v) RG.FarUnsafe = v end)
+                popup:toggle("Unsafe", RG.FarUnsafe == true, function(v) RG.FarUnsafe = v end)
+                -- v0.99.34: 10^x studs. 8 = 100M, 9 = 1B, 12 = 1T, 38 = the float32 ceiling
+                popup:slider("Unsafe Distance (10^x)", 8, 38, RG.UnsafeExp or 8.5, 1,
+                    function(v) RG.UnsafeExp = v end)
             else
                 popup:action("Pick Far to unlock Unsafe", function() end)
             end
@@ -40922,7 +40926,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local C = cfg()
             -- v0.99.32: Void Spam rerolls the spot every frame (Hop Rate removed)
             local hop = 0
-            local kind = tostring(C.HideDist) .. tostring(C.FarUnsafe)
+            local kind = tostring(C.HideDist) .. tostring(C.FarUnsafe) .. tostring(C.UnsafeExp)
             if RG.hide == nil or RG.hideKind ~= kind or (C.VoidSpam and now - RG.hopAt > hop) then
                 RG.hopAt = now
                 RG.hideKind = kind
@@ -40934,7 +40938,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local rings = { 35e3, 1e5, 3e5, 1e6, 3e6 }
                 if C.HideDist == "Far" then
                     -- v0.99.32: as far as the setting allows (top of each range)
-                    rings = C.FarUnsafe and { math.random(250, 300) * 1e6 } or { math.random(45, 50) * 1e6 }
+                    -- v0.99.34: Unsafe goes to 10^UnsafeExp (85% to 100% of it), capped under
+                    -- the float32 max so the position never overflows to inf
+                    local far = math.min(10 ^ math.clamp(tonumber(C.UnsafeExp) or 8.5, 8, 38), 3e38)
+                    rings = C.FarUnsafe and { far * (0.85 + math.random() * 0.15) } or { math.random(45, 50) * 1e6 }
                 end
                 RG.refreshBounds(now)
                 local pick
