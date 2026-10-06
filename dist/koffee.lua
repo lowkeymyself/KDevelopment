@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.40"
+Koffee.Version = "0.99.41"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10824,7 +10824,7 @@ Koffee.Rivals = {
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 20M to 50M
                     HideMax = 1.5,       -- v0.99.16: longest unbroken hide, then home for 0.2s
                     FarUnsafe = false,   -- v0.99.14: Far at 100M to 300M (crashed his client)
-                    UnsafeExp = 8.5,     -- v0.99.34: Unsafe distance as 10^x studs (8 to 9.2 since v0.99.40)
+                    UnsafeExp = 8.5,     -- v0.99.34: Unsafe distance as 10^x studs (8 to 38)
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
                     Adaptive = true, AdaptiveWeapons = false,
                     AntiMelee = true, ThreatRange = 25,   -- v0.99.5: teleport-in answer (melee and gun)
@@ -10896,8 +10896,8 @@ Shared.rage2UI = function(card)
         rightClickSettings(hdDd.frame, "Hide Distance", function(popup)
             if RG.HideDist == "Far" then
                 popup:toggle("Unsafe", RG.FarUnsafe == true, function(v) RG.FarUnsafe = v end)
-                -- v0.99.40: 10^x studs, 8 = 100M, 9 = 1B, 9.2 = ~1.6B (past that crashed)
-                popup:slider("Unsafe Distance (10^x)", 8, 9.2, math.min(RG.UnsafeExp or 8.5, 9.2), 1,
+                -- v0.99.34: 10^x studs. 8 = 100M, 9 = 1B, 12 = 1T, 38 = the float32 ceiling
+                popup:slider("Unsafe Distance (10^x)", 8, 38, RG.UnsafeExp or 8.5, 1,
                     function(v) RG.UnsafeExp = v end)
             else
                 popup:action("Pick Far to unlock Unsafe", function() end)
@@ -39698,19 +39698,15 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if typeof(v) ~= "Vector3" then return tostring(v) end
         return string.format("(%.4g,%.4g,%.4g)", v.X, v.Y, v.Z)
     end
-    -- v0.99.40: the last gate before a CFrame reaches the body. Non-finite parts or a
-    -- position past RV.FAR_MAX on any axis (2B studs) faulted the engine natively
-    -- (Unsafe at 10^38 vanished the client), so those frames stay home instead.
-    RV.FAR_MAX = 2e9
+    -- v0.99.40: the last gate before a CFrame reaches the body. A NaN or infinite
+    -- component (Unsafe near 10^38 can overflow to one) would fault the engine
+    -- natively, so that frame stays home instead. Distance itself is never capped.
     function RV.cfValid(cf)
         if typeof(cf) ~= "CFrame" then return false end
-        local ok = true
         for _, c in ipairs({ cf:GetComponents() }) do
-            if c ~= c or c == math.huge or c == -math.huge then ok = false; break end
+            if c ~= c or c == math.huge or c == -math.huge then return false end
         end
-        if not ok then return false end
-        local p = cf.Position
-        return math.abs(p.X) < RV.FAR_MAX and math.abs(p.Y) < RV.FAR_MAX and math.abs(p.Z) < RV.FAR_MAX
+        return true
     end
     function RV.armEngine(want)
         if RV._armed == want then return end
@@ -41001,8 +40997,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     -- v0.99.32: as far as the setting allows (top of each range)
                     -- v0.99.34: Unsafe goes to 10^UnsafeExp (85% to 100% of it), capped under
                     -- the float32 max so the position never overflows to inf
-                    -- v0.99.40: 10^8 to 10^9.2 (100M to ~1.6B); old configs saved at 38 clamp here
-                    local far = math.min(10 ^ math.clamp(tonumber(C.UnsafeExp) or 8.5, 8, 9.2), RV.FAR_MAX * 0.8)
+                    local far = math.min(10 ^ math.clamp(tonumber(C.UnsafeExp) or 8.5, 8, 38), 3e38)
                     rings = C.FarUnsafe and { far * (0.85 + math.random() * 0.15) } or { math.random(45, 50) * 1e6 }
                 end
                 RG.refreshBounds(now)
