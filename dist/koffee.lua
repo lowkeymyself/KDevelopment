@@ -1,7 +1,7 @@
--- koffee v0.99.30
+-- koffee v0.99.31
 
 local Koffee = {}
-Koffee.Version = "0.99.30"
+Koffee.Version = "0.99.31"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10811,6 +10811,7 @@ Koffee.Rivals = {
                     LongMin = 60, LongMax = 250,                                -- v0.99.21
                     LongTune = false,                                           -- v0.99.23
                     PreArm = true,                                              -- v0.99.26
+                    StayBehind = true, FrontCone = 75,                          -- v0.99.31
                     AutoAdapt = false,                                          -- v0.99.11
                     PlayerAdapt = false, SwapEmpty = false,                     -- v0.99.12
                     Pickups = false, PickupAmmoPct = 30,                        -- v0.99.15
@@ -10872,6 +10873,8 @@ Shared.rage2UI = function(card)
     slider(card, "Strike Lead (ms)", 0, 150, RG.Lead, 0, function(v) RG.Lead = v end)
     slider(card, "Strike Hold (ms)", 0, 250, RG.Hold, 0, function(v) RG.Hold = v end)
     configCheckbox(card, "Instant Fire", RG.InstantFire == true, function(v) RG.InstantFire = v end)
+    configCheckbox(card, "Stay Behind", RG.StayBehind ~= false, function(v) RG.StayBehind = v end)
+    slider(card, "Front Cone", 20, 120, RG.FrontCone or 75, 0, function(v) RG.FrontCone = v end)
 
     configCheckbox(card, "Scatter", RG.Scatter, function(v) RG.Scatter = v end)
     slider(card, "Scatter Rate", 2, 60, RG.ScatterRate or 20, 0, function(v) RG.ScatterRate = v end)
@@ -40570,7 +40573,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local lp = last.Position
                 local dist = (lp - tp).Magnitude
                 if dist > r - 3 and dist < r + 3 and (inVoid or RG.los(lp, tp, ignore)) and RG.budget(lp) > need
-                    and RG.meleeSafe(lp, keep) then
+                    and RG.meleeSafe(lp, keep) and not RG.exposed(lp) then
                     return CFrame.lookAt(lp, tp)
                 end
             end
@@ -40579,7 +40582,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local a = i / 12 * math.pi * 2
                 for _, h in ipairs(melee and { 0, 1.5 } or { 2.5, 6 }) do
                     local pos = tp + Vector3.new(math.cos(a) * r, h, math.sin(a) * r)
-                    if RG.budget(pos) > need and RG.meleeSafe(pos, keep) and (inVoid or RG.los(pos, tp, ignore)) then
+                    if RG.budget(pos) > need and RG.meleeSafe(pos, keep) and (inVoid or RG.los(pos, tp, ignore))
+                        and not RG.exposed(pos) then
                         local dir = (pos - tp).Unit
                         local s = -look:Dot(dir) * 2 + math.random() * 0.4   -- behind them, a little noise
                         if s > bs then best, bs = pos, s end
@@ -40653,6 +40657,31 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return true
         end
 
+        -- v0.99.31 stay behind: legit players auto-shoot whatever lands in front of
+        -- them. A spot is exposed when any enemy in our duel faces it (within Front
+        -- Cone of their head's look) AND has line of sight to it.
+        function RG.exposed(pos)
+            local C = cfg()
+            if C.StayBehind == false then return false end
+            local cosA = math.cos(math.rad(math.clamp(C.FrontCone or 75, 20, 120)))
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                local ch = plr ~= LocalPlayer and plr.Character
+                local head = ch and ch:FindFirstChild("Head")
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                if head and hum and hum.Health > 0 and not RV.isAlly(plr) and RG.sameDuel(plr) then
+                    local to = pos - head.Position
+                    local d = to.Magnitude
+                    if d > 0.5 and d < 800 and head.CFrame.LookVector:Dot(to.Unit) > cosA then
+                        if RG.los(head.Position, pos, { ch, LocalPlayer.Character, Workspace.CurrentCamera,
+                            Workspace:FindFirstChild("ViewModels") }) then
+                            return true
+                        end
+                    end
+                end
+            end
+            return false
+        end
+
         -- scatter: a fresh valid spot around the target every hop, random or a fast orbit
         function RG.scatterSpot(plr, part, it)
             local C = cfg()
@@ -40672,7 +40701,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local look
             pcall(function() look = ch.HumanoidRootPart.CFrame.LookVector end)
             local mode = C.ScatterMode or "Random"
-            for _ = 1, 10 do
+            for _ = 1, 16 do
                 local pos
                 if mode == "Random" then
                     local a = math.random() * math.pi * 2
@@ -40684,7 +40713,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local r = (rmin + rmax) * 0.5 + (math.random() - 0.5) * (rmax - rmin) * 0.3
                     pos = tp + RV.orbitOffset(mode, RG.orbA, r, look) + Vector3.new(0, 1.5 + math.random() * 2, 0)
                 end
-                if RG.budget(pos) > need and RG.meleeSafe(pos, keep) and (inVoid or RG.los(pos, tp, ignore)) then
+                if RG.budget(pos) > need and RG.meleeSafe(pos, keep) and (inVoid or RG.los(pos, tp, ignore))
+                    and not RG.exposed(pos) then
                     RG.spotFor = plr
                     return CFrame.lookAt(pos, tp)
                 end
@@ -40716,7 +40746,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local a = math.random() * math.pi * 2
                 local d = lo + math.random() * (hi - lo)
                 local pos = tp + Vector3.new(math.cos(a) * d, 2 + math.random() * 28, math.sin(a) * d)
-                if RG.budget(pos) > need and RG.meleeSafe(pos, keep) and RG.los(pos, tp, ignore) then
+                if RG.budget(pos) > need and RG.meleeSafe(pos, keep) and RG.los(pos, tp, ignore)
+                    and not RG.exposed(pos) then
                     RG.spotFor = plr
                     return CFrame.lookAt(pos, tp)
                 end
@@ -40743,7 +40774,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local hit = Workspace:Raycast(x + Vector3.new(0, 120, 0), Vector3.new(0, -260, 0), rp)
                 if hit and hit.Normal.Y > 0.6 then
                     local pos = hit.Position + Vector3.new(0, 2.5 + math.random() * 3, 0)
-                    if RG.budget(pos) > need and RG.meleeSafe(pos, RG.keepOut(it)) and RG.los(pos, tp, ignore) then
+                    if RG.budget(pos) > need and RG.meleeSafe(pos, RG.keepOut(it)) and RG.los(pos, tp, ignore)
+                        and not RG.exposed(pos) then
                         RG.spotFor = plr
                         return CFrame.lookAt(pos, tp)
                     end
@@ -40857,7 +40889,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local k = RG.dropKind(d)
                     if (k == "health" and wantHealth) or (k == "ammo" and wantAmmo) then
                         local dist = (d.Position - mr.Position).Magnitude
-                        if dist < bd and RG.budget(d.Position) == math.huge and RG.meleeSafe(d.Position, RG.keepOut(it)) then
+                        if dist < bd and RG.budget(d.Position) == math.huge and RG.meleeSafe(d.Position, RG.keepOut(it))
+                            and not RG.exposed(d.Position + Vector3.new(0, 2.5, 0)) then
                             best, bd, bk = d, dist, k
                         end
                     end
