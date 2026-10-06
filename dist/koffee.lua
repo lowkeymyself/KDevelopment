@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.32"
+Koffee.Version = "0.99.33"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10812,6 +10812,7 @@ Koffee.Rivals = {
                     LongTune = false,                                           -- v0.99.23
                     PreArm = true,                                              -- v0.99.26
                     StayBehind = true, FrontCone = 75,                          -- v0.99.31
+                    ReloadHide = true,                                          -- v0.99.33
                     AutoAdapt = false,                                          -- v0.99.11
                     PlayerAdapt = false, SwapEmpty = false,                     -- v0.99.12
                     Pickups = false, PickupAmmoPct = 30,                        -- v0.99.15
@@ -10899,6 +10900,7 @@ Shared.rage2UI = function(card)
         end, nil, true)
     end
     slider(card, "Max Hide (s)", 0.3, 5, RG.HideMax or 1.5, 1, function(v) RG.HideMax = v end)
+    configCheckbox(card, "Hide When Can't Shoot", RG.ReloadHide ~= false, function(v) RG.ReloadHide = v end)
     configCheckbox(card, "Void Spam", RG.VoidSpam, function(v) RG.VoidSpam = v end)
     configCheckbox(card, "OOB Guard", RG.OOBGuard, function(v) RG.OOBGuard = v end)
 
@@ -41156,25 +41158,64 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
 
         -- :: OOB guard :: time our server spot spends in lethal volumes; before the
         -- budget runs out, hand the real (in-bounds) body back for a beat
+        -- v0.99.33: a surface lands on an in-bounds spot no enemy is near, never on the
+        -- home body a teleporter can read and land inside. Picked once per surface.
+        function RG.surfaceCF(now)
+            local mr = myRoot()
+            if not mr then return nil end
+            if RG.surf and now - (RG.surfAt or 0) < 0.25 then return RG.surf end
+            local roots = {}
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                local ch = plr ~= LocalPlayer and plr.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                if root and hum and hum.Health > 0 and not RV.isAlly(plr) then roots[#roots + 1] = root.Position end
+            end
+            local function clear(pos)
+                for _, r in ipairs(roots) do
+                    if (r - pos).Magnitude < 35 then return false end
+                end
+                return RG.budget(pos) == math.huge
+            end
+            local pick = clear(mr.Position) and mr.Position or nil
+            if pick == nil then
+                local rp = RaycastParams.new()
+                rp.FilterType = Enum.RaycastFilterType.Exclude
+                rp.FilterDescendantsInstances = { LocalPlayer.Character, Workspace.CurrentCamera }
+                for _ = 1, 16 do
+                    local a = math.random() * math.pi * 2
+                    local d = 40 + math.random() * 120
+                    local x = mr.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d)
+                    local hit = Workspace:Raycast(x + Vector3.new(0, 120, 0), Vector3.new(0, -260, 0), rp)
+                    if hit and hit.Normal.Y > 0.6 then
+                        local pos = hit.Position + Vector3.new(0, 3, 0)
+                        if clear(pos) then pick = pos; break end
+                    end
+                end
+            end
+            RG.surf, RG.surfAt = pick and CFrame.new(pick) or nil, now
+            return RG.surf
+        end
         function RG.oobStep(now, cf)
             local dt = math.clamp(now - RG.lastT, 0, 0.1)
             RG.lastT = now
-            -- v0.99.16: no hide lasts longer than Max Hide; the body comes home for
-            -- 0.2s to reset any server-side timer (message (2) caps it at 3s too)
-            if now < (RG.surfaceUntil or 0) then return nil end
+            -- v0.99.16: no hide lasts longer than Max Hide; the body surfaces for 0.2s to
+            -- reset any server-side timer (message (2) caps it at 3s too)
+            if now < (RG.surfaceUntil or 0) then return RG.surfaceCF(now) end
             if cf ~= nil and cf == RG.hide then
                 RG.hideSince = RG.hideSince or now
                 if now - RG.hideSince > math.clamp(cfg().HideMax or 1.5, 0.3, 5) then
                     RG.hideSince = nil
                     RG.surfaceUntil = now + 0.2
                     RG.hide = nil   -- a fresh spot next time
-                    return nil
+                    RG.surf = nil
+                    return RG.surfaceCF(now)
                 end
             else
                 RG.hideSince = nil
             end
             if not cfg().OOBGuard or cf == nil then RG.oobT = 0; return cf end
-            if now < RG.resetUntil then return nil end
+            if now < RG.resetUntil then return RG.surfaceCF(now) end
             local b = RG.budget(cf.Position)
             if b == math.huge then RG.oobT = math.max(0, RG.oobT - dt); return cf end
             RG.oobT = RG.oobT + dt
@@ -41251,6 +41292,48 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
                 return
             end
+            -- v0.99.33 hide when we cannot shoot: an empty mag, a reload, or no gun out
+            -- (nothing held, or a throwable / utility). The server body waits at the void
+            -- spot; a reload returns Lead before it ends. Melee with Melee Ragebot fights.
+            if C.ReloadHide ~= false then
+                local why
+                if it == nil then
+                    why = "no gun out"
+                elseif RG.isMelee(it) then
+                    if not C.Melee then why = "no gun out" end
+                else
+                    local isGun = false
+                    pcall(function()
+                        isGun = it.Info.Type == "Gun" or rawget(it.Info, "ShootCooldown") ~= nil
+                    end)
+                    if not isGun then
+                        why = "no gun out"
+                    else
+                        local rcd, ammo = 0, nil
+                        pcall(function() rcd = it._reload_cooldown or 0 end)
+                        pcall(function() ammo = it:Get("Ammo") end)
+                        local left = rcd - tick()
+                        local empty = type(ammo) == "number" and ammo <= 0
+                        if empty and left <= 0 and not (C.SwapEmpty and RG.swapEmpty(it)) then
+                            local lf = RV.localFighter()
+                            local inp = lf and lf.Input
+                            if type(inp) == "function" then pcall(inp, lf, "StartReloading") end
+                        end
+                        if left > RG.v("Lead") / 1000 or (empty and left <= 0) then why = "reloading" end
+                    end
+                end
+                if why then
+                    RG.phase = "idle"
+                    RG.action = why .. " (hidden)"
+                    RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
+                    local from = RV._rageCF and RV._rageCF.Position or RV.serverHead()
+                    if from then
+                        local p, y = RV.anglesTo(from, part.Position)
+                        if p then RV.setAngles(RV.slots.Rage, p, y) end
+                    end
+                    return
+                end
+            end
             -- v0.99.12 player adapt: a target with no teleport, void or fly evidence is a
             -- normal player. Shoot from where we really stand when we can see them;
             -- only fall back to a strike spot when we cannot.
@@ -41300,7 +41383,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         and RG.ready(it) then
                         RG.fire(it, RG.spot.Position, part)
                     end
-                    RV._rageCF = RG.oobStep(now, RG.spot)
+                    -- v0.99.33: no valid spot yet -> the void, never the home body
+                    RV._rageCF = RG.oobStep(now, RG.spot or (C.VoidHide and RG.hideCF(mr, now)) or nil)
                 end
                 RG.phase = "idle"
                 local from = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
@@ -41381,7 +41465,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
                 want = RG.spot
             end
-            RV._rageCF = RG.oobStep(now, want)
+            RV._rageCF = RG.oobStep(now, want or (C.VoidHide and RG.hideCF(mr, now)) or nil)
             local from = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
             if from then
                 local p, y = RV.anglesTo(from, part.Position)
