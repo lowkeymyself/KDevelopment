@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.37"
+Koffee.Version = "0.99.38"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -40977,10 +40977,23 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             pcall(function() r = tonumber(rawget(it.Info, "AttackReach")) or 6 end)
             return r
         end
-        -- v0.99.36: one next-attack clock, set by every packet we send (a heavy blocks
-        -- every attack for HeavyAttackCooldown, like the game's own _attack_cooldown)
-        function RG.meleeReady(_it)
-            return os.clock() >= (RG.meleeNext or 0)
+        -- v0.99.38: seconds until the item can attack, read live off the item: the
+        -- game's own _attack_cooldown (tick based, set by every light / heavy / burst
+        -- step) and IsEquipping. RG.meleeNext only covers the frame we sent in, or a
+        -- fallback when the local attack call could not run.
+        function RG.meleeLeft(it)
+            local left = (RG.meleeNext or 0) - os.clock()
+            pcall(function()
+                local cd = it._attack_cooldown
+                if type(cd) == "number" then left = math.max(left, cd - tick()) end
+            end)
+            pcall(function()
+                if it:IsEquipping() then left = math.max(left, 0.03) end
+            end)
+            return math.max(left, 0)
+        end
+        function RG.meleeReady(it)
+            return it ~= nil and RG.meleeLeft(it) <= 0
         end
         -- v0.99.13: the health-drop hit path credits bodies we just fired at
         function RG.stampShot(part)
@@ -41028,30 +41041,33 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             pcall(function() v = tonumber(rawget(it.Info, key)) or def end)
             return v
         end
+        -- after a packet, run the item's own attack method (p = true skips its checks):
+        -- it plays the animation and sets the real _attack_cooldown, so the next
+        -- attack waits exactly as long as the game would make it
+        local function mirror(it, method, cdKey, def)
+            local now = os.clock()
+            RG.meleeNext = now + 0.03
+            local ran = pcall(function() it[method](it, true) end)
+            if not ran then RG.meleeNext = now + math.max(infoNum(it, cdKey, def), 0.05) end
+        end
         function RG.swing(origin, part, it)
             if it == nil then return false end
             local ok = RG.meleePacket(it, origin, part, "StartShooting")
-            if ok then RG.meleeNext = os.clock() + math.max(infoNum(it, "AttackCooldown", 0.5), 0.05) end
+            if ok then mirror(it, "StartShooting", "AttackCooldown", 0.5) end
             return ok
         end
-        -- Knife: right click (heavy) only when its own cooldown is up, since the
-        -- server refuses a rapid one and it blocks every attack while cooling;
-        -- otherwise the left click. The view angle copies their facing.
+        -- Knife: light and heavy share the item's one _attack_cooldown (a heavy sets it
+        -- to HeavyAttackCooldown), so whenever it is free the heavy goes out (right
+        -- click), else the light. The view angle copies their facing.
         function RG.knifeSwing(it, origin, part, flat)
+            if not RG.meleeReady(it) then return false end
             local p, y = CFrame.lookAt(Vector3.zero, flat):ToOrientation()
             RV.setAngles(RV.slots.Rage, math.deg(p), math.deg(y))
-            local now = os.clock()
-            local heavyCd = infoNum(it, "HeavyAttackCooldown", 1.25)
-            if now - (RG.heavyAt or -math.huge) >= heavyCd + 0.05
-                and RG.meleePacket(it, origin, part, "StartAiming") then
-                RG.heavyAt = now
-                RG.meleeNext = now + heavyCd + 0.05
-                pcall(function() it:StartAiming(true) end)   -- v0.99.37: local animation only
+            if type(it.StartAiming) == "function" and RG.meleePacket(it, origin, part, "StartAiming") then
+                mirror(it, "StartAiming", "HeavyAttackCooldown", 1.25)
                 return true
             end
-            local ok = RG.swing(origin, part, it)
-            if ok then pcall(function() it:StartShooting(true) end) end
-            return ok
+            return RG.swing(origin, part, it)
         end
         -- the Chainsaw's right-click cut: held while inside reach, let go outside
         function RG.chainsaw(it, inReach)
@@ -41066,7 +41082,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- run during the cooldown and land exactly Lead before it ends
         function RG.readyIn(it)
             if it == nil then return math.huge end
-            if RG.isMelee(it) then return math.max((RG.meleeNext or 0) - os.clock(), 0) end
+            if RG.isMelee(it) then return RG.meleeLeft(it) end
             local now = tick()
             local cd, rcd = 0, 0
             pcall(function() cd = it._shoot_cooldown or 0 end)
