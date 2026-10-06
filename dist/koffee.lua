@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.34"
+Koffee.Version = "0.99.35"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10819,6 +10819,7 @@ Koffee.Rivals = {
                     MeleeKeepOut = 10,                                          -- v0.99.18
                     SwapOrder = "Primary > Secondary > Melee",
                     MeleeVertical = true,                                       -- v0.99.9
+                    KnifeStab = true,                                           -- v0.99.35
                     VoidHide = true, VoidSpam = true, HopRate = 6, OOBGuard = true,
                     HideDist = "Edge",   -- v0.99.8: Edge 30k to 45k | Far 20M to 50M
                     HideMax = 1.5,       -- v0.99.16: longest unbroken hide, then home for 0.2s
@@ -10914,6 +10915,7 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Melee Ragebot", RG.Melee, function(v) RG.Melee = v end)
     configCheckbox(card, "Chainsaw Cut Hold", RG.ChainsawHold, function(v) RG.ChainsawHold = v end)
     configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
+    configCheckbox(card, "Knife Backstab", RG.KnifeStab ~= false, function(v) RG.KnifeStab = v end)
 
     configCheckbox(card, "Smart Targeting", RG.Smart, function(v) RG.Smart = v end)
     configCheckbox(card, "Prediction", RG.Predict, function(v) RG.Predict = v end)
@@ -41012,6 +41014,28 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             task.delay(0.03, function() if not Koffee.dead() then RG.input("FinishShooting") end end)
             return ok
         end
+        -- v0.99.35 knife: camera and view angle copy their facing (what makes a hit a
+        -- backstab), then left click and right click on the same edge
+        function RG.knifeSwing(part, flat)
+            local cc = RV.CamCtrl
+            local rot0
+            pcall(function() rot0 = cc.Rotation end)
+            local p, y = CFrame.lookAt(Vector3.zero, flat):ToOrientation()
+            RV.setAngles(RV.slots.Rage, math.deg(p), math.deg(y))
+            local faced = pcall(function() cc:SetRotation(Vector2.new(p, y)) end)
+            RG.swingAt = os.clock()
+            RG.firedAt = RG.swingAt
+            RG.stampShot(part)
+            RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
+            RG.input("StartShooting")
+            RG.input("StartAiming")
+            if faced and typeof(rot0) == "Vector2" then pcall(function() cc:SetRotation(rot0) end) end
+            task.delay(0.03, function()
+                if Koffee.dead() then return end
+                RG.input("FinishShooting")
+                RG.input("FinishAiming")
+            end)
+        end
         -- the Chainsaw's right-click cut: held while inside reach, let go outside
         function RG.chainsaw(it, inReach)
             local want = inReach and cfg().ChainsawHold and it ~= nil and tostring(it.Name) == "Chainsaw"
@@ -41337,6 +41361,50 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     if from then
                         local p, y = RV.anglesTo(from, part.Position)
                         if p then RV.setAngles(RV.slots.Rage, p, y) end
+                    end
+                    return
+                end
+            end
+            -- v0.99.35 knife backstab: a Knife with Melee Ragebot goes inside them, a hair
+            -- behind, for Lead before the cooldown edge, stabs (left + right click) with
+            -- their own facing, holds Hold, then waits out the cooldown at the hide spot
+            -- (Edge / Far / Unsafe, whatever Hide Distance says)
+            if C.KnifeStab ~= false and C.Melee and it ~= nil and RG.isMelee(it) and tostring(it.Name) == "Knife" then
+                if RG.sawHeld then RG.chainsaw(nil, false) end
+                local root = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+                if root then
+                    local tp = RG.predicted(plr, root)
+                    local look = root.CFrame.LookVector
+                    local flat = Vector3.new(look.X, 0, look.Z)
+                    flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
+                    local pos = tp - flat * 0.75
+                    local spot = CFrame.lookAt(pos, pos + flat)
+                    local lead = RG.v("Lead") / 1000
+                    local inside = RG.knifeIn ~= nil and RG.knifeFor == plr
+                    local want
+                    if live and RG.budget(pos) > lead + 0.3 and RG.readyIn(it) <= lead then
+                        if not inside then RG.knifeIn, RG.knifeFor = now, plr end
+                        want = spot
+                        RG.action = "knife: inside"
+                        local held = now - RG.knifeIn >= lead
+                        local instant = C.InstantFire and now >= (RG.warmUntil or 0) and RG.placeNow(spot)
+                        if RG.meleeReady(it) and (held or instant) then
+                            RG.knifeSwing(part, flat)
+                            RG.knifeHold = now + math.max(RG.v("Hold") / 1000, 0.05)
+                        end
+                    elseif now < (RG.knifeHold or 0) and RG.knifeFor == plr then
+                        want = spot
+                        RG.action = "knife: stabbed"
+                    else
+                        RG.knifeIn = nil
+                        want = RV.inRound() and RG.hideCF(mr, now) or nil
+                        RG.action = live and "knife: voiding" or "knife: waiting"
+                    end
+                    RG.phase = "idle"
+                    RV._rageCF = RG.oobStep(now, want)
+                    if want == spot then
+                        local p, y = CFrame.lookAt(Vector3.zero, flat):ToOrientation()
+                        RV.setAngles(RV.slots.Rage, math.deg(p), math.deg(y))
                     end
                     return
                 end
