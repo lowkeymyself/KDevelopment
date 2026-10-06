@@ -1,7 +1,7 @@
--- koffee v0.99.28
+-- koffee v0.99.29
 
 local Koffee = {}
-Koffee.Version = "0.99.28"
+Koffee.Version = "0.99.29"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -34518,10 +34518,11 @@ local function safeSpot(origin, dir, dist)
     for _ = 1, 6 do
         local cand = origin + d * dist
         if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
-        if groundBelow(cand, 2000) then return cand end
+        if groundBelow(cand, 2000) and not (Shared.nearMine and Shared.nearMine(cand)) then return cand end
         d = randomDir()
     end
-    return origin + Vector3.new(0, math.min(dist, 2000), 0)
+    local up = origin + Vector3.new(0, math.min(dist, 2000), 0)
+    return Shared.mineSafe and Shared.mineSafe(up) or up
 end
 -- v0.73.0: Fast Draw. Equips the named tool the instant it matters (spawn,
 -- lock engage, blink landing) instead of after fumbling for a number key.
@@ -34784,11 +34785,11 @@ local function safeBall(center, R)
     for _ = 1, 2 do
         local cand = ballPoint(center, R)
         if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
-        if groundBelow(cand, 2000) then return cand end
+        if groundBelow(cand, 2000) and not (Shared.nearMine and Shared.nearMine(cand)) then return cand end
     end
     local cand = ballPoint(center, R)
     if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
-    return cand
+    return Shared.mineSafe and Shared.mineSafe(cand) or cand
 end
 -- hand the aim systems their target directly: prime both _targets and snap
 -- the camera same-tick, so the loop after a teleport starts aimed, not sweeping.
@@ -39845,6 +39846,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if pos.Y < D.MinY or pos.Y > D.MaxY then pos = tp + Vector3.new(0, 2, 2) end
             if (pos - tp).Magnitude > D.MaxFromTarget then pos = tp + Vector3.new(0, 2, 2) end
         end
+        if Shared.mineSafe then pos = Shared.mineSafe(pos) end   -- v0.99.29: tripmines
         local cf
         local fine = pcall(function() cf = CFrame.lookAt(pos, tp) end)
         if not fine or cf == nil or not Koffee.cfOk(cf) then return nil end
@@ -40273,6 +40275,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
         -- seconds we may rest at pos (math.huge = free)
         function RG.budget(pos)
+            if RG.mineAt and RG.mineAt(pos) then return 0 end   -- v0.99.29: tripmines
             local B = RG.bounds
             for _, kb in ipairs(B.kill or {}) do
                 if kb.Parent and RG.inside(kb, pos) then return 0 end
@@ -40720,6 +40723,47 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not (mr and RV._dsLast ~= nil) then return false end
             RV._dsLast = cf
             return pcall(function() mr.CFrame = cf end)
+        end
+
+        -- v0.99.29 SUBSPACE TRIPMINES: always avoided, no toggle (his rule). Tagged
+        -- "SubspaceTripmine"; the trigger is the Hitbox part (touch). Anything within
+        -- half its size + 5 studs is lethal to every teleport Koffee makes.
+        RG.mines = {}
+        local function addMine(m) RG.mines[m] = true end
+        pcall(function()
+            for _, m in ipairs(CS:GetTagged("SubspaceTripmine")) do addMine(m) end
+            CS:GetInstanceAddedSignal("SubspaceTripmine"):Connect(addMine)
+            CS:GetInstanceRemovedSignal("SubspaceTripmine"):Connect(function(m) RG.mines[m] = nil end)
+        end)
+        function RG.mineAt(pos)
+            for m in pairs(RG.mines) do
+                if not m.Parent then
+                    RG.mines[m] = nil
+                else
+                    local hb = m:FindFirstChild("Hitbox")
+                    local c, half = nil, 2
+                    if hb and hb:IsA("BasePart") then
+                        c = hb.Position
+                        half = math.max(hb.Size.X, hb.Size.Y, hb.Size.Z) * 0.5
+                    else
+                        pcall(function() c = m:GetPivot().Position end)
+                    end
+                    if c and (pos - c).Magnitude < half + 5 then return c, half + 5 end
+                end
+            end
+            return nil
+        end
+        Shared.nearMine = function(pos) return RG.mineAt(pos) ~= nil end
+        -- pushes a spot radially out of every mine zone it sits in
+        Shared.mineSafe = function(pos)
+            for _ = 1, 4 do
+                local c, r = RG.mineAt(pos)
+                if not c then return pos end
+                local away = pos - c
+                if away.Magnitude < 0.1 then away = Vector3.new(1, 0, 0) end
+                pos = c + away.Unit * (r + 1)
+            end
+            return pos
         end
 
         -- v0.99.15 :: pickups :: workspace "_drop" parts carrying a Health or Ammo*
