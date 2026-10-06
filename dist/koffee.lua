@@ -1,7 +1,7 @@
--- koffee v0.99.29
+-- koffee v0.99.30
 
 local Koffee = {}
-Koffee.Version = "0.99.29"
+Koffee.Version = "0.99.30"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -34518,11 +34518,13 @@ local function safeSpot(origin, dir, dist)
     for _ = 1, 6 do
         local cand = origin + d * dist
         if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
-        if groundBelow(cand, 2000) and not (Shared.nearMine and Shared.nearMine(cand)) then return cand end
+        if groundBelow(cand, 2000) and not (Shared.spotSafe and not Shared.spotSafe(cand)) then return cand end
         d = randomDir()
     end
+    -- v0.99.30: nothing safe found -> nil, and the caller stays where it is
     local up = origin + Vector3.new(0, math.min(dist, 2000), 0)
-    return Shared.mineSafe and Shared.mineSafe(up) or up
+    if Shared.spotSafe and not Shared.spotSafe(up) then return nil end
+    return up
 end
 -- v0.73.0: Fast Draw. Equips the named tool the instant it matters (spawn,
 -- lock engage, blink landing) instead of after fumbling for a number key.
@@ -34560,6 +34562,7 @@ local function fireBlink()
     local center = r.Position
     if anchorCF and LocalPlayer.Character == anchorChar then center = anchorCF.Position end
     local dest = safeSpot(center, randomDir(), HV.BlinkDist or 500)
+    if dest == nil then return end   -- v0.99.30: no safe landing, stay put
     pcall(function()
         r.CFrame = r.CFrame - r.Position + dest
         r.AssemblyLinearVelocity = Vector3.zero
@@ -34785,11 +34788,12 @@ local function safeBall(center, R)
     for _ = 1, 2 do
         local cand = ballPoint(center, R)
         if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
-        if groundBelow(cand, 2000) and not (Shared.nearMine and Shared.nearMine(cand)) then return cand end
+        if groundBelow(cand, 2000) and not (Shared.spotSafe and not Shared.spotSafe(cand)) then return cand end
     end
     local cand = ballPoint(center, R)
     if cand.Y < floor then cand = Vector3.new(cand.X, floor, cand.Z) end
-    return Shared.mineSafe and Shared.mineSafe(cand) or cand
+    if Shared.spotSafe and not Shared.spotSafe(cand) then return nil end   -- v0.99.30
+    return cand
 end
 -- hand the aim systems their target directly: prime both _targets and snap
 -- the camera same-tick, so the loop after a teleport starts aimed, not sweeping.
@@ -34919,6 +34923,7 @@ RunService.Heartbeat:Connect(function()
             local hr = ch and ch:FindFirstChild("HumanoidRootPart")
             if plr and r and hr then
                 local dest = safeBall(hr.Position, HV.SpamDist or 300)
+                if dest == nil then dest = r.Position end   -- v0.99.30: no safe spot, stay put
                 -- v0.98.1: face the target (yaw only, stays upright)
                 local face = r.CFrame - r.Position + dest
                 local flat = Vector3.new(hr.Position.X, dest.Y, hr.Position.Z)
@@ -39803,6 +39808,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 cf = CFrame.new(far) * (mr.CFrame - mr.CFrame.Position)
             end)
             if not fine or cf == nil or not Koffee.cfOk(cf) then return nil end
+            if Shared.spotSafe and not Shared.spotSafe(cf.Position) then return nil end
             return cf
         end
         if tgt == nil then
@@ -39847,6 +39853,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if (pos - tp).Magnitude > D.MaxFromTarget then pos = tp + Vector3.new(0, 2, 2) end
         end
         if Shared.mineSafe then pos = Shared.mineSafe(pos) end   -- v0.99.29: tripmines
+        -- v0.99.30: out of bounds / KillBrick / mine -> no desync spot, the body stays home
+        if Shared.spotSafe and not Shared.spotSafe(pos) then return nil end
         local cf
         local fine = pcall(function() cf = CFrame.lookAt(pos, tp) end)
         if not fine or cf == nil or not Koffee.cfOk(cf) then return nil end
@@ -40257,7 +40265,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- :: bounds :: the game's OutOfBoundsPart volumes (WarnDelay + KillDelay, -1 = never)
         function RG.refreshBounds(now)
             local B = RG.bounds
-            if now - B.at < 2 then return end
+            if now - B.at < 0.5 then return end
             B.at = now
             local okP, parts = pcall(CS.GetTagged, CS, "OutOfBoundsPart")
             local okS, safe = pcall(CS.GetTagged, CS, "OutOfBoundsSafePart")
@@ -40274,8 +40282,35 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return math.abs(rel.X) <= h.X and math.abs(rel.Y) <= h.Y and math.abs(rel.Z) <= h.Z
         end
         -- seconds we may rest at pos (math.huge = free)
+        -- v0.99.30: one strict check for every teleport. Any OutOfBoundsPart (3 stud
+        -- margin), any KillBrick (4 stud margin: the body reaches past its centre)
+        -- or a tripmine zone is refused outright, never rested in on a timer.
+        function RG.insideM(part, pos, m)
+            local rel = part.CFrame:PointToObjectSpace(pos)
+            local h = part.Size * 0.5
+            return math.abs(rel.X) <= h.X + m and math.abs(rel.Y) <= h.Y + m and math.abs(rel.Z) <= h.Z + m
+        end
+        function RG.safe(pos)
+            RG.refreshBounds(os.clock())
+            local B = RG.bounds
+            for _, kb in ipairs(B.kill or {}) do
+                if kb.Parent and RG.insideM(kb, pos, 4) then return false end
+            end
+            local inSafe = false
+            for _, sp in ipairs(B.safe or {}) do
+                if sp.Parent and RG.inside(sp, pos) then inSafe = true; break end
+            end
+            if not inSafe then
+                for _, pt in ipairs(B.parts or {}) do
+                    if pt.Parent and RG.insideM(pt, pos, 3) then return false end
+                end
+            end
+            if RG.mineAt and RG.mineAt(pos) then return false end
+            return true
+        end
+        Shared.spotSafe = function(pos) return RG.safe(pos) end
         function RG.budget(pos)
-            if RG.mineAt and RG.mineAt(pos) then return 0 end   -- v0.99.29: tripmines
+            if not RG.safe(pos) then return 0 end   -- v0.99.30: strict, see RG.safe
             local B = RG.bounds
             for _, kb in ipairs(B.kill or {}) do
                 if kb.Parent and RG.inside(kb, pos) then return 0 end
@@ -40875,7 +40910,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     end
                     if pick then break end
                 end
-                RG.hide = CFrame.new(pick or (mr.Position + Vector3.new(3e6, 0, 0)))
+                -- v0.99.30: nothing safe out there -> stay on the real (in bounds) body
+                RG.hide = CFrame.new(pick or mr.Position)
             end
             return RG.hide
         end
