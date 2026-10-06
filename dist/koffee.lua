@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.43"
+Koffee.Version = "0.99.44"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10829,6 +10829,7 @@ Koffee.Rivals = {
                     Adaptive = true, AdaptiveWeapons = false,
                     AntiMelee = true, ThreatRange = 25,   -- v0.99.5: teleport-in answer (melee and gun)
                     Melee = true, ChainsawHold = true,    -- v0.99.6: melee ragebot
+                    Team = true, TeamNotify = true,       -- v0.99.44: Koffee team
                     Picks = { "Auto", "Auto", "Auto", "Auto" } },
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
                     Melee = false, MeleePct = 50, NoMuzzle = false,
@@ -10916,6 +10917,8 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Chainsaw Cut Hold", RG.ChainsawHold, function(v) RG.ChainsawHold = v end)
     configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
     configCheckbox(card, "Knife Backstab", RG.KnifeStab ~= false, function(v) RG.KnifeStab = v end)
+    configCheckbox(card, "Koffee Team", RG.Team ~= false, function(v) RG.Team = v end)
+    configCheckbox(card, "Team Notifications", RG.TeamNotify ~= false, function(v) RG.TeamNotify = v end)
     slider(card, "Knife Arrive (ms)", 30, 400, RG.KnifeArrive or 120, 0, function(v) RG.KnifeArrive = v end)
     slider(card, "Knife Stay (ms)", 100, 1000, RG.KnifeStay or 300, 0, function(v) RG.KnifeStay = v end)
 
@@ -39777,6 +39780,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     function RV.isAlly(plr)
         local ally = false
         pcall(function() ally = RV.sameTeam(plr) == true end)
+        -- v0.99.44: Koffee team members in this server (see RG.peerAlly)
+        if not ally and RV.RG and RV.RG.peerAlly then pcall(function() ally = RV.RG.peerAlly(plr) == true end) end
         return ally
     end
     function RV.serverHead()
@@ -40486,7 +40491,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ch = plr ~= LocalPlayer and plr.Character
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 and not RV.isAlly(plr) and Shared.aimAllowed(plr, true)
-                    and not RV.isDeflecting(plr) and RG.sameDuel(plr) then
+                    and not RV.isDeflecting(plr) and RG.sameDuel(plr) and (RG.allow == nil or RG.allow[plr]) then
                     local part = partOf(ch, R.LockPart)
                     local t = RG.track[plr]
                     if part and not (t and t.sub and not C.CounterVoid) then
@@ -40559,11 +40564,180 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             RG.threatFrom = me
             return best, bp
         end
+        -- v0.99.44 :: Koffee team :: every Koffee client in this server checks in with
+        -- the koffee-team worker (one Durable Object per JobId) every 3s. Members start
+        -- as allies; the game's TeamID makes one an enemy in a team duel or a 1v1.
+        RG.team = { peers = {}, seen = {}, at = -math.huge, url = "https://koffee-team.companiesfrm.workers.dev" }
+        function RG.teamOf(plr)
+            local t
+            pcall(function() t = plr:GetAttribute("TeamID") end)
+            return t
+        end
+        -- FFA: 3+ teams in our duel and nobody shares ours (cached 0.5s)
+        function RG.isFFA()
+            local T = RG.team
+            if T.ffaAt and os.clock() - T.ffaAt < 0.5 then return T.ffa end
+            local mine = RG.teamOf(LocalPlayer)
+            local teams, n, shared = {}, 0, false
+            for _, p in ipairs(Plrs:GetPlayers()) do
+                if p == LocalPlayer or RG.sameDuel(p) then
+                    local t = RG.teamOf(p)
+                    if t ~= nil then
+                        if not teams[t] then teams[t] = true; n = n + 1 end
+                        if p ~= LocalPlayer and t == mine then shared = true end
+                    end
+                end
+            end
+            T.ffa, T.ffaAt = mine == nil or (not shared and n > 2), os.clock()
+            return T.ffa
+        end
+        function RG.peerAlly(plr)
+            local T = RG.team
+            if cfg().Team == false or os.clock() - T.at > 12 or not T.peers[plr.UserId] then return false end
+            local dc = RG.dc
+            local inDuel = true
+            if dc then pcall(function() inDuel = dc:GetDuel(LocalPlayer) ~= nil end) end
+            if not inDuel then return true end
+            local a, b = RG.teamOf(LocalPlayer), RG.teamOf(plr)
+            if a ~= nil and a == b then return true end
+            return RG.isFFA()
+        end
+        -- how strong this config is, from what rage is set to do
+        function RG.strength()
+            local C = cfg()
+            local s = 0
+            if C.Strike then s = s + 30 end
+            if C.Scatter then s = s + 10 + math.clamp(tonumber(C.ScatterRate) or 0, 0, 60) / 3 end
+            if C.VoidHide then s = s + 10 end
+            if C.AntiMelee then s = s + 5 end
+            if C.InstantFire then s = s + 5 end
+            if C.Adaptive then s = s + 5 end
+            if C.CounterTP then s = s + 5 end
+            return math.floor(s)
+        end
+        function RG.teamApply(list)
+            local T = RG.team
+            local peers = {}
+            for _, e in ipairs(list) do
+                local uid = tonumber(e.uid)
+                local plr = uid and Plrs:GetPlayerByUserId(uid)
+                if plr and plr ~= LocalPlayer then
+                    peers[uid] = e
+                    if not T.seen[uid] then
+                        T.seen[uid] = true
+                        if cfg().TeamNotify ~= false and Koffee.notify then
+                            Koffee.notify("Koffee Team", plr.DisplayName .. " (@" .. plr.Name .. ") is in your server",
+                                { severity = "success", duration = 6 })
+                        end
+                    end
+                end
+            end
+            T.peers, T.at, T.assignAt = peers, os.clock(), nil
+        end
+        -- the split: raging members in our duel, strongest first, deal the enemies out
+        -- with cheaters (flagged by anyone) first. Every member runs the same sort on the
+        -- same data, so they agree without a coordinator. nil = no split, pick freely.
+        function RG.teamAssigned()
+            local T = RG.team
+            if cfg().Team == false or os.clock() - T.at > 12 then return nil end
+            if T.assignAt and os.clock() - T.assignAt < 0.25 then return T.assign end
+            T.assignAt = os.clock()
+            T.assign = nil
+            local me = LocalPlayer.UserId
+            local users = { { uid = me, str = RG.strength() } }
+            local flagged = {}
+            for uid, e in pairs(T.peers) do
+                local plr = Plrs:GetPlayerByUserId(uid)
+                if e.rage and plr and RG.sameDuel(plr) and RG.peerAlly(plr) then
+                    users[#users + 1] = { uid = uid, str = tonumber(e.str) or 0 }
+                end
+                if type(e.cheat) == "table" then
+                    for _, c in ipairs(e.cheat) do flagged[c] = true end
+                end
+            end
+            if #users < 2 then return nil end
+            table.sort(users, function(a, b)
+                if a.str ~= b.str then return a.str > b.str end
+                return a.uid < b.uid
+            end)
+            local foes = {}
+            for _, p in ipairs(Plrs:GetPlayers()) do
+                if p ~= LocalPlayer and not RV.isAlly(p) and RG.sameDuel(p) then
+                    local hum = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        foes[#foes + 1] = { plr = p, ch = (flagged[p.UserId] or RG.cheating(p)) and 1 or 0 }
+                    end
+                end
+            end
+            table.sort(foes, function(a, b)
+                if a.ch ~= b.ch then return a.ch > b.ch end
+                return a.plr.UserId < b.plr.UserId
+            end)
+            local idx = 1
+            for i, u in ipairs(users) do
+                if u.uid == me then idx = i end
+            end
+            local mine = {}
+            for i, f in ipairs(foes) do
+                if (i - 1) % #users + 1 == idx then mine[f.plr] = true end
+            end
+            T.assign = mine
+            return mine
+        end
+        function RG.teamEntry()
+            local cheat = {}
+            for _, p in ipairs(Plrs:GetPlayers()) do
+                if p ~= LocalPlayer and #cheat < 20 and RG.cheating(p) then cheat[#cheat + 1] = p.UserId end
+            end
+            local tgt = RV._rageTarget
+            return { job = game.JobId, uid = LocalPlayer.UserId, name = LocalPlayer.Name, ver = tostring(Koffee.Version),
+                rage = on("rv_rage") == true, str = RG.strength(), tgt = tgt and tgt.UserId or nil,
+                tid = tostring(RG.teamOf(LocalPlayer) or ""), cheat = cheat }
+        end
+        task.spawn(function()
+            local HS = game:GetService("HttpService")
+            local req = (syn and syn.request) or (http and http.request) or http_request or request
+            if not req then return end
+            local function post(path, body)
+                local ok, resp = pcall(req, { Url = RG.team.url .. path, Method = "POST",
+                    Headers = { ["Content-Type"] = "application/json", ["X-Koffee-Team"] = "koffee-team-1" },
+                    Body = HS:JSONEncode(body) })
+                if not (ok and resp and (resp.StatusCode or 0) < 400 and resp.Body) then return nil end
+                local dok, d = pcall(HS.JSONDecode, HS, resp.Body)
+                return dok and d or nil
+            end
+            local joined = false
+            while not Koffee.dead() do
+                if cfg().Team ~= false and game.JobId ~= "" then
+                    local ok, entry = pcall(RG.teamEntry)
+                    local d = ok and post("/room/beat", entry) or nil
+                    if type(d) == "table" and type(d.peers) == "table" then
+                        joined = true
+                        pcall(RG.teamApply, d.peers)
+                    end
+                elseif joined then
+                    joined = false
+                    RG.team.peers = {}
+                    post("/room/leave", { job = game.JobId, uid = LocalPlayer.UserId })
+                end
+                task.wait(3)
+            end
+            if joined then post("/room/leave", { job = game.JobId, uid = LocalPlayer.UserId }) end
+        end)
+
         function RV.rageTarget()
             local tp, tpart = RG.threat()
             RG.threatPlr = tp
             if tp and tpart then return tp, tpart end
-            return RG.pick()
+            -- v0.99.44: our share of the team split first; anyone when ours are all down
+            RG.allow = RG.teamAssigned()
+            local p, pt = RG.pick()
+            if p == nil and RG.allow ~= nil then
+                RG.allow = nil
+                p, pt = RG.pick()
+            end
+            RG.allow = nil
+            return p, pt
         end
 
         -- :: weapon-aware distance :: shotguns close in, spread guns stay near
