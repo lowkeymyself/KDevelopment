@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.35"
+Koffee.Version = "0.99.36"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -40975,12 +40975,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             pcall(function() r = tonumber(rawget(it.Info, "AttackReach")) or 6 end)
             return r
         end
-        function RG.meleeReady(it)
-            local cd = 0.5
-            pcall(function()
-                cd = tonumber(rawget(it.Info, "AttackCooldown")) or tonumber(rawget(it.Info, "Cooldown")) or 0.5
-            end)
-            return os.clock() - (RG.swingAt or 0) >= math.max(cd, 0.05)
+        -- v0.99.36: one next-attack clock, set by every packet we send (a heavy blocks
+        -- every attack for HeavyAttackCooldown, like the game's own _attack_cooldown)
+        function RG.meleeReady(_it)
+            return os.clock() >= (RG.meleeNext or 0)
         end
         -- v0.99.13: the health-drop hit path credits bodies we just fired at
         function RG.stampShot(part)
@@ -40995,46 +40993,60 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if type(mech) ~= "table" then return false end
             return pcall(function() mech:EquippedItemInput(name) end)
         end
-        function RG.swing(origin, part)
-            local cc = RV.CamCtrl
-            local rot0
-            pcall(function() rot0 = cc.Rotation end)
-            local faced = false
-            pcall(function()
-                local p, y = CFrame.lookAt(origin, part.Position):ToOrientation()
-                cc:SetRotation(Vector2.new(p, y))
-                faced = true
+        -- v0.99.36: melee hits go through the same UseItem packet as guns (the leaks'
+        -- method). The local input swung from the real body, so the server never saw a
+        -- hit. Light = StartShooting, heavy (Knife right click) = StartAiming.
+        function RG.meleePacket(it, origin, part, action)
+            local oid
+            if not pcall(function() oid = it:Get("ObjectID") end) or oid == nil then return false end
+            local toEnum = RV.Enums and RV.Enums.ToEnum
+            local U = RV.Utility
+            if type(toEnum) ~= "function" or U == nil or RV.UseItem == nil then return false end
+            local aim = CFrame.lookAt(origin, part.Position)
+            if not Koffee.cfOk(aim) then return false end
+            local c0, c1, c2, c3 = utf8.char(0), utf8.char(1), utf8.char(2), utf8.char(3)
+            local inner = {}
+            inner[c0] = U:EncodeCFrame(aim)
+            inner[c1] = U:EncodeCFrame(aim)
+            inner[c2] = part
+            inner[c3] = U:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(part.Position)))
+            local ok = pcall(function()
+                RV.UseItem:FireServer(oid, toEnum(RV.Enums, action), { [c1] = inner }, nil)
             end)
-            RG.swingAt = os.clock()
-            RG.firedAt = RG.swingAt
-            RG.stampShot(part)
-            RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
-            local ok = RG.input("StartShooting")
-            if faced and typeof(rot0) == "Vector2" then pcall(function() cc:SetRotation(rot0) end) end
-            task.delay(0.03, function() if not Koffee.dead() then RG.input("FinishShooting") end end)
+            if ok then
+                RG.swingAt = os.clock()
+                RG.firedAt = RG.swingAt
+                RG.stampShot(part)
+                RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
+            end
             return ok
         end
-        -- v0.99.35 knife: camera and view angle copy their facing (what makes a hit a
-        -- backstab), then left click and right click on the same edge
-        function RG.knifeSwing(part, flat)
-            local cc = RV.CamCtrl
-            local rot0
-            pcall(function() rot0 = cc.Rotation end)
+        local function infoNum(it, key, def)
+            local v = def
+            pcall(function() v = tonumber(rawget(it.Info, key)) or def end)
+            return v
+        end
+        function RG.swing(origin, part, it)
+            if it == nil then return false end
+            local ok = RG.meleePacket(it, origin, part, "StartShooting")
+            if ok then RG.meleeNext = os.clock() + math.max(infoNum(it, "AttackCooldown", 0.5), 0.05) end
+            return ok
+        end
+        -- Knife: right click (heavy) only when its own cooldown is up, since the
+        -- server refuses a rapid one and it blocks every attack while cooling;
+        -- otherwise the left click. The view angle copies their facing.
+        function RG.knifeSwing(it, origin, part, flat)
             local p, y = CFrame.lookAt(Vector3.zero, flat):ToOrientation()
             RV.setAngles(RV.slots.Rage, math.deg(p), math.deg(y))
-            local faced = pcall(function() cc:SetRotation(Vector2.new(p, y)) end)
-            RG.swingAt = os.clock()
-            RG.firedAt = RG.swingAt
-            RG.stampShot(part)
-            RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
-            RG.input("StartShooting")
-            RG.input("StartAiming")
-            if faced and typeof(rot0) == "Vector2" then pcall(function() cc:SetRotation(rot0) end) end
-            task.delay(0.03, function()
-                if Koffee.dead() then return end
-                RG.input("FinishShooting")
-                RG.input("FinishAiming")
-            end)
+            local now = os.clock()
+            local heavyCd = infoNum(it, "HeavyAttackCooldown", 1.25)
+            if now - (RG.heavyAt or -math.huge) >= heavyCd + 0.05
+                and RG.meleePacket(it, origin, part, "StartAiming") then
+                RG.heavyAt = now
+                RG.meleeNext = now + heavyCd + 0.05
+                return true
+            end
+            return RG.swing(origin, part, it)
         end
         -- the Chainsaw's right-click cut: held while inside reach, let go outside
         function RG.chainsaw(it, inReach)
@@ -41049,13 +41061,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- run during the cooldown and land exactly Lead before it ends
         function RG.readyIn(it)
             if it == nil then return math.huge end
-            if RG.isMelee(it) then
-                local cd = 0.5
-                pcall(function()
-                    cd = tonumber(rawget(it.Info, "AttackCooldown")) or tonumber(rawget(it.Info, "Cooldown")) or 0.5
-                end)
-                return math.max((RG.swingAt or 0) + math.max(cd, 0.05) - os.clock(), 0)
-            end
+            if RG.isMelee(it) then return math.max((RG.meleeNext or 0) - os.clock(), 0) end
             local now = tick()
             local cd, rcd = 0, 0
             pcall(function() cd = it._shoot_cooldown or 0 end)
@@ -41145,7 +41151,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         function RG.fire(it, origin, part)
             if RG.isMelee(it) then
                 if not cfg().Melee then return false end
-                return RG.swing(origin, part)
+                return RG.swing(origin, part, it)
             end
             local ammo
             pcall(function() ammo = it:Get("Ammo") end)
@@ -41389,7 +41395,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         local held = now - RG.knifeIn >= lead
                         local instant = C.InstantFire and now >= (RG.warmUntil or 0) and RG.placeNow(spot)
                         if RG.meleeReady(it) and (held or instant) then
-                            RG.knifeSwing(part, flat)
+                            RG.knifeSwing(it, pos, part, flat)
                             RG.knifeHold = now + math.max(RG.v("Hold") / 1000, 0.05)
                         end
                     elseif now < (RG.knifeHold or 0) and RG.knifeFor == plr then
