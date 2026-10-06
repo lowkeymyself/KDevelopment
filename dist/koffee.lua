@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.41"
+Koffee.Version = "0.99.42"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -39708,6 +39708,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
         return true
     end
+    -- v0.99.42: AssemblyHistoryBufferSize was 2147483648 (one past int32 max, from the
+    -- SkidOnyx leak); now 2147483647. Suspected cause of the vanish right after a kill.
     function RV.armEngine(want)
         if RV._armed == want then return end
         RV._armed = want
@@ -39719,7 +39721,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             pcall(sethiddenproperty, Workspace, "FallenPartsDestroyHeight", v)
         end
         if not setfflag then return end
-        local list = want and { { "DFIntS2PhysicsSenderRate", "120" }, { "DFIntAssemblyHistoryBufferSize", "2147483648" },
+        local list = want and { { "DFIntS2PhysicsSenderRate", "120" }, { "DFIntAssemblyHistoryBufferSize", "2147483647" },
             { "DFIntAssemblyHistorySkipSize", "1" } }
             or { { "DFIntS2PhysicsSenderRate", "15" }, { "DFIntAssemblyHistoryBufferSize", "15" },
             { "DFIntAssemblyHistorySkipSize", "8" } }
