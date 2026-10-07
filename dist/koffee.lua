@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.58"
+Koffee.Version = "0.99.59"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -41274,6 +41274,71 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             return best
         end
+        -- v0.99.59 lobby duels (read live): the arena is workspace.Arena, walled by six
+        -- InstakillOOB volumes, and the hub server kills anyone outside its allowed area
+        -- with a check the client never sees (the lobby carries a DisableOOBBlacklist tag
+        -- the match servers don't). So no void there. A lobby duel = we are in a duel and
+        -- someone in the server is not. The box is the arena's walls (tall volumes only;
+        -- the floor slab runs far past them), cached 2s.
+        function RG.lobbyBox()
+            local now = os.clock()
+            if RG.lbAt and now - RG.lbAt < 2 then return RG.lb end
+            RG.lbAt, RG.lb = now, nil
+            if RG.dc == nil then RG.sameDuel(LocalPlayer) end
+            local dc = RG.dc
+            if not dc then return nil end
+            local mine
+            pcall(function() mine = dc:GetDuel(LocalPlayer) end)
+            if mine == nil then return nil end
+            local outsider = false
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local d
+                    pcall(function() d = dc:GetDuel(plr) end)
+                    if d ~= mine then outsider = true; break end
+                end
+            end
+            if not outsider then return nil end
+            local arena = Workspace:FindFirstChild("Arena")
+            if not arena then return nil end
+            local lo, hi
+            for _, inst in ipairs(CS:GetTagged("OutOfBoundsPart")) do
+                if inst:IsA("BasePart") and inst:IsDescendantOf(arena) and inst.Size.Y > 60 then
+                    local h = inst.Size * 0.5
+                    for _, sx in ipairs({ -1, 1 }) do
+                        for _, sy in ipairs({ -1, 1 }) do
+                            for _, sz in ipairs({ -1, 1 }) do
+                                local c = (inst.CFrame * CFrame.new(h.X * sx, h.Y * sy, h.Z * sz)).Position
+                                lo = lo and lo:Min(c) or c
+                                hi = hi and hi:Max(c) or c
+                            end
+                        end
+                    end
+                end
+            end
+            if lo and hi then RG.lb = { lo = lo, hi = hi } end
+            return RG.lb
+        end
+        -- the safe spot inside the arena box farthest from every enemy
+        function RG.lobbyPick(mr)
+            local lb = RG.lb
+            if not lb then return nil end
+            local best, bd = nil, -1
+            for _ = 1, 30 do
+                local pos = Vector3.new(lb.lo.X + math.random() * (lb.hi.X - lb.lo.X),
+                    lb.lo.Y + math.random() * (lb.hi.Y - lb.lo.Y), lb.lo.Z + math.random() * (lb.hi.Z - lb.lo.Z))
+                if RG.budget(pos) == math.huge then
+                    local dmin = math.huge
+                    for _, plr in ipairs(Plrs:GetPlayers()) do
+                        local ch = plr ~= LocalPlayer and plr.Character
+                        local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                        if root and not RV.isAlly(plr) then dmin = math.min(dmin, (root.Position - pos).Magnitude) end
+                    end
+                    if dmin > bd then best, bd = pos, dmin end
+                end
+            end
+            return best or (mr and mr.Position)
+        end
         function RG.clearOfEnemies(pos, r)
             for _, plr in ipairs(Plrs:GetPlayers()) do
                 local ch = plr ~= LocalPlayer and plr.Character
@@ -42369,6 +42434,15 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     end
                     if pick then break end
                 end
+                -- v0.99.59: a lobby duel never voids (see RG.lobbyBox)
+                if RG.lobbyBox() then
+                    pick = RG.lobbyPick(mr)
+                    if not RG.lobbyNoted and Koffee.notify then
+                        RG.lobbyNoted = true
+                        Koffee.notify("Rage", "Lobby duel: the hub server kills anyone outside the arena, so hiding stays inside it",
+                            { severity = "info", duration = 6 })
+                    end
+                end
                 -- v0.99.30: nothing safe out there -> stay on the real (in bounds) body
                 RG.hide = CFrame.new(pick or mr.Position)
             end
@@ -42659,6 +42733,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 return RG.budget(pos) == math.huge
             end
             local pick = clear(mr.Position) and mr.Position or nil
+            if RG.lobbyBox() then pick = RG.lobbyPick(mr) end
             if pick == nil then
                 local rp = RaycastParams.new()
                 rp.FilterType = Enum.RaycastFilterType.Exclude
