@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.53"
+Koffee.Version = "0.99.54"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -25029,6 +25029,8 @@ registerConfig("item_skins", Koffee.ItemSkins)
             local L = { size = q.Size, sm = sm, ms = sm and sm.Scale, col = q.Color, t = q.Transparency,
                 mat = q.Material, rf = q.Reflectance, smTex = sm and sm.TextureId }
             if q:IsA("MeshPart") then pcall(function() L.mpTex = q.TextureID end) end
+            -- v0.99.54: a SurfaceAppearance overrides TextureID, so a texture lifts it off
+            L.sa = q:FindFirstChildWhichIsA("SurfaceAppearance")
             -- a dress the source already carried (a pasted Copy Skin string)
             local kd = q:GetAttribute("_kdress")
             if type(kd) == "string" then
@@ -25068,6 +25070,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
             L.sm.TextureId = tex or L.smTex or ""
         elseif q:IsA("MeshPart") then
             pcall(function() q.TextureID = tex or L.mpTex or "" end)
+            if L.sa then pcall(function() L.sa.Parent = (not tex) and q or nil end) end
         elseif tex then
             local tile = math.clamp(tonumber(d.tile) or 2, 0.05, 50)
             for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
