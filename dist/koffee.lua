@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.47"
+Koffee.Version = "0.99.48"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -40808,27 +40808,139 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
             end
         end
+        -- v0.99.48: while countering, a free camera stays put (the body is hopping) and a
+        -- status panel shows the target, the logged home and the countdown back. The
+        -- counter ends 3s after there is no live target (they died, or we did).
+        local CAMBIND = "KoffeeCounterCam"
+        function RG.freecam(on, from)
+            pcall(function() RunService:UnbindFromRenderStep(CAMBIND) end)
+            if not on then return end
+            local UIS = game:GetService("UserInputService")
+            local cam = Workspace.CurrentCamera
+            local start = from or cam.CFrame
+            local pitch, yaw = start:ToOrientation()
+            local pos = start.Position
+            RunService:BindToRenderStep(CAMBIND, Enum.RenderPriority.Last.Value + 5, function(dt)
+                local d = UIS:GetMouseDelta()
+                yaw = yaw - d.X * 0.004
+                pitch = math.clamp(pitch - d.Y * 0.004, -1.5, 1.5)
+                local rot = CFrame.fromOrientation(pitch, yaw, 0)
+                local mv = Vector3.zero
+                if not UIS:GetFocusedTextBox() then
+                    if UIS:IsKeyDown(Enum.KeyCode.W) then mv = mv + rot.LookVector end
+                    if UIS:IsKeyDown(Enum.KeyCode.S) then mv = mv - rot.LookVector end
+                    if UIS:IsKeyDown(Enum.KeyCode.D) then mv = mv + rot.RightVector end
+                    if UIS:IsKeyDown(Enum.KeyCode.A) then mv = mv - rot.RightVector end
+                    if UIS:IsKeyDown(Enum.KeyCode.E) then mv = mv + Vector3.yAxis end
+                    if UIS:IsKeyDown(Enum.KeyCode.Q) then mv = mv - Vector3.yAxis end
+                end
+                local speed = UIS:IsKeyDown(Enum.KeyCode.LeftShift) and 120 or 40
+                pos = pos + mv * speed * dt
+                cam.CFrame = CFrame.new(pos) * rot
+            end)
+        end
+        function RG.counterPanel()
+            local P = Theme.Palette
+            local sg = Instance.new("ScreenGui")
+            sg.Name = "KoffeeCounterStatus"
+            sg.IgnoreGuiInset = true
+            sg.ResetOnSpawn = false
+            sg.DisplayOrder = 2147483000
+            pcall(function() sg.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+            local f = Instance.new("Frame")
+            f.AnchorPoint = Vector2.new(0.5, 0)
+            f.Position = UDim2.new(0.5, 0, 0, 18)
+            f.Size = UDim2.new(0, 500, 0, 102)
+            f.BackgroundColor3 = P.PanelElevated
+            f.BorderSizePixel = 0
+            f.Parent = sg
+            local cr = Instance.new("UICorner")
+            cr.CornerRadius = UDim.new(0, 10)
+            cr.Parent = f
+            local st = Instance.new("UIStroke")
+            st.Color = P.Success
+            st.Thickness = 1.5
+            st.Parent = f
+            local rows = {}
+            for i, spec in ipairs({ { Theme.Fonts.Bold, 15, P.Text }, { Theme.Fonts.Bold, 14, P.Success },
+                { Theme.Fonts.Mono, 12, P.TextMuted }, { Theme.Fonts.Medium, 13, P.TextMuted } }) do
+                local l = Instance.new("TextLabel")
+                l.BackgroundTransparency = 1
+                l.Position = UDim2.new(0, 14, 0, 8 + (i - 1) * 22)
+                l.Size = UDim2.new(1, -28, 0, 20)
+                l.TextXAlignment = Enum.TextXAlignment.Left
+                l.FontFace = spec[1]
+                l.TextSize = spec[2]
+                l.TextColor3 = spec[3]
+                l.Text = ""
+                l.Parent = f
+                rows[i] = l
+            end
+            return sg, rows
+        end
         function RG.counterStart(plr)
             local mr = myRoot()
-            RV.counter = { plr = plr, at = os.clock(), home = mr and mr.Position }
+            if not mr then return end
+            local home = mr.CFrame
+            local c = { plr = plr, at = os.clock(), home = home, char = LocalPlayer.Character }
+            RV.counter = c
             RG.intr.ev[plr] = nil
+            Shared.rtrace("counter start vs " .. plr.Name .. " home " .. Shared.rtv(home))
+            RG.freecam(true, Workspace.CurrentCamera.CFrame)
+            c.gui, c.rows = RG.counterPanel()
+            c.loop = RunService.Heartbeat:Connect(function()
+                if RV.counter ~= c then return end
+                local now = os.clock()
+                local cp = c.plr
+                if cp.Parent == nil then return RG.counterEnd("they left") end
+                if not on("rv_rage") or Koffee.dead() then return RG.counterEnd("rage off") end
+                local th = cp.Character and cp.Character:FindFirstChildOfClass("Humanoid")
+                local mh = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                local theyLive = th ~= nil and th.Health > 0
+                local weLive = LocalPlayer.Character == c.char and mh ~= nil and mh.Health > 0
+                if theyLive and weLive then
+                    c.noTgt = nil
+                else
+                    c.noTgt = c.noTgt or now
+                    if now - c.noTgt >= 3 then return RG.counterEnd(weLive and "target down" or "you died") end
+                end
+                local r = c.rows
+                if r then
+                    r[1].Text = "COUNTERING  " .. cp.DisplayName .. " (@" .. cp.Name .. ")"
+                    r[2].Text = "FREECAM ON: your camera is staying here while your body fights"
+                    r[3].Text = "home saved at " .. Shared.rtv(c.home) .. "  ·  WASD QE + mouse, Shift fast"
+                    if c.noTgt then
+                        r[4].Text = string.format("%s  ·  freecam off and back home in %.1fs",
+                            weLive and "target down" or "you died", math.max(0, 3 - (now - c.noTgt)))
+                    else
+                        r[4].Text = "fighting  ·  freecam stays on until you or they die (+3s)"
+                    end
+                end
+            end)
             if Koffee.notify then
-                Koffee.notify("Counter", "Fighting " .. plr.Name .. " with your real body", { severity = "success" })
+                Koffee.notify("Counter", "Freecam on: your camera stays here while your body fights " .. plr.Name
+                    .. ". Home saved at " .. Shared.rtv(home), { severity = "success", duration = 7 })
             end
         end
         function RG.counterEnd(why)
             local c = RV.counter
             if not c then return end
             RV.counter = nil
+            if c.loop then c.loop:Disconnect() end
+            if c.gui then pcall(function() c.gui:Destroy() end) end
+            RG.freecam(false)
+            Shared.rtrace("counter end (" .. tostring(why) .. ") home " .. Shared.rtv(c.home))
+            -- back to the logged home, only on the same life (a respawn already moved us)
             local mr = myRoot()
-            local back = RG.surfaceCF(os.clock()) or (c.home and CFrame.new(c.home))
-            if mr and back then
+            if mr and LocalPlayer.Character == c.char then
                 pcall(function()
-                    mr.CFrame = back
+                    mr.CFrame = c.home
                     mr.AssemblyLinearVelocity = Vector3.zero
                 end)
             end
-            if Koffee.notify then Koffee.notify("Counter", "Ended: " .. tostring(why), { severity = "info" }) end
+            if Koffee.notify then
+                Koffee.notify("Counter", "Ended (" .. tostring(why) .. "): freecam off, back home", { severity = "info" })
+            end
         end
         function RG.counterPrompt(plr)
             local I = RG.intr
@@ -40912,19 +41024,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             RG.threatPlr = tp
             if tp and tpart then return tp, tpart end
             -- v0.99.47: a countered cheater is the target for as long as the counter runs
+            -- (RG.counterStart's loop ends it 3s after no live target)
             local c = RV.counter
-            if c then
-                local cp = c.plr
-                if cp.Parent == nil or not on("rv_rage") or Koffee.dead() then
-                    RG.counterEnd(cp.Parent == nil and "they left" or "rage off")
-                elseif not RG.sameDuel(cp) then
-                    RG.counterEnd("duel over")
-                else
-                    local ch = cp.Character
-                    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-                    local part = ch and partOf(ch, R.LockPart)
-                    if hum and hum.Health > 0 and part then return cp, part end
-                end
+            if c and c.plr.Parent ~= nil then
+                local ch = c.plr.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local part = ch and partOf(ch, R.LockPart)
+                if hum and hum.Health > 0 and part then return c.plr, part end
             end
             -- v0.99.44: our share of the team split first; anyone when ours are all down
             RG.allow = RG.teamAssigned()
