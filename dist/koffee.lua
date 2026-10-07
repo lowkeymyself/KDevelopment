@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.57"
+Koffee.Version = "0.99.58"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -42753,6 +42753,79 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local live = it ~= nil and RV.inRound() and not RV.isDeflecting(plr)
             local aggr = RG.aggressive(plr)
             local t = RG.track[plr]
+            -- v0.99.58 counter strike: a countered cheater surfaces for a moment to one-shot
+            -- (sniper headshot, knife backstab) and voids again, so there is no time for an
+            -- approach. The instant they are back near the arena and our weapon is ready:
+            -- teleport and shoot / stab in the same frame, aimed at where they are now (no
+            -- prediction on a teleporter). Otherwise: void, and an empty gun swaps to a loaded one.
+            local cn = RV.counter
+            if cn and cn.plr == plr then
+                local ch = plr.Character
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local homePos = cn.home and cn.home.Position or mr.Position
+                local surfaced = root ~= nil and hum ~= nil and hum.Health > 0 and not (t and t.sub)
+                    and (root.Position - homePos).Magnitude < 1500
+                local melee = it ~= nil and RG.isMelee(it)
+                if it ~= nil and not melee then
+                    local ammo
+                    pcall(function() ammo = it:Get("Ammo") end)
+                    if type(ammo) == "number" and ammo <= 0 then RG.swapEmpty(it) end
+                end
+                local ready = it ~= nil and RG.readyIn(it) <= 0 and (not melee or C.Melee)
+                RG.phase = "idle"
+                local tgtPart = surfaced and ((not melee and ch:FindFirstChild("Head")) or root) or part
+                if surfaced and ready and live and not (cn.hold and now < cn.hold) then
+                    local spot, flat
+                    if melee then
+                        local look = root.CFrame.LookVector
+                        flat = Vector3.new(look.X, 0, look.Z)
+                        flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
+                        local pos = root.Position - flat * 0.75
+                        spot = CFrame.lookAt(pos, pos + flat)
+                    else
+                        spot = RG.planSpot(plr, tgtPart, it)
+                        if not spot then
+                            -- no planned spot: a few studs behind them at head height, if safe
+                            local look = root.CFrame.LookVector
+                            local back = Vector3.new(look.X, 0, look.Z)
+                            back = back.Magnitude > 0.01 and back.Unit or Vector3.new(0, 0, -1)
+                            local pos = tgtPart.Position - back * 6 + Vector3.new(0, 0.5, 0)
+                            if RG.safe(pos) then spot = CFrame.lookAt(pos, tgtPart.Position) end
+                        end
+                    end
+                    if spot and RV.cfValid(spot) then
+                        RG.placeNow(spot)
+                        RV._rageCF = spot
+                        if melee then
+                            if tostring(it.Name) == "Knife" then RG.knifeSwing(it, spot.Position, tgtPart, flat)
+                            else RG.swing(spot.Position, tgtPart, it) end
+                            -- a melee hit is judged AttackDelay later against our server body
+                            local delay = 0
+                            pcall(function() delay = tonumber(rawget(it.Info, "AttackDelay")) or 0 end)
+                            cn.hold = now + delay + RG.ping() + 0.1
+                        else
+                            RG.fire(it, spot.Position, tgtPart)
+                            cn.hold = now + 0.08
+                        end
+                        cn.spot = spot
+                    end
+                end
+                if cn.hold and now < cn.hold and cn.spot then
+                    RV._rageCF = cn.spot
+                    RG.action = "counter: struck"
+                else
+                    RV._rageCF = RG.oobStep(now, RG.hideCF(mr, now))
+                    RG.action = not surfaced and "counter: waiting for them to surface"
+                        or (ready and "counter: no clean spot" or "counter: voided until ready")
+                end
+                local from = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
+                if from then
+                    local p, y = RV.anglesTo(from, tgtPart.Position)
+                    if p then RV.setAngles(RV.slots.Rage, p, y) end
+                end
+                return
+            end
             -- v0.99.5 anti-melee: they came to us, so shoot from where we stand, then
             -- dodge to a fresh sky spot so the swing lands on air
             if C.AntiMelee and RG.threatPlr == plr then
