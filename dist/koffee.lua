@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.45"
+Koffee.Version = "0.99.46"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -41386,9 +41386,23 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             ["Primary > Secondary > Melee"] = { 1, 2, 3 }, ["Secondary > Primary > Melee"] = { 2, 1, 3 },
             ["Primary > Melee"] = { 1, 3 }, ["Secondary > Melee"] = { 2, 3 }, ["Primary > Secondary"] = { 1, 2 },
         }
+        -- v0.99.46: a slot can fight when it is a gun with rounds in the mag, or a melee
+        -- weapon while Melee Ragebot is on (otherwise melee would just sit hidden)
+        function RG.slotUsable(other)
+            local usable = false
+            pcall(function()
+                if RG.isMelee(other) then
+                    usable = cfg().Melee == true
+                elseif other.Info.Type == "Gun" then
+                    local a = other:Get("Ammo")
+                    usable = type(a) == "number" and a > 0
+                end
+            end)
+            return usable
+        end
         function RG.swapEmpty(it)
             local now = os.clock()
-            if now - (RG.swapAt or 0) < 0.6 then return true end
+            if now - (RG.swapAt or 0) < 0.4 then return true end
             local lf = RV.localFighter()
             local items
             pcall(function() items = lf.Items end)
@@ -41396,31 +41410,28 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local order = RG.SWAP[cfg().SwapOrder] or RG.SWAP["Primary > Secondary > Melee"]
             for _, slot in ipairs(order) do
                 local other = items[slot]
-                if other ~= nil and other ~= it then
-                    local usable = false
-                    pcall(function()
-                        if RG.isMelee(other) then
-                            usable = true
-                        else
-                            local a = other:Get("Ammo")
-                            usable = a == nil or a > 0
-                        end
-                    end)
-                    if usable then
-                        RG.swapAt = now
-                        Shared.rtrace("native EquipItem " .. tostring(slot))
-                        pcall(function() lf:EquipItem(slot) end)
-                        return true
-                    end
+                if other ~= nil and other ~= it and RG.slotUsable(other) then
+                    RG.swapAt = now
+                    Shared.rtrace("native EquipItem " .. tostring(slot))
+                    pcall(function() lf:EquipItem(slot) end)
+                    return true
                 end
             end
-            -- nothing loaded: bring the first slot back and let it reload there
-            local first = items[order[1]]
-            if first ~= nil and first ~= it then
-                RG.swapAt = now
-                Shared.rtrace("native EquipItem " .. tostring(order[1]))
-                pcall(function() lf:EquipItem(order[1]) end)
-                return true
+            -- nothing loaded: a gun in hand reloads where it is (swapping would cancel
+            -- the reload); melee / utility in hand goes back to the first gun to reload
+            local isGun = false
+            pcall(function() isGun = it ~= nil and it.Info.Type == "Gun" end)
+            if isGun then return false end
+            for _, slot in ipairs(order) do
+                local g = items[slot]
+                local gun = false
+                pcall(function() gun = g ~= nil and g ~= it and g.Info.Type == "Gun" end)
+                if gun then
+                    RG.swapAt = now
+                    Shared.rtrace("native EquipItem " .. tostring(slot))
+                    pcall(function() lf:EquipItem(slot) end)
+                    return true
+                end
             end
             return false
         end
@@ -41608,6 +41619,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
                 return
             end
+            -- v0.99.46 swap on empty, every rage frame (fire is never reached mid-reload)
+            if C.SwapEmpty and it ~= nil and not RG.isMelee(it) then
+                local ammo
+                pcall(function() ammo = it:Get("Ammo") end)
+                if type(ammo) == "number" and ammo <= 0 then RG.swapEmpty(it) end
+            end
             -- v0.99.33 hide when we cannot shoot: an empty mag, a reload, or no gun out
             -- (nothing held, or a throwable / utility). The server body waits at the void
             -- spot; a reload returns Lead before it ends. Melee with Melee Ragebot fights.
@@ -41630,7 +41647,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         pcall(function() ammo = it:Get("Ammo") end)
                         local left = rcd - tick()
                         local empty = type(ammo) == "number" and ammo <= 0
-                        if empty and left <= 0 and not (C.SwapEmpty and RG.swapEmpty(it)) then
+                        -- v0.99.46: RIVALS starts the reload the moment the mag hits 0, so the
+                        -- swap must not wait for the reload to be idle (it never was)
+                        local swapped = empty and C.SwapEmpty and RG.swapEmpty(it)
+                        if empty and left <= 0 and not swapped then
                             local lf = RV.localFighter()
                             local inp = lf and lf.Input
                             if type(inp) == "function" then pcall(inp, lf, "StartReloading") end
