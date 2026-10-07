@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.56"
+Koffee.Version = "0.99.57"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -5623,6 +5623,19 @@ end
 -- v0.12.3: rename = copy the file's bytes to the new name, then drop the old one.
 -- Deliberately NOT a save() under the new name: that would snapshot whatever is
 -- live right now and silently rewrite the config you were only renaming.
+-- v0.99.57: a copy of a config under a new name (the original stays)
+function ConfigIO.duplicate(old, newName)
+    if not filesReady() then return false, "no file access" end
+    newName = tostring(newName):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if newName == "" then return false, "name required" end
+    local src, dst = CFG_DIR .. "/" .. old .. ".koffee", CFG_DIR .. "/" .. newName .. ".koffee"
+    if not fileAPI.isfile(src) then return false, "not found" end
+    if fileAPI.isfile(dst) then return false, "name already used" end
+    local rok, text = pcall(fileAPI.read, src)
+    if not rok or type(text) ~= "string" then return false, "read failed" end
+    if not pcall(fileAPI.write, dst, text) then return false, "write failed" end
+    return true, newName
+end
 function ConfigIO.rename(old, newName)
     if not (filesReady() and fileAPI.delfile) then return false, "no file access" end
     newName = tostring(newName):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -25203,6 +25216,22 @@ registerConfig("item_skins", Koffee.ItemSkins)
             local k = i .. ":" .. p.Name
             b.keys[p], b.byKey[k] = k, p
         end
+        -- v0.99.57 duplicated parts: s.dups["<id>"] = source key, copy keyed "d<id>:<name>"
+        if type(s.dups) == "table" then
+            for id, from in pairs(s.dups) do
+                local src = b.byKey[from]
+                if src then
+                    local c
+                    pcall(function() src.Archivable = true; c = src:Clone() end)
+                    if c then
+                        c.Parent = src.Parent
+                        local k = "d" .. tostring(id) .. ":" .. src.Name
+                        rel[c], b.keys[c], b.byKey[k] = rel[src], k, c
+                        ours[c] = true
+                    end
+                end
+            end
+        end
         PT.capture(b)
         PT.apply(b, s, false)
         return b
@@ -25709,6 +25738,67 @@ registerConfig("item_skins", Koffee.ItemSkins)
             note("Item Models", "Copied the skin with your part edits (" .. #str .. " chars)")
         end)
         actBtn("Clear Skin", function() IS.clear() end)
+        -- v0.99.57 skin library: named skins in workspace Koffee/skins, loadable on any item
+        pcall(function() if makefolder and isfolder and not isfolder("Koffee/skins") then makefolder("Koffee/skins") end end)
+        local libHead = new("TextLabel", { Text = "SKIN LIBRARY", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, 0, 0, 18), Parent = card })
+        local libList = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, Parent = card },
+            { new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local function libName(n) return (tostring(n):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")) end
+        local refreshLib
+        local function libRow(name, order)
+            local row = new("Frame", { Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = order,
+                Parent = libList }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+                    Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center,
+                    SortOrder = Enum.SortOrder.LayoutOrder }) })
+            new("TextLabel", { Text = name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, -132, 1, 0), LayoutOrder = 0, Parent = row })
+            local function mini(text, ord, fn)
+                local b = new("TextButton", { Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                    TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+                    Size = UDim2.fromOffset(60, 24), LayoutOrder = ord, Parent = row }, { corner(6) })
+                b.MouseButton1Click:Connect(fn)
+            end
+            mini("Load", 1, function()
+                local ok, d = pcall(function() return Http:JSONDecode(readfile("Koffee/skins/" .. name .. ".json")) end)
+                if not (ok and type(d) == "table") then note("Item Models", "Couldn't read " .. name); return end
+                if IS.applyTo(d) then note("Item Models", "Loaded " .. name) end
+            end)
+            mini("Delete", 2, function()
+                pcall(function() delfile("Koffee/skins/" .. name .. ".json") end)
+                refreshLib()
+            end)
+        end
+        refreshLib = function()
+            for _, c in ipairs(libList:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+            local names = {}
+            pcall(function()
+                for _, f in ipairs(listfiles("Koffee/skins")) do
+                    local n = tostring(f):match("([^/\\]+)%.json$")
+                    if n then names[#names + 1] = n end
+                end
+            end)
+            table.sort(names)
+            for i, n in ipairs(names) do libRow(n, i) end
+            libHead.Text = "SKIN LIBRARY (" .. #names .. ")"
+        end
+        inputRow("name this skin to save it", "Save", function(box)
+            local nm = libName(box.Text or "")
+            if nm == "" then note("Item Models", "Type a name first"); return end
+            local sk0 = IS.skinFor()
+            if not sk0 then note("Item Models", "No skin on this item to save"); return end
+            local ok, js = pcall(Http.JSONEncode, Http, sk0)
+            if not ok or not pcall(writefile, "Koffee/skins/" .. nm .. ".json", js) then
+                note("Item Models", "Couldn't save " .. nm); return
+            end
+            box.Text = ""
+            note("Item Models", "Saved " .. nm)
+            refreshLib()
+        end)
+        refreshLib()
         actBtn("Edit in 3D", function()
             local h = IS.current()
             if h and h.kind == "Arms" then note("Item Models", "Arms use the sliders below, the 3D editor is for items"); return end
@@ -26632,12 +26722,40 @@ end)()
         -- v0.99.52 every part of the skin, picked one by one
         local plist = {}
         for part, k in pairs(ED.b.keys) do
-            plist[#plist + 1] = { k = k, i = tonumber(k:match("^(%d+)")) or 0, name = part.Name }
+            local di = k:match("^d(%d+)")
+            plist[#plist + 1] = { k = k, i = tonumber(k:match("^(%d+)")) or (10000 + (tonumber(di) or 0)),
+                name = di and (part.Name .. " (copy)") or part.Name }
         end
         table.sort(plist, function(a, b) return a.i < b.i end)
         text(out, "PARTS (" .. #plist .. ")", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 200)
         text(out, "click one on the skin, Shift-click for the whole skin", Theme.Text.Small - 2,
             Theme.Palette.TextMuted, Theme.Fonts.Regular, 201, true)
+        -- v0.99.57: search + hide / show every part
+        local srch = new("TextBox", { Text = "", PlaceholderText = "search parts", ClearTextOnFocus = false,
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+            PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
+            BackgroundTransparency = 0.15, Size = UDim2.new(1, 0, 0, 24), TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = 201, ZIndex = 6, Parent = out },
+            { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        srch:GetPropertyChangedSignal("Text"):Connect(function()
+            local q = string.lower(srch.Text or "")
+            for _, r in ipairs(ED.rows) do
+                if r.part then r.b.Visible = q == "" or string.find(string.lower(r.name or ""), q, 1, true) ~= nil end
+            end
+        end)
+        local hs = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 201, ZIndex = 6, Parent = out })
+        list(hs, Enum.FillDirection.Horizontal, 6)
+        local function every(hide)
+            pushUndo()
+            if type(ED.s.parts) ~= "table" then ED.s.parts = {} end
+            for _, key in pairs(ED.b.keys) do
+                local e = ED.s.parts[key] or {}
+                e.hide = hide or nil
+                ED.s.parts[key] = e
+            end
+        end
+        button(hs, "Hide all", 1, function() every(true) end)
+        button(hs, "Show all", 2, function() every(false) end)
         local ps = new("ScrollingFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, math.min(#plist * 28, 280)),
             CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
             ScrollBarImageColor3 = Theme.Palette.Border, ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -26659,7 +26777,7 @@ end)()
                 Position = UDim2.new(1, -8, 0, 0), Size = UDim2.new(0, 60, 1, 0),
                 TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 7, Parent = pb })
             pb.MouseButton1Click:Connect(function() selectTarget(tgt) end)
-            ED.rows[#ED.rows + 1] = { b = pb, dot = dot, sub = t2, target = tgt, part = it.k }
+            ED.rows[#ED.rows + 1] = { b = pb, dot = dot, sub = t2, target = tgt, part = it.k, name = it.i .. " " .. it.name }
         end
 
         -- inspector
@@ -26817,6 +26935,34 @@ end)()
         button(gps, "Copy style", 1, function() ED.pcopy() end)
         button(gps, "Paste style", 2, function() ED.ppaste(false) end)
         button(gps, "Paste on all", 3, function() ED.ppaste(true) end)
+        -- v0.99.57: duplicate a part (the editor reloads to build it); copies can be deleted
+        local gdp = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 46, ZIndex = 6, Parent = gp })
+        list(gdp, Enum.FillDirection.Horizontal, 6)
+        button(gdp, "Duplicate", 1, function()
+            local k = ED.pkey()
+            if not k then return end
+            local sk = ED.s
+            sk.dups = type(sk.dups) == "table" and sk.dups or {}
+            sk.dupN = (tonumber(sk.dupN) or 0) + 1
+            local id = tostring(sk.dupN)
+            local from = k:match("^d%d+:") and sk.dups[k:match("^d(%d+):")] or k
+            sk.dups[id] = from
+            -- the copy starts with this part's edits, so it lands right on top of it
+            local e = ED.pentry(false)
+            if e then
+                sk.parts = sk.parts or {}
+                sk.parts["d" .. id .. ":" .. (ED.b.byKey[k] and ED.b.byKey[k].Name or "")] = copy(e)
+            end
+            if ED.reopen then ED.reopen("d" .. id .. ":" .. (ED.b.byKey[k] and ED.b.byKey[k].Name or "")) end
+        end)
+        ED.delCopyBtn = button(gdp, "Delete copy", 2, function()
+            local k = ED.pkey()
+            local id = k and k:match("^d(%d+):")
+            if not id then return end
+            if type(ED.s.dups) == "table" then ED.s.dups[id] = nil end
+            if type(ED.s.parts) == "table" then ED.s.parts[k] = nil end
+            if ED.reopen then ED.reopen(nil) end
+        end)
         ED.gPart = gp
 
         local gn = group(insp, 3)
@@ -26914,6 +27060,7 @@ end)()
             local e = ED.pentry(false)
             ED.hideBtn.Text = (e and e.hide) and "Show" or "Hide"
             ED.matDd.setValue((e and e.m) or "Original")
+            ED.delCopyBtn.Visible = pk:match("^d%d+:") ~= nil
             ED.fxDd.setValue((e and e.fx) or "None")
             if ED.lastPk ~= pk then
                 -- the text boxes follow the selection, not every refresh (so typing isn't eaten)
@@ -27298,6 +27445,16 @@ end)()
     end
     IS.openEditor = open
     IS.closeEditor = function() close() end
+    -- rebuild the stage (after a part is duplicated or a copy deleted), keeping the view
+    function ED.reopen(selKey)
+        local view = ED.view
+        close()
+        open()
+        if ED.open then
+            if view then ED.view = view end
+            if selKey and ED.b and ED.b.byKey[selKey] then selectTarget("p:" .. selKey) end
+        end
+    end
     IS._editor = ED
 end)()
 
@@ -27963,6 +28120,95 @@ addTab("Options", function(root)
         local tp = panel(root, "Koffee Team")
         configCheckbox(tp, "Koffee Team", TP.On, function(v) TP.On = v; TP.save() end)
         configCheckbox(tp, "Join Notifications", TP.Notify, function(v) TP.Notify = v; TP.save() end)
+        -- v0.99.57: who's here, live (the room data the team split already uses)
+        local teamList = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true, AutomaticSize = Enum.AutomaticSize.Y,
+            Size = UDim2.new(1, 0, 0, 16), Parent = tp })
+        task.spawn(function()
+            while teamList.Parent and not Koffee.dead() do
+                local RG = Shared.RV and Shared.RV.RG
+                local T = RG and RG.team
+                local lines = {}
+                if T and os.clock() - (T.at or -math.huge) < 12 then
+                    for uid, e in pairs(T.peers) do
+                        local plr = Players:GetPlayerByUserId(uid)
+                        local tgt = e.tgt and Players:GetPlayerByUserId(e.tgt)
+                        lines[#lines + 1] = string.format("%s (@%s)  v%s  ·  %s%s", plr and plr.DisplayName or tostring(e.name),
+                            tostring(e.name), tostring(e.ver), e.rage and "rage on" or "rage off",
+                            tgt and ("  ·  on " .. tgt.Name) or "")
+                    end
+                end
+                teamList.Text = #lines > 0 and table.concat(lines, "\n") or (TP.On and "No other Koffee users in this server"
+                    or "Koffee Team is off")
+                task.wait(1)
+            end
+        end)
+
+        -- v0.99.57 panic key: one press turns off every enabled feature (and closes the
+        -- menu), the next turns exactly those back on. Saved with Skip Loading, never a config.
+        local PK = { key = nil, on = false, list = {} }
+        pcall(function()
+            if isfile and readfile and isfile("Koffee/startup.json") then
+                local d = HS:JSONDecode(readfile("Koffee/startup.json"))
+                if type(d) == "table" and type(d.PanicKey) == "string" then PK.key = Enum.KeyCode[d.PanicKey] end
+            end
+        end)
+        local function savePrefs()
+            pcall(function()
+                local d = {}
+                if isfile("Koffee/startup.json") then
+                    local ok, t = pcall(HS.JSONDecode, HS, readfile("Koffee/startup.json"))
+                    if ok and type(t) == "table" then d = t end
+                end
+                d.PanicKey = PK.key and PK.key.Name or nil
+                writefile("Koffee/startup.json", HS:JSONEncode(d))
+            end)
+        end
+        local function panic()
+            if not PK.on then
+                PK.list = {}
+                for id, m in pairs(Modules) do
+                    if m.Enabled then PK.list[#PK.list + 1] = id end
+                end
+                for _, id in ipairs(PK.list) do pcall(toggleModule, id) end
+                if Shared.setWindowOpen then pcall(Shared.setWindowOpen, false) end
+                PK.on = true
+            else
+                for _, id in ipairs(PK.list) do
+                    local m = Modules[id]
+                    if m and not m.Enabled then pcall(toggleModule, id) end
+                end
+                PK.list, PK.on = {}, false
+            end
+        end
+        Shared.panic = panic
+        local pp = panel(root, "Panic")
+        local pkBtn = new("TextButton", { Text = "", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+            Size = UDim2.new(1, 0, 0, 28), Parent = pp }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        local capturing = false
+        local function label()
+            pkBtn.Text = capturing and "Press a key... (Esc clears)" or ("Panic Key: " .. (PK.key and PK.key.Name or "None"))
+        end
+        label()
+        pkBtn.MouseButton1Click:Connect(function() capturing = true; label() end)
+        new("TextLabel", { Text = "Turns every enabled feature off and closes the menu. Press again to bring them back.",
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+            AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 16), Parent = pp })
+        UserInputService.InputBegan:Connect(function(io, gp)
+            if Koffee.dead() or io.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if capturing then
+                capturing = false
+                PK.key = io.KeyCode ~= Enum.KeyCode.Escape and io.KeyCode or nil
+                savePrefs()
+                label()
+                return
+            end
+            if gp or UserInputService:GetFocusedTextBox() then return end
+            if PK.key and io.KeyCode == PK.key then panic() end
+        end)
     end)()
     ;(function()
         local o = KoffeeOptions
@@ -32746,6 +32992,18 @@ addTab("Configs", function(root)
             selectedName = msg
             rebuildManager()
             setStatus("Renamed: " .. from .. " -> " .. msg, true)
+        end)
+    end).LayoutOrder = 3
+    mkBtn(actionRow, "Duplicate", 84, function()
+        if not needSel() then return end
+        if not Shared.openTextPopup then return end
+        local from = selectedName
+        Shared.openTextPopup("duplicate config", from .. " copy", "new name", function(txt)
+            local ok, msg = CIO.duplicate(from, txt)
+            if not ok then setStatus("Duplicate failed: " .. tostring(msg), false); return end
+            selectedName = msg
+            rebuildManager()
+            setStatus("Duplicated: " .. from .. " -> " .. msg, true)
         end)
     end).LayoutOrder = 3
     mkBtn(actionRow, "Delete", 66, function()
