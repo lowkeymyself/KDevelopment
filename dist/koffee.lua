@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.60"
+Koffee.Version = "0.99.61"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -24852,6 +24852,36 @@ registerConfig("item_skins", Koffee.ItemSkins)
         local body = iv:FindFirstChild("Body")
         local bp = body and body:IsA("Model") and body.PrimaryPart
         if h and bp then h.root = bp end
+        -- v0.99.61 animated pieces: every ItemVisual child model is one piece, its
+        -- PrimaryPart driven by a Motor6D from the viewmodel root (Body, Magazine, Bolt,
+        -- ReloadMagazine, StringCurve, Arrow...). rest = where the piece sits on Body with
+        -- no animation, from the motors' C0 / C1, so it never depends on the current pose.
+        if h then
+            local motors = {}
+            for _, d in ipairs(vm:GetDescendants()) do
+                if d:IsA("Motor6D") and d.Part1 then motors[d.Part1] = d end
+            end
+            local bm = bp and motors[bp]
+            local bodyRest = bm and (bm.C0 * bm.C1:Inverse())
+            local pieces = {}
+            for _, c in ipairs(iv:GetChildren()) do
+                if c:IsA("Model") and c.PrimaryPart then
+                    local m = motors[c.PrimaryPart]
+                    local rest
+                    if m and bm and m.Part0 == bm.Part0 then
+                        rest = bodyRest:Inverse() * (m.C0 * m.C1:Inverse())
+                    elseif bp then
+                        rest = bp.CFrame:ToObjectSpace(c.PrimaryPart.CFrame)
+                    end
+                    local ps = {}
+                    for _, x in ipairs(c:GetDescendants()) do
+                        if x:IsA("BasePart") and x ~= c.PrimaryPart then ps[#ps + 1] = x end
+                    end
+                    pieces[c.Name] = { prim = c.PrimaryPart, rest = rest or CFrame.identity, parts = ps }
+                end
+            end
+            h.pieces = pieces
+        end
         return h
     end
     IS.rivalsVM = rivalsVM
@@ -25026,7 +25056,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
         IS_RT.arms, IS_RT.armsKey = nil, nil
         if IS_RT.model then pcall(function() IS_RT.model:Destroy() end) end
         IS_RT.model, IS_RT.modelKey, IS_RT.rel, IS_RT.grip = nil, nil, nil, nil
-        IS_RT.root, IS_RT.weld, IS_RT.weldAnchor, IS_RT.b = nil, nil, nil, nil
+        IS_RT.root, IS_RT.weld, IS_RT.weldAnchor, IS_RT.b, IS_RT.pw = nil, nil, nil, nil, nil
     end
     local function skinKey(s) return table.concat({ s.src or "", tostring(s.asset or ""), s.data and #s.data or 0,
         s.data and s.data:sub(-24) or "", tostring(s.scale or 1) }, "|") end
@@ -25586,10 +25616,20 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 end
                 for p in pairs(IS_RT.rel) do p.Anchored = false; p.Massless = true end
                 local rr = IS_RT.rel[IS_RT.root] or CFrame.identity
+                local keys = IS_RT.b and IS_RT.b.keys or {}
+                IS_RT.pw = {}
                 for p, rel in pairs(IS_RT.rel) do
                     if p ~= IS_RT.root then
                         local w = Instance.new("Weld")
-                        w.Part0, w.Part1, w.C0 = IS_RT.root, p, rr:Inverse() * rel
+                        local e = PT.edit(s, keys[p] or "")
+                        local pc = e and e.piece and h.pieces and h.pieces[e.piece]
+                        if pc and pc.prim and pc.prim.Parent then
+                            -- v0.99.61: rides its RIVALS piece (magazine, bolt...)
+                            w.Part0, w.Part1 = pc.prim, p
+                            IS_RT.pw[#IS_RT.pw + 1] = { w = w, inv = pc.rest:Inverse(), p = p, pc = pc }
+                        else
+                            w.Part0, w.Part1, w.C0 = IS_RT.root, p, rr:Inverse() * rel
+                        end
                         w.Parent = IS_RT.model
                     end
                 end
@@ -25599,6 +25639,16 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 IS_RT.weld, IS_RT.weldAnchor = w, h.root
             end
             IS_RT.weld.C0 = seat * off * (IS_RT.rel[IS_RT.root] or CFrame.identity)
+            -- pieces: follow the offset sliders, and show only while RIVALS shows the piece
+            -- (ReloadMagazine is only visible mid-reload)
+            for _, x in ipairs(IS_RT.pw or {}) do
+                x.w.C0 = x.inv * seat * off * (IS_RT.rel[x.p] or CFrame.identity)
+                local vis = #x.pc.parts == 0
+                for _, q in ipairs(x.pc.parts) do
+                    if q.Parent and q.Transparency < 1 then vis = true; break end
+                end
+                x.p.LocalTransparencyModifier = vis and 0 or 1
+            end
         else
             local base = h.root.CFrame * seat * off
             for p, rel in pairs(IS_RT.rel) do p.CFrame = base * rel end
@@ -26025,7 +26075,7 @@ end)()
         end
     end
     -- the look of one part (everything but where it sits), to stamp onto others
-    ED.LOOK = { "k", "c", "m", "t", "rf", "tex", "tile", "fx", "fs", "fc", "ptex" }
+    ED.LOOK = { "k", "c", "m", "t", "rf", "tex", "tile", "fx", "fs", "fc", "ptex" }   -- not "piece": that's per part
     function ED.pcopy()
         local e = ED.pentry(false)
         if not e then note("This part has no edits to copy"); return end
@@ -26911,6 +26961,17 @@ end)()
             if e then pushUndo(); e.fx = (v ~= "None") and v or nil end
         end)
         ED.fxDd.frame.LayoutOrder = 41
+        -- v0.99.61: which RIVALS piece this part moves with (Body = the gun itself)
+        local pieceNames = {}
+        for n in pairs(ED.h.pieces or {}) do if n ~= "Body" then pieceNames[#pieceNames + 1] = n end end
+        table.sort(pieceNames)
+        table.insert(pieceNames, 1, "Body")
+        ED.pieceDd = dropdown(gp, "Animated by", pieceNames, "Body", function(v)
+            local e = ED.pkey() and ED.pentry(true)
+            if e then pushUndo(); e.piece = (v ~= "Body") and v or nil end
+        end)
+        ED.pieceDd.frame.LayoutOrder = 39
+        ED.pieceDd.frame.Visible = #pieceNames > 1
         local function boxRow(order, ph, label, onGo)
             local row = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = order, ZIndex = 6, Parent = gp })
             list(row, Enum.FillDirection.Horizontal, 6)
@@ -27072,6 +27133,7 @@ end)()
             ED.matDd.setValue((e and e.m) or "Original")
             ED.delCopyBtn.Visible = pk:match("^d%d+:") ~= nil
             ED.fxDd.setValue((e and e.fx) or "None")
+            ED.pieceDd.setValue((e and e.piece) or "Body")
             if ED.lastPk ~= pk then
                 -- the text boxes follow the selection, not every refresh (so typing isn't eaten)
                 ED.lastPk = pk
