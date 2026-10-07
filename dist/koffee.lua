@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.51"
+Koffee.Version = "0.99.52"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -25003,6 +25003,55 @@ registerConfig("item_skins", Koffee.ItemSkins)
     end
     local function skinKey(s) return table.concat({ s.src or "", tostring(s.asset or ""), s.data and #s.data or 0,
         s.data and s.data:sub(-24) or "", tostring(s.scale or 1) }, "|") end
+    -- v0.99.52 per-part edits, s.parts[key] = { p = {x,y,z} (unscaled studs), r = {deg x,y,z},
+    -- k = size, hide = true, c = {r,g,b} }. Move / rotate happen in the part's own space.
+    -- Keys are "index:name" in the template's own part order, the same for every rebuild.
+    local PT = {}
+    function PT.edit(s, k)
+        local t = type(s.parts) == "table" and s.parts[k]
+        return type(t) == "table" and t or nil
+    end
+    function PT.delta(b, e)
+        if not e then return CFrame.identity end
+        local q, r, sc = e.p or {}, e.r or {}, b.scale or 1
+        return CFrame.new((q[1] or 0) * sc, (q[2] or 0) * sc, (q[3] or 0) * sc)
+            * CFrame.Angles(math.rad(r[1] or 0), math.rad(r[2] or 0), math.rad(r[3] or 0))
+    end
+    function PT.capture(b)
+        b.base, b.look = {}, {}
+        for q in pairs(b.keys) do
+            b.base[q] = b.root.CFrame:ToObjectSpace(q.CFrame)
+            local sm = q:FindFirstChildWhichIsA("SpecialMesh")
+            b.look[q] = { size = q.Size, sm = sm, ms = sm and sm.Scale, col = q.Color, t = q.Transparency }
+        end
+    end
+    -- back to the captured look and spots (the editor does this before a rescale)
+    function PT.reset(b)
+        local F = b.root.CFrame * (b.rel[b.root] or CFrame.identity):Inverse()
+        for q in pairs(b.keys) do
+            local L = b.look[q]
+            if L.sm then L.sm.Scale = L.ms else q.Size = L.size end
+            q.Color, q.Transparency, L.sig = L.col, L.t, nil
+            q.CFrame = F * b.base[q]
+        end
+    end
+    -- editing = true shows hidden parts faint so they can still be picked
+    function PT.apply(b, s, editing)
+        for q, k in pairs(b.keys) do
+            local e = PT.edit(s, k)
+            b.rel[q] = b.base[q] * PT.delta(b, e)
+            local L = b.look[q]
+            local kk = math.clamp(e and tonumber(e.k) or 1, 0.05, 20)
+            local c = e and type(e.c) == "table" and e.c or nil
+            local sig = kk .. "|" .. tostring(e and e.hide) .. "|" .. (c and table.concat(c, ",") or "") .. tostring(editing)
+            if L.sig ~= sig then
+                L.sig = sig
+                if L.sm then L.sm.Scale = L.ms * kk else q.Size = L.size * kk end
+                q.Color = c and Color3.new(c[1] or 0, c[2] or 0, c[3] or 0) or L.col
+                q.Transparency = (e and e.hide) and (editing and 0.85 or 1) or L.t
+            end
+        end
+    end
     -- one unparented skin: the live one and the editor's preview both come from here
     local function makeTemplate(s)
         local tpl
@@ -25043,7 +25092,14 @@ registerConfig("item_skins", Koffee.ItemSkins)
         tpl.Name = KID.name("ism")
         ours[tpl] = true
         for _, p in ipairs(parts) do ours[p] = true end
-        return { model = tpl, root = root, rel = rel, grip = g, mz = mz, scale = sc }
+        local b = { model = tpl, root = root, rel = rel, grip = g, mz = mz, scale = sc, keys = {}, byKey = {} }
+        for i, p in ipairs(parts) do
+            local k = i .. ":" .. p.Name
+            b.keys[p], b.byKey[k] = k, p
+        end
+        PT.capture(b)
+        PT.apply(b, s, false)
+        return b
     end
     local function build(s)
         local b = makeTemplate(s)
@@ -25335,10 +25391,11 @@ registerConfig("item_skins", Koffee.ItemSkins)
                         return
                     end
                     for part in pairs(b.rel) do part.Anchored = false; part.Massless = true end
+                    local rr = b.rel[b.root] or CFrame.identity
                     for part, rel in pairs(b.rel) do
                         if part ~= b.root then
                             local w = Instance.new("Weld")
-                            w.Part0, w.Part1, w.C0 = b.root, part, rel
+                            w.Part0, w.Part1, w.C0 = b.root, part, rr:Inverse() * rel
                             w.Parent = b.model
                         end
                     end
@@ -25352,7 +25409,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 IS_RT.arms, IS_RT.armsKey = built, akey
             end
             local aoff = offOf(s)
-            for _, b in ipairs(IS_RT.arms) do b.weld.C0 = aoff end
+            for _, b in ipairs(IS_RT.arms) do b.weld.C0 = aoff * (b.rel[b.root] or CFrame.identity) end
             if IS.HideOriginal ~= false then
                 for _, part in ipairs(h.parts) do
                     if part.Parent then
@@ -25383,10 +25440,11 @@ registerConfig("item_skins", Koffee.ItemSkins)
                     for _, c in ipairs(IS_RT.model:GetChildren()) do if c:IsA("Weld") then c:Destroy() end end
                 end
                 for p in pairs(IS_RT.rel) do p.Anchored = false; p.Massless = true end
+                local rr = IS_RT.rel[IS_RT.root] or CFrame.identity
                 for p, rel in pairs(IS_RT.rel) do
                     if p ~= IS_RT.root then
                         local w = Instance.new("Weld")
-                        w.Part0, w.Part1, w.C0 = IS_RT.root, p, rel
+                        w.Part0, w.Part1, w.C0 = IS_RT.root, p, rr:Inverse() * rel
                         w.Parent = IS_RT.model
                     end
                 end
@@ -25395,7 +25453,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 w.Parent = IS_RT.model
                 IS_RT.weld, IS_RT.weldAnchor = w, h.root
             end
-            IS_RT.weld.C0 = seat * off
+            IS_RT.weld.C0 = seat * off * (IS_RT.rel[IS_RT.root] or CFrame.identity)
         else
             local base = h.root.CFrame * seat * off
             for p, rel in pairs(IS_RT.rel) do p.CFrame = base * rel end
@@ -25453,7 +25511,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
     IS._ed = { makeTemplate = makeTemplate, templateFromInst = templateFromInst, partsOf = partsOf, fxList = fxList,
         fxTarget = fxTarget, fxEntry = fxEntry, restRel = restRel, muzzleSkin = muzzleSkin, offOf = offOf,
         seatFor = seatFor, fxRestore = fxRestore, scaleSeq = scaleSeq, FXC = FXC, rt = IS_RT, ours = ours,
-        hideOne = hideOne, hostOf = hostOf, cleanClone = cleanClone }
+        hideOne = hideOne, hostOf = hostOf, cleanClone = cleanClone, PT = PT }
     registerModule("itemskins", "Item Models", function() end, function() dropModel(); unhide() end)
     IS._probe = function() return pcall(step) end   -- test hook: one step, error returned
 
@@ -25531,6 +25589,18 @@ registerConfig("item_skins", Koffee.ItemSkins)
         actBtn("Copy Held", function()
             local h = IS.current()
             if h then IS.copyInst(h.obj) else note("Item Models", "Hold an item first") end
+        end)
+        actBtn("Copy Skin", function()
+            local sk0 = IS.skinFor()
+            if not sk0 then note("Item Models", "No skin on this item"); return end
+            local b = makeTemplate(sk0)
+            if not b then note("Item Models", "Skin isn't loaded yet, try again"); return end
+            for q, rel in pairs(b.rel) do q.CFrame = rel end
+            local str = encodeInst(b.model)
+            pcall(function() b.model:Destroy() end)
+            if not str then note("Item Models", "Nothing to copy"); return end
+            if setclipboard then pcall(setclipboard, str) end
+            note("Item Models", "Copied the skin with your part edits (" .. #str .. " chars)")
         end)
         actBtn("Clear Skin", function() IS.clear() end)
         actBtn("Edit in 3D", function()
@@ -25666,7 +25736,38 @@ end)()
         for k, v in pairs(t) do o[k] = copy(v) end
         return o
     end
-    local SNAP_KEYS = { "ox", "oy", "oz", "rx", "ry", "rz", "scale", "fx" }
+    local SNAP_KEYS = { "ox", "oy", "oz", "rx", "ry", "rz", "scale", "fx", "parts" }
+    -- v0.99.52 a single part of the skin is selected as ED.sel = "p:<key>"
+    function ED.pkey()
+        local sl = ED.sel
+        return type(sl) == "string" and sl:sub(1, 2) == "p:" and sl:sub(3) or nil
+    end
+    function ED.pentry(make)
+        local k = ED.pkey()
+        if not k then return nil end
+        local sk = ED.s
+        if type(sk.parts) ~= "table" then
+            if not make then return nil end
+            sk.parts = {}
+        end
+        local e = sk.parts[k]
+        if not e and make then
+            e = {}
+            sk.parts[k] = e
+        end
+        return e
+    end
+    function ED.pvals()
+        local e = ED.pentry(false) or {}
+        local q, r = e.p or {}, e.r or {}
+        local part = ED.b.byKey[ED.pkey() or ""]
+        local col = (type(e.c) == "table" and Color3.new(e.c[1] or 0, e.c[2] or 0, e.c[3] or 0))
+            or (part and ED.b.look[part].col) or Color3.new(1, 1, 1)
+        return { x = q[1] or 0, y = q[2] or 0, z = q[3] or 0, rx = r[1] or 0, ry = r[2] or 0, rz = r[3] or 0,
+            k = tonumber(e.k) or 1, cr = math.floor(col.R * 255 + 0.5), cg = math.floor(col.G * 255 + 0.5),
+            cb = math.floor(col.B * 255 + 0.5) }
+    end
+    local PIDX = { x = 1, y = 2, z = 3, rx = 1, ry = 2, rz = 3, cr = 1, cg = 2, cb = 3 }
     local function pushUndo()
         local o = {}
         for _, k in ipairs(SNAP_KEYS) do o[k] = copy(ED.s[k]) end
@@ -25678,6 +25779,31 @@ end)()
         if os.clock() - (ED.lastEdit or 0) > 0.6 then pushUndo() end
         ED.lastEdit = os.clock()
     end
+    function ED.pset(k, v)
+        edit()
+        local e = ED.pentry(true)
+        if not e then return end
+        if k == "x" or k == "y" or k == "z" then
+            e.p = e.p or { 0, 0, 0 }
+            e.p[PIDX[k]] = math.floor(v * 1000 + 0.5) / 1000
+        elseif k == "rx" or k == "ry" or k == "rz" then
+            e.r = e.r or { 0, 0, 0 }
+            e.r[PIDX[k]] = math.floor(v * 100 + 0.5) / 100
+        elseif k == "k" then
+            e.k = math.clamp(v, 0.05, 20)
+        else
+            local v0 = ED.pvals()
+            local c = { v0.cr / 255, v0.cg / 255, v0.cb / 255 }
+            c[PIDX[k]] = v / 255
+            e.c = c
+        end
+    end
+    function ED.ptoggle()
+        if not ED.pkey() then return end
+        pushUndo()
+        local e = ED.pentry(true)
+        e.hide = (not e.hide) or nil
+    end
     local function undo()
         local o = table.remove(ED.undo)
         if not o then note("Nothing to undo"); return end
@@ -25685,6 +25811,11 @@ end)()
         ED.b.mzKey = nil
     end
     local function selWorld()
+        local pk = ED.pkey()
+        if pk then
+            local part = ED.b.byKey[pk]
+            return part and ED.S * skinItem() * ED.b.rel[part] or nil
+        end
         if ED.sel == "model" then return ED.S * skinItem() end
         -- surface effects have no single point to drag
         if type(ED.sel) == "table" and ED.sel.part then return nil end
@@ -25699,6 +25830,18 @@ end)()
         s.rx, s.ry, s.rz = r2(math.deg(rx)), r2(math.deg(ry)), r2(math.deg(rz))
     end
     local function setSelWorld(W)
+        local pk = ED.pkey()
+        if pk then
+            local part = ED.b.byKey[pk]
+            if not part then return end
+            local d = ED.b.base[part]:Inverse() * ((ED.S * skinItem()):Inverse() * W)
+            local e = ED.pentry(true)
+            local sc = ED.b.scale or 1
+            e.p = { r3(d.X / sc), r3(d.Y / sc), r3(d.Z / sc) }
+            local ax, ay, az = d:ToEulerAnglesXYZ()
+            e.r = { r2(math.deg(ax)), r2(math.deg(ay)), r2(math.deg(az)) }
+            return
+        end
         if ED.sel == "model" then
             writeOff(X.seatFor(ED.h, ED.b.grip):Inverse() * ED.S:Inverse() * W)
         elseif type(ED.sel) == "table" then
@@ -25710,12 +25853,17 @@ end)()
         end
     end
     local function selScale()
+        if ED.pkey() then
+            local e = ED.pentry(false)
+            return e and tonumber(e.k) or 1
+        end
         if ED.sel == "model" then return tonumber(ED.s.scale) or 1 end
         local e = fxItems()[ED.sel.c.key]
         return e and tonumber(e.size) or 1
     end
     local function setSelScale(v)
         v = math.clamp(r2(v), 0.05, 20)
+        if ED.pkey() then ED.pentry(true).k = v; return end
         if ED.sel == "model" then ED.s.scale = v; return end
         local items = fxItems()
         local e = items[ED.sel.c.key]
@@ -25786,10 +25934,14 @@ end)()
     local function rescale()
         local b = ED.b
         local want = math.max(tonumber(ED.s.scale) or 1, 0.01)
+        -- part edits come off first so the scale lands on the clean skin, then go back on
+        X.PT.reset(b)
         pcall(function() b.model:ScaleTo(want) end)
-        for p in pairs(b.rel) do b.rel[p] = b.root.CFrame:ToObjectSpace(p.CFrame) end
+        X.PT.capture(b)
+        for p in pairs(b.rel) do b.rel[p] = b.base[p] end
         if b.mz then b.mz = b.mz * (want / (b.scale or 1)) end
         b.scale, b.mzKey = want, nil
+        X.PT.apply(b, ED.s, true)
         measure()
     end
     local function kindsOf(att)
@@ -25979,7 +26131,12 @@ end)()
             G.center.CFrame = A:ToObjectSpace(CFrame.new(O))
             G.center.Radius = g * 0.075
         end
-        if ED.sel == "model" then G.sel.Adornee, G.sel.Visible = ED.b.model, true end
+        if ED.sel == "model" then
+            G.sel.Adornee, G.sel.Visible = ED.b.model, true
+        elseif ED.pkey() then
+            local part = ED.b.byKey[ED.pkey()]
+            if part then G.sel.Adornee, G.sel.Visible = part, true end
+        end
     end
     local function pickHandle(m)
         local gz = ED.gz
@@ -26031,7 +26188,8 @@ end)()
         local rp = RaycastParams.new()
         rp.FilterType = Enum.RaycastFilterType.Include
         rp.FilterDescendantsInstances = { ED.b.model }
-        return Workspace:Raycast(P, r * 1000, rp) ~= nil
+        local hit = Workspace:Raycast(P, r * 1000, rp)
+        return hit and hit.Instance or nil
     end
     local function beginDrag(hh, m)
         local gz = ED.gz
@@ -26319,6 +26477,38 @@ end)()
         if #ED.fx == 0 then
             text(out, "no effect points on this item", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 99, true)
         end
+        -- v0.99.52 every part of the skin, picked one by one
+        local plist = {}
+        for part, k in pairs(ED.b.keys) do
+            plist[#plist + 1] = { k = k, i = tonumber(k:match("^(%d+)")) or 0, name = part.Name }
+        end
+        table.sort(plist, function(a, b) return a.i < b.i end)
+        text(out, "PARTS (" .. #plist .. ")", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 200)
+        text(out, "click one on the skin, Shift-click for the whole skin", Theme.Text.Small - 2,
+            Theme.Palette.TextMuted, Theme.Fonts.Regular, 201, true)
+        local ps = new("ScrollingFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, math.min(#plist * 28, 280)),
+            CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
+            ScrollBarImageColor3 = Theme.Palette.Border, ScrollingDirection = Enum.ScrollingDirection.Y,
+            LayoutOrder = 202, ZIndex = 6, Parent = out })
+        list(ps, nil, 2)
+        for i, it in ipairs(plist) do
+            local tgt = "p:" .. it.k
+            local pb = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Theme.Palette.Pill,
+                BackgroundTransparency = 1, Size = UDim2.new(1, -6, 0, 26), LayoutOrder = i, ZIndex = 6, Parent = ps },
+                { corner(6) })
+            local dot = new("Frame", { Size = UDim2.fromOffset(6, 6), Position = UDim2.new(0, 9, 0.5, -3),
+                BackgroundColor3 = Theme.Palette.TextMuted, ZIndex = 7, Parent = pb }, { pillCorner() })
+            new("TextLabel", { Text = it.i .. "  " .. it.name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, Position = UDim2.fromOffset(22, 0),
+                Size = UDim2.new(1, -90, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7, Parent = pb })
+            local t2 = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small - 2,
+                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
+                Position = UDim2.new(1, -8, 0, 0), Size = UDim2.new(0, 60, 1, 0),
+                TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 7, Parent = pb })
+            pb.MouseButton1Click:Connect(function() selectTarget(tgt) end)
+            ED.rows[#ED.rows + 1] = { b = pb, dot = dot, sub = t2, target = tgt, part = it.k }
+        end
 
         -- inspector
         local insp = new("ScrollingFrame", {
@@ -26400,9 +26590,38 @@ end)()
         end)
         ED.gFx = gf
 
+        -- v0.99.52 one part of the skin
+        local gp = group(insp, 4)
+        ED.pTitle = text(gp, "", Theme.Text.Body, Theme.Palette.Text, Theme.Fonts.Bold, 1)
+        text(gp, "this part only, from where it sits on the skin. drag the gizmo or type values. H hides it",
+            Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 2, true)
+        ED.sp = {}
+        local SPD = { { "x", "Move X", -5, 5, 3 }, { "y", "Move Y", -5, 5, 3 }, { "z", "Move Z", -5, 5, 3 },
+            { "rx", "Rotate X", -180, 180, 1 }, { "ry", "Rotate Y", -180, 180, 1 }, { "rz", "Rotate Z", -180, 180, 1 },
+            { "k", "Size", 0.05, 5, 2 }, { "cr", "Red", 0, 255, 0 }, { "cg", "Green", 0, 255, 0 }, { "cb", "Blue", 0, 255, 0 } }
+        for i, d in ipairs(SPD) do
+            local k = d[1]
+            ED.sp[k] = slider(gp, d[2], d[3], d[4], k == "k" and 1 or 0, d[5], function(v)
+                if ED.pkey() then ED.pset(k, v) end
+            end)
+            ED.sp[k].row.LayoutOrder = 10 + i
+        end
+        local gpb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 30, ZIndex = 6, Parent = gp })
+        list(gpb, Enum.FillDirection.Horizontal, 6)
+        ED.hideBtn = button(gpb, "Hide", 1, function() ED.ptoggle() end)
+        button(gpb, "Reset part", 2, function()
+            local k = ED.pkey()
+            if k and type(ED.s.parts) == "table" then pushUndo(); ED.s.parts[k] = nil end
+        end)
+        button(gpb, "Reset colour", 3, function()
+            local e = ED.pentry(false)
+            if e then pushUndo(); e.c = nil end
+        end)
+        ED.gPart = gp
+
         local gn = group(insp, 3)
         text(gn, "Nothing selected", Theme.Text.Body, Theme.Palette.Text, Theme.Fonts.Bold, 1)
-        text(gn, "click the skin or an effect point (the dots). with nothing picked, the timeline plays every effect.",
+        text(gn, "click a part of the skin (Shift-click for the whole skin) or an effect point (the dots). with nothing picked, the timeline plays every effect.",
             Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 2, true)
         ED.muzText = text(gn, "", Theme.Text.Small, Theme.Palette.Text, Theme.Fonts.Regular, 3, true)
         local gnb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 4, ZIndex = 6, Parent = gn })
@@ -26452,7 +26671,7 @@ end)()
         end)
         ED.scrubAt = scrubAt
 
-        text(gui, "RMB orbit    MMB pan    wheel zoom    RMB + WASD/QE fly    1 2 3 tools    F focus    Space play    Ctrl+Z undo",
+        text(gui, "RMB orbit    MMB pan    wheel zoom    RMB + WASD/QE fly    1 2 3 tools    F focus    H hide part    Shift-click whole skin    Space play    Ctrl+Z undo",
             Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 0).Position = UDim2.new(0, 16, 1, -24)
         -- marker labels follow their dots
         for _, rec in ipairs(ED.fx) do
@@ -26478,9 +26697,23 @@ end)()
                 local m = r.target.mode or "Leave"
                 r.dot.BackgroundColor3 = MODE_COL[m]
                 r.sub.Text = r.target.kinds .. "  /  " .. string.lower(m)
+            elseif r.part then
+                local e = type(ED.s.parts) == "table" and ED.s.parts[r.part] or nil
+                r.sub.Text = e and (e.hide and "hidden" or "edited") or ""
+                r.dot.BackgroundColor3 = e and (e.hide and MODE_COL.Hide or Theme.Palette.Accent) or Theme.Palette.TextMuted
             end
         end
         local sel = ED.sel
+        local pk = ED.pkey()
+        ED.gPart.Visible = pk ~= nil
+        if pk then
+            local v = ED.pvals()
+            for k, sl in pairs(ED.sp) do sl.set(v[k]) end
+            local part = ED.b.byKey[pk]
+            ED.pTitle.Text = (part and part.Name or "part") .. "  #" .. (pk:match("^(%d+)") or "?")
+            local e = ED.pentry(false)
+            ED.hideBtn.Text = (e and e.hide) and "Show" or "Hide"
+        end
         ED.gModel.Visible = sel == "model"
         ED.gFx.Visible = type(sel) == "table"
         ED.gNone.Visible = sel == nil
@@ -26578,6 +26811,7 @@ end)()
             if p.Parent and p.LocalTransparencyModifier ~= 1 then p.LocalTransparencyModifier = 1 end
         end
         if ED.b.scale ~= math.max(tonumber(ED.s.scale) or 1, 0.01) then rescale() end
+        X.PT.apply(ED.b, ED.s, true)
         local si = skinItem()
         local W = ED.S * si
         for p, rel in pairs(ED.b.rel) do p.CFrame = W * rel end
@@ -26638,7 +26872,7 @@ end)()
     -- :: input ::
     local SINK = {}
     for _, n in ipairs({ "W", "A", "S", "D", "Q", "E", "R", "F", "G", "T", "V", "X", "Z", "C", "B", "L", "Space",
-        "LeftShift", "LeftControl", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero" }) do
+        "LeftShift", "LeftControl", "H", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero" }) do
         SINK[#SINK + 1] = Enum.KeyCode[n]
     end
     local function onDown(m)
@@ -26647,7 +26881,14 @@ end)()
         if hh then beginDrag(hh, m); return end
         local rec = pickMarker(m)
         if rec then selectTarget(rec); return end
-        if pickModel() then selectTarget("model"); return end
+        -- v0.99.52: a click picks the part under the mouse, Shift-click the whole skin
+        local hp = pickModel()
+        if hp then
+            local k = ED.b.keys[hp]
+            local shift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+            selectTarget((k and not shift) and ("p:" .. k) or "model")
+            return
+        end
         selectTarget(nil)
     end
     local function onKey(k)
@@ -26663,6 +26904,7 @@ end)()
         elseif k == K.Two then setTool("Rotate")
         elseif k == K.Three then setTool("Scale")
         elseif k == K.F then focusSel()
+        elseif k == K.H then ED.ptoggle()
         elseif k == K.Space then tlToggle()
         end
     end
