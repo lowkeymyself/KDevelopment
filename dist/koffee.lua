@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.44"
+Koffee.Version = "0.99.45"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -10829,7 +10829,6 @@ Koffee.Rivals = {
                     Adaptive = true, AdaptiveWeapons = false,
                     AntiMelee = true, ThreatRange = 25,   -- v0.99.5: teleport-in answer (melee and gun)
                     Melee = true, ChainsawHold = true,    -- v0.99.6: melee ragebot
-                    Team = true, TeamNotify = true,       -- v0.99.44: Koffee team
                     Picks = { "Auto", "Auto", "Auto", "Auto" } },
     Mods        = { Recoil = false, RecoilPct = 100, AutoFire = false,
                     Melee = false, MeleePct = 50, NoMuzzle = false,
@@ -10917,8 +10916,6 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Chainsaw Cut Hold", RG.ChainsawHold, function(v) RG.ChainsawHold = v end)
     configCheckbox(card, "Melee Under / Over", RG.MeleeVertical ~= false, function(v) RG.MeleeVertical = v end)
     configCheckbox(card, "Knife Backstab", RG.KnifeStab ~= false, function(v) RG.KnifeStab = v end)
-    configCheckbox(card, "Koffee Team", RG.Team ~= false, function(v) RG.Team = v end)
-    configCheckbox(card, "Team Notifications", RG.TeamNotify ~= false, function(v) RG.TeamNotify = v end)
     slider(card, "Knife Arrive (ms)", 30, 400, RG.KnifeArrive or 120, 0, function(v) RG.KnifeArrive = v end)
     slider(card, "Knife Stay (ms)", 100, 1000, RG.KnifeStay or 300, 0, function(v) RG.KnifeStay = v end)
 
@@ -27367,6 +27364,28 @@ addTab("Options", function(root)
     -- v0.48.0: animation settings. Master + speed + one flag per surface, all
     -- read live so they take effect instantly, all nil-means-on so old configs
     -- animate exactly as before. Persisted through registerConfig("options").
+    -- v0.99.45: Koffee Team lives in its own file (Koffee/team.json), not in configs,
+    -- so turning it off stays off whatever config gets loaded
+    ;(function()
+        local HS = game:GetService("HttpService")
+        local TP = { On = true, Notify = true }
+        pcall(function()
+            if isfile and readfile and isfile("Koffee/team.json") then
+                local d = HS:JSONDecode(readfile("Koffee/team.json"))
+                if type(d) == "table" then
+                    if d.On == false then TP.On = false end
+                    if d.Notify == false then TP.Notify = false end
+                end
+            end
+        end)
+        function TP.save()
+            pcall(function() writefile("Koffee/team.json", HS:JSONEncode({ On = TP.On, Notify = TP.Notify })) end)
+        end
+        Shared.TeamPrefs = TP
+        local tp = panel(root, "Koffee Team")
+        configCheckbox(tp, "Koffee Team", TP.On, function(v) TP.On = v; TP.save() end)
+        configCheckbox(tp, "Join Notifications", TP.Notify, function(v) TP.Notify = v; TP.save() end)
+    end)()
     ;(function()
         local o = KoffeeOptions
         local sp = panel(root, "Sounds")
@@ -40591,9 +40610,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             T.ffa, T.ffaAt = mine == nil or (not shared and n > 2), os.clock()
             return T.ffa
         end
+        function RG.teamOn()
+            local TP = Shared.TeamPrefs
+            return TP == nil or TP.On ~= false
+        end
         function RG.peerAlly(plr)
             local T = RG.team
-            if cfg().Team == false or os.clock() - T.at > 12 or not T.peers[plr.UserId] then return false end
+            if not RG.teamOn() or os.clock() - T.at > 12 or not T.peers[plr.UserId] then return false end
             local dc = RG.dc
             local inDuel = true
             if dc then pcall(function() inDuel = dc:GetDuel(LocalPlayer) ~= nil end) end
@@ -40625,7 +40648,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     peers[uid] = e
                     if not T.seen[uid] then
                         T.seen[uid] = true
-                        if cfg().TeamNotify ~= false and Koffee.notify then
+                        if not (Shared.TeamPrefs and Shared.TeamPrefs.Notify == false) and Koffee.notify then
                             Koffee.notify("Koffee Team", plr.DisplayName .. " (@" .. plr.Name .. ") is in your server",
                                 { severity = "success", duration = 6 })
                         end
@@ -40639,7 +40662,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- same data, so they agree without a coordinator. nil = no split, pick freely.
         function RG.teamAssigned()
             local T = RG.team
-            if cfg().Team == false or os.clock() - T.at > 12 then return nil end
+            if not RG.teamOn() or os.clock() - T.at > 12 then return nil end
             if T.assignAt and os.clock() - T.assignAt < 0.25 then return T.assign end
             T.assignAt = os.clock()
             T.assign = nil
@@ -40708,7 +40731,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             local joined = false
             while not Koffee.dead() do
-                if cfg().Team ~= false and game.JobId ~= "" then
+                if RG.teamOn() and game.JobId ~= "" then
                     local ok, entry = pcall(RG.teamEntry)
                     local d = ok and post("/room/beat", entry) or nil
                     if type(d) == "table" and type(d.peers) == "table" then
