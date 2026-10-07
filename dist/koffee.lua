@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.59"
+Koffee.Version = "0.99.60"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -24815,20 +24815,30 @@ registerConfig("item_skins", Koffee.ItemSkins)
     -- is ItemVisual (Body, Magazine, Bolt... models Motor6D'd to the viewmodel root) and
     -- Body.PrimaryPart is the gun's frame. The generic path grabbed the whole FirstPerson
     -- folder: arms hidden, skin riding an arm, one skin shared by every weapon.
+    -- v0.99.60: in third person RIVALS drops the FirstPerson model and builds
+    -- ViewModels["<you> - <weapon> - <skin>"] instead (same layout, invisible arms,
+    -- anchored root posed at your hands). Returns the model and whether it's third person.
     local function rivalsVM()
-        local f = Workspace:FindFirstChild("ViewModels")
-        f = f and f:FindFirstChild("FirstPerson")
-        if not f then return nil end
+        local vms = Workspace:FindFirstChild("ViewModels")
+        if not vms then return nil end
         local pre = LocalPlayer.Name .. " - "
-        for _, c in ipairs(f:GetChildren()) do
-            if c:IsA("Model") and c.Name:sub(1, #pre) == pre then return c end
+        local f = vms:FindFirstChild("FirstPerson")
+        if f then
+            for _, c in ipairs(f:GetChildren()) do
+                if c:IsA("Model") and c.Name:sub(1, #pre) == pre then return c, false end
+            end
+        end
+        for _, c in ipairs(vms:GetChildren()) do
+            if c:IsA("Model") and c.Name:sub(1, #pre) == pre then return c, true end
         end
         return nil
     end
     local function findRivals()
-        local vm = rivalsVM()
+        local vm, third = rivalsVM()
         if not vm then return nil end
         if IS.Target == "Arms" then
+            -- third-person arms are invisible stand-ins; your character's own arms show
+            if third then return nil end
             local l, r = vm:FindFirstChild("LeftArm"), vm:FindFirstChild("RightArm")
             if not (l and r and l:IsA("BasePart") and r:IsA("BasePart")) then return nil end
             local h = held("Arms", r, { l, r }, "RIVALS Arms")
