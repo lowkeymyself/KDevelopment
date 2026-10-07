@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.49"
+Koffee.Version = "0.99.50"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -609,7 +609,15 @@ do
 
             -- v0.93.16: Skip only skips CHECKING cached files. It fades out the moment a
             -- download starts and back in when checking resumes; missing files still download.
+            -- v0.99.50: Options > Startup > Skip Loading starts with the check pass skipped
+            -- (Koffee/startup.json, outside configs); missing files still download
             local skipCheck = false
+            pcall(function()
+                if isfile("Koffee/startup.json") then
+                    local d = game:GetService("HttpService"):JSONDecode(readfile("Koffee/startup.json"))
+                    skipCheck = type(d) == "table" and d.SkipLoading == true
+                end
+            end)
             local chk = Instance.new("TextButton")
             chk.AnchorPoint = Vector2.new(1, 1)
             chk.Position = UDim2.new(1, -16, 1, -12)
@@ -5302,6 +5310,15 @@ end
 --   Advanced OFF -> manual: ally iff player's Team name is in Shared.MyTeams (right-click list).
 function isTeammate(plr)
     if not plr or plr == LocalPlayer then return false end
+    -- v0.99.50: in RIVALS every Team Check uses the rage rule (RV.isAlly): the game's
+    -- own TeamID in our duel, plus Koffee Team members. Manual / Advanced do not apply.
+    if Koffee._isRivals then
+        local RV = Shared.RV
+        if RV and RV.ok and RV.isAlly then
+            local fine, ally = pcall(RV.isAlly, plr)
+            if fine then return ally == true end
+        end
+    end
     if Shared.AdvancedTeam then return isSameTeam(plr) end
     local t = plr.Team
     return t ~= nil and Shared.MyTeams[t.Name] == true
@@ -27382,6 +27399,19 @@ addTab("Options", function(root)
             pcall(function() writefile("Koffee/team.json", HS:JSONEncode({ On = TP.On, Notify = TP.Notify })) end)
         end
         Shared.TeamPrefs = TP
+        -- v0.99.50: startup prefs, same idea: their own file, never a config
+        local SP = { SkipLoading = false }
+        pcall(function()
+            if isfile and readfile and isfile("Koffee/startup.json") then
+                local d = HS:JSONDecode(readfile("Koffee/startup.json"))
+                if type(d) == "table" and d.SkipLoading == true then SP.SkipLoading = true end
+            end
+        end)
+        local sp = panel(root, "Startup")
+        configCheckbox(sp, "Skip Loading", SP.SkipLoading, function(v)
+            SP.SkipLoading = v
+            pcall(function() writefile("Koffee/startup.json", HS:JSONEncode({ SkipLoading = SP.SkipLoading })) end)
+        end)
         local tp = panel(root, "Koffee Team")
         configCheckbox(tp, "Koffee Team", TP.On, function(v) TP.On = v; TP.save() end)
         configCheckbox(tp, "Join Notifications", TP.Notify, function(v) TP.Notify = v; TP.save() end)
