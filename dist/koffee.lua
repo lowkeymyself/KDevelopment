@@ -1,7 +1,7 @@
--- koffee v1.0.0
+-- koffee v1.1.0
 
 local Koffee = {}
-Koffee.Version = "1.0.0"
+Koffee.Version = "1.1.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -370,6 +370,7 @@ do
         "bar-chart-2", "signal", "clock", "map-pin",  -- v0.85.0: details bar
         "play", "pause", "skip-back", "skip-forward", "shuffle", "repeat", "repeat-1",
         "volume-2", "volume-x", "mic-vocal",   -- v0.90.0: media player
+        "globe", "settings", "bot", "sparkles", "koffee-k", "koffee-steam",   -- v1.1.0: Glass sidebar + logo
     }
     local MANIFEST = {
         { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
@@ -2620,6 +2621,58 @@ function Koffee.Anim.wait(base)
     return base / Koffee.Anim.speed()
 end
 
+-- v1.1.0: UI modes. Each widget registers a skin fn that restyles it in place, so a
+-- switch is live with no tab rebuild (Extra included). Mode lives in startup.json.
+Koffee.UI = { mode = "Classic", modes = { "Classic", "Glass" }, reg = {}, n = 0, texCache = {} }
+pcall(function()
+    if isfile and readfile and isfile("Koffee/startup.json") then
+        local d = game:GetService("HttpService"):JSONDecode(readfile("Koffee/startup.json"))
+        if type(d) == "table" and d.UiMode == "Glass" then Koffee.UI.mode = "Glass" end
+    end
+end)
+function Koffee.UI.glass() return Koffee.UI.mode == "Glass" end
+function Koffee.UI.tex(name)
+    local c = Koffee.UI.texCache[name]
+    if c ~= nil then return c end
+    c = ""
+    pcall(function()
+        if getcustomasset and isfile and isfile("Koffee/fx/" .. name .. ".png") then c = getcustomasset("Koffee/fx/" .. name .. ".png") end
+    end)
+    Koffee.UI.texCache[name] = c
+    return c
+end
+-- fn(mode) must restore the classic look too: capture originals before registering
+function Koffee.UI.skin(inst, fn)
+    local U = Koffee.UI
+    U.reg[inst] = fn
+    U.n += 1
+    if U.n % 400 == 0 then
+        for i in pairs(U.reg) do
+            if i.Parent == nil then U.reg[i] = nil end
+        end
+    end
+    if U.mode ~= "Classic" then pcall(fn, U.mode) end
+end
+function Koffee.UI.setMode(m)
+    local U = Koffee.UI
+    if m ~= "Glass" then m = "Classic" end
+    if m == U.mode then return end
+    U.mode = m
+    pcall(function()
+        local HS, d = game:GetService("HttpService"), {}
+        if isfile("Koffee/startup.json") then
+            local ok, t = pcall(HS.JSONDecode, HS, readfile("Koffee/startup.json"))
+            if ok and type(t) == "table" then d = t end
+        end
+        d.UiMode = m
+        writefile("Koffee/startup.json", HS:JSONEncode(d))
+    end)
+    if U.shell then pcall(U.shell, m) end
+    for inst, fn in pairs(U.reg) do
+        if inst.Parent == nil then U.reg[inst] = nil else pcall(fn, m) end
+    end
+end
+
 local nextLayoutOrder = 0
 local ROW = {
     height = 20,
@@ -3175,6 +3228,7 @@ local function selectTab(name)
     if activeTab == name then return end
     if activeTab ~= nil then Koffee.Sfx.play("tab") end
     activeTab = name
+    if Koffee.UI.onTab then pcall(Koffee.UI.onTab, name) end
     -- v0.48.0: tab switches honour Animations > Tab Switching; off snaps the
     -- colours, panels and pill straight to their resting states.
     local tabsAnim = Koffee.Anim.spot("AnimTabs")
@@ -3492,6 +3546,7 @@ local function rebuildTabPanel(name)
         Parent = p,
     })
     new("UIPadding", { PaddingBottom = UDim.new(0, 12), Parent = p })
+    if Koffee.UI.padPanel then pcall(Koffee.UI.padPanel, p, Koffee.UI.glass()) end
     pcall(entry.Build, p)
 end
 rebuildConfigTabs = function()
@@ -3576,6 +3631,30 @@ local function panel(parent, title)
     task.delay(0.03, function()
         if not card.Parent then return end
         tween(sc, Theme.Animation.Normal, { Scale = 1 })
+    end)
+    -- v1.1.0: glass skin
+    local cr, st = card:FindFirstChildOfClass("UICorner"), card:FindFirstChildOfClass("UIStroke")
+    local tl = title and card:FindFirstChildOfClass("TextLabel")
+    local hi
+    Koffee.UI.skin(card, function(mode)
+        local g = mode == "Glass"
+        card.BackgroundTransparency = g and 0.55 or 0.15
+        if cr then cr.CornerRadius = UDim.new(0, g and 16 or Theme.Radius.XLarge) end
+        if st then
+            if g and not hi then
+                hi = new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0),
+                    NumberSequenceKeypoint.new(0.35, 0.75), NumberSequenceKeypoint.new(1, 0.92) }), Parent = st })
+            end
+            if hi then hi.Enabled = g end
+            st.Color = g and Theme.Palette.Snow or Theme.Palette.BorderSubtle
+            st.Transparency = g and 0.72 or 0
+        end
+        if tl then
+            tl.Text = g and title:upper() or title
+            tl.FontFace = g and Theme.Fonts.Bold or Theme.Fonts.Medium
+            tl.TextSize = g and Theme.Text.Tiny or Theme.Text.Header
+            tl.TextColor3 = g and Theme.Palette.TextMuted or Theme.Palette.Text
+        end
     end)
     return card
 end
@@ -3699,6 +3778,47 @@ local function checkboxVisual(parent, label, initialOn)
     attachHover(row, btn)
     popFx(btn)   -- v0.0.98: checkbox rows squash on press
 
+    -- v1.1.0: glass switch, built the first time glass shows this row
+    local sw
+    local function paintSwitch(animate)
+        if not sw then return end
+        local on = state
+        local tp = { BackgroundColor3 = on and Theme.Palette.Accent or Theme.Palette.Snow, BackgroundTransparency = on and 0 or 0.84 }
+        local kp = { Position = UDim2.new(0, on and 15 or 2, 0.5, 0), BackgroundColor3 = on and Theme.Palette.Snow or Theme.Palette.Text }
+        local gp = { ImageTransparency = on and 0.62 or 1 }
+        if animate then
+            tween(sw.track, Theme.Animation.Normal, tp)
+            tween(sw.knob, TweenInfo.new(0.34, Enum.EasingStyle.Back, Enum.EasingDirection.Out), kp)
+            tween(sw.glow, Theme.Animation.Slow, gp)
+        else
+            for k, v in pairs(tp) do sw.track[k] = v end
+            for k, v in pairs(kp) do sw.knob[k] = v end
+            sw.glow.ImageTransparency = gp.ImageTransparency
+        end
+    end
+    Koffee.UI.skin(row, function(mode)
+        local g = mode == "Glass"
+        if g and not sw then
+            sw = {}
+            sw.glow = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 15, 0.5, 0),
+                Size = UDim2.new(0, 64, 0, 40), BackgroundTransparency = 1, Image = Koffee.UI.tex("fx_glow"),
+                ImageColor3 = Theme.Palette.Accent, ImageTransparency = 1, ZIndex = 34, Parent = row })
+            sw.track = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+                Size = UDim2.new(0, 30, 0, 17), BorderSizePixel = 0, ZIndex = 35, Parent = row }, { pillCorner() })
+            sw.knob = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Size = UDim2.new(0, 13, 0, 13),
+                BorderSizePixel = 0, ZIndex = 36, Parent = sw.track }, { pillCorner() })
+        end
+        box.Visible = not g
+        if sw then sw.track.Visible, sw.glow.Visible = g, g end
+        local off = g and 40 or CBOX.off
+        lbl.Position = UDim2.new(0, off, 0, 0)
+        lbl.Size = UDim2.new(1, -off - CBOX.reserve, 1, 0)
+        innerFill.Size = state and UDim2.new(0, CBOX.inner, 0, CBOX.inner) or UDim2.new(0, 0, 0, 0)
+        innerFill.BackgroundTransparency = state and 0 or 1
+        paintSwitch(false)
+        lbl.TextColor3 = (state and not g) and Theme.Palette.Accent or Theme.Palette.Text
+    end)
+
     local CB_GROW   = TweenInfo.new(0.16, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
     local CB_SHRINK = TweenInfo.new(0.12, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
     local CB_FADE   = TweenInfo.new(0.05, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
@@ -3713,6 +3833,13 @@ local function checkboxVisual(parent, label, initialOn)
         if activeFade then activeFade:Cancel(); activeFade = nil end
         -- v0.48.0: Toggles off snaps the fill + label straight to rest.
         local togAnim = Koffee.Anim.spot("AnimToggles")
+        if Koffee.UI.glass() then
+            paintSwitch(togAnim)
+            innerFill.Size = state and UDim2.new(0, CBOX.inner, 0, CBOX.inner) or UDim2.new(0, 0, 0, 0)
+            innerFill.BackgroundTransparency = state and 0 or 1
+            lbl.TextColor3 = Theme.Palette.Text
+            return
+        end
         if state then
             -- OFF -> ON: grow OUTWARD from center. Snap to 0 first (in case a
             -- prior tween was mid-shrink) and pop opacity to opaque immediately
@@ -4504,6 +4631,14 @@ local function dropdown(parent, label, options, initial, onChange)
         Parent = btn,
     })
     local caretRoot = chevron(btn, 10)
+    -- v1.1.0: glass skin
+    local dCr, dSt = btn:FindFirstChildOfClass("UICorner"), btn:FindFirstChildOfClass("UIStroke")
+    Koffee.UI.skin(wrap, function(mode)
+        local g = mode == "Glass"
+        btn.BackgroundTransparency = g and 0.5 or 0.15
+        if dCr then dCr.CornerRadius = UDim.new(0, g and 9 or 4) end
+        if dSt then dSt.Color = g and Theme.Palette.Snow or Theme.Palette.BorderSubtle; dSt.Transparency = g and 0.88 or 0 end
+    end)
 
     -- popup lives in the dedicated popup ScreenGui, above everything: ZIndex 260
     -- so it clears the settings popup (210) AND the colour picker (250) when a
@@ -4867,6 +5002,22 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         Parent = row,
     })
     local dragging = false
+    -- v1.1.0: glass skin
+    local kSt = knob:FindFirstChildOfClass("UIStroke")
+    Koffee.UI.skin(row, function(mode)
+        local g = mode == "Glass"
+        track.Size = UDim2.new(1, 0, 0, g and 4 or 6)
+        track.Position = UDim2.new(0, 0, 0, g and 31 or 30)
+        track.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.PanelElevated
+        track.BackgroundTransparency = g and 0.84 or 0
+        knob.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.Accent
+        knob.Size = g and UDim2.new(0, 13, 0, 13) or UDim2.new(0, 12, 0, 12)
+        if kSt then
+            kSt.Color = g and Theme.Palette.Accent or Theme.Palette.Border
+            kSt.Thickness = g and 3 or 1
+            kSt.Transparency = g and 0.6 or 0
+        end
+    end)
 
     local function applyValue(animate)
         local pct = (current - min) / (max - min)
@@ -15798,12 +15949,16 @@ local Combat = {
                 VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }),
         })
         local buttons, content = {}, {}
+        local cur
         -- v0.0.32: fade content in on switch (CanvasGroup GroupTransparency).
         local function showCol(name)
+            cur = name
+            local g = Koffee.UI.glass()
             for n, b in pairs(buttons) do
                 local on = (n == name)
+                b.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.PanelElevated
                 tween(b, Theme.Animation.Fast, {
-                    BackgroundTransparency = on and 0.15 or 1,
+                    BackgroundTransparency = on and (g and 0.86 or 0.15) or 1,
                     TextColor3 = on and Theme.Palette.Text or Theme.Palette.TextMuted,
                 })
                 local cf = content[n]
@@ -15833,6 +15988,25 @@ local Combat = {
             b.MouseButton1Click:Connect(function() showCol(name) end)
         end
         showCol(names[1])
+        -- v1.1.0: glass skin (paints only, the open page keeps its content)
+        local bCr = bar:FindFirstChildOfClass("UICorner")
+        local pads = {}
+        Koffee.UI.skin(bar, function(mode)
+            local g = mode == "Glass"
+            for n, cf in pairs(content) do
+                pads[n] = pads[n] or new("UIPadding", { Parent = cf })
+                local v = UDim.new(0, g and 2 or 0)
+                pads[n].PaddingLeft, pads[n].PaddingRight, pads[n].PaddingTop, pads[n].PaddingBottom = v, v, v, v
+            end
+            bar.BackgroundTransparency = g and 0.55 or 0.35
+            if bCr then bCr.CornerRadius = g and UDim.new(1, 0) or UDim.new(0, 6) end
+            for n, b in pairs(buttons) do
+                local c = b:FindFirstChildOfClass("UICorner")
+                if c then c.CornerRadius = g and UDim.new(1, 0) or UDim.new(0, 5) end
+                b.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.PanelElevated
+                b.BackgroundTransparency = n == cur and (g and 0.86 or 0.15) or 1
+            end
+        end)
         return content
     end
 
@@ -28986,6 +29160,8 @@ addTab("Options", function(root)
     local card = panel(root, "Options")
 
     local uiPanel = panel(root, "Interface")
+    -- v1.1.0: live UI mode switch (saved in startup.json, never a config)
+    dropdown(uiPanel, "UI Mode", Koffee.UI.modes, Koffee.UI.mode, function(v) Koffee.UI.setMode(v) end)
     local arrRow = configCheckbox(uiPanel, "Arraylist", KoffeeOptions.Arraylist, function(v)
         KoffeeOptions.Arraylist = v
         activeArray.Visible = v
@@ -38262,6 +38438,7 @@ local function setWindowOpen(open)
     -- drag gate ("only draggable while the main UI is open") needs no chunk upvalue.
     if Koffee.Windows then Koffee.Windows._setPrimary(open) end
     Koffee.Sfx.play(open and "open" or "close")
+    if Koffee.UI.onOpen then pcall(Koffee.UI.onOpen, open) end
     if open then
         window.Visible = true
         -- v0.48.0: window open honours the Animations > Window Open flag; off
@@ -46911,6 +47088,281 @@ if getgenv and getgenv().KoffeeDev == true then
 end
 
 task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") end end)
+
+-- v1.1.0: Glass shell. Lives inside the classic window (so open / close, drag and the
+-- window-rect guards keep working); animated decor sits outside it on the root gui so
+-- the CanvasGroup never re-rasterises every frame.
+;(function()
+    local U = Koffee.UI
+    local P = Theme.Palette
+    local SIDE, GAP, CLASSIC_W = 64, 12, Theme.Sizes.WindowWidth
+    local ICON = { Combat = "crosshair", Visuals = "eye", World = "globe", Character = "user", Options = "settings",
+        Custom = "pencil", Configs = "folder", NPC = "bot", Extra = "sparkles" }
+    local G = { built = false, buttons = {}, order = {} }
+    local wStroke = window:FindFirstChildOfClass("UIStroke")
+
+    local function litStroke(parent, base)
+        local s = stroke(P.Snow, 1)
+        s.Transparency = base or 0.72
+        s.Parent = parent
+        new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0),
+            NumberSequenceKeypoint.new(0.3, 0.7), NumberSequenceKeypoint.new(1, 0.92) }), Parent = s })
+        return s
+    end
+
+    -- glass pages keep card strokes clear of the scroll clip and the scrollbar
+    function G.pad(panelSF, g)
+        local pd = panelSF:FindFirstChildOfClass("UIPadding")
+        if not pd then return end
+        pd.PaddingLeft = UDim.new(0, g and 3 or 2)
+        pd.PaddingTop = UDim.new(0, g and 3 or 2)
+        pd.PaddingRight = UDim.new(0, g and 9 or 2)
+    end
+
+    local function build()
+        if G.built then return end
+        G.built = true
+        G.root = new("Frame", { Name = KID.name("gl"), Position = UDim2.new(0, 3, 0, 3), Size = UDim2.new(1, -6, 1, -6), BackgroundTransparency = 1,
+            Visible = false, ZIndex = 31, Parent = window })
+
+        -- sidebar capsule
+        local side = new("Frame", { Size = UDim2.new(0, SIDE, 1, 0), BackgroundColor3 = P.Panel, BackgroundTransparency = 0.32,
+            BorderSizePixel = 0, ZIndex = 31, Parent = G.root }, { corner(24) })
+        litStroke(side)
+        G.side = side
+        local logo = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 18),
+            Size = UDim2.new(0, 40, 0, 40), BackgroundTransparency = 1, ZIndex = 33, Parent = side })
+        new("ImageLabel", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Image = Koffee.icon("koffee-k"),
+            ImageColor3 = P.Accent, ScaleType = Enum.ScaleType.Fit, ZIndex = 34, Parent = logo })
+        G.logo = logo
+        local list = new("Frame", { Position = UDim2.new(0, 0, 0, 72), Size = UDim2.new(1, 0, 1, -82),
+            BackgroundTransparency = 1, ZIndex = 32, Parent = side }, {
+            new("UIListLayout", { Padding = UDim.new(0, 6), HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
+        G.bar = new("Frame", { Position = UDim2.new(0, 6, 0, 0), Size = UDim2.new(0, 4, 0, 20), BackgroundColor3 = P.Accent,
+            BorderSizePixel = 0, BackgroundTransparency = 1, ZIndex = 35, Parent = side }, { pillCorner() })
+        new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, 26, 0, 46),
+            BackgroundTransparency = 1, Image = U.tex("fx_glow"), ImageColor3 = P.Accent, ImageTransparency = 0.45, ZIndex = 34, Parent = G.bar })
+
+        local tip = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small, TextColor3 = P.Text,
+            BackgroundColor3 = P.Background, BackgroundTransparency = 0.1, AutomaticSize = Enum.AutomaticSize.X,
+            Size = UDim2.new(0, 0, 0, 24), Visible = false, ZIndex = 60, Parent = G.root },
+            { corner(8), new("UIPadding", { PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9) }) })
+        local names = {}
+        for name, t in pairs(tabs) do names[#names + 1] = { name, t.Button.LayoutOrder } end
+        table.sort(names, function(a, b) return a[2] < b[2] end)
+        for i, e in ipairs(names) do
+            local name = e[1]
+            local b = new("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.new(0, 44, 0, 44),
+                BackgroundColor3 = P.Snow, BackgroundTransparency = 1, LayoutOrder = i, ZIndex = 33, Parent = list }, { corner(14) })
+            local ic = Koffee.lucideIcon(b, ICON[name] or "box", 20, P.TextMuted, 34)
+            ic.AnchorPoint = Vector2.new(0.5, 0.5)
+            ic.Position = UDim2.new(0.5, 0, 0.5, 0)
+            G.buttons[name] = { b = b, ic = ic }
+            G.order[#G.order + 1] = name
+            b.MouseEnter:Connect(function()
+                if activeTab ~= name then tween(b, Theme.Animation.Fast, { BackgroundTransparency = 0.94 }) end
+                tween(ic, Theme.Animation.Fast, { ImageColor3 = P.Text })
+                tip.Text = name
+                tip.Position = UDim2.new(0, SIDE + 8, 0, b.AbsolutePosition.Y - window.AbsolutePosition.Y + 10)
+                tip.Visible = true
+            end)
+            b.MouseLeave:Connect(function()
+                if activeTab ~= name then
+                    tween(b, Theme.Animation.Fast, { BackgroundTransparency = 1 })
+                    tween(ic, Theme.Animation.Fast, { ImageColor3 = P.TextMuted })
+                end
+                if tip.Text == name then tip.Visible = false end
+            end)
+            b.MouseButton1Click:Connect(function() selectTab(name) end)
+            popFx(b)
+        end
+
+        -- frosted sheet
+        local sheet = new("Frame", { Position = UDim2.new(0, SIDE + GAP, 0, 0), Size = UDim2.new(1, -(SIDE + GAP), 1, 0),
+            BackgroundColor3 = P.Background, BackgroundTransparency = 0.42, BorderSizePixel = 0, ZIndex = 31, Parent = G.root },
+            { corner(20) })
+        litStroke(sheet, 0.76)
+        G.sheet = sheet
+        local head = new("Frame", { Size = UDim2.new(1, 0, 0, 62), BackgroundTransparency = 1, ZIndex = 32, Parent = sheet })
+        makeDraggable(head, window)
+        G.kicker = new("TextLabel", { Text = "KOFFEE", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Tiny,
+            TextColor3 = P.Accent, BackgroundTransparency = 1, Position = UDim2.new(0, 20, 0, 13), Size = UDim2.new(0.5, 0, 0, 12),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 33, Parent = head })
+        G.title = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Title or Theme.Fonts.Bold, TextSize = 22, TextColor3 = P.Text,
+            BackgroundTransparency = 1, Position = UDim2.new(0, 20, 0, 25), Size = UDim2.new(0.6, 0, 0, 26),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 33, Parent = head })
+        new("Frame", { Position = UDim2.new(0, 16, 1, -1), Size = UDim2.new(1, -32, 0, 1), BackgroundColor3 = P.Snow,
+            BackgroundTransparency = 0.93, BorderSizePixel = 0, ZIndex = 32, Parent = head })
+
+        -- quick config switch: the configs on disk, loaded on pick
+        local cfgBtn = new("TextButton", { Text = "", AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -16, 0.5, 0), Size = UDim2.new(0, 190, 0, 30), BackgroundColor3 = P.Snow,
+            BackgroundTransparency = 0.93, ZIndex = 33, Parent = head }, { corner(10) })
+        litStroke(cfgBtn, 0.8)
+        local fi = Koffee.lucideIcon(cfgBtn, "folder", 14, P.Accent, 34)
+        fi.AnchorPoint = Vector2.new(0, 0.5)
+        fi.Position = UDim2.new(0, 10, 0.5, 0)
+        G.cfgLbl = new("TextLabel", { Text = U.cfgName or "No config", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = P.Text, BackgroundTransparency = 1, Position = UDim2.new(0, 30, 0, 0), Size = UDim2.new(1, -52, 1, 0),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 34, Parent = cfgBtn })
+        local cv = Koffee.lucideIcon(cfgBtn, "chevron-down", 14, P.TextMuted, 34)
+        cv.AnchorPoint = Vector2.new(1, 0.5)
+        cv.Position = UDim2.new(1, -9, 0.5, 0)
+        Koffee.attachBtnHover(cfgBtn, 0.86, 0.93)
+        local menu
+        local function closeMenu()
+            if menu then menu:Destroy(); menu = nil end
+        end
+        cfgBtn.MouseButton1Click:Connect(function()
+            if menu then closeMenu(); return end
+            local names2 = Koffee.Config.list()
+            local rowH = 28
+            local h = math.min(math.max(#names2, 1) * rowH + 8, 260)
+            local ap, as = cfgBtn.AbsolutePosition - popupScreen.AbsolutePosition, cfgBtn.AbsoluteSize
+            menu = new("ScrollingFrame", { Position = UDim2.new(0, ap.X, 0, ap.Y + as.Y + 6), Size = UDim2.new(0, as.X, 0, h),
+                CanvasSize = UDim2.new(0, 0, 0, #names2 * rowH + 8), ScrollBarThickness = 3, ScrollBarImageColor3 = P.Border,
+                BackgroundColor3 = P.Panel, BackgroundTransparency = 0.04, BorderSizePixel = 0, ZIndex = 262, Parent = popupScreen },
+                { corner(10), stroke(P.Border), new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingLeft = UDim.new(0, 4),
+                    PaddingRight = UDim.new(0, 4) }), new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }) })
+            Koffee.popIn(menu, 0.95)
+            if #names2 == 0 then
+                new("TextLabel", { Text = "No saved configs", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                    TextColor3 = P.TextMuted, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, rowH), ZIndex = 263, Parent = menu })
+            end
+            for i, n in ipairs(names2) do
+                local r = new("TextButton", { Text = n, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                    TextColor3 = n == U.cfgName and P.Accent or P.Text, TextXAlignment = Enum.TextXAlignment.Left,
+                    AutoButtonColor = false, BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, rowH), LayoutOrder = i, ZIndex = 263, Parent = menu },
+                    { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 10) }) })
+                Koffee.attachBtnHover(r, 0.2, 1)
+                r.MouseButton1Click:Connect(function()
+                    closeMenu()
+                    pcall(function() Koffee.Config.load(n) end)
+                end)
+            end
+        end)
+        G.closeMenu = closeMenu
+
+        G.content = new("Frame", { Position = UDim2.new(0, 0, 0, 62), Size = UDim2.new(1, 0, 1, -62), BackgroundTransparency = 1,
+            ClipsDescendants = true, ZIndex = 31, Parent = sheet }, {
+            new("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12), PaddingLeft = UDim.new(0, 14),
+                PaddingRight = UDim.new(0, 14) }) })
+    end
+
+    -- the active marker glides between icons; boxes on the new tab rise in one after another
+    local function onTab(name, instant)
+        if not (G.built and U.glass()) then return end
+        G.title.Text = name
+        local anim = Koffee.Anim.spot("AnimTabs") and not instant
+        for n, e in pairs(G.buttons) do
+            local on = n == name
+            local props = { BackgroundTransparency = on and 0.88 or 1 }
+            if anim then tween(e.b, Theme.Animation.Fast, props) else e.b.BackgroundTransparency = props.BackgroundTransparency end
+            e.ic.ImageColor3 = on and P.Accent or P.TextMuted
+        end
+        local e = G.buttons[name]
+        if not e then return end
+        task.defer(function()
+            local y = e.b.AbsolutePosition.Y - G.side.AbsolutePosition.Y + 12
+            local goal = { Position = UDim2.new(0, 6, 0, y), BackgroundTransparency = 0 }
+            if anim and G.bar.BackgroundTransparency < 1 then
+                tween(G.bar, TweenInfo.new(0.34, Enum.EasingStyle.Back, Enum.EasingDirection.Out), goal)
+            else
+                G.bar.Position, G.bar.BackgroundTransparency = goal.Position, 0
+            end
+        end)
+        local t = tabs[name]
+        if t then G.pad(t.Panel, true) end
+    end
+    U.onTab = onTab
+    U.padPanel = G.pad
+
+    -- sidebar slides in a beat before the sheet
+    function U.onOpen(open)
+        if not open and G.closeMenu then G.closeMenu() end
+        if not (open and G.built and U.glass() and Koffee.Anim.spot("AnimWindow")) then return end
+        G.side.Position = UDim2.new(0, -18, 0, 0)
+        G.sheet.Position = UDim2.new(0, SIDE + GAP + 22, 0, 0)
+        tween(G.side, TweenInfo.new(0.42, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Position = UDim2.new(0, 0, 0, 0) })
+        task.delay(0.05, function()
+            tween(G.sheet, TweenInfo.new(0.46, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+                { Position = UDim2.new(0, SIDE + GAP, 0, 0) })
+        end)
+    end
+
+    function U.shell(mode)
+        local g = mode == "Glass"
+        if g then build() end
+        local w = g and (SIDE + GAP + CLASSIC_W) or CLASSIC_W
+        window.Size = UDim2.new(window.Size.X.Scale, w, window.Size.Y.Scale, window.Size.Y.Offset)
+        window.BackgroundTransparency = g and 1 or 0
+        if wStroke then wStroke.Enabled = not g end
+        titleBar.Visible, tabBar.Visible, content.Visible = not g, not g, not g
+        if G.root then G.root.Visible = g end
+        if G.closeMenu then G.closeMenu() end
+        for _, t in pairs(tabs) do
+            t.Wrap.Parent = g and G.content or content
+            G.pad(t.Panel, g)
+        end
+        Theme.Background.BlurSize = g and 22 or 14
+        if blur.Size > 0 then blur.Size = Theme.Background.BlurSize end
+        if g and activeTab then onTab(activeTab, true) end
+        if not g and activeTab then
+            local t = tabs[activeTab]
+            if t then task.defer(function() movePillTo(t.Button, true) end) end
+        end
+    end
+
+    -- the config picker names whatever loaded last, from any path
+    local ld = Koffee.Config.load
+    Koffee.Config.load = function(name, ...)
+        local ok, r = ld(name, ...)
+        if ok then
+            U.cfgName = name
+            if G.cfgLbl then G.cfgLbl.Text = name end
+        end
+        return ok, r
+    end
+
+    -- decor outside the window: two warm lights drifting behind the glass, steam over the logo
+    local back = new("Frame", { Name = KID.name("gb"), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        ZIndex = 29, Parent = screen })
+    local front = new("Frame", { Name = KID.name("gf"), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        ZIndex = 40, Parent = screen })
+    local function glow(color, size)
+        return new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, size, 0, size),
+            BackgroundTransparency = 1, Image = U.tex("fx_glow"), ImageColor3 = color, ImageTransparency = 1, ZIndex = 29, Parent = back })
+    end
+    local g1, g2 = glow(P.Accent, 720), glow(P.Danger, 560)
+    local steam = {}
+    for i = 1, 2 do
+        steam[i] = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 40, 0, 40), BackgroundTransparency = 1,
+            Image = Koffee.icon("koffee-steam"), ImageColor3 = P.Snow, ImageTransparency = 1, ZIndex = 41, Parent = front })
+    end
+    RunService.RenderStepped:Connect(function()
+        if Koffee.dead() then back.Visible = false; front.Visible = false; return end
+        local live = U.glass() and G.built and window.Visible and window.GroupTransparency < 1
+        back.Visible, front.Visible = live, live
+        if not live then return end
+        local a = 1 - window.GroupTransparency
+        local t = os.clock()
+        local p, s = window.AbsolutePosition - back.AbsolutePosition, window.AbsoluteSize
+        g1.Position = UDim2.fromOffset(p.X + s.X * (0.42 + 0.12 * math.sin(t * 0.21)), p.Y + s.Y * (0.32 + 0.1 * math.cos(t * 0.17)))
+        g2.Position = UDim2.fromOffset(p.X + s.X * (0.7 + 0.1 * math.cos(t * 0.13)), p.Y + s.Y * (0.72 + 0.08 * math.sin(t * 0.19)))
+        g1.ImageTransparency = 1 - 0.55 * a
+        g2.ImageTransparency = 1 - 0.3 * a
+        local lp, ls = G.logo.AbsolutePosition - front.AbsolutePosition, G.logo.AbsoluteSize
+        for i, im in ipairs(steam) do
+            local ph = (t / 2.6 + (i - 1) * 0.5) % 1
+            im.Position = UDim2.fromOffset(lp.X + ls.X * 0.5 + math.sin(ph * 6.28) * 1.2, lp.Y + ls.Y * 0.5 - ph * 7)
+            im.ImageTransparency = 1 - math.sin(ph * math.pi) * 0.55 * a
+        end
+    end)
+
+    if U.glass() then U.shell("Glass") end
+end)()
 
 -- v1.0.0: one-time celebration after the first 1.0 load (confetti, fanfare, the road
 -- here, what's new). Seen flag in Koffee/milestones.json, never a config.
