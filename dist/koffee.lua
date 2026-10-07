@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.61"
+Koffee.Version = "0.99.62"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -25703,10 +25703,156 @@ registerConfig("item_skins", Koffee.ItemSkins)
         return h and IS.Skins[h.sig], h
     end
     fxRestoreRef = fxRestore
+    -- v0.99.62 :: viewmodel animation edits :: the client can read an animation
+    -- (KeyframeSequenceProvider) but can't register an edited one outside Studio, so
+    -- Koffee drives the joints itself: while RIVALS plays the original track, each
+    -- edited joint's Motor6D.Transform becomes the original pose at the track's own
+    -- time, times your offset. Same clock, so the length never changes. Edits live on
+    -- the skin (skin.anims[key] = { id, blend, k = { [joint] = { { time, {12} }, ... } } }).
+    local AN = { base = {}, loading = {} }
+    local TweenSvc = game:GetService("TweenService")
+    function AN.load(id)
+        local b = AN.base[id]
+        if b then return b end
+        if AN.loading[id] then return nil end
+        AN.loading[id] = true
+        task.spawn(function()
+            local ok, kfs = pcall(function()
+                return game:GetService("KeyframeSequenceProvider"):GetKeyframeSequenceAsync(id)
+            end)
+            local joints, times = {}, {}
+            if ok and kfs then
+                for _, kf in ipairs(kfs:GetKeyframes()) do
+                    times[#times + 1] = kf.Time
+                    for _, ps in ipairs(kf:GetDescendants()) do
+                        if ps:IsA("Pose") and ps.Weight > 0 then
+                            local l = joints[ps.Name] or {}
+                            joints[ps.Name] = l
+                            l[#l + 1] = { kf.Time, ps.CFrame, ps.EasingStyle.Name, ps.EasingDirection.Name }
+                        end
+                    end
+                end
+                for _, l in pairs(joints) do table.sort(l, function(a, c) return a[1] < c[1] end) end
+                table.sort(times)
+            end
+            AN.base[id] = { joints = joints, times = times, len = times[#times] or 0, failed = not (ok and kfs) }
+            AN.loading[id] = nil
+        end)
+        return nil
+    end
+    -- pose easing runs opposite to TweenService's direction (Roblox quirk)
+    function AN.ease(a, style, dir)
+        if style == "Constant" then return 0 end
+        if style == "Linear" then return a end
+        local es = Enum.EasingStyle[style == "CubicV2" and "Cubic" or style] or Enum.EasingStyle.Linear
+        local ed = (dir == "In" and Enum.EasingDirection.Out) or (dir == "Out" and Enum.EasingDirection.In)
+            or Enum.EasingDirection.InOut
+        local ok, v = pcall(TweenSvc.GetValue, TweenSvc, a, es, ed)
+        return ok and v or a
+    end
+    function AN.sample(list, t)
+        local n = #list
+        if n == 0 then return nil end
+        if t <= list[1][1] then return list[1][2] end
+        if t >= list[n][1] then return list[n][2] end
+        for i = 1, n - 1 do
+            local a, b = list[i], list[i + 1]
+            if t <= b[1] then
+                local span = b[1] - a[1]
+                local al = span > 0 and (t - a[1]) / span or 1
+                return a[2]:Lerp(b[2], AN.ease(al, a[3], a[4]))
+            end
+        end
+        return list[n][2]
+    end
+    -- your offset at t. smooth: blended between your keys and fading in / out over
+    -- `blend` seconds. Not smooth: only the exact keyframe you edited changes, every
+    -- other frame plays the original untouched.
+    function AN.offset(keys, t, blend, smooth)
+        local n = type(keys) == "table" and #keys or 0
+        if n == 0 then return nil end
+        local function cf(k) return CFrame.new(table.unpack(k[2])) end
+        if smooth == false then
+            for _, k in ipairs(keys) do
+                if math.abs(k[1] - t) < 0.0085 then return cf(k) end
+            end
+            return nil
+        end
+        blend = math.max(blend, 0.01)
+        if t < keys[1][1] then
+            local d = keys[1][1] - t
+            if d >= blend then return nil end
+            return CFrame.new():Lerp(cf(keys[1]), 1 - d / blend)
+        end
+        if t > keys[n][1] then
+            local d = t - keys[n][1]
+            if d >= blend then return nil end
+            return cf(keys[n]):Lerp(CFrame.identity, d / blend)
+        end
+        for i = 1, n - 1 do
+            local a, b = keys[i], keys[i + 1]
+            if t <= b[1] then
+                local span = b[1] - a[1]
+                local al = span > 0 and (t - a[1]) / span or 1
+                return cf(a):Lerp(cf(b), al * al * (3 - 2 * al))
+            end
+        end
+        return cf(keys[n])
+    end
+    function AN.pose(base, edit, joint, t)
+        local list = base.joints[joint]
+        local b = list and AN.sample(list, t)
+        if not b then return nil end
+        local off = edit and type(edit.k) == "table"
+            and AN.offset(edit.k[joint], t, tonumber(edit.blend) or 0.2, edit.smooth ~= false)
+        return off and (b * off) or b
+    end
+    function AN.motors(model)
+        local c = AN.mcache
+        if c and c.model == model then return c.map end
+        local map = {}
+        for _, d in ipairs(model:GetDescendants()) do
+            if d:IsA("Motor6D") and d.Part1 then map[d.Part1.Name] = d end
+        end
+        AN.mcache = { model = model, map = map }
+        return map
+    end
+    -- after the Animator (PreAnimation) and before the joints solve: blend your pose in
+    -- by the original track's own weight, only for joints you edited
+    RunService.Stepped:Connect(function()
+        if Koffee.dead() or IS_RT.editing then return end
+        local m = Modules.itemskins
+        if not (m and m.Enabled) then return end
+        local h = IS_RT.held
+        local sk = h and IS.Skins[h.sig]
+        if not (sk and type(sk.anims) == "table" and next(sk.anims)) then return end
+        pcall(function()
+            local lf = Shared.RV and Shared.RV.localFighter and Shared.RV.localFighter()
+            local cvm = lf and lf.EquippedItem and lf.EquippedItem.ViewModel
+            local animr = cvm and cvm.Animator
+            local model = cvm and cvm.Model
+            if not (animr and model and animr._animation_tracks) then return end
+            local mot = AN.motors(model)
+            for key, edit in pairs(sk.anims) do
+                local tr = animr._animation_tracks[key]
+                if tr and tr.IsPlaying and type(edit) == "table" and edit.id and type(edit.k) == "table" and next(edit.k) then
+                    local base = AN.load(edit.id)
+                    if base then
+                        local t, w = tr.TimePosition, math.clamp(tr.WeightCurrent, 0, 1)
+                        for joint in pairs(edit.k) do
+                            local mo = mot[joint]
+                            local pose = mo and AN.pose(base, edit, joint, t)
+                            if pose then mo.Transform = mo.Transform:Lerp(pose, w) end
+                        end
+                    end
+                end
+            end
+        end)
+    end)
     IS._ed = { makeTemplate = makeTemplate, templateFromInst = templateFromInst, partsOf = partsOf, fxList = fxList,
         fxTarget = fxTarget, fxEntry = fxEntry, restRel = restRel, muzzleSkin = muzzleSkin, offOf = offOf,
         seatFor = seatFor, fxRestore = fxRestore, scaleSeq = scaleSeq, FXC = FXC, rt = IS_RT, ours = ours,
-        hideOne = hideOne, hostOf = hostOf, cleanClone = cleanClone, PT = PT }
+        hideOne = hideOne, hostOf = hostOf, cleanClone = cleanClone, PT = PT, AN = AN }
     registerModule("itemskins", "Item Models", function() end, function() dropModel(); unhide() end)
     IS._probe = function() return pcall(step) end   -- test hook: one step, error returned
 
@@ -25992,7 +26138,7 @@ end)()
         for k, v in pairs(t) do o[k] = copy(v) end
         return o
     end
-    local SNAP_KEYS = { "ox", "oy", "oz", "rx", "ry", "rz", "scale", "fx", "parts" }
+    local SNAP_KEYS = { "ox", "oy", "oz", "rx", "ry", "rz", "scale", "fx", "parts", "anims" }
     -- v0.99.52 a single part of the skin is selected as ED.sel = "p:<key>"
     function ED.pkey()
         local sl = ED.sel
@@ -26113,6 +26259,8 @@ end)()
         ED.b.mzKey = nil
     end
     local function selWorld()
+        local jk = ED.A.jkey()
+        if jk then return ED.A.world(jk) end
         local pk = ED.pkey()
         if pk then
             local part = ED.b.byKey[pk]
@@ -26132,6 +26280,8 @@ end)()
         s.rx, s.ry, s.rz = r2(math.deg(rx)), r2(math.deg(ry)), r2(math.deg(rz))
     end
     local function setSelWorld(W)
+        local jk = ED.A.jkey()
+        if jk then ED.A.setWorld(jk, W); return end
         local pk = ED.pkey()
         if pk then
             local part = ED.b.byKey[pk]
@@ -26155,6 +26305,7 @@ end)()
         end
     end
     local function selScale()
+        if ED.A.jkey() then return 1 end
         if ED.pkey() then
             local e = ED.pentry(false)
             return e and tonumber(e.k) or 1
@@ -26165,6 +26316,7 @@ end)()
     end
     local function setSelScale(v)
         v = math.clamp(r2(v), 0.05, 20)
+        if ED.A.jkey() then return end
         if ED.pkey() then ED.pentry(true).k = v; return end
         if ED.sel == "model" then ED.s.scale = v; return end
         local items = fxItems()
@@ -26438,6 +26590,9 @@ end)()
         elseif ED.pkey() then
             local part = ED.b.byKey[ED.pkey()]
             if part then G.sel.Adornee, G.sel.Visible = part, true end
+        elseif ED.A.jkey() then
+            local mo = ED.A.rig and ED.A.rig.motors[ED.A.jkey()]
+            if mo and mo.Part1 then G.sel.Adornee, G.sel.Visible = mo.Part1, true end
         end
     end
     local function pickHandle(m)
@@ -26489,7 +26644,7 @@ end)()
         local P, r = mouseRay()
         local rp = RaycastParams.new()
         rp.FilterType = Enum.RaycastFilterType.Include
-        rp.FilterDescendantsInstances = { ED.b.model }
+        rp.FilterDescendantsInstances = { (ED.A.on and ED.A.rig) and ED.A.rig.model or ED.b.model }
         local hit = Workspace:Raycast(P, r * 1000, rp)
         return hit and hit.Instance or nil
     end
@@ -26715,6 +26870,358 @@ end)()
             v.dist = math.max(ED.radius * 1.2, 0.6)
         end
     end
+    -- v0.99.62 :: Animate mode :: a copy of the RIVALS viewmodel (arms, gun, your skin)
+    -- posed by the chosen animation; pick a joint, go to a keyframe, drag the gizmo.
+    -- Edits are offsets that blend in and out around their key (see AN.offset).
+    ED.A = { on = false, t = 0 }
+    function ED.A.jkey()
+        local sl = ED.sel
+        return type(sl) == "string" and sl:sub(1, 2) == "j:" and sl:sub(3) or nil
+    end
+    function ED.A.list()
+        if ED.A.cacheList then return ED.A.cacheList end
+        local out = {}
+        pcall(function()
+            local lf = Shared.RV.localFighter()
+            local anims = lf.EquippedItem.ViewModel.Info.Animations
+            local AL = Shared.RV.idRequire(game:GetService("ReplicatedStorage").Modules.AnimationLibrary)
+            for key, name in pairs(anims) do
+                local inf = AL.Info[name]
+                if inf and inf.AnimationID then out[#out + 1] = { key = key, id = inf.AnimationID } end
+            end
+        end)
+        table.sort(out, function(a, b) return a.key < b.key end)
+        ED.A.cacheList = out
+        return out
+    end
+    function ED.A.entry(make)
+        local A, sk = ED.A, ED.s
+        if not A.key then return nil end
+        if type(sk.anims) ~= "table" then
+            if not make then return nil end
+            sk.anims = {}
+        end
+        local e = sk.anims[A.key]
+        if not e and make then
+            e = { id = A.id, blend = 0.2, k = {} }
+            sk.anims[A.key] = e
+        end
+        return e
+    end
+    function ED.A.buildRig()
+        local A = ED.A
+        local vm = ED.h.obj and ED.h.obj.Parent
+        if not (vm and vm:IsA("Model") and vm:FindFirstChild("HumanoidRootPart")) then return false end
+        local c
+        pcall(function()
+            vm.Archivable = true
+            for _, d in ipairs(vm:GetDescendants()) do pcall(function() d.Archivable = true end) end
+            c = vm:Clone()
+        end)
+        if not c then return false end
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("LuaSourceContainer") or d:IsA("Sound") then
+                d:Destroy()
+            elseif d:IsA("BasePart") then
+                d.CanCollide = false
+                pcall(function() d.CanQuery = true; d.CanTouch = false end)
+            end
+        end
+        local hrp = c.HumanoidRootPart
+        hrp.Anchored = true
+        hrp.CFrame = ED.S * ED.h.root.CFrame:ToObjectSpace(vm.HumanoidRootPart.CFrame)
+        local iv = c:FindFirstChild("ItemVisual")
+        local body = iv and iv:FindFirstChild("Body")
+        local bodyPrim = body and body.PrimaryPart
+        if not bodyPrim then c:Destroy(); return false end
+        if IS.HideOriginal ~= false then
+            for _, d in ipairs(iv:GetDescendants()) do if d:IsA("BasePart") then d.Transparency = 1 end end
+        end
+        -- your skin on the copy, welded the way the live one is (pieces included)
+        local pieces = {}
+        for _, ch in ipairs(iv:GetChildren()) do
+            if ch:IsA("Model") and ch.PrimaryPart then pieces[ch.Name] = ch.PrimaryPart end
+        end
+        local b = X.makeTemplate(ED.s)
+        if b then
+            local off = X.offOf(ED.s)
+            local rr = b.rel[b.root] or CFrame.identity
+            for q in pairs(b.rel) do q.Anchored = false; q.Massless = true end
+            for q, rel in pairs(b.rel) do
+                local w = Instance.new("Weld")
+                if q == b.root then
+                    w.Part0, w.Part1, w.C0 = bodyPrim, q, off * rr
+                else
+                    local e = X.PT.edit(ED.s, b.keys[q] or "")
+                    local prim = e and e.piece and pieces[e.piece]
+                    local info = e and e.piece and ED.h.pieces and ED.h.pieces[e.piece]
+                    if prim and info then
+                        w.Part0, w.Part1, w.C0 = prim, q, info.rest:Inverse() * off * rel
+                    else
+                        w.Part0, w.Part1, w.C0 = b.root, q, rr:Inverse() * rel
+                    end
+                end
+                w.Parent = b.model
+            end
+            b.model.Parent = c
+        end
+        c.Parent = ED.stage
+        A.rig = { model = c, motors = X.AN.motors(c), b = b, focus = bodyPrim.Position }
+        X.AN.mcache = nil   -- that cache is the live viewmodel's
+        return true
+    end
+    function ED.A.jointFor(part)
+        local A = ED.A
+        local mot = A.rig.motors
+        local bb = A.rig.b
+        if bb and bb.keys[part] then
+            local e = X.PT.edit(ED.s, bb.keys[part])
+            local pc = e and e.piece and ED.h.pieces and ED.h.pieces[e.piece]
+            local nm = pc and pc.prim and pc.prim.Name
+            return (nm and mot[nm]) and nm or "BodyPrimary"
+        end
+        local x = part
+        while x and x ~= A.rig.model do
+            if x:IsA("BasePart") then
+                local mo = mot[x.Name]
+                if mo and mo.Part1 == x then return x.Name end
+            elseif x:IsA("Model") and x.PrimaryPart then
+                local mo = mot[x.PrimaryPart.Name]
+                if mo and mo.Part1 == x.PrimaryPart then return x.PrimaryPart.Name end
+            end
+            x = x.Parent
+        end
+        return nil
+    end
+    function ED.A.world(name)
+        local mo = ED.A.rig and ED.A.rig.motors[name]
+        return mo and mo.Part1 and mo.Part1.CFrame or nil
+    end
+    -- nearest keyframe to the playhead (edits always land on one)
+    function ED.A.snap()
+        local base = ED.A.id and X.AN.load(ED.A.id)
+        if not base or #base.times == 0 then return ED.A.t end
+        local best, bd = base.times[1], math.huge
+        for _, tt in ipairs(base.times) do
+            local d = math.abs(tt - ED.A.t)
+            if d < bd then best, bd = tt, d end
+        end
+        ED.A.t = best
+        return best
+    end
+    function ED.A.setWorld(name, W)
+        local A = ED.A
+        local mo = A.rig and A.rig.motors[name]
+        local base = A.id and X.AN.load(A.id)
+        if not (mo and mo.Part0 and base and base.joints[name]) then return end
+        A.playing = false
+        local tk = A.snap()
+        local newT = mo.C0:Inverse() * mo.Part0.CFrame:Inverse() * W * mo.C1
+        local b0 = X.AN.sample(base.joints[name], tk)
+        if not b0 then return end
+        local e = A.entry(true)
+        e.k[name] = e.k[name] or {}
+        local list = e.k[name]
+        local comps = { (b0:Inverse() * newT):GetComponents() }
+        local put = false
+        for _, k in ipairs(list) do
+            if math.abs(k[1] - tk) < 1e-4 then k[2] = comps; put = true end
+        end
+        if not put then
+            list[#list + 1] = { tk, comps }
+            table.sort(list, function(a, b) return a[1] < b[1] end)
+        end
+        pcall(function() mo.Transform = newT end)
+    end
+    function ED.A.pick(key, id)
+        ED.A.key, ED.A.id, ED.A.t, ED.A.playing = key, id, 0, false
+        X.AN.load(id)
+        if refreshUi then refreshUi() end
+    end
+    function ED.A.step(dir)
+        local base = ED.A.id and X.AN.load(ED.A.id)
+        if not base or #base.times == 0 then return end
+        ED.A.playing = false
+        local t = ED.A.t
+        if dir > 0 then
+            for _, tt in ipairs(base.times) do if tt > t + 1e-4 then ED.A.t = tt; return end end
+        else
+            for i = #base.times, 1, -1 do if base.times[i] < t - 1e-4 then ED.A.t = base.times[i]; return end end
+        end
+    end
+    function ED.A.resetKey()
+        local jk, e = ED.A.jkey(), ED.A.entry(false)
+        if not (jk and e and e.k[jk]) then return end
+        pushUndo()
+        local tk = ED.A.snap()
+        for i = #e.k[jk], 1, -1 do if math.abs(e.k[jk][i][1] - tk) < 1e-4 then table.remove(e.k[jk], i) end end
+        if #e.k[jk] == 0 then e.k[jk] = nil end
+    end
+    function ED.A.resetJoint()
+        local jk, e = ED.A.jkey(), ED.A.entry(false)
+        if jk and e then pushUndo(); e.k[jk] = nil end
+    end
+    function ED.A.resetAnim()
+        if type(ED.s.anims) == "table" and ED.A.key then pushUndo(); ED.s.anims[ED.A.key] = nil end
+    end
+    function ED.A.fillJoints()
+        local A = ED.A
+        for _, c in ipairs(A.jointBox:GetChildren()) do if c:IsA("GuiButton") then c:Destroy() end end
+        A.jointRows = {}
+        local names = {}
+        for n in pairs(A.rig.motors) do names[#names + 1] = n end
+        table.sort(names)
+        for i, n in ipairs(names) do
+            A.jointRows[n] = button(A.jointBox, n, i, function() selectTarget("j:" .. n) end, 206)
+        end
+    end
+    function ED.A.toggle()
+        local A = ED.A
+        if not A.on then
+            if ED.h.kind ~= "Viewmodel" or not (ED.h.obj and ED.h.obj.Parent) then
+                note("Animations work on a RIVALS viewmodel")
+                return
+            end
+            if not A.rig and not A.buildRig() then note("Couldn't copy the viewmodel"); return end
+            local l = A.list()
+            if #l == 0 then note("No animations found for this weapon") end
+            if not A.key then
+                for _, a in ipairs(l) do if a.key == "Reload" then A.pick(a.key, a.id) end end
+                if not A.key and l[1] then A.pick(l[1].key, l[1].id) end
+            end
+            A.fillJoints()
+            A.on = true
+        else
+            A.on = false
+        end
+        for q in pairs(ED.b.rel) do q.LocalTransparencyModifier = A.on and 1 or 0 end
+        if ED.ghost then
+            for _, q in ipairs(X.partsOf(ED.ghost)) do q.LocalTransparencyModifier = (A.on or not ED.ghostOn) and 1 or 0 end
+        end
+        for _, q in ipairs(X.partsOf(A.rig.model)) do q.LocalTransparencyModifier = A.on and 0 or 1 end
+        for _, rec in ipairs(ED.fx) do
+            rec.mk.Visible, rec.rmk.Visible = false, false
+            if rec.lbl then rec.lbl.Visible = false end
+        end
+        ED.mzMk.Visible = false
+        ED.outP.Visible, ED.inspP.Visible, ED.tlP.Visible = not A.on, not A.on, not A.on
+        A.panel.Visible, A.tl.Visible = A.on, A.on
+        selectTarget(nil)
+        if A.on then ED.view.focus = A.rig.focus end
+    end
+    function ED.A.frame(dt)
+        local A = ED.A
+        local base = A.id and X.AN.load(A.id)
+        local len = base and base.len or 0
+        if A.playing and len > 0 then A.t = (A.t + dt) % len end
+        if base and A.rig then
+            local e = A.entry(false)
+            for name, mo in pairs(A.rig.motors) do
+                local pose = X.AN.pose(base, e, name, A.t)
+                if pose then pcall(function() mo.Transform = pose end) end
+            end
+        end
+        local f = len > 0 and math.clamp(A.t / len, 0, 1) or 0
+        A.fill.Size = UDim2.new(f, 0, 1, 0)
+        A.knob.Position = UDim2.new(f, 0, 0.5, 0)
+        if not base then
+            A.timeLbl.Text = A.id and "loading..." or "pick an animation"
+        elseif base.failed then
+            A.timeLbl.Text = "couldn't load this animation"
+        else
+            local idx = 1
+            for i, tt in ipairs(base.times) do if tt <= A.t + 1e-4 then idx = i end end
+            A.timeLbl.Text = string.format("%s  %.2f / %.2fs  ·  key %d / %d", A.key or "", A.t, len, idx, #base.times)
+        end
+    end
+    function ED.A.scrubAt(x)
+        local A = ED.A
+        local w = A.bar.AbsoluteSize.X
+        local base = A.id and X.AN.load(A.id)
+        if w > 0 and base then
+            A.playing = false
+            A.t = math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len
+        end
+    end
+    function ED.A.buildGui()
+        local A = ED.A
+        local ap = mkPanel({ Position = UDim2.new(0, 14, 0, 70), Size = UDim2.new(0, 230, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, Visible = false })
+        pad(ap, 10, 10)
+        list(ap, nil, 3)
+        text(ap, "ANIMATIONS", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 0)
+        A.animRows = {}
+        local l = A.list()
+        for i, a in ipairs(l) do
+            A.animRows[a.key] = button(ap, a.key, i, function() A.pick(a.key, a.id) end, 206)
+        end
+        if #l == 0 then
+            text(ap, "no animations found for this weapon", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 50, true)
+        end
+        text(ap, "JOINTS", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 100)
+        A.jointBox = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 101, ZIndex = 6, Parent = ap })
+        list(A.jointBox, nil, 3)
+        A.blend = slider(ap, "Blend in / out (s)", 0.02, 1.5, 0.2, 2, function(v)
+            local e = A.entry(true)
+            if e then edit(); e.blend = v end
+        end)
+        A.blend.row.LayoutOrder = 200
+        -- smooth: edits fade in / out and blend into each other; off: only the edited
+        -- keyframe changes, the frames around it stay the original
+        A.smooth = configCheckbox(ap, "Smooth edits", true, function(v)
+            local e = A.entry(true)
+            if e then edit(); e.smooth = (v == false) and false or nil end
+        end)
+        A.smooth.row.LayoutOrder = 199
+        local rb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 201, ZIndex = 6, Parent = ap })
+        list(rb, Enum.FillDirection.Horizontal, 6)
+        button(rb, "Reset key", 1, function() A.resetKey() end)
+        button(rb, "Reset joint", 2, function() A.resetJoint() end)
+        button(ap, "Reset animation", 202, function() A.resetAnim() end)
+        text(ap, "pick a joint (here or click it), go to a moment, drag the gizmo. each edit blends in and out around its key, and only plays while this skin is on.",
+            Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 203, true)
+        A.panel = ap
+        local at = mkPanel({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
+            Size = UDim2.new(0, 640, 0, 68), Visible = false })
+        pad(at, 8, 12)
+        local ctr = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), ZIndex = 6, Parent = at })
+        list(ctr, Enum.FillDirection.Horizontal, 6)
+        A.playBtn = button(ctr, "Play", 1, function() A.playing = not A.playing end, 70)
+        button(ctr, "<", 2, function() A.step(-1) end, 30)
+        button(ctr, ">", 3, function() A.step(1) end, 30)
+        A.timeLbl = text(ctr, "", Theme.Text.Small, Theme.Palette.Text, Theme.Fonts.Mono, 10)
+        local track = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 0, 0, 32), Size = UDim2.new(1, 0, 0, 18), ZIndex = 6, Parent = at })
+        local bar = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+            Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = Theme.Palette.PanelElevated, ZIndex = 6, Parent = track },
+            { pillCorner() })
+        A.fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Theme.Palette.Accent, ZIndex = 7, Parent = bar },
+            { pillCorner() })
+        A.knob = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+            Size = UDim2.fromOffset(12, 12), BackgroundColor3 = Theme.Palette.Accent, ZIndex = 8, Parent = bar },
+            { pillCorner(), stroke(Theme.Palette.Border, 1) })
+        track.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 then A.scrub = true; A.scrubAt(io.Position.X) end
+        end)
+        A.bar, A.tl = bar, at
+    end
+    function ED.A.refresh()
+        local A = ED.A
+        if not A.panel then return end
+        A.playBtn.Text = A.playing and "Pause" or "Play"
+        for key, b in pairs(A.animRows or {}) do
+            local e = type(ED.s.anims) == "table" and ED.s.anims[key]
+            b.Text = key .. ((e and type(e.k) == "table" and next(e.k)) and "  (edited)" or "")
+            lit(b, A.key == key)
+        end
+        local jk = A.jkey()
+        for name, b in pairs(A.jointRows or {}) do lit(b, jk == name) end
+        local e = A.entry(false)
+        A.blend.set(e and tonumber(e.blend) or 0.2)
+        A.blend.row.Visible = not (e and e.smooth == false)
+        if A.smooth.setState then A.smooth.setState(not (e and e.smooth == false)) end
+    end
     local close
     local function buildGui()
         local gui = KID.track(new("ScreenGui", {
@@ -26746,6 +27253,7 @@ end)()
         ED.backBtn = button(top, "Backdrop", 22, function() setBack(not ED.backOn); refreshUi() end)
         button(top, "Focus", 23, focusSel)
         button(top, "Undo", 24, undo)
+        ED.animBtn = button(top, "Animate", 25, function() ED.A.toggle(); refreshUi() end)
         new("Frame", { Size = UDim2.new(0, 1, 0, 20), BackgroundColor3 = Theme.Palette.Border, LayoutOrder = 29, ZIndex = 6, Parent = top })
         local done = button(top, "Done", 30, function() close() end)
         lit(done, true)
@@ -26753,6 +27261,7 @@ end)()
         -- outliner
         local out = mkPanel({ Position = UDim2.new(0, 14, 0, 70), Size = UDim2.new(0, 230, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y })
+        ED.outP = out
         pad(out, 10, 10)
         list(out, nil, 3)
         text(out, "SCENE", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 0)
@@ -26848,6 +27357,7 @@ end)()
             ScrollingDirection = Enum.ScrollingDirection.Y, Active = true, ZIndex = 5, Parent = gui,
         }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
         ED.panels[#ED.panels + 1] = insp
+        ED.inspP = insp
         pad(insp, 12, 14)
         local lay = list(insp, nil, 6)
         local function fit()
@@ -27054,6 +27564,7 @@ end)()
         -- timeline
         local tl = mkPanel({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
             Size = UDim2.new(0, 640, 0, 68) })
+        ED.tlP = tl
         pad(tl, 8, 12)
         local ctr = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), ZIndex = 6, Parent = tl })
         list(ctr, Enum.FillDirection.Horizontal, 6)
@@ -27090,6 +27601,7 @@ end)()
 
         text(gui, "RMB orbit    MMB pan    wheel zoom    RMB + WASD/QE fly    1 2 3 tools    F focus    H hide part    Shift-click whole skin    Space play    Ctrl+Z undo",
             Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 0).Position = UDim2.new(0, 16, 1, -24)
+        ED.A.buildGui()
         -- marker labels follow their dots
         for _, rec in ipairs(ED.fx) do
             rec.lbl = new("TextLabel", { Text = rec.c.name, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small - 1,
@@ -27167,6 +27679,8 @@ end)()
                 or src == "model" and "from the skin's own muzzle point" or "auto-detected from the skin's shape")
         end
         ED.tlName.Text = type(sel) == "table" and sel.c.name or "all effects"
+        lit(ED.animBtn, ED.A.on)
+        ED.A.refresh()
     end
 
     -- :: frame ::
@@ -27238,6 +27752,17 @@ end)()
         for _, p in ipairs(ED.hidden) do
             if p.Parent and p.LocalTransparencyModifier ~= 1 then p.LocalTransparencyModifier = 1 end
         end
+        if ED.A.on then
+            ED.A.frame(dt)
+            if not ED.drag then
+                local m = UserInputService:GetMouseLocation()
+                ED.hover = (not overPanel(m)) and pickHandle(m) or nil
+            end
+            drawGizmo()
+            ED.tick = (ED.tick or 0) + dt
+            if ED.tick > 0.1 then ED.tick = 0; refreshUi() end
+            return
+        end
         if ED.b.scale ~= math.max(tonumber(ED.s.scale) or 1, 0.01) then rescale() end
         X.PT.apply(ED.b, ED.s, true)
         local si = skinItem()
@@ -27307,6 +27832,12 @@ end)()
         if overPanel(m) then return end
         local hh = ED.gz and pickHandle(m)
         if hh then beginDrag(hh, m); return end
+        if ED.A.on then
+            local hp = pickModel()
+            local j = hp and ED.A.jointFor(hp)
+            selectTarget(j and ("j:" .. j) or nil)
+            return
+        end
         local rec = pickMarker(m)
         if rec then selectTarget(rec); return end
         -- v0.99.52: a click picks the part under the mouse, Shift-click the whole skin
@@ -27333,7 +27864,8 @@ end)()
         elseif k == K.Three then setTool("Scale")
         elseif k == K.F then focusSel()
         elseif k == K.H then ED.ptoggle()
-        elseif k == K.Space then tlToggle()
+        elseif k == K.Space then
+            if ED.A.on then ED.A.playing = not ED.A.playing else tlToggle() end
         end
     end
     local function wire()
@@ -27358,6 +27890,8 @@ end)()
                 local m = UserInputService:GetMouseLocation()
                 if ED.scrub then
                     ED.scrubAt(io.Position.X)
+                elseif ED.A.scrub then
+                    ED.A.scrubAt(io.Position.X)
                 elseif ED.drag then
                     moveDrag(m)
                 elseif ED.rmb or ED.mmb then
@@ -27380,7 +27914,7 @@ end)()
         end)
         cs[#cs + 1] = UserInputService.InputEnded:Connect(function(io)
             local t = io.UserInputType
-            if t == Enum.UserInputType.MouseButton1 then ED.drag, ED.scrub = nil, false
+            if t == Enum.UserInputType.MouseButton1 then ED.drag, ED.scrub, ED.A.scrub = nil, false, false
             elseif t == Enum.UserInputType.MouseButton2 then ED.rmb = false
             elseif t == Enum.UserInputType.MouseButton3 then ED.mmb = false end
         end)
@@ -27445,6 +27979,7 @@ end)()
         X.fxRestore()
         ED.h, ED.s, ED.cam = h, s, cam
         ED.undo, ED.lastEdit, ED.sel = {}, 0, nil
+        ED.A.on, ED.A.rig, ED.A.key, ED.A.id, ED.A.t, ED.A.playing, ED.A.cacheList = false, nil, nil, nil, 0, false, nil
         ED.S = CFrame.new(cam.CFrame.Position + Vector3.new(0, 400, 0))
         local ok, built = pcall(buildStage)
         if not (ok and built) then
