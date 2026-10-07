@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.52"
+Koffee.Version = "0.99.53"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -24883,6 +24883,9 @@ registerConfig("item_skins", Koffee.ItemSkins)
             local rel = root.CFrame:ToObjectSpace(p.CFrame)
             local e = { s = num3(p.Size), cf = { rel:GetComponents() }, c = { p.Color.R, p.Color.G, p.Color.B },
                 m = p.Material.Name, t = p.Transparency, r = p.Reflectance, root = (p == root) or nil }
+            -- v0.99.53: textures and effects added in the part editor ride along
+            local kd = p:GetAttribute("_kdress")
+            if type(kd) == "string" and kd ~= "" then e.kd = kd end
             if p:IsA("MeshPart") then
                 local ms
                 pcall(function() ms = p.MeshSize end)
@@ -24958,6 +24961,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 sm.Offset = Vector3.new(table.unpack(e.mesh.off or { 0, 0, 0 }))
                 sm.Parent = p
             end
+            if type(e.kd) == "string" then p:SetAttribute("_kdress", e.kd) end
             p.Parent = m
             if e.root then m.PrimaryPart = p end
         end
@@ -25022,8 +25026,93 @@ registerConfig("item_skins", Koffee.ItemSkins)
         for q in pairs(b.keys) do
             b.base[q] = b.root.CFrame:ToObjectSpace(q.CFrame)
             local sm = q:FindFirstChildWhichIsA("SpecialMesh")
-            b.look[q] = { size = q.Size, sm = sm, ms = sm and sm.Scale, col = q.Color, t = q.Transparency }
+            local L = { size = q.Size, sm = sm, ms = sm and sm.Scale, col = q.Color, t = q.Transparency,
+                mat = q.Material, rf = q.Reflectance, smTex = sm and sm.TextureId }
+            if q:IsA("MeshPart") then pcall(function() L.mpTex = q.TextureID end) end
+            -- a dress the source already carried (a pasted Copy Skin string)
+            local kd = q:GetAttribute("_kdress")
+            if type(kd) == "string" then
+                local ok, d = pcall(Http.JSONDecode, Http, kd)
+                if ok and type(d) == "table" then L.dress0 = d end
+            end
+            b.look[q] = L
         end
+    end
+    -- v0.99.53 textures: a Roblox id ("123" / "rbxassetid://123") or an image file in
+    -- workspace Koffee/textures ("name.png"), loaded through getcustomasset
+    PT.texCache = {}
+    pcall(function() if makefolder and isfolder and not isfolder("Koffee/textures") then makefolder("Koffee/textures") end end)
+    function PT.texId(t)
+        if type(t) ~= "string" or t == "" then return nil end
+        local id = t:match("^%s*(%d+)%s*$")
+        if id then return "rbxassetid://" .. id end
+        if t:find("^rbxasset") or t:find("^http") then return t end
+        if PT.texCache[t] then return PT.texCache[t] end
+        local out
+        pcall(function()
+            local path = "Koffee/textures/" .. t
+            if getcustomasset and isfile and isfile(path) then out = getcustomasset(path) end
+        end)
+        PT.texCache[t] = out
+        return out
+    end
+    PT.FX = { "None", "Glow", "Outline", "Sparkles", "Fire", "Smoke", "Particles", "Spin Particles" }
+    -- texture + effect on one part; everything we add is tagged and replaced as a set
+    function PT.dress(q, d, col, L)
+        for _, c in ipairs(q:GetChildren()) do
+            if c:GetAttribute("_kd") then c:Destroy() end
+        end
+        d = d or {}
+        local tex = PT.texId(d.tex)
+        if L.sm then
+            L.sm.TextureId = tex or L.smTex or ""
+        elseif q:IsA("MeshPart") then
+            pcall(function() q.TextureID = tex or L.mpTex or "" end)
+        elseif tex then
+            local tile = math.clamp(tonumber(d.tile) or 2, 0.05, 50)
+            for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
+                local t = Instance.new("Texture")
+                t.Texture, t.Face, t.StudsPerTileU, t.StudsPerTileV = tex, face, tile, tile
+                t:SetAttribute("_kd", true)
+                t.Parent = q
+            end
+        end
+        local fx, k = d.fx, math.clamp(tonumber(d.fs) or 1, 0.1, 10)
+        local fxc = (type(d.fc) == "table" and Color3.new(d.fc[1] or 1, d.fc[2] or 1, d.fc[3] or 1)) or col
+        local e
+        if fx == "Glow" then
+            e = Instance.new("PointLight")
+            e.Color, e.Range, e.Brightness, e.Shadows = fxc, 6 * k, 2, false
+        elseif fx == "Outline" then
+            e = Instance.new("Highlight")
+            e.Adornee, e.FillTransparency, e.OutlineColor = q, 1, fxc
+            e.DepthMode = Enum.HighlightDepthMode.Occluded
+        elseif fx == "Sparkles" then
+            e = Instance.new("Sparkles")
+            e.SparkleColor = fxc
+        elseif fx == "Fire" then
+            e = Instance.new("Fire")
+            e.Color, e.SecondaryColor, e.Size, e.Heat = fxc, fxc:Lerp(Color3.new(1, 1, 1), 0.5), 2 * k, 3
+        elseif fx == "Smoke" then
+            e = Instance.new("Smoke")
+            e.Color, e.Size, e.Opacity, e.RiseVelocity = fxc, k, 0.25, 1
+        elseif fx == "Particles" or fx == "Spin Particles" then
+            e = Instance.new("ParticleEmitter")
+            e.Color = ColorSequence.new(fxc)
+            e.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.12 * k), NumberSequenceKeypoint.new(1, 0) })
+            e.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) })
+            e.Lifetime, e.Rate, e.Speed = NumberRange.new(0.4, 0.8), 18, NumberRange.new(0.3, 0.8)
+            e.SpreadAngle, e.LightEmission = Vector2.new(180, 180), 1
+            e.Texture = PT.texId(d.ptex) or "rbxasset://textures/particles/sparkles_main.dds"
+            if fx == "Spin Particles" then e.RotSpeed = NumberRange.new(-240, 240); e.Rotation = NumberRange.new(0, 360) end
+        end
+        if e then
+            e:SetAttribute("_kd", true)
+            e.Parent = q
+        end
+        local any = (d.tex and d.tex ~= "") or (fx and fx ~= "None")
+        local ok, js = pcall(Http.JSONEncode, Http, { tex = d.tex, tile = d.tile, fx = d.fx, fs = d.fs, fc = d.fc, ptex = d.ptex })
+        q:SetAttribute("_kdress", (any and ok) and js or nil)
     end
     -- back to the captured look and spots (the editor does this before a rescale)
     function PT.reset(b)
@@ -25032,6 +25121,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
             local L = b.look[q]
             if L.sm then L.sm.Scale = L.ms else q.Size = L.size end
             q.Color, q.Transparency, L.sig = L.col, L.t, nil
+            q.Material, q.Reflectance = L.mat, L.rf
             q.CFrame = F * b.base[q]
         end
     end
@@ -25043,12 +25133,25 @@ registerConfig("item_skins", Koffee.ItemSkins)
             local L = b.look[q]
             local kk = math.clamp(e and tonumber(e.k) or 1, 0.05, 20)
             local c = e and type(e.c) == "table" and e.c or nil
+            -- the dress: this edit's own texture / effect fields, else what the source carried
+            local d = L.dress0
+            if e and (e.tex ~= nil or e.fx ~= nil or e.ptex ~= nil) then
+                d = { tex = e.tex, tile = e.tile, fx = e.fx, fs = e.fs, fc = e.fc, ptex = e.ptex }
+            end
             local sig = kk .. "|" .. tostring(e and e.hide) .. "|" .. (c and table.concat(c, ",") or "") .. tostring(editing)
+                .. "|" .. tostring(e and e.m) .. "|" .. tostring(e and e.t) .. "|" .. tostring(e and e.rf)
+                .. "|" .. (d and table.concat({ tostring(d.tex), tostring(d.tile), tostring(d.fx), tostring(d.fs),
+                    d.fc and table.concat(d.fc, ",") or "", tostring(d.ptex) }, ";") or "")
             if L.sig ~= sig then
                 L.sig = sig
                 if L.sm then L.sm.Scale = L.ms * kk else q.Size = L.size * kk end
-                q.Color = c and Color3.new(c[1] or 0, c[2] or 0, c[3] or 0) or L.col
-                q.Transparency = (e and e.hide) and (editing and 0.85 or 1) or L.t
+                local col = c and Color3.new(c[1] or 0, c[2] or 0, c[3] or 0) or L.col
+                q.Color = col
+                local mat = e and e.m and Enum.Material[e.m]
+                q.Material = mat or L.mat
+                q.Reflectance = (e and tonumber(e.rf)) or L.rf
+                q.Transparency = (e and e.hide) and (editing and 0.85 or 1) or (e and tonumber(e.t)) or L.t
+                pcall(PT.dress, q, d, col, L)
             end
         end
     end
@@ -25765,9 +25868,17 @@ end)()
             or (part and ED.b.look[part].col) or Color3.new(1, 1, 1)
         return { x = q[1] or 0, y = q[2] or 0, z = q[3] or 0, rx = r[1] or 0, ry = r[2] or 0, rz = r[3] or 0,
             k = tonumber(e.k) or 1, cr = math.floor(col.R * 255 + 0.5), cg = math.floor(col.G * 255 + 0.5),
-            cb = math.floor(col.B * 255 + 0.5) }
+            cb = math.floor(col.B * 255 + 0.5),
+            t = tonumber(e.t) or (part and ED.b.look[part].t) or 0, rf = tonumber(e.rf) or (part and ED.b.look[part].rf) or 0,
+            tile = tonumber(e.tile) or 2, fs = tonumber(e.fs) or 1,
+            fr = type(e.fc) == "table" and math.floor((e.fc[1] or 1) * 255 + 0.5) or math.floor(col.R * 255 + 0.5),
+            fg = type(e.fc) == "table" and math.floor((e.fc[2] or 1) * 255 + 0.5) or math.floor(col.G * 255 + 0.5),
+            fb = type(e.fc) == "table" and math.floor((e.fc[3] or 1) * 255 + 0.5) or math.floor(col.B * 255 + 0.5) }
     end
-    local PIDX = { x = 1, y = 2, z = 3, rx = 1, ry = 2, rz = 3, cr = 1, cg = 2, cb = 3 }
+    local PIDX = { x = 1, y = 2, z = 3, rx = 1, ry = 2, rz = 3, cr = 1, cg = 2, cb = 3, fr = 1, fg = 2, fb = 3 }
+    ED.MATS = { "Original", "SmoothPlastic", "Plastic", "Neon", "ForceField", "Glass", "Metal", "DiamondPlate", "Foil",
+        "Marble", "Granite", "Wood", "WoodPlanks", "Slate", "Concrete", "Brick", "Fabric", "Ice", "Sand", "CrackedLava",
+        "Pebble", "Cobblestone", "Grass", "CorrodedMetal" }
     local function pushUndo()
         local o = {}
         for _, k in ipairs(SNAP_KEYS) do o[k] = copy(ED.s[k]) end
@@ -25791,11 +25902,49 @@ end)()
             e.r[PIDX[k]] = math.floor(v * 100 + 0.5) / 100
         elseif k == "k" then
             e.k = math.clamp(v, 0.05, 20)
+        elseif k == "t" or k == "rf" then
+            e[k] = math.clamp(math.floor(v * 100 + 0.5) / 100, 0, 1)
+        elseif k == "tile" or k == "fs" then
+            e[k] = math.floor(v * 100 + 0.5) / 100
+        elseif k == "fr" or k == "fg" or k == "fb" then
+            local fc = e.fc
+            if type(fc) ~= "table" then
+                local v0 = ED.pvals()
+                fc = { v0.fr / 255, v0.fg / 255, v0.fb / 255 }
+            end
+            fc[PIDX[k]] = v / 255
+            e.fc = fc
         else
             local v0 = ED.pvals()
             local c = { v0.cr / 255, v0.cg / 255, v0.cb / 255 }
             c[PIDX[k]] = v / 255
             e.c = c
+        end
+    end
+    -- the look of one part (everything but where it sits), to stamp onto others
+    ED.LOOK = { "k", "c", "m", "t", "rf", "tex", "tile", "fx", "fs", "fc", "ptex" }
+    function ED.pcopy()
+        local e = ED.pentry(false)
+        if not e then note("This part has no edits to copy"); return end
+        local o = {}
+        for _, k in ipairs(ED.LOOK) do o[k] = copy(e[k]) end
+        ED.style = o
+        note("Style copied")
+    end
+    function ED.ppaste(all)
+        if not ED.style then note("Copy a part's style first"); return end
+        pushUndo()
+        local function stamp(key)
+            if type(ED.s.parts) ~= "table" then ED.s.parts = {} end
+            local e = ED.s.parts[key] or {}
+            for _, k in ipairs(ED.LOOK) do e[k] = copy(ED.style[k]) end
+            ED.s.parts[key] = e
+        end
+        if all then
+            for _, key in pairs(ED.b.keys) do stamp(key) end
+            note("Style pasted on every part")
+        elseif ED.pkey() then
+            stamp(ED.pkey())
         end
     end
     function ED.ptoggle()
@@ -26598,7 +26747,10 @@ end)()
         ED.sp = {}
         local SPD = { { "x", "Move X", -5, 5, 3 }, { "y", "Move Y", -5, 5, 3 }, { "z", "Move Z", -5, 5, 3 },
             { "rx", "Rotate X", -180, 180, 1 }, { "ry", "Rotate Y", -180, 180, 1 }, { "rz", "Rotate Z", -180, 180, 1 },
-            { "k", "Size", 0.05, 5, 2 }, { "cr", "Red", 0, 255, 0 }, { "cg", "Green", 0, 255, 0 }, { "cb", "Blue", 0, 255, 0 } }
+            { "k", "Size", 0.05, 5, 2 }, { "cr", "Red", 0, 255, 0 }, { "cg", "Green", 0, 255, 0 }, { "cb", "Blue", 0, 255, 0 },
+            { "t", "Transparency", 0, 1, 2 }, { "rf", "Reflectance", 0, 1, 2 }, { "tile", "Texture Tile (studs)", 0.1, 20, 1 },
+            { "fs", "Effect Size", 0.1, 5, 2 }, { "fr", "Effect Red", 0, 255, 0 }, { "fg", "Effect Green", 0, 255, 0 },
+            { "fb", "Effect Blue", 0, 255, 0 } }
         for i, d in ipairs(SPD) do
             local k = d[1]
             ED.sp[k] = slider(gp, d[2], d[3], d[4], k == "k" and 1 or 0, d[5], function(v)
@@ -26617,6 +26769,51 @@ end)()
             local e = ED.pentry(false)
             if e then pushUndo(); e.c = nil end
         end)
+        -- v0.99.53 look: material, effect, hex colour, textures, style copy
+        ED.matDd = dropdown(gp, "Material", ED.MATS, "Original", function(v)
+            local e = ED.pkey() and ED.pentry(true)
+            if e then pushUndo(); e.m = (v ~= "Original") and v or nil end
+        end)
+        ED.matDd.frame.LayoutOrder = 40
+        ED.fxDd = dropdown(gp, "Effect", X.PT.FX, "None", function(v)
+            local e = ED.pkey() and ED.pentry(true)
+            if e then pushUndo(); e.fx = (v ~= "None") and v or nil end
+        end)
+        ED.fxDd.frame.LayoutOrder = 41
+        local function boxRow(order, ph, label, onGo)
+            local row = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = order, ZIndex = 6, Parent = gp })
+            list(row, Enum.FillDirection.Horizontal, 6)
+            local box = new("TextBox", { Text = "", PlaceholderText = ph, ClearTextOnFocus = false,
+                TextTruncate = Enum.TextTruncate.AtEnd, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+                BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.15, Size = UDim2.new(1, -70, 0, 26),
+                TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, ZIndex = 6, Parent = row },
+                { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+            button(row, label, 2, function() onGo(box.Text or "", box) end, 62)
+            return box
+        end
+        ED.hexBox = boxRow(42, "colour hex, e.g. ff8800", "Colour", function(t)
+            local h = t:gsub("#", ""):match("^(%x%x%x%x%x%x)$")
+            if not (h and ED.pkey()) then note("Use 6 hex digits, like ff8800"); return end
+            pushUndo()
+            ED.pentry(true).c = { tonumber(h:sub(1, 2), 16) / 255, tonumber(h:sub(3, 4), 16) / 255, tonumber(h:sub(5, 6), 16) / 255 }
+        end)
+        ED.texBox = boxRow(43, "texture: asset id or file in Koffee/textures", "Texture", function(t)
+            if not ED.pkey() then return end
+            pushUndo()
+            ED.pentry(true).tex = (t ~= "") and t or nil
+            if t ~= "" and not X.PT.texId(t) then note("Couldn't find that texture (id, or a file in workspace/Koffee/textures)") end
+        end)
+        ED.ptexBox = boxRow(44, "particle texture (optional)", "Particle", function(t)
+            if not ED.pkey() then return end
+            pushUndo()
+            ED.pentry(true).ptex = (t ~= "") and t or nil
+        end)
+        local gps = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 45, ZIndex = 6, Parent = gp })
+        list(gps, Enum.FillDirection.Horizontal, 6)
+        button(gps, "Copy style", 1, function() ED.pcopy() end)
+        button(gps, "Paste style", 2, function() ED.ppaste(false) end)
+        button(gps, "Paste on all", 3, function() ED.ppaste(true) end)
         ED.gPart = gp
 
         local gn = group(insp, 3)
@@ -26713,6 +26910,15 @@ end)()
             ED.pTitle.Text = (part and part.Name or "part") .. "  #" .. (pk:match("^(%d+)") or "?")
             local e = ED.pentry(false)
             ED.hideBtn.Text = (e and e.hide) and "Show" or "Hide"
+            ED.matDd.setValue((e and e.m) or "Original")
+            ED.fxDd.setValue((e and e.fx) or "None")
+            if ED.lastPk ~= pk then
+                -- the text boxes follow the selection, not every refresh (so typing isn't eaten)
+                ED.lastPk = pk
+                ED.texBox.Text = (e and e.tex) or ""
+                ED.ptexBox.Text = (e and e.ptex) or ""
+                ED.hexBox.Text = string.format("%02x%02x%02x", v.cr, v.cg, v.cb)
+            end
         end
         ED.gModel.Visible = sel == "model"
         ED.gFx.Visible = type(sel) == "table"
