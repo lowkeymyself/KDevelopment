@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.54"
+Koffee.Version = "0.99.56"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -40152,7 +40152,6 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoNative) then pcall(fu
         if tbl == nil then return end
         local old = rawget(tbl, "Update")
         if type(old) ~= "function" then return end
-        Shared.rtrace("native hook setreadonly L39555")
         if setreadonly then pcall(setreadonly, tbl, false) end
         local fine = pcall(rawset, tbl, "Update", function(self, a, state)
             local w = VA.win
@@ -40267,32 +40266,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     -- config, so a save taken while armed would load the flag true and this would
     -- early-return without ever applying the fflags.
     RV._armed = false
-    -- v0.99.39 rage flight recorder (temporary, crash hunt): a line per rage frame
-    -- and before every native call, appended straight to disk so a hard crash keeps
-    -- the tail. Last run is kept as rage_trace_prev.txt. getgenv().KoffeeTraceOff stops it.
-    Shared.rt = Shared.rt or { n = 0, buf = {}, path = "Koffee/rage_trace.txt" }
-    pcall(function()
-        local T = Shared.rt
-        if T.started or not (writefile and appendfile) then return end
-        T.started = true
-        if isfile and readfile and isfile(T.path) then writefile("Koffee/rage_trace_prev.txt", readfile(T.path)) end
-        writefile(T.path, "session " .. os.date("%Y-%m-%d %H:%M:%S") .. " v" .. tostring(Koffee.Version) .. "\n")
-    end)
-    function Shared.rtrace(msg)
-        local T = Shared.rt
-        if not (T.started and appendfile) or (getgenv and getgenv().KoffeeTraceOff) then return end
-        T.n = T.n + 1
-        local line = string.format("%d %.3f %s\n", T.n, os.clock(), tostring(msg))
-        T.buf[#T.buf + 1] = line
-        if #T.buf > 2000 then
-            local keep = {}
-            for i = #T.buf - 999, #T.buf do keep[#keep + 1] = T.buf[i] end
-            T.buf = keep
-            pcall(writefile, T.path, table.concat(keep))
-        else
-            pcall(appendfile, T.path, line)
-        end
-    end
+    -- position formatter for status text (was part of the v0.99.39 flight recorder)
     function Shared.rtv(v)
         if typeof(v) == "CFrame" then v = v.Position end
         if typeof(v) ~= "Vector3" then return tostring(v) end
@@ -40313,11 +40287,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
     function RV.armEngine(want)
         if RV._armed == want then return end
         RV._armed = want
-        Shared.rtrace("arm " .. tostring(want))
         if sethiddenproperty then
             local v = RV._fpdh or -500
             if want then v = 0 / 0 end
-            Shared.rtrace("native sethiddenproperty FPDH " .. tostring(v))
             pcall(sethiddenproperty, Workspace, "FallenPartsDestroyHeight", v)
         end
         if not setfflag then return end
@@ -40326,10 +40298,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             or { { "DFIntS2PhysicsSenderRate", "15" }, { "DFIntAssemblyHistoryBufferSize", "15" },
             { "DFIntAssemblyHistorySkipSize", "8" } }
         for _, f in ipairs(list) do
-            Shared.rtrace("native setfflag " .. f[1] .. "=" .. f[2])
             pcall(setfflag, f[1], f[2])
         end
-        Shared.rtrace("arm done")
     end
 
     -- :: TARGET PICK ::
@@ -40549,7 +40519,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
         if dest == nil then RV._dsLast = nil; return end
         if not RV.cfValid(dest) then
-            Shared.rtrace("reject invalid " .. Shared.rtv(dest))
             RV._dsLast = nil
             return
         end
@@ -40559,8 +40528,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if not riding and RV.RG and RV.RG.intrudeStep then pcall(RV.RG.intrudeStep, oldCF.Position, dest.Position) end
         RV._dsLast = dest
         if RV.RG and RV.RG.noteSpot then RV.RG.noteSpot(dest.Position) end
-        Shared.rtrace("native write " .. (rcf and "rage " or "desync ") .. Shared.rtv(dest) .. " act="
-            .. tostring(RV.RG and RV.RG.action) .. " ph=" .. tostring(RV.RG and RV.RG.phase))
         pcall(function() mr.CFrame = dest end)
         if riding then
             pcall(function() mr.AssemblyLinearVelocity = Vector3.zero end)
@@ -40941,14 +40908,59 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local B = RG.bounds
             if now - B.at < 0.5 then return end
             B.at = now
-            local okP, parts = pcall(CS.GetTagged, CS, "OutOfBoundsPart")
-            local okS, safe = pcall(CS.GetTagged, CS, "OutOfBoundsSafePart")
             -- v0.99.17: map Barriers also hold "KillBrick" parts (instant death), the
             -- reason the Edge hide spot insta-killed on some maps
-            local okK, kill = pcall(CS.GetTagged, CS, "KillBrick")
-            B.parts = okP and parts or {}
-            B.safe = okS and safe or {}
-            B.kill = okK and kill or {}
+            -- v0.99.55 (lobby duel OOB deaths): every volume is kept as a snapshot. With
+            -- streaming on (the lobby streams its map in) a volume that streams out of
+            -- reach is remembered for 10 minutes instead of forgotten; without streaming a
+            -- missing volume is a map swap and is dropped at once.
+            local streaming = false
+            pcall(function() streaming = Workspace.StreamingEnabled == true end)
+            RG.streaming = streaming
+            local live = {}
+            for _, pair in ipairs({ { "OutOfBoundsPart", "oob" }, { "OutOfBoundsSafePart", "safe" }, { "KillBrick", "kill" } }) do
+                local ok, list = pcall(CS.GetTagged, CS, pair[1])
+                if ok then
+                    for _, inst in ipairs(list) do
+                        if inst:IsA("BasePart") then
+                            live[inst] = true
+                            local sh = Enum.PartType.Block
+                            pcall(function() if inst:IsA("Part") then sh = inst.Shape end end)
+                            RG.snaps[inst] = { cf = inst.CFrame, size = inst.Size, shape = sh, kind = pair[2],
+                                w = inst:GetAttribute("WarnDelay"), k = inst:GetAttribute("KillDelay") }
+                        end
+                    end
+                end
+            end
+            for inst, sn in pairs(RG.snaps) do
+                if live[inst] then
+                    sn.gone = nil
+                elseif not streaming or now - (sn.gone or now) > 600 then
+                    RG.snaps[inst] = nil
+                else
+                    sn.gone = sn.gone or now
+                end
+            end
+            B.parts, B.safe, B.kill = {}, {}, {}
+            for _, sn in pairs(RG.snaps) do
+                local t = (sn.kind == "oob" and B.parts) or (sn.kind == "safe" and B.safe) or B.kill
+                t[#t + 1] = sn
+            end
+        end
+        RG.snaps = {}
+        -- the game's own test (GameplayUtility.IsWithinRotatedShape): Ball and Cylinder
+        -- volumes are round. A box test made round safe zones look bigger than they are,
+        -- so a spot read "safe" where the game read "out of bounds". m widens (or, when
+        -- negative, shrinks) the volume.
+        function RG.shapeIn(sn, pos, m)
+            local rel = sn.cf:PointToObjectSpace(pos)
+            local h = sn.size * 0.5
+            if sn.shape == Enum.PartType.Ball then
+                return rel.Magnitude <= math.max(h.X, h.Y, h.Z) + m
+            elseif sn.shape == Enum.PartType.Cylinder then
+                return math.abs(rel.X) <= h.X + m and math.sqrt(rel.Y * rel.Y + rel.Z * rel.Z) <= math.max(h.Y, h.Z) + m
+            end
+            return math.abs(rel.X) <= h.X + m and math.abs(rel.Y) <= h.Y + m and math.abs(rel.Z) <= h.Z + m
         end
         function RG.inside(part, pos)
             local rel = part.CFrame:PointToObjectSpace(pos)
@@ -40968,15 +40980,16 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             RG.refreshBounds(os.clock())
             local B = RG.bounds
             for _, kb in ipairs(B.kill or {}) do
-                if kb.Parent and RG.insideM(kb, pos, 4) then return false end
+                if RG.shapeIn(kb, pos, 4) then return false end
             end
+            -- a safe volume only counts a stud inside its real edge
             local inSafe = false
             for _, sp in ipairs(B.safe or {}) do
-                if sp.Parent and RG.inside(sp, pos) then inSafe = true; break end
+                if RG.shapeIn(sp, pos, -1) then inSafe = true; break end
             end
             if not inSafe then
                 for _, pt in ipairs(B.parts or {}) do
-                    if pt.Parent and RG.insideM(pt, pos, 3) then return false end
+                    if RG.shapeIn(pt, pos, 3) then return false end
                 end
             end
             if RG.mineAt and RG.mineAt(pos) then return false end
@@ -40987,21 +41000,29 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not RG.safe(pos) then return 0 end   -- v0.99.30: strict, see RG.safe
             local B = RG.bounds
             for _, kb in ipairs(B.kill or {}) do
-                if kb.Parent and RG.inside(kb, pos) then return 0 end
+                if RG.shapeIn(kb, pos, 0) then return 0 end
             end
-            for _, sp in ipairs(B.safe) do
-                if sp.Parent and RG.inside(sp, pos) then return math.huge end
+            for _, sp in ipairs(B.safe or {}) do
+                if RG.shapeIn(sp, pos, -1) then return math.huge end
             end
             local best = math.huge
-            for _, pt in ipairs(B.parts) do
-                if pt.Parent and RG.inside(pt, pos) then
-                    local w, k = pt:GetAttribute("WarnDelay"), pt:GetAttribute("KillDelay")
+            for _, pt in ipairs(B.parts or {}) do
+                if RG.shapeIn(pt, pos, 0) then
+                    local w, k = pt.w, pt.k
                     w = type(w) == "number" and w or 1
                     k = type(k) == "number" and k or 4
                     if w ~= -1 and k ~= -1 then best = math.min(best, w + k) end
                 end
             end
             return best
+        end
+        function RG.clearOfEnemies(pos, r)
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                local ch = plr ~= LocalPlayer and plr.Character
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                if root and not RV.isAlly(plr) and (root.Position - pos).Magnitude < r then return false end
+            end
+            return true
         end
         function RG.ping()
             local p = 0.08
@@ -41467,7 +41488,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local c = { plr = plr, at = os.clock(), home = home, char = LocalPlayer.Character }
             RV.counter = c
             RG.intr.ev[plr] = nil
-            Shared.rtrace("counter start vs " .. plr.Name .. " home " .. Shared.rtv(home))
             RG.freecam(true, Workspace.CurrentCamera.CFrame)
             c.gui, c.rows = RG.counterPanel()
             c.loop = RunService.Heartbeat:Connect(function()
@@ -41511,7 +41531,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if c.loop then c.loop:Disconnect() end
             if c.gui then pcall(function() c.gui:Destroy() end) end
             RG.freecam(false)
-            Shared.rtrace("counter end (" .. tostring(why) .. ") home " .. Shared.rtv(c.home))
             -- back to the logged home, only on the same life (a respawn already moved us)
             local mr = myRoot()
             if mr and LocalPlayer.Character == c.char then
@@ -41916,7 +41935,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not (mr and RV._dsLast ~= nil) then return false end
             if not RV.cfValid(cf) then return false end
             RV._dsLast = cf
-            Shared.rtrace("native placeNow " .. Shared.rtv(cf))
             return pcall(function() mr.CFrame = cf end)
         end
 
@@ -42067,12 +42085,29 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     rings = C.FarUnsafe and { far * (0.85 + math.random() * 0.15) } or { math.random(45, 50) * 1e6 }
                 end
                 RG.refreshBounds(now)
+                -- v0.99.55: a streamed map (the lobby) only has its volumes loaded near us, so
+                -- a void spot can sit in a kill zone we were never sent. Hide inside the loaded
+                -- radius instead, on a spot our snapshot says is safe and away from enemies.
+                local tries = 6
+                if RG.streaming then
+                    local rad = 1024
+                    pcall(function() rad = math.clamp(Workspace.StreamingTargetRadius, 128, 4096) end)
+                    rings, tries = { rad * 0.4, rad * 0.6, rad * 0.75 }, 14
+                    if not RG.streamNoted and Koffee.notify then
+                        RG.streamNoted = true
+                        Koffee.notify("Rage", "This map streams in (lobby duels): hiding stays inside the loaded area, not the void",
+                            { severity = "info", duration = 6 })
+                    end
+                end
                 local pick
                 for _, d in ipairs(rings) do
-                    for _ = 1, 6 do
+                    for _ = 1, tries do
                         local a = math.random() * math.pi * 2
                         local pos = mr.Position + Vector3.new(math.cos(a) * d, 0, math.sin(a) * d)
-                        if RG.budget(pos) == math.huge then pick = pos; break end
+                        if RG.budget(pos) == math.huge and (not RG.streaming or RG.clearOfEnemies(pos, 60)) then
+                            pick = pos
+                            break
+                        end
                     end
                     if pick then break end
                 end
@@ -42145,7 +42180,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             inner[c2] = part
             inner[c3] = U:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(part.Position)))
             local ok = pcall(function()
-                Shared.rtrace("native melee " .. tostring(action) .. " from " .. Shared.rtv(origin))
                 RV.UseItem:FireServer(oid, toEnum(RV.Enums, action), { [c1] = inner }, nil)
             end)
             if ok then
@@ -42279,7 +42313,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local other = items[slot]
                 if other ~= nil and other ~= it and RG.slotUsable(other) then
                     RG.swapAt = now
-                    Shared.rtrace("native EquipItem " .. tostring(slot))
                     pcall(function() lf:EquipItem(slot) end)
                     return true
                 end
@@ -42295,7 +42328,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 pcall(function() gun = g ~= nil and g ~= it and g.Info.Type == "Gun" end)
                 if gun then
                     RG.swapAt = now
-                    Shared.rtrace("native EquipItem " .. tostring(slot))
                     pcall(function() lf:EquipItem(slot) end)
                     return true
                 end
@@ -42341,7 +42373,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 RG.lr.shots[#RG.lr.shots + 1] = { RG.firedAt, (origin - part.Position).Magnitude }
             end
             RG.ad.shots[#RG.ad.shots + 1] = RG.firedAt
-            Shared.rtrace("native fire from " .. Shared.rtv(origin))
             local ok = pcall(function()
                 RV.UseItem:FireServer(oid, toEnum(RV.Enums, "StartShooting"), outer, nil)
             end)
@@ -42425,8 +42456,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local C = cfg()
             local now = os.clock()
             local mr = myRoot()
-            Shared.rtrace("S " .. tostring(plr and plr.Name) .. " at " .. Shared.rtv(part and part.Position)
-                .. " eq=" .. tostring(RV.equipped() and RV.equipped().Name))
             if not mr then RV._rageCF = nil; return end
             -- v0.99.25: warm-up window on a rage start (0.4s) or a new lock (0.25s)
             if RG.lastTick == nil or now - RG.lastTick > 0.5 then RG.warmUntil = now + 0.4 end
@@ -42729,7 +42758,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- no target: aggressive users stay hidden in a round, everyone else lands
         function RV.rageIdle()
             local C = cfg()
-            Shared.rtrace("I idle")
             RG.phase = "idle"
             RG.statusFor = nil
             if RG.sawHeld then RG.chainsaw(nil, false) end
@@ -42762,7 +42790,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local old = ORIG.isOob or rawget(tbl, "IsOutOfBounds")
             if type(old) ~= "function" then return end
             ORIG.isOob = old
-            Shared.rtrace("native hook setreadonly L41660")
             if setreadonly then pcall(setreadonly, tbl, false) end
             local fine = pcall(rawset, tbl, "IsOutOfBounds", function(self, ...)
                 if not Koffee.dead() and RV._rageCF ~= nil and cfg().OOBGuard then return nil end
@@ -42819,7 +42846,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local old = ORIG.pickOpen or rawget(tbl, "Open")
             if type(old) ~= "function" then return end
             ORIG.pickOpen = old
-            Shared.rtrace("native hook setreadonly L41716")
             if setreadonly then pcall(setreadonly, tbl, false) end
             local fine = pcall(rawset, tbl, "Open", function(self, ...)
                 local res = table.pack(old(self, ...))
@@ -42971,7 +42997,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if tbl == nil then return end
         local old = rawget(tbl, "ShakeOnce")
         if type(old) ~= "function" then return end
-        Shared.rtrace("native hook setreadonly L41867")
         if setreadonly then pcall(setreadonly, tbl, false) end
         -- every shake in the game routes through CameraController:ShakeOnce, which
         -- only forwards to the shaker, so one wrapper covers all of them.
@@ -43036,7 +43061,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local old = ORIG[key] or rawget(tbl, name)
             if type(old) ~= "function" then return end
             ORIG[key] = old
-            Shared.rtrace("native hook setreadonly L41931")
             if setreadonly then pcall(setreadonly, tbl, false) end
             if pcall(rawset, tbl, name, make(old)) then done[key] = true end
         end
