@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.50"
+Koffee.Version = "0.99.51"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -24658,7 +24658,7 @@ end)()
 -- v0.86.0 ITEM MODELS: local-only replacement models for whatever you hold. Finds the
 -- held item without Tools (viewmodel under the camera, or a model jointed to a hand),
 -- with Tools as the alternative path. The original only goes invisible locally.
-Koffee.ItemSkins = { Bind = "Auto", HideOriginal = true, Skins = {} }
+Koffee.ItemSkins = { Bind = "Auto", HideOriginal = true, Skins = {}, Target = "Item" }
 registerConfig("item_skins", Koffee.ItemSkins)
 ;(function()
     local IS = Koffee.ItemSkins
@@ -24797,7 +24797,47 @@ registerConfig("item_skins", Koffee.ItemSkins)
         for _, p in ipairs(partsOf(vm)) do if not armish(p.Name) then parts[#parts + 1] = p end end
         return held("Viewmodel", vm, parts)
     end
+    -- v0.99.51 RIVALS: the viewmodel is workspace.ViewModels.FirstPerson["<you> - <weapon> - <skin>"],
+    -- not under the camera. LeftArm / RightArm are mesh parts with a shirt decal; the gun
+    -- is ItemVisual (Body, Magazine, Bolt... models Motor6D'd to the viewmodel root) and
+    -- Body.PrimaryPart is the gun's frame. The generic path grabbed the whole FirstPerson
+    -- folder: arms hidden, skin riding an arm, one skin shared by every weapon.
+    local function rivalsVM()
+        local f = Workspace:FindFirstChild("ViewModels")
+        f = f and f:FindFirstChild("FirstPerson")
+        if not f then return nil end
+        local pre = LocalPlayer.Name .. " - "
+        for _, c in ipairs(f:GetChildren()) do
+            if c:IsA("Model") and c.Name:sub(1, #pre) == pre then return c end
+        end
+        return nil
+    end
+    local function findRivals()
+        local vm = rivalsVM()
+        if not vm then return nil end
+        if IS.Target == "Arms" then
+            local l, r = vm:FindFirstChild("LeftArm"), vm:FindFirstChild("RightArm")
+            if not (l and r and l:IsA("BasePart") and r:IsA("BasePart")) then return nil end
+            local h = held("Arms", r, { l, r }, "RIVALS Arms")
+            if h then h.root, h.arms = r, { l, r } end
+            return h
+        end
+        local iv = vm:FindFirstChild("ItemVisual")
+        if not iv then return nil end
+        local weapon = vm.Name:match("^.- %- (.-) %- ") or vm.Name:match("^.- %- (.+)$") or vm.Name
+        local h = held("Viewmodel", iv, partsOf(iv), "RIVALS/" .. weapon)
+        local body = iv:FindFirstChild("Body")
+        local bp = body and body:IsA("Model") and body.PrimaryPart
+        if h and bp then h.root = bp end
+        return h
+    end
+    IS.rivalsVM = rivalsVM
     local function detect()
+        if Koffee._isRivals then
+            local ok, r = pcall(findRivals)
+            if ok and r then return r end
+            if IS.Target == "Arms" then return nil end
+        end
         local char = LocalPlayer.Character
         local mode = IS.Bind or "Auto"
         if mode == "Viewmodel" then return findViewmodel() end
@@ -24953,6 +24993,10 @@ registerConfig("item_skins", Koffee.ItemSkins)
         if fxRestoreRef then fxRestoreRef() end
     end
     local function dropModel()
+        if IS_RT.arms then
+            for _, b in ipairs(IS_RT.arms) do pcall(function() b.model:Destroy() end) end
+        end
+        IS_RT.arms, IS_RT.armsKey = nil, nil
         if IS_RT.model then pcall(function() IS_RT.model:Destroy() end) end
         IS_RT.model, IS_RT.modelKey, IS_RT.rel, IS_RT.grip = nil, nil, nil, nil
         IS_RT.root, IS_RT.weld, IS_RT.weldAnchor, IS_RT.b = nil, nil, nil, nil
@@ -25277,6 +25321,50 @@ registerConfig("item_skins", Koffee.ItemSkins)
             unhide()
             return
         end
+        -- v0.99.51 arms: one copy of the skin welded to each arm, offsets shared
+        if h.kind == "Arms" then
+            local akey = h.sig .. "#" .. skinKey(s) .. "#" .. tostring(h.arms[1]) .. tostring(h.arms[2])
+            if IS_RT.armsKey ~= akey then
+                dropModel()
+                unhide()
+                local built = {}
+                for i, arm in ipairs(h.arms) do
+                    local b = makeTemplate(s)
+                    if not b then
+                        for _, x in ipairs(built) do pcall(function() x.model:Destroy() end) end
+                        return
+                    end
+                    for part in pairs(b.rel) do part.Anchored = false; part.Massless = true end
+                    for part, rel in pairs(b.rel) do
+                        if part ~= b.root then
+                            local w = Instance.new("Weld")
+                            w.Part0, w.Part1, w.C0 = b.root, part, rel
+                            w.Parent = b.model
+                        end
+                    end
+                    local w = Instance.new("Weld")
+                    w.Part0, w.Part1 = arm, b.root
+                    w.Parent = b.model
+                    b.weld = w
+                    b.model.Parent = Workspace.CurrentCamera
+                    built[i] = b
+                end
+                IS_RT.arms, IS_RT.armsKey = built, akey
+            end
+            local aoff = offOf(s)
+            for _, b in ipairs(IS_RT.arms) do b.weld.C0 = aoff end
+            if IS.HideOriginal ~= false then
+                for _, part in ipairs(h.parts) do
+                    if part.Parent then
+                        IS_RT.hidden[part] = true
+                        part.LocalTransparencyModifier = 1
+                    end
+                end
+            elseif next(IS_RT.hidden) then
+                unhide()
+            end
+            return
+        end
         local key = h.sig .. "#" .. skinKey(s)
         if IS_RT.modelKey ~= key then
             dropModel()
@@ -25389,6 +25477,11 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 function(v) IS.Bind = v; IS_RT.heldAt = 0 end)
             popup:toggle("Hide Original", IS.HideOriginal ~= false, function(v) IS.HideOriginal = v end)
         end)
+        -- v0.99.51: what the skin goes on. Arms = both viewmodel arms (RIVALS)
+        dropdown(card, "Apply To", { "Held Item", "Arms" }, IS.Target == "Arms" and "Arms" or "Held Item", function(v)
+            IS.Target = v == "Arms" and "Arms" or "Item"
+            IS_RT.heldAt = 0
+        end)
         local status = new("TextLabel", {
             Text = "Holding: nothing", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
@@ -25440,7 +25533,11 @@ registerConfig("item_skins", Koffee.ItemSkins)
             if h then IS.copyInst(h.obj) else note("Item Models", "Hold an item first") end
         end)
         actBtn("Clear Skin", function() IS.clear() end)
-        actBtn("Edit in 3D", function() if IS.openEditor then IS.openEditor() end end)
+        actBtn("Edit in 3D", function()
+            local h = IS.current()
+            if h and h.kind == "Arms" then note("Item Models", "Arms use the sliders below, the 3D editor is for items"); return end
+            if IS.openEditor then IS.openEditor() end
+        end)
         -- sliders edit the skin of whatever is held right now
         local function sk(k, v)
             local s = IS.skinFor()
