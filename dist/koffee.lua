@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.46"
+Koffee.Version = "0.99.47"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -39976,11 +39976,18 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return
         end
         local oldCF, oldV, oldRV = mr.CFrame, mr.Velocity, mr.RotVelocity
+        -- v0.99.47: countering, the real body rides the rage spot (no restore below)
+        local riding = RV.counter ~= nil and rcf ~= nil
+        if not riding and RV.RG and RV.RG.intrudeStep then pcall(RV.RG.intrudeStep, oldCF.Position, dest.Position) end
         RV._dsLast = dest
         if RV.RG and RV.RG.noteSpot then RV.RG.noteSpot(dest.Position) end
         Shared.rtrace("native write " .. (rcf and "rage " or "desync ") .. Shared.rtv(dest) .. " act="
             .. tostring(RV.RG and RV.RG.action) .. " ph=" .. tostring(RV.RG and RV.RG.phase))
         pcall(function() mr.CFrame = dest end)
+        if riding then
+            pcall(function() mr.AssemblyLinearVelocity = Vector3.zero end)
+            return
+        end
         pcall(function()
             RunService:BindToRenderStep(DSBIND, 101, function()
                 if mr.Parent then
@@ -40469,8 +40476,34 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     end
                     t.sub = sub
                     t.pos, t.at = pos, now
+                    -- v0.99.47: one second of positions for RG.resolve
+                    t.hist = t.hist or {}
+                    t.hist[#t.hist + 1] = { now, pos }
+                    while #t.hist > 0 and now - t.hist[1][1] > 1 do table.remove(t.hist, 1) end
                 end
             end
+        end
+        -- v0.99.47 resolver: a desyncing target flickers between fake spots and the one
+        -- it keeps coming back to, its real body. Over the last second the 4 stud cell it
+        -- sits in most is where it really is. nil when it is not flickering.
+        function RG.resolve(plr)
+            local t = RG.track[plr]
+            if not (t and t.hist and #t.hist >= 8 and #t.jumps >= 2) then return nil end
+            local cells, best, bn = {}, nil, 0
+            for _, e in ipairs(t.hist) do
+                local q = e[2]
+                local k = math.floor(q.X / 4) .. "," .. math.floor(q.Y / 4) .. "," .. math.floor(q.Z / 4)
+                local c = cells[k]
+                if not c then
+                    c = { n = 0, sum = Vector3.zero }
+                    cells[k] = c
+                end
+                c.n = c.n + 1
+                c.sum = c.sum + q
+                if c.n > bn then best, bn = c, c.n end
+            end
+            if best == nil or bn < #t.hist * 0.35 then return nil end
+            return best.sum / best.n
         end
         function RG.cheating(plr)
             local t = RG.track[plr]
@@ -40748,10 +40781,151 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if joined then post("/room/leave", { job = game.JobId, uid = LocalPlayer.UserId }) end
         end)
 
+        -- v0.99.47 :: counter :: someone who keeps landing inside our REAL body while the
+        -- server sees us on a spot can read where we really are. Three landings in 20s
+        -- raises a prompt at the top: "." within 10s counters, anything else ignores
+        -- them for 10s. Countering stops the RenderStep restore, so the real body rides
+        -- every rage spot (nothing left at home to find) and rage locks onto them.
+        RG.intr = { ev = {}, last = {}, quiet = {} }
+        function RG.intrudeStep(home, spot)
+            if RV.counter or RG.intr.prompt or not on("rv_rage") then return end
+            if (spot - home).Magnitude < 10 then return end
+            local now = os.clock()
+            local I = RG.intr
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                local ch = plr ~= LocalPlayer and plr.Character
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                if root and hum and hum.Health > 0 and (root.Position - home).Magnitude < 5
+                    and (root.Position - spot).Magnitude > 8 and not RV.isAlly(plr) and RG.sameDuel(plr)
+                    and now - (I.last[plr] or 0) > 0.75 then
+                    I.last[plr] = now
+                    local ev = I.ev[plr] or {}
+                    I.ev[plr] = ev
+                    ev[#ev + 1] = now
+                    while #ev > 0 and now - ev[1] > 20 do table.remove(ev, 1) end
+                    if #ev >= 3 and now >= (I.quiet[plr] or 0) then RG.counterPrompt(plr) end
+                end
+            end
+        end
+        function RG.counterStart(plr)
+            local mr = myRoot()
+            RV.counter = { plr = plr, at = os.clock(), home = mr and mr.Position }
+            RG.intr.ev[plr] = nil
+            if Koffee.notify then
+                Koffee.notify("Counter", "Fighting " .. plr.Name .. " with your real body", { severity = "success" })
+            end
+        end
+        function RG.counterEnd(why)
+            local c = RV.counter
+            if not c then return end
+            RV.counter = nil
+            local mr = myRoot()
+            local back = RG.surfaceCF(os.clock()) or (c.home and CFrame.new(c.home))
+            if mr and back then
+                pcall(function()
+                    mr.CFrame = back
+                    mr.AssemblyLinearVelocity = Vector3.zero
+                end)
+            end
+            if Koffee.notify then Koffee.notify("Counter", "Ended: " .. tostring(why), { severity = "info" }) end
+        end
+        function RG.counterPrompt(plr)
+            local I = RG.intr
+            I.prompt = plr
+            local P = Theme.Palette
+            local sg = Instance.new("ScreenGui")
+            sg.Name = "KoffeeCounter"
+            sg.IgnoreGuiInset = true
+            sg.ResetOnSpawn = false
+            sg.DisplayOrder = 2147483000
+            pcall(function() sg.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+            local f = Instance.new("Frame")
+            f.AnchorPoint = Vector2.new(0.5, 0)
+            f.Position = UDim2.new(0.5, 0, 0, 18)
+            f.Size = UDim2.new(0, 460, 0, 62)
+            f.BackgroundColor3 = P.PanelElevated
+            f.BorderSizePixel = 0
+            f.Parent = sg
+            local cr = Instance.new("UICorner")
+            cr.CornerRadius = UDim.new(0, 10)
+            cr.Parent = f
+            local st = Instance.new("UIStroke")
+            st.Color = P.Danger
+            st.Thickness = 1.5
+            st.Parent = f
+            local function label(text, y, h, font, size, color)
+                local l = Instance.new("TextLabel")
+                l.BackgroundTransparency = 1
+                l.Position = UDim2.new(0, 14, 0, y)
+                l.Size = UDim2.new(1, -28, 0, h)
+                l.TextXAlignment = Enum.TextXAlignment.Left
+                l.FontFace = font
+                l.TextSize = size
+                l.TextColor3 = color
+                l.Text = text
+                l.Parent = f
+                return l
+            end
+            label(plr.DisplayName .. " (@" .. plr.Name .. ") keeps landing on your real body", 8, 20,
+                Theme.Fonts.Bold, 15, P.Text)
+            local sub = label("Press  .  to counter  ·  ignoring in 10s", 30, 18, Theme.Fonts.Medium, 13, P.TextMuted)
+            local bar = Instance.new("Frame")
+            bar.AnchorPoint = Vector2.new(0, 1)
+            bar.Position = UDim2.new(0, 0, 1, 0)
+            bar.Size = UDim2.new(1, 0, 0, 3)
+            bar.BackgroundColor3 = P.Danger
+            bar.BorderSizePixel = 0
+            bar.Parent = f
+            pcall(function() Koffee.Sfx.play("toast_error", true) end)
+            local done = false
+            local conn
+            local function finish(counter)
+                if done then return end
+                done = true
+                if conn then conn:Disconnect() end
+                pcall(function() sg:Destroy() end)
+                I.prompt = nil
+                if counter and plr.Parent ~= nil and not Koffee.dead() then
+                    RG.counterStart(plr)
+                else
+                    I.quiet[plr] = os.clock() + 10
+                end
+            end
+            conn = game:GetService("UserInputService").InputBegan:Connect(function(input, gp)
+                if not gp and input.KeyCode == Enum.KeyCode.Period then finish(true) end
+            end)
+            task.spawn(function()
+                local t0 = os.clock()
+                while not done and os.clock() - t0 < 10 do
+                    local left = 10 - (os.clock() - t0)
+                    bar.Size = UDim2.new(left / 10, 0, 0, 3)
+                    sub.Text = string.format("Press  .  to counter  ·  ignoring in %ds", math.ceil(left))
+                    task.wait(0.1)
+                end
+                finish(false)
+            end)
+        end
+
         function RV.rageTarget()
             local tp, tpart = RG.threat()
             RG.threatPlr = tp
             if tp and tpart then return tp, tpart end
+            -- v0.99.47: a countered cheater is the target for as long as the counter runs
+            local c = RV.counter
+            if c then
+                local cp = c.plr
+                if cp.Parent == nil or not on("rv_rage") or Koffee.dead() then
+                    RG.counterEnd(cp.Parent == nil and "they left" or "rage off")
+                elseif not RG.sameDuel(cp) then
+                    RG.counterEnd("duel over")
+                else
+                    local ch = cp.Character
+                    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                    local part = ch and partOf(ch, R.LockPart)
+                    if hum and hum.Health > 0 and part then return cp, part end
+                end
+            end
             -- v0.99.44: our share of the team split first; anyone when ours are all down
             RG.allow = RG.teamAssigned()
             local p, pt = RG.pick()
@@ -41678,7 +41852,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if RG.sawHeld then RG.chainsaw(nil, false) end
                 local root = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
                 if root then
-                    local tp = RG.predicted(plr, root)
+                    local resolved = RG.resolve(plr)
+                    local tp = resolved or RG.predicted(plr, root)
                     local look = root.CFrame.LookVector
                     local flat = Vector3.new(look.X, 0, look.Z)
                     flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
@@ -41698,7 +41873,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     if live and RG.budget(pos) > arrive + stay + 0.3 and RG.readyIn(it) <= arrive then
                         if not inside then RG.knifeIn, RG.knifeFor = now, plr end
                         want = spot
-                        RG.action = "knife: inside"
+                        RG.action = resolved and "knife: inside (resolved)" or "knife: inside"
                         if RG.meleeReady(it) and now - RG.knifeIn >= arrive then
                             RG.knifeSwing(it, pos, part, flat)
                             RG.knifeHold = now + stay
