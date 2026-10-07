@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.62"
+Koffee.Version = "0.99.63"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -25853,6 +25853,187 @@ registerConfig("item_skins", Koffee.ItemSkins)
         fxTarget = fxTarget, fxEntry = fxEntry, restRel = restRel, muzzleSkin = muzzleSkin, offOf = offOf,
         seatFor = seatFor, fxRestore = fxRestore, scaleSeq = scaleSeq, FXC = FXC, rt = IS_RT, ours = ours,
         hideOne = hideOne, hostOf = hostOf, cleanClone = cleanClone, PT = PT, AN = AN }
+    -- v0.99.63 :: Copy Any :: an explorer of the game (search + tree) with a live 3D
+    -- preview on the right; copy any model or part as KIM1, or put it on what you hold
+    local EX = {}
+    function IS.openExplorer()
+        if EX.gui and EX.gui.Parent then return end
+        local gui = KID.track(new("ScreenGui", { Name = KID.name("iex"), ResetOnSpawn = false, IgnoreGuiInset = true,
+            ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = screen.DisplayOrder + 2, Parent = guiParent() }))
+        protectGuiSafe(gui)
+        EX.gui = gui
+        local win = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(760, 480), BackgroundColor3 = Theme.Palette.Panel, Active = true, Parent = gui },
+            { corner(10), stroke(Theme.Palette.BorderSubtle) })
+        local bar = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+            Size = UDim2.new(1, -90, 0, 36), Parent = win })
+        new("TextLabel", { Text = "Copy Any", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+            TextColor3 = Theme.Palette.Accent, BackgroundTransparency = 1, Position = UDim2.fromOffset(14, 0),
+            Size = UDim2.new(0, 120, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = bar })
+        new("TextLabel", { Text = "pick any model or part in the game, preview it, copy it",
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+            BackgroundTransparency = 1, Position = UDim2.fromOffset(110, 0), Size = UDim2.new(1, -120, 1, 0),
+            TextXAlignment = Enum.TextXAlignment.Left, Parent = bar })
+        local closeBtn = new("TextButton", { Text = "Close", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill, AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -10, 0, 6), Size = UDim2.fromOffset(70, 24), Parent = win }, { corner(6) })
+        closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
+        -- drag by the title
+        local dragging, last
+        bar.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 then dragging, last = true, io.Position end
+        end)
+        local c1 = UserInputService.InputChanged:Connect(function(io)
+            if dragging and io.UserInputType == Enum.UserInputType.MouseMovement then
+                local d = io.Position - last
+                last = io.Position
+                win.Position = win.Position + UDim2.fromOffset(d.X, d.Y)
+            end
+        end)
+        local c2 = UserInputService.InputEnded:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+        end)
+        gui.Destroying:Connect(function() c1:Disconnect(); c2:Disconnect() end)
+
+        -- left: search + tree
+        local search = new("TextBox", { Text = "", PlaceholderText = "search by name (models, parts, tools, accessories)",
+            ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+            BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.15, Position = UDim2.fromOffset(12, 40),
+            Size = UDim2.new(0, 360, 0, 26), TextXAlignment = Enum.TextXAlignment.Left, Parent = win },
+            { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        local tree = new("ScrollingFrame", { BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.4,
+            Position = UDim2.fromOffset(12, 72), Size = UDim2.new(0, 360, 1, -84), CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.Border,
+            ScrollingDirection = Enum.ScrollingDirection.Y, Parent = win },
+            { corner(6), new("UIListLayout", { Padding = UDim.new(0, 1), SortOrder = Enum.SortOrder.LayoutOrder }),
+              new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 6) }) })
+
+        -- right: preview + actions
+        local right = new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(384, 40),
+            Size = UDim2.new(1, -396, 1, -52), Parent = win })
+        local selName = new("TextLabel", { Text = "Nothing selected", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = right })
+        local selPath = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small - 2,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 18),
+            Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd, Parent = right })
+        local vpHolder = new("Frame", { BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.2,
+            Position = UDim2.fromOffset(0, 38), Size = UDim2.new(1, 0, 1, -74), Parent = right },
+            { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        local acts = new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0),
+            Size = UDim2.new(1, 0, 0, 28), Parent = right },
+            { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local sel
+        local function act(text, order, fn)
+            local b = new("TextButton", { Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+                AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0), LayoutOrder = order, Parent = acts },
+                { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }) })
+            b.MouseButton1Click:Connect(function()
+                if not (sel and sel.Parent) then note("Item Models", "Pick something first"); return end
+                fn(sel)
+            end)
+            return b
+        end
+        act("Copy", 1, function(inst) IS.copyInst(inst) end)
+        local useBtn = act("Use on Held", 2, function(inst) IS.useInst(inst) end)
+        useBtn.BackgroundColor3 = Theme.Palette.Accent
+        useBtn.TextColor3 = Theme.Palette.Background
+
+        local function preview(inst)
+            for _, c in ipairs(vpHolder:GetChildren()) do
+                if c:IsA("ViewportFrame") or c:IsA("TextLabel") then c:Destroy() end
+            end
+            sel = inst
+            selName.Text = inst.Name .. "  (" .. inst.ClassName .. ")"
+            selPath.Text = inst:GetFullName()
+            local ok = Shared.previewable and Shared.previewable(inst)
+            if ok and Shared.fillViewport then
+                local vp = new("ViewportFrame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = vpHolder })
+                pcall(Shared.fillViewport, vp, inst, { z = 2, spin = true })
+            else
+                new("TextLabel", { Text = "No preview for this one", FontFace = Theme.Fonts.Regular,
+                    TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                    Size = UDim2.fromScale(1, 1), Parent = vpHolder })
+            end
+        end
+
+        -- rows: things worth copying, and the containers that hold them
+        local function interesting(c)
+            return c:IsA("Model") or c:IsA("BasePart") or c:IsA("Tool") or c:IsA("Accessory") or c:IsA("Folder")
+        end
+        local open = {}
+        local rows, cap = 0, 600
+        local function row(inst, depth, order)
+            rows = rows + 1
+            local kids = 0
+            pcall(function() for _, c in ipairs(inst:GetChildren()) do if interesting(c) then kids = kids + 1 end end end)
+            local b = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Theme.Palette.Pill,
+                BackgroundTransparency = (sel == inst) and 0 or 1, Size = UDim2.new(1, 0, 0, 22), LayoutOrder = order,
+                Parent = tree }, { corner(4) })
+            local arrow = kids > 0 and (open[inst] and "v " or "> ") or "  "
+            new("TextLabel", { Text = arrow .. inst.Name .. (kids > 0 and ("  (" .. kids .. ")") or ""),
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = (inst:IsA("Folder") or inst:IsA("Workspace") or inst:IsA("ReplicatedStorage")) and Theme.Palette.TextMuted
+                    or Theme.Palette.Text,
+                BackgroundTransparency = 1, Position = UDim2.fromOffset(6 + depth * 14, 0), Size = UDim2.new(1, -8 - depth * 14, 1, 0),
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = b })
+            return b, kids
+        end
+        local render
+        local function walk(inst, depth, counter)
+            if rows >= cap then return end
+            counter.n = counter.n + 1
+            local b, kids = row(inst, depth, counter.n)
+            b.MouseButton1Click:Connect(function()
+                if kids > 0 then open[inst] = not open[inst] end
+                if not inst:IsA("Folder") and inst ~= Workspace and inst.Parent ~= game then preview(inst) end
+                render()
+            end)
+            if open[inst] then
+                local list = {}
+                pcall(function() for _, c in ipairs(inst:GetChildren()) do if interesting(c) and not ours[c] then list[#list + 1] = c end end end)
+                table.sort(list, function(a, c) return a.Name:lower() < c.Name:lower() end)
+                for _, c in ipairs(list) do walk(c, depth + 1, counter) end
+            end
+        end
+        local ROOTS = { Workspace, game:GetService("ReplicatedStorage"), game:GetService("Lighting"),
+            game:GetService("ReplicatedFirst") }
+        render = function()
+            for _, c in ipairs(tree:GetChildren()) do if c:IsA("GuiButton") then c:Destroy() end end
+            rows = 0
+            local q = string.lower(search.Text or "")
+            local counter = { n = 0 }
+            if q ~= "" then
+                for _, r in ipairs(ROOTS) do
+                    pcall(function()
+                        for _, d in ipairs(r:GetDescendants()) do
+                            if rows >= 200 then break end
+                            if (d:IsA("Model") or d:IsA("BasePart") or d:IsA("Tool") or d:IsA("Accessory")) and not ours[d]
+                                and string.find(string.lower(d.Name), q, 1, true) then
+                                counter.n = counter.n + 1
+                                local b = row(d, 0, counter.n)
+                                b.MouseButton1Click:Connect(function() preview(d); render() end)
+                            end
+                        end
+                    end)
+                end
+                if rows == 0 then
+                    new("TextButton", { Text = "  nothing found", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                        TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22),
+                        TextXAlignment = Enum.TextXAlignment.Left, Parent = tree })
+                end
+            else
+                for _, r in ipairs(ROOTS) do walk(r, 0, counter) end
+            end
+        end
+        search:GetPropertyChangedSignal("Text"):Connect(function() render() end)
+        open[Workspace] = true
+        render()
+    end
     registerModule("itemskins", "Item Models", function() end, function() dropModel(); unhide() end)
     IS._probe = function() return pcall(step) end   -- test hook: one step, error returned
 
@@ -25931,6 +26112,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
             local h = IS.current()
             if h then IS.copyInst(h.obj) else note("Item Models", "Hold an item first") end
         end)
+        actBtn("Copy Any", function() if IS.openExplorer then IS.openExplorer() end end)
         actBtn("Copy Skin", function()
             local sk0 = IS.skinFor()
             if not sk0 then note("Item Models", "No skin on this item"); return end
@@ -34599,6 +34781,8 @@ NPC.viewTick = function() if viewing and not viewing.Parent then unview() end en
 -- never fired from InputBegan), spawn is inset-correct, and the title bar gained
 -- Teleport + View. One window per instance: re-opening moves it to the cursor.
 local previews = {}
+-- v0.99.63: the Item Models explorer (defined earlier in the file) borrows these
+Shared.fillViewport, Shared.previewable, Shared.instIcon = fillViewport, previewable, instIcon
 local function openPreview(model)
     local SMALL = Vector2.new(280, 320)
     local existing = previews[model]
