@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.48"
+Koffee.Version = "0.99.49"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -40850,7 +40850,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local f = Instance.new("Frame")
             f.AnchorPoint = Vector2.new(0.5, 0)
             f.Position = UDim2.new(0.5, 0, 0, 18)
-            f.Size = UDim2.new(0, 500, 0, 102)
+            f.Size = UDim2.new(0, 560, 0, 102)
             f.BackgroundColor3 = P.PanelElevated
             f.BorderSizePixel = 0
             f.Parent = sg
@@ -40870,9 +40870,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 l.Size = UDim2.new(1, -28, 0, 20)
                 l.TextXAlignment = Enum.TextXAlignment.Left
                 l.FontFace = spec[1]
-                l.TextSize = spec[2]
                 l.TextColor3 = spec[3]
                 l.Text = ""
+                l.TextScaled = true
+                local tc = Instance.new("UITextSizeConstraint")
+                tc.MaxTextSize = spec[2]
+                tc.MinTextSize = 8
+                tc.Parent = l
                 l.Parent = f
                 rows[i] = l
             end
@@ -40955,7 +40959,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local f = Instance.new("Frame")
             f.AnchorPoint = Vector2.new(0.5, 0)
             f.Position = UDim2.new(0.5, 0, 0, 18)
-            f.Size = UDim2.new(0, 460, 0, 62)
+            f.Size = UDim2.new(0, 540, 0, 62)
             f.BackgroundColor3 = P.PanelElevated
             f.BorderSizePixel = 0
             f.Parent = sg
@@ -40973,9 +40977,14 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 l.Size = UDim2.new(1, -28, 0, h)
                 l.TextXAlignment = Enum.TextXAlignment.Left
                 l.FontFace = font
-                l.TextSize = size
                 l.TextColor3 = color
                 l.Text = text
+                -- v0.99.49: shrink to fit instead of running off the card
+                l.TextScaled = true
+                local tc = Instance.new("UITextSizeConstraint")
+                tc.MaxTextSize = size
+                tc.MinTextSize = 8
+                tc.Parent = l
                 l.Parent = f
                 return l
             end
