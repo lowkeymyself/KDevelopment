@@ -1,7 +1,7 @@
 -- koffee v0.99.32
 
 local Koffee = {}
-Koffee.Version = "0.99.63"
+Koffee.Version = "0.99.64"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -25064,6 +25064,17 @@ registerConfig("item_skins", Koffee.ItemSkins)
     -- k = size, hide = true, c = {r,g,b} }. Move / rotate happen in the part's own space.
     -- Keys are "index:name" in the template's own part order, the same for every rebuild.
     local PT = {}
+    -- "Magazine + ReloadMagazine" -> { "Magazine", "ReloadMagazine" }
+    function PT.pieceList(str)
+        local out = {}
+        if type(str) == "string" then
+            for n in string.gmatch(str, "[^+]+") do
+                n = n:gsub("^%s+", ""):gsub("%s+$", "")
+                if n ~= "" then out[#out + 1] = n end
+            end
+        end
+        return out
+    end
     function PT.edit(s, k)
         local t = type(s.parts) == "table" and s.parts[k]
         return type(t) == "table" and t or nil
@@ -25622,11 +25633,30 @@ registerConfig("item_skins", Koffee.ItemSkins)
                     if p ~= IS_RT.root then
                         local w = Instance.new("Weld")
                         local e = PT.edit(s, keys[p] or "")
-                        local pc = e and e.piece and h.pieces and h.pieces[e.piece]
+                        local names = PT.pieceList(e and e.piece)
+                        local pc = names[1] and h.pieces and h.pieces[names[1]]
                         if pc and pc.prim and pc.prim.Parent then
                             -- v0.99.61: rides its RIVALS piece (magazine, bolt...)
                             w.Part0, w.Part1 = pc.prim, p
                             IS_RT.pw[#IS_RT.pw + 1] = { w = w, inv = pc.rest:Inverse(), p = p, pc = pc }
+                            -- v0.99.64: a combo ("Magazine + ReloadMagazine") gives each other
+                            -- piece its own copy, so the part shows on both
+                            for i = 2, #names do
+                                local pc2 = h.pieces[names[i]]
+                                if pc2 and pc2.prim and pc2.prim.Parent then
+                                    local cp
+                                    pcall(function() p.Archivable = true; cp = p:Clone() end)
+                                    if cp then
+                                        for _, j in ipairs(cp:GetChildren()) do if j:IsA("JointInstance") then j:Destroy() end end
+                                        cp.Parent = IS_RT.model
+                                        ours[cp] = true
+                                        local w2 = Instance.new("Weld")
+                                        w2.Part0, w2.Part1 = pc2.prim, cp
+                                        w2.Parent = IS_RT.model
+                                        IS_RT.pw[#IS_RT.pw + 1] = { w = w2, inv = pc2.rest:Inverse(), p = cp, src = p, pc = pc2 }
+                                    end
+                                end
+                            end
                         else
                             w.Part0, w.Part1, w.C0 = IS_RT.root, p, rr:Inverse() * rel
                         end
@@ -25642,7 +25672,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
             -- pieces: follow the offset sliders, and show only while RIVALS shows the piece
             -- (ReloadMagazine is only visible mid-reload)
             for _, x in ipairs(IS_RT.pw or {}) do
-                x.w.C0 = x.inv * seat * off * (IS_RT.rel[x.p] or CFrame.identity)
+                x.w.C0 = x.inv * seat * off * (IS_RT.rel[x.src or x.p] or CFrame.identity)
                 local vis = #x.pc.parts == 0
                 for _, q in ipairs(x.pc.parts) do
                     if q.Parent and q.Transparency < 1 then vis = true; break end
@@ -26326,8 +26356,15 @@ end)()
         local sl = ED.sel
         return type(sl) == "string" and sl:sub(1, 2) == "p:" and sl:sub(3) or nil
     end
-    function ED.pentry(make)
-        local k = ED.pkey()
+    -- v0.99.64 multi-select: ED.msel holds every picked part key, ED.sel the primary
+    function ED.selKeys()
+        local out, pk = {}, ED.pkey()
+        if pk then out[1] = pk end
+        for k in pairs(ED.msel or {}) do if k ~= pk then out[#out + 1] = k end end
+        return out
+    end
+    function ED.pentry(make) return ED.pentryFor(ED.pkey(), make) end
+    function ED.pentryFor(k, make)
         if not k then return nil end
         local sk = ED.s
         if type(sk.parts) ~= "table" then
@@ -26341,10 +26378,11 @@ end)()
         end
         return e
     end
-    function ED.pvals()
-        local e = ED.pentry(false) or {}
+    function ED.pvals(key)
+        key = key or ED.pkey()
+        local e = ED.pentryFor(key, false) or {}
         local q, r = e.p or {}, e.r or {}
-        local part = ED.b.byKey[ED.pkey() or ""]
+        local part = ED.b.byKey[key or ""]
         local col = (type(e.c) == "table" and Color3.new(e.c[1] or 0, e.c[2] or 0, e.c[3] or 0))
             or (part and ED.b.look[part].col) or Color3.new(1, 1, 1)
         return { x = q[1] or 0, y = q[2] or 0, z = q[3] or 0, rx = r[1] or 0, ry = r[2] or 0, rz = r[3] or 0,
@@ -26371,36 +26409,74 @@ end)()
         if os.clock() - (ED.lastEdit or 0) > 0.6 then pushUndo() end
         ED.lastEdit = os.clock()
     end
+    -- every selected part: move / rotate shift all by the same amount, the rest set the
+    -- same value on all
     function ED.pset(k, v)
         edit()
-        local e = ED.pentry(true)
-        if not e then return end
-        if k == "x" or k == "y" or k == "z" then
-            e.p = e.p or { 0, 0, 0 }
-            e.p[PIDX[k]] = math.floor(v * 1000 + 0.5) / 1000
-        elseif k == "rx" or k == "ry" or k == "rz" then
-            e.r = e.r or { 0, 0, 0 }
-            e.r[PIDX[k]] = math.floor(v * 100 + 0.5) / 100
-        elseif k == "k" then
-            e.k = math.clamp(v, 0.05, 20)
-        elseif k == "t" or k == "rf" then
-            e[k] = math.clamp(math.floor(v * 100 + 0.5) / 100, 0, 1)
-        elseif k == "tile" or k == "fs" then
-            e[k] = math.floor(v * 100 + 0.5) / 100
-        elseif k == "fr" or k == "fg" or k == "fb" then
-            local fc = e.fc
-            if type(fc) ~= "table" then
-                local v0 = ED.pvals()
-                fc = { v0.fr / 255, v0.fg / 255, v0.fb / 255 }
+        local pk = ED.pkey()
+        if not pk then return end
+        local idx = PIDX[k]
+        local move = k == "x" or k == "y" or k == "z"
+        local turn = k == "rx" or k == "ry" or k == "rz"
+        local delta = (move or turn) and (v - ED.pvals(pk)[k]) or 0
+        for _, key in ipairs(ED.selKeys()) do
+            local e = ED.pentryFor(key, true)
+            if move then
+                e.p = e.p or { 0, 0, 0 }
+                e.p[idx] = math.floor(((e.p[idx] or 0) + delta) * 1000 + 0.5) / 1000
+            elseif turn then
+                e.r = e.r or { 0, 0, 0 }
+                e.r[idx] = math.floor(((e.r[idx] or 0) + delta) * 100 + 0.5) / 100
+            elseif k == "k" then
+                e.k = math.clamp(v, 0.05, 20)
+            elseif k == "t" or k == "rf" then
+                e[k] = math.clamp(math.floor(v * 100 + 0.5) / 100, 0, 1)
+            elseif k == "tile" or k == "fs" then
+                e[k] = math.floor(v * 100 + 0.5) / 100
+            elseif k == "fr" or k == "fg" or k == "fb" then
+                local fc = e.fc
+                if type(fc) ~= "table" then
+                    local v0 = ED.pvals(key)
+                    fc = { v0.fr / 255, v0.fg / 255, v0.fb / 255 }
+                end
+                fc[idx] = v / 255
+                e.fc = fc
+            else
+                local v0 = ED.pvals(key)
+                local c = { v0.cr / 255, v0.cg / 255, v0.cb / 255 }
+                c[idx] = v / 255
+                e.c = c
             end
-            fc[PIDX[k]] = v / 255
-            e.fc = fc
-        else
-            local v0 = ED.pvals()
-            local c = { v0.cr / 255, v0.cg / 255, v0.cb / 255 }
-            c[PIDX[k]] = v / 255
-            e.c = c
         end
+    end
+    -- set one field on every selected part (nil clears it)
+    function ED.pall(field, value)
+        if not ED.pkey() then return end
+        pushUndo()
+        for _, key in ipairs(ED.selKeys()) do ED.pentryFor(key, true)[field] = value end
+    end
+    -- pick a part: plain click selects it alone, Ctrl-click adds / removes it
+    function ED.pick(key, additive)
+        ED.msel = ED.msel or {}
+        if additive and ED.pkey() then
+            if ED.msel[key] then
+                ED.msel[key] = nil
+                if ED.pkey() == key then
+                    local nxt = next(ED.msel)
+                    ED._select(nxt and ("p:" .. nxt) or nil)
+                else
+                    ED._refresh()
+                end
+                return
+            end
+            ED.msel[key] = true
+        else
+            ED.msel = { [key] = true }
+        end
+        ED._select("p:" .. key)
+    end
+    function ED.ctrl()
+        return UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
     end
     -- the look of one part (everything but where it sits), to stamp onto others
     ED.LOOK = { "k", "c", "m", "t", "rf", "tex", "tile", "fx", "fs", "fc", "ptex" }   -- not "piece": that's per part
@@ -26425,14 +26501,13 @@ end)()
             for _, key in pairs(ED.b.keys) do stamp(key) end
             note("Style pasted on every part")
         elseif ED.pkey() then
-            stamp(ED.pkey())
+            for _, key in ipairs(ED.selKeys()) do stamp(key) end
         end
     end
     function ED.ptoggle()
         if not ED.pkey() then return end
-        pushUndo()
-        local e = ED.pentry(true)
-        e.hide = (not e.hide) or nil
+        local e = ED.pentry(false)
+        ED.pall("hide", (not (e and e.hide)) or nil)
     end
     local function undo()
         local o = table.remove(ED.undo)
@@ -26471,9 +26546,22 @@ end)()
             local d = ED.b.base[part]:Inverse() * ((ED.S * skinItem()):Inverse() * W)
             local e = ED.pentry(true)
             local sc = ED.b.scale or 1
+            local op, orr = e.p or { 0, 0, 0 }, e.r or { 0, 0, 0 }
             e.p = { r3(d.X / sc), r3(d.Y / sc), r3(d.Z / sc) }
             local ax, ay, az = d:ToEulerAnglesXYZ()
             e.r = { r2(math.deg(ax)), r2(math.deg(ay)), r2(math.deg(az)) }
+            -- v0.99.64: the rest of the selection moves / turns by the same amount
+            for _, key in ipairs(ED.selKeys()) do
+                if key ~= pk then
+                    local o = ED.pentryFor(key, true)
+                    local p0, r0 = o.p or { 0, 0, 0 }, o.r or { 0, 0, 0 }
+                    o.p, o.r = {}, {}
+                    for i = 1, 3 do
+                        o.p[i] = r3((p0[i] or 0) + (e.p[i] - (op[i] or 0)))
+                        o.r[i] = r2((r0[i] or 0) + (e.r[i] - (orr[i] or 0)))
+                    end
+                end
+            end
             return
         end
         if ED.sel == "model" then
@@ -26499,7 +26587,10 @@ end)()
     local function setSelScale(v)
         v = math.clamp(r2(v), 0.05, 20)
         if ED.A.jkey() then return end
-        if ED.pkey() then ED.pentry(true).k = v; return end
+        if ED.pkey() then
+            for _, key in ipairs(ED.selKeys()) do ED.pentryFor(key, true).k = v end
+            return
+        end
         if ED.sel == "model" then ED.s.scale = v; return end
         local items = fxItems()
         local e = items[ED.sel.c.key]
@@ -26776,6 +26867,26 @@ end)()
             local mo = ED.A.rig and ED.A.rig.motors[ED.A.jkey()]
             if mo and mo.Part1 then G.sel.Adornee, G.sel.Visible = mo.Part1, true end
         end
+        ED.mboxes = ED.mboxes or {}
+        local nb = 0
+        local pk0 = ED.pkey()
+        if pk0 then
+            for key in pairs(ED.msel or {}) do
+                local part = key ~= pk0 and ED.b.byKey[key]
+                if part then
+                    nb = nb + 1
+                    local sb = ED.mboxes[nb]
+                    if not (sb and sb.Parent) then
+                        sb = Instance.new("SelectionBox")
+                        sb.LineThickness, sb.SurfaceTransparency, sb.Color3 = 0.004, 1, Theme.Palette.Accent
+                        sb.Parent = ED.stage
+                        ED.mboxes[nb] = sb
+                    end
+                    sb.Adornee, sb.Visible = part, true
+                end
+            end
+        end
+        for j = nb + 1, #ED.mboxes do if ED.mboxes[j].Parent then ED.mboxes[j].Visible = false end end
     end
     local function pickHandle(m)
         local gz = ED.gz
@@ -27036,11 +27147,20 @@ end)()
     end
     local refreshUi
     local function selectTarget(target)
+        -- v0.99.64: leaving parts clears the multi-selection; a part outside it starts one
+        if not (type(target) == "string" and target:sub(1, 2) == "p:") then
+            ED.msel = {}
+        elseif not (ED.msel and ED.msel[target:sub(3)]) then
+            ED.msel = { [target:sub(3)] = true }
+        end
         ED.sel = target
         TL.dur = tlDur()
         if refreshUi then refreshUi() end
     end
     local function setTool(t) ED.tool = t; refreshUi() end
+    -- for helpers defined above these (ED.pick)
+    ED._select = selectTarget
+    ED._refresh = function() if refreshUi then refreshUi() end end
     local function focusSel()
         local v = ED.view
         local W = selWorld()
@@ -27135,10 +27255,26 @@ end)()
                     w.Part0, w.Part1, w.C0 = bodyPrim, q, off * rr
                 else
                     local e = X.PT.edit(ED.s, b.keys[q] or "")
-                    local prim = e and e.piece and pieces[e.piece]
-                    local info = e and e.piece and ED.h.pieces and ED.h.pieces[e.piece]
+                    local names = X.PT.pieceList(e and e.piece)
+                    local prim = names[1] and pieces[names[1]]
+                    local info = names[1] and ED.h.pieces and ED.h.pieces[names[1]]
                     if prim and info then
                         w.Part0, w.Part1, w.C0 = prim, q, info.rest:Inverse() * off * rel
+                        for i = 2, #names do
+                            local prim2 = pieces[names[i]]
+                            local info2 = ED.h.pieces and ED.h.pieces[names[i]]
+                            if prim2 and info2 then
+                                local cp
+                                pcall(function() q.Archivable = true; cp = q:Clone() end)
+                                if cp then
+                                    for _, j in ipairs(cp:GetChildren()) do if j:IsA("JointInstance") then j:Destroy() end end
+                                    cp.Parent = b.model
+                                    local w2 = Instance.new("Weld")
+                                    w2.Part0, w2.Part1, w2.C0 = prim2, cp, info2.rest:Inverse() * off * rel
+                                    w2.Parent = b.model
+                                end
+                            end
+                        end
                     else
                         w.Part0, w.Part1, w.C0 = b.root, q, rr:Inverse() * rel
                     end
@@ -27158,7 +27294,8 @@ end)()
         local bb = A.rig.b
         if bb and bb.keys[part] then
             local e = X.PT.edit(ED.s, bb.keys[part])
-            local pc = e and e.piece and ED.h.pieces and ED.h.pieces[e.piece]
+            local first = X.PT.pieceList(e and e.piece)[1]
+            local pc = first and ED.h.pieces and ED.h.pieces[first]
             local nm = pc and pc.prim and pc.prim.Name
             return (nm and mot[nm]) and nm or "BodyPrimary"
         end
@@ -27479,7 +27616,7 @@ end)()
         end
         table.sort(plist, function(a, b) return a.i < b.i end)
         text(out, "PARTS (" .. #plist .. ")", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 200)
-        text(out, "click one on the skin, Shift-click for the whole skin", Theme.Text.Small - 2,
+        text(out, "click one on the skin, Ctrl-click to pick several, Shift-click for the whole skin", Theme.Text.Small - 2,
             Theme.Palette.TextMuted, Theme.Fonts.Regular, 201, true)
         -- v0.99.57: search + hide / show every part
         local srch = new("TextBox", { Text = "", PlaceholderText = "search parts", ClearTextOnFocus = false,
@@ -27507,6 +27644,12 @@ end)()
         end
         button(hs, "Hide all", 1, function() every(true) end)
         button(hs, "Show all", 2, function() every(false) end)
+        button(hs, "Select all", 3, function()
+            local first
+            ED.msel = {}
+            for _, key in pairs(ED.b.keys) do ED.msel[key] = true; first = first or key end
+            if first then selectTarget("p:" .. first) end
+        end)
         local ps = new("ScrollingFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, math.min(#plist * 28, 280)),
             CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
             ScrollBarImageColor3 = Theme.Palette.Border, ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -27527,7 +27670,7 @@ end)()
                 TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
                 Position = UDim2.new(1, -8, 0, 0), Size = UDim2.new(0, 60, 1, 0),
                 TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 7, Parent = pb })
-            pb.MouseButton1Click:Connect(function() selectTarget(tgt) end)
+            pb.MouseButton1Click:Connect(function() ED.pick(it.k, ED.ctrl()) end)
             ED.rows[#ED.rows + 1] = { b = pb, dot = dot, sub = t2, target = tgt, part = it.k, name = it.i .. " " .. it.name }
         end
 
@@ -27635,32 +27778,35 @@ end)()
         list(gpb, Enum.FillDirection.Horizontal, 6)
         ED.hideBtn = button(gpb, "Hide", 1, function() ED.ptoggle() end)
         button(gpb, "Reset part", 2, function()
-            local k = ED.pkey()
-            if k and type(ED.s.parts) == "table" then pushUndo(); ED.s.parts[k] = nil end
+            if ED.pkey() and type(ED.s.parts) == "table" then
+                pushUndo()
+                for _, key in ipairs(ED.selKeys()) do ED.s.parts[key] = nil end
+            end
         end)
-        button(gpb, "Reset colour", 3, function()
-            local e = ED.pentry(false)
-            if e then pushUndo(); e.c = nil end
-        end)
+        button(gpb, "Reset colour", 3, function() ED.pall("c", nil) end)
         -- v0.99.53 look: material, effect, hex colour, textures, style copy
         ED.matDd = dropdown(gp, "Material", ED.MATS, "Original", function(v)
-            local e = ED.pkey() and ED.pentry(true)
-            if e then pushUndo(); e.m = (v ~= "Original") and v or nil end
+            ED.pall("m", (v ~= "Original") and v or nil)
         end)
         ED.matDd.frame.LayoutOrder = 40
         ED.fxDd = dropdown(gp, "Effect", X.PT.FX, "None", function(v)
-            local e = ED.pkey() and ED.pentry(true)
-            if e then pushUndo(); e.fx = (v ~= "None") and v or nil end
+            ED.pall("fx", (v ~= "None") and v or nil)
         end)
         ED.fxDd.frame.LayoutOrder = 41
         -- v0.99.61: which RIVALS piece this part moves with (Body = the gun itself)
         local pieceNames = {}
         for n in pairs(ED.h.pieces or {}) do if n ~= "Body" then pieceNames[#pieceNames + 1] = n end end
         table.sort(pieceNames)
+        -- v0.99.64: "X + ReloadX" combos (the gun's mag and the one in your hand are
+        -- separate pieces); a part on a combo shows on both
+        local combos = {}
+        for _, n in ipairs(pieceNames) do
+            if ED.h.pieces["Reload" .. n] then combos[#combos + 1] = n .. " + Reload" .. n end
+        end
+        for _, c in ipairs(combos) do pieceNames[#pieceNames + 1] = c end
         table.insert(pieceNames, 1, "Body")
         ED.pieceDd = dropdown(gp, "Animated by", pieceNames, "Body", function(v)
-            local e = ED.pkey() and ED.pentry(true)
-            if e then pushUndo(); e.piece = (v ~= "Body") and v or nil end
+            ED.pall("piece", (v ~= "Body") and v or nil)
         end)
         ED.pieceDd.frame.LayoutOrder = 39
         ED.pieceDd.frame.Visible = #pieceNames > 1
@@ -27679,19 +27825,16 @@ end)()
         ED.hexBox = boxRow(42, "colour hex, e.g. ff8800", "Colour", function(t)
             local h = t:gsub("#", ""):match("^(%x%x%x%x%x%x)$")
             if not (h and ED.pkey()) then note("Use 6 hex digits, like ff8800"); return end
-            pushUndo()
-            ED.pentry(true).c = { tonumber(h:sub(1, 2), 16) / 255, tonumber(h:sub(3, 4), 16) / 255, tonumber(h:sub(5, 6), 16) / 255 }
+            ED.pall("c", { tonumber(h:sub(1, 2), 16) / 255, tonumber(h:sub(3, 4), 16) / 255, tonumber(h:sub(5, 6), 16) / 255 })
         end)
         ED.texBox = boxRow(43, "texture: asset id or file in Koffee/textures", "Texture", function(t)
             if not ED.pkey() then return end
-            pushUndo()
-            ED.pentry(true).tex = (t ~= "") and t or nil
+            ED.pall("tex", (t ~= "") and t or nil)
             if t ~= "" and not X.PT.texId(t) then note("Couldn't find that texture (id, or a file in workspace/Koffee/textures)") end
         end)
         ED.ptexBox = boxRow(44, "particle texture (optional)", "Particle", function(t)
             if not ED.pkey() then return end
-            pushUndo()
-            ED.pentry(true).ptex = (t ~= "") and t or nil
+            ED.pall("ptex", (t ~= "") and t or nil)
         end)
         local gps = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 45, ZIndex = 6, Parent = gp })
         list(gps, Enum.FillDirection.Horizontal, 6)
@@ -27803,7 +27946,8 @@ end)()
         for sp, b in pairs(ED.speedBtn) do lit(b, TL.speed == sp) end
         ED.playBtn.Text = TL.playing and "Pause" or "Play"
         for _, r in ipairs(ED.rows) do
-            r.b.BackgroundTransparency = ED.sel == r.target and 0 or 1
+            r.b.BackgroundTransparency = (ED.sel == r.target and 0)
+                or (r.part and ED.msel and ED.msel[r.part] and 0.45) or 1
             if type(r.target) == "table" then
                 local m = r.target.mode or "Leave"
                 r.dot.BackgroundColor3 = MODE_COL[m]
@@ -27821,7 +27965,9 @@ end)()
             local v = ED.pvals()
             for k, sl in pairs(ED.sp) do sl.set(v[k]) end
             local part = ED.b.byKey[pk]
+            local more = #ED.selKeys() - 1
             ED.pTitle.Text = (part and part.Name or "part") .. "  #" .. (pk:match("^(%d+)") or "?")
+                .. (more > 0 and ("  (+" .. more .. " more)") or "")
             local e = ED.pentry(false)
             ED.hideBtn.Text = (e and e.hide) and "Show" or "Hide"
             ED.matDd.setValue((e and e.m) or "Original")
@@ -28027,7 +28173,7 @@ end)()
         if hp then
             local k = ED.b.keys[hp]
             local shift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
-            selectTarget((k and not shift) and ("p:" .. k) or "model")
+            if k and not shift then ED.pick(k, ED.ctrl()) else selectTarget("model") end
             return
         end
         selectTarget(nil)
@@ -28162,6 +28308,7 @@ end)()
         ED.h, ED.s, ED.cam = h, s, cam
         ED.undo, ED.lastEdit, ED.sel = {}, 0, nil
         ED.A.on, ED.A.rig, ED.A.key, ED.A.id, ED.A.t, ED.A.playing, ED.A.cacheList = false, nil, nil, nil, 0, false, nil
+        ED.msel, ED.mboxes = {}, {}
         ED.S = CFrame.new(cam.CFrame.Position + Vector3.new(0, 400, 0))
         local ok, built = pcall(buildStage)
         if not (ok and built) then
