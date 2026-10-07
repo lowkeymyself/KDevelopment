@@ -1,7 +1,7 @@
--- koffee v0.99.32
+-- koffee v1.0.0
 
 local Koffee = {}
-Koffee.Version = "0.99.64"
+Koffee.Version = "1.0.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -407,6 +407,9 @@ do
             })
         end
     end
+    -- v1.0.0: the 1.0 celebration fanfare, one file shared by every pack
+    table.insert(MANIFEST, { name = "ui sound: milestone", path = "Koffee/sfx/milestone.ogg",
+        url = BASE .. "ui/milestone.ogg", min = 256 })
     for _, t in ipairs(FXTEX) do
         table.insert(MANIFEST, {
             name = "fx: " .. t,
@@ -29051,7 +29054,16 @@ addTab("Options", function(root)
         local sp = panel(root, "Startup")
         configCheckbox(sp, "Skip Loading", SP.SkipLoading, function(v)
             SP.SkipLoading = v
-            pcall(function() writefile("Koffee/startup.json", HS:JSONEncode({ SkipLoading = SP.SkipLoading })) end)
+            -- v1.0.0: merge into the file; a plain write wiped the saved Panic key
+            pcall(function()
+                local d = {}
+                if isfile("Koffee/startup.json") then
+                    local ok, t = pcall(HS.JSONDecode, HS, readfile("Koffee/startup.json"))
+                    if ok and type(t) == "table" then d = t end
+                end
+                d.SkipLoading = SP.SkipLoading
+                writefile("Koffee/startup.json", HS:JSONEncode(d))
+            end)
         end)
         local tp = panel(root, "Koffee Team")
         configCheckbox(tp, "Koffee Team", TP.On, function(v) TP.On = v; TP.save() end)
@@ -46899,6 +46911,379 @@ if getgenv and getgenv().KoffeeDev == true then
 end
 
 task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") end end)
+
+-- v1.0.0: one-time celebration after the first 1.0 load (confetti, fanfare, the road
+-- here, what's new). Seen flag in Koffee/milestones.json, never a config.
+-- getgenv().KoffeeCelebrate = true shows it again on the next load.
+;(function()
+    local HS = game:GetService("HttpService")
+    local FLAG, PATH = "1.0", "Koffee/milestones.json"
+    local force = getgenv and getgenv().KoffeeCelebrate == true
+    local seen = {}
+    pcall(function()
+        if isfile and readfile and isfile(PATH) then
+            local d = HS:JSONDecode(readfile(PATH))
+            if type(d) == "table" then seen = d end
+        end
+    end)
+    local major = tonumber(tostring(Koffee.Version):match("^(%d+)")) or 0
+    if not force then
+        if major < 1 or seen[FLAG] == true then return end
+        if getgenv and getgenv()["\6_rt_cel10"] then return end
+    end
+    if getgenv then getgenv()["\6_rt_cel10"] = true; getgenv().KoffeeCelebrate = nil end
+
+    local P = Theme.Palette
+    local STATS = {
+        { n = 441, label = "versions" },
+        { n = 471, label = "commits" },
+        { n = 83, label = "days" },
+        { n = 47299, label = "lines", from = "from 561" },
+    }
+    local ROAD = {
+        { "v0.0.1", "Jul 16", "The first window: sliding tabs, falling snow, a module list" },
+        { "v0.1.0", "Aug 8", "Configs, keybinds, custom fonts and the first full gate" },
+        { "v0.10.0", "Aug 30", "Weather, custom skyboxes and hit sound packs" },
+        { "v0.29.0", "Sep 10", "Cloud Configs" },
+        { "v0.35.0", "Sep 11", "Buffer Lab joins Custom Features" },
+        { "v0.52.0", "Sep 13", "NPC tab: any instance can be a target" },
+        { "v0.62.0", "Sep 14", "Windows and the dock bar" },
+        { "v0.85.0", "Sep 25", "Effects tab, built live in Koffee Lab" },
+        { "v0.91.0", "Sep 26", "Lit chams from 143 to 240 fps" },
+        { "v0.94.0", "Oct 4", "RIVALS native suite" },
+        { "v0.99.4", "Oct 4", "Rage v2" },
+        { "v0.99.62", "Oct 7", "Item editor with per-part edits and animations" },
+        { "v1.0.0", "Oct 7", "You are here" },
+    }
+    local NEW = {
+        { "Per-part item editor", "Select, move, recolour, texture and add effects to any part, one at a time or many" },
+        { "Animation editor", "Edit viewmodel animations per skin. Timing never changes, so it stays in sync" },
+        { "Animated pieces", "Skin parts ride magazines, bolts and slides through every reload" },
+        { "Third-person item models", "Your skin follows the gun into third person" },
+        { "Copy Any", "Copy any model in the game from an explorer with a live preview" },
+        { "Skin library", "Save, load and share skins, edits included" },
+        { "Panic key", "One press turns everything off, the next turns it all back on" },
+        { "Duplicate configs", "Copy a config in one click" },
+        { "Koffee Team list", "See who else runs Koffee in your server" },
+        { "Counter strike", "Answers attackers who teleport in, shoot and void" },
+        { "Lobby duels", "No more out-of-bounds deaths while hiding in lobby duels" },
+    }
+
+    local function txt(parent, props)
+        props.BackgroundTransparency = 1
+        props.Parent = parent
+        props.FontFace = props.FontFace or Theme.Fonts.Regular
+        props.TextColor3 = props.TextColor3 or P.Text
+        props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+        props.ZIndex = props.ZIndex or 112
+        return new("TextLabel", props)
+    end
+    local function fmt(n)
+        local s = tostring(math.floor(n + 0.5))
+        local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+        if out:sub(1, 1) == "," then out = out:sub(2) end
+        return out
+    end
+
+    -- the fanfare: one shared file, not per pack, so it plays whatever pack is picked
+    local function fanfare()
+        local o = KoffeeOptions
+        if o and o.SfxOn == false then return end
+        local id
+        pcall(function()
+            if getcustomasset and isfile and isfile("Koffee/sfx/milestone.ogg") then id = getcustomasset("Koffee/sfx/milestone.ogg") end
+        end)
+        if not id then Koffee.Sfx.play("toast_success", true); return end
+        pcall(function()
+            local snd = Instance.new("Sound")
+            snd.Name = "KUiSfx"
+            snd.SoundId = id
+            snd.Volume = math.clamp((o and o.SfxVolume or 0.5) * 1.3, 0.2, 1)
+            snd.Parent = game:GetService("SoundService")
+            snd.Ended:Once(function() snd:Destroy() end)
+            task.delay(6, function() if snd.Parent then snd:Destroy() end end)
+            snd:Play()
+        end)
+    end
+
+    -- confetti: plain Frames on the popup layer, two side cannons then a rain from the top.
+    -- Paper flips by squashing width with cos(phase); everything is gone after ~6s.
+    local function confetti()
+        local pS = popupScreen
+        if not (pS and pS.Parent) then return end
+        local vp = viewport()
+        local host = new("Frame", { Name = KID.name("cnf"), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+            ZIndex = 130, Parent = pS })
+        local COLORS = { P.Accent, P.Success, P.Snow, P.Danger, Color3.fromRGB(240, 196, 92),
+            Color3.fromRGB(236, 140, 182), Color3.fromRGB(122, 172, 240), Color3.fromRGB(180, 140, 240) }
+        local bits = {}
+        local function spawnBit(x, y, vx, vy, delay)
+            local kind = math.random()
+            local w, h = math.random(7, 12), math.random(4, 7)
+            if kind < 0.18 then w, h = 3, math.random(14, 20) end
+            local f = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(x, y),
+                Size = UDim2.fromOffset(w, h), BackgroundColor3 = COLORS[math.random(#COLORS)], BorderSizePixel = 0,
+                Visible = false, ZIndex = 131, Parent = host })
+            if kind > 0.82 then new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = f }); h = w end
+            bits[#bits + 1] = { f = f, x = x, y = y, vx = vx, vy = vy, w = w, h = h, rot = math.random(0, 360),
+                vr = math.random(-540, 540), ph = math.random() * 6.28, fs = 4 + math.random() * 8,
+                sway = 20 + math.random() * 50, born = os.clock() + (delay or 0), life = 4.2 + math.random() * 1.6 }
+        end
+        for side = -1, 1, 2 do
+            local ox = side < 0 and -10 or vp.X + 10
+            for _ = 1, 70 do
+                local ang = math.rad(55 + math.random() * 25)
+                local sp = 900 + math.random() * 900
+                spawnBit(ox, vp.Y * 0.92, -side * math.cos(ang) * sp, -math.sin(ang) * sp,
+                    (side > 0 and 0.07 or 0) + math.random() * 0.12)
+            end
+        end
+        for _ = 1, 60 do
+            spawnBit(math.random() * vp.X, -20 - math.random() * 200, (math.random() - 0.5) * 120, 80 + math.random() * 120,
+                0.35 + math.random() * 0.9)
+        end
+        local conn
+        conn = RunService.RenderStepped:Connect(function(dt)
+            if Koffee.dead() then conn:Disconnect(); host:Destroy(); return end
+            dt = math.min(dt, 1 / 20)
+            local now, alive = os.clock(), 0
+            for _, b in ipairs(bits) do
+                if b.f.Parent and now >= b.born then
+                    local age = now - b.born
+                    if age > b.life or b.y > vp.Y + 40 then
+                        b.f:Destroy()
+                    else
+                        alive += 1
+                        b.vy = math.min(b.vy + 1500 * dt, 260)
+                        local drag = math.exp(-2.2 * dt)
+                        b.vx *= drag
+                        if b.vy < 0 then b.vy *= math.exp(-0.9 * dt) end
+                        b.ph += b.fs * dt
+                        b.x += (b.vx + math.sin(b.ph) * b.sway * math.min(age, 1)) * dt
+                        b.y += b.vy * dt
+                        b.rot += b.vr * dt
+                        local flip = math.max(0.15, math.abs(math.cos(b.ph * 0.8)))
+                        b.f.Visible = true
+                        b.f.Position = UDim2.fromOffset(b.x, b.y)
+                        b.f.Size = UDim2.fromOffset(b.w * flip, b.h)
+                        b.f.Rotation = b.rot
+                        if age > b.life - 0.8 then b.f.BackgroundTransparency = (age - (b.life - 0.8)) / 0.8 end
+                    end
+                elseif b.f.Parent then
+                    alive += 1
+                end
+            end
+            if alive == 0 then conn:Disconnect(); host:Destroy() end
+        end)
+    end
+
+    local function show()
+        local pS = popupScreen
+        if not (pS and pS.Parent) then return end
+        pcall(function()
+            if writefile then
+                seen[FLAG] = true
+                writefile(PATH, HS:JSONEncode(seen))
+            end
+        end)
+        local vp = viewport()
+        local W, H = 500, math.min(600, vp.Y - 60)
+        local anim = Koffee.Anim.enabled()
+        local conns = {}
+        local dim = new("Frame", { Name = KID.name("cel"), Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0),
+            BackgroundTransparency = anim and 1 or 0.45, BorderSizePixel = 0, Active = true, ZIndex = 110, Parent = pS })
+        dim:SetAttribute("KUserColor", true)
+        local box = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(W, H), BackgroundColor3 = P.Panel, BorderSizePixel = 0, ZIndex = 111, Parent = dim },
+            { corner(Theme.Radius.XLarge), stroke(P.Border) })
+        local sc = new("UIScale", { Scale = anim and 0.86 or 1, Parent = box })
+        local glow = new("Frame", { Size = UDim2.new(1, 0, 0, 150), BackgroundColor3 = P.Accent, BackgroundTransparency = 0.82,
+            BorderSizePixel = 0, ZIndex = 111, Parent = box }, { corner(Theme.Radius.XLarge) })
+        new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0),
+            NumberSequenceKeypoint.new(1, 1) }), Parent = glow })
+
+        -- mouse stays usable for the button even in first-person games
+        local MB = KID.name("celm") .. math.random(1, 1e9)
+        pcall(function()
+            RunService:BindToRenderStep(MB, Enum.RenderPriority.Last.Value + 1, function()
+                if Koffee.dead() or not dim.Parent then pcall(function() RunService:UnbindFromRenderStep(MB) end); return end
+                if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
+                if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then UserInputService.MouseBehavior = Enum.MouseBehavior.Default end
+                if not UserInputService.MouseIconEnabled then UserInputService.MouseIconEnabled = true end
+            end)
+        end)
+
+        txt(box, { Text = "VERSION 1.0.0", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Tiny, TextColor3 = P.Accent,
+            Position = UDim2.fromOffset(24, 20), Size = UDim2.new(1, -48, 0, 12) })
+        local big = txt(box, { Text = "Koffee 1.0", FontFace = Theme.Fonts.Title, TextSize = 40, TextColor3 = P.Snow,
+            Position = UDim2.fromOffset(24, 34), Size = UDim2.new(1, -48, 0, 46) })
+        local shine = new("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, P.Accent),
+            ColorSequenceKeypoint.new(0.45, P.Snow), ColorSequenceKeypoint.new(0.55, P.Snow),
+            ColorSequenceKeypoint.new(1, P.Accent) }), Offset = Vector2.new(-1, 0), Parent = big })
+        txt(box, { Text = "Out of beta. It started on July 16 as one window with sliding tabs and falling snow. "
+            .. "Thank you to everyone who tested it, broke it and reported it.",
+            TextSize = Theme.Text.Body, TextColor3 = P.TextMuted, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top,
+            Position = UDim2.fromOffset(24, 84), Size = UDim2.new(1, -48, 0, 34) })
+
+        -- stat tiles count up, staggered
+        local row = new("Frame", { Position = UDim2.fromOffset(24, 128), Size = UDim2.new(1, -48, 0, 62),
+            BackgroundTransparency = 1, ZIndex = 112, Parent = box })
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), Parent = row })
+        local counters = {}
+        for i, s in ipairs(STATS) do
+            local tile = new("Frame", { Size = UDim2.new(0.25, -6, 1, 0), BackgroundColor3 = P.PanelElevated,
+                BackgroundTransparency = 0.3, BorderSizePixel = 0, LayoutOrder = i, ZIndex = 112, Parent = row },
+                { corner(Theme.Radius.Large), stroke(P.Border) })
+            local num = txt(tile, { Text = "0", FontFace = Theme.Fonts.Bold, TextSize = 22, TextColor3 = P.Text,
+                TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 9), Size = UDim2.new(1, 0, 0, 24), ZIndex = 113 })
+            txt(tile, { Text = s.from and (s.label .. "  ·  " .. s.from) or s.label, TextSize = Theme.Text.Tiny,
+                TextColor3 = P.TextMuted, TextXAlignment = Enum.TextXAlignment.Center,
+                Position = UDim2.fromOffset(0, 37), Size = UDim2.new(1, 0, 0, 12), ZIndex = 113 })
+            counters[i] = { lbl = num, n = s.n, from = s.from and 561 or 0, delay = 0.35 + i * 0.12 }
+        end
+
+        -- two pages behind a small pill switch
+        local sw = new("Frame", { Position = UDim2.fromOffset(24, 204), Size = UDim2.fromOffset(250, 28),
+            BackgroundColor3 = P.Pill, BackgroundTransparency = 0.35, BorderSizePixel = 0, ZIndex = 112, Parent = box },
+            { corner(14) })
+        local knob = new("Frame", { Position = UDim2.fromOffset(3, 3), Size = UDim2.new(0.5, -3, 1, -6),
+            BackgroundColor3 = P.Accent, BorderSizePixel = 0, ZIndex = 113, Parent = sw }, { corner(11) })
+        local pageArea = new("Frame", { Position = UDim2.fromOffset(16, 242), Size = UDim2.new(1, -32, 1, -242 - 70),
+            BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 112, Parent = box })
+        local function page()
+            local s = new("ScrollingFrame", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+                ScrollBarThickness = 3, ScrollBarImageColor3 = P.Border, CanvasSize = UDim2.new(),
+                AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 112, Parent = pageArea })
+            new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = s })
+            new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 10), Parent = s })
+            return s
+        end
+        local road, news = page(), page()
+        news.Visible = false
+
+        local reveal = {}
+        for i, r in ipairs(ROAD) do
+            local last = i == #ROAD
+            local item = new("Frame", { Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, LayoutOrder = i,
+                ZIndex = 112, Parent = road })
+            if not last then
+                new("Frame", { Position = UDim2.fromOffset(5, 15), Size = UDim2.fromOffset(2, 32), BackgroundColor3 = P.Border,
+                    BorderSizePixel = 0, ZIndex = 112, Parent = item })
+            end
+            local dot = new("Frame", { Position = UDim2.fromOffset(last and 0 or 2, last and 6 or 9), Size = UDim2.fromOffset(last and 12 or 8, last and 12 or 8),
+                BackgroundColor3 = last and P.Accent or P.TextMuted, BorderSizePixel = 0, ZIndex = 113, Parent = item },
+                { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+            local inner = new("Frame", { Position = UDim2.fromOffset(22, 0), Size = UDim2.new(1, -22, 1, 0),
+                BackgroundTransparency = 1, ZIndex = 112, Parent = item })
+            local v = txt(inner, { Text = r[1], FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+                TextColor3 = last and P.Accent or P.Text, Size = UDim2.fromOffset(62, 30) })
+            local d = txt(inner, { Text = r[2], TextSize = Theme.Text.Tiny, TextColor3 = P.TextMuted,
+                Position = UDim2.fromOffset(64, 0), Size = UDim2.fromOffset(44, 30) })
+            local t = txt(inner, { Text = r[3], TextSize = Theme.Text.Small, TextColor3 = last and P.Snow or P.Text,
+                FontFace = last and Theme.Fonts.Bold or Theme.Fonts.Regular, TextTruncate = Enum.TextTruncate.AtEnd,
+                Position = UDim2.fromOffset(110, 0), Size = UDim2.new(1, -110, 0, 30) })
+            reveal[#reveal + 1] = { inner = inner, labels = { v, d, t }, dot = dot }
+        end
+        for i, r in ipairs(NEW) do
+            local item = new("Frame", { Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1, LayoutOrder = i,
+                ZIndex = 112, Parent = news })
+            new("Frame", { Position = UDim2.fromOffset(0, 8), Size = UDim2.fromOffset(3, 24), BackgroundColor3 = P.Accent,
+                BorderSizePixel = 0, ZIndex = 113, Parent = item }, { corner(2) })
+            txt(item, { Text = r[1], FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+                Position = UDim2.fromOffset(14, 5), Size = UDim2.new(1, -14, 0, 15) })
+            txt(item, { Text = r[2], TextSize = Theme.Text.Small, TextColor3 = P.TextMuted, TextTruncate = Enum.TextTruncate.AtEnd,
+                Position = UDim2.fromOffset(14, 21), Size = UDim2.new(1, -14, 0, 14) })
+        end
+
+        local tabs = {}
+        local function selectTab(i)
+            tween(knob, Theme.Animation.Pill, { Position = UDim2.new((i - 1) * 0.5, i == 1 and 3 or 0, 0, 3) })
+            road.Visible, news.Visible = i == 1, i == 2
+            for j, b in ipairs(tabs) do
+                tween(b, Theme.Animation.Fast, { TextColor3 = j == i and P.Background or P.TextMuted })
+            end
+        end
+        for i, name in ipairs({ "The road here", "What's new" }) do
+            local b = new("TextButton", { Text = name, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+                TextColor3 = i == 1 and P.Background or P.TextMuted, AutoButtonColor = false, BackgroundTransparency = 1,
+                Position = UDim2.new((i - 1) * 0.5, 0, 0, 0), Size = UDim2.new(0.5, 0, 1, 0), ZIndex = 114, Parent = sw })
+            tabs[i] = b
+            b.MouseButton1Click:Connect(function()
+                Koffee.Sfx.play("tab")
+                selectTab(i)
+            end)
+        end
+
+        txt(box, { Text = "This only shows once", TextSize = Theme.Text.Tiny, TextColor3 = P.TextMuted,
+            AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 24, 1, -28), Size = UDim2.fromOffset(200, 12) })
+        local go = new("TextButton", { Text = "Let's go", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
+            TextColor3 = P.Background, BackgroundColor3 = P.Accent, AutoButtonColor = false, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -20, 1, -18), Size = UDim2.fromOffset(128, 34),
+            ZIndex = 113, Parent = box }, { corner(Theme.Radius.Large) })
+        local goSc = new("UIScale", { Parent = go })
+        go.MouseEnter:Connect(function() tween(goSc, Theme.Animation.Fast, { Scale = 1.05 }) end)
+        go.MouseLeave:Connect(function() tween(goSc, Theme.Animation.Fast, { Scale = 1 }) end)
+
+        local closing = false
+        local function close()
+            if closing then return end
+            closing = true
+            Koffee.Sfx.play("close")
+            for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+            pcall(function() RunService:UnbindFromRenderStep(MB) end)
+            if anim then
+                tween(sc, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 0.9 })
+                tween(dim, TweenInfo.new(0.2), { BackgroundTransparency = 1 })
+                tween(box, TweenInfo.new(0.18), { BackgroundTransparency = 1 })
+                task.delay(Koffee.Anim.wait(0.2), function() dim:Destroy() end)
+            else
+                dim:Destroy()
+            end
+        end
+        go.MouseButton1Click:Connect(close)
+        conns[#conns + 1] = UserInputService.InputBegan:Connect(function(io)
+            if io.KeyCode == Enum.KeyCode.Return or io.KeyCode == Enum.KeyCode.KeypadEnter then close() end
+        end)
+
+        -- entrance, then the party
+        if anim then
+            tween(dim, TweenInfo.new(0.25), { BackgroundTransparency = 0.45 })
+            tween(sc, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 })
+        end
+        fanfare()
+        confetti()
+        for i, r in ipairs(reveal) do
+            for _, l in ipairs(r.labels) do l.TextTransparency = 1 end
+            r.dot.BackgroundTransparency = 1
+            r.inner.Position = UDim2.fromOffset(34, 0)
+            task.delay(0.5 + i * 0.07, function()
+                if not dim.Parent then return end
+                for _, l in ipairs(r.labels) do tween(l, Theme.Animation.Slow, { TextTransparency = 0 }) end
+                tween(r.dot, Theme.Animation.Slow, { BackgroundTransparency = 0 })
+                tween(r.inner, Theme.Animation.Pill, { Position = UDim2.fromOffset(22, 0) })
+            end)
+        end
+        local t0 = os.clock()
+        conns[#conns + 1] = RunService.RenderStepped:Connect(function()
+            if Koffee.dead() or not dim.Parent then return end
+            local t = os.clock() - t0
+            for _, c in ipairs(counters) do
+                local k = math.clamp((t - c.delay) / 1.6, 0, 1)
+                local e = 1 - (1 - k) ^ 4
+                local s = fmt(c.from + (c.n - c.from) * e)
+                if c.lbl.Text ~= s then c.lbl.Text = s end
+            end
+            -- a slow shine sweeps the title every 3.5s
+            local sw2 = (t % 3.5) / 1.1
+            shine.Offset = Vector2.new(sw2 <= 1 and (sw2 * 2 - 1) or 1, 0)
+        end)
+    end
+
+    task.spawn(function()
+        task.wait(1.2)
+        if not Koffee.dead() then show() end
+    end)
+end)()
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
 -- pcall'd so a bad/locked config never blocks the UI from coming up.
