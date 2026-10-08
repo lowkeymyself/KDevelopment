@@ -1,7 +1,7 @@
 -- koffee v1.3.0
 
 local Koffee = {}
-Koffee.Version = "1.3.0"
+Koffee.Version = "1.3.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -11049,6 +11049,7 @@ Koffee.Rivals = {
                     FarUnsafe = false,   -- v0.99.14: Far at 100M to 300M (crashed his client)
                     UnsafeExp = 8.5,     -- v0.99.34: Unsafe distance as 10^x studs (8 to 38)
                     CounterVoid = true, CounterTP = true, Smart = true, Predict = true,
+                    AntiVoider = true,                    -- v1.3.1: chase targets in the void
                     Adaptive = true, AdaptiveWeapons = false,
                     AntiMelee = true, ThreatRange = 25,   -- v0.99.5: teleport-in answer (melee and gun)
                     Melee = true, ChainsawHold = true,    -- v0.99.6: melee ragebot
@@ -11145,6 +11146,7 @@ Shared.rage2UI = function(card)
     configCheckbox(card, "Smart Targeting", RG.Smart, function(v) RG.Smart = v end)
     configCheckbox(card, "Prediction", RG.Predict, function(v) RG.Predict = v end)
     configCheckbox(card, "Counter Void", RG.CounterVoid, function(v) RG.CounterVoid = v end)
+    configCheckbox(card, "Anti-Voider", RG.AntiVoider ~= false, function(v) RG.AntiVoider = v end)
     configCheckbox(card, "Counter Teleport", RG.CounterTP, function(v) RG.CounterTP = v end)
     configCheckbox(card, "Adaptive Aggression", RG.Adaptive, function(v) RG.Adaptive = v end)
     configCheckbox(card, "Player Adapt", RG.PlayerAdapt == true, function(v) RG.PlayerAdapt = v end)
@@ -29291,6 +29293,14 @@ addTab("Options", function(root)
             end
         end)
         local sp = panel(root, "Startup")
+        -- v1.3.1: replay the 1.0 celebration
+        local celBtn = new("TextButton", { Text = "View 1.0 Celebration", FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill,
+            AutoButtonColor = true, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 100, Parent = sp },
+            { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        celBtn.MouseButton1Click:Connect(function()
+            if Shared.showCelebration then Shared.showCelebration() end
+        end)
         configCheckbox(sp, "Skip Loading", SP.SkipLoading, function(v)
             SP.SkipLoading = v
             -- v1.0.0: merge into the file; a plain write wiped the saved Panic key
@@ -41959,6 +41969,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if not want then RV._dsLast = nil; return end
         local mr = myRoot()
         if not mr then RV._dsLast = nil; return end
+        -- v1.3.1: a kill / round end / respawn tears the character down; a CFrame write
+        -- (plus the RenderStep restore bound to it) on a body that is dying or already out
+        -- of the workspace is the riskiest moment we touch the engine, so skip those frames
+        local hum0 = mr.Parent and mr.Parent:FindFirstChildOfClass("Humanoid")
+        if not (mr:IsDescendantOf(Workspace) and hum0 and hum0.Health > 0) then RV._dsLast = nil; return end
         dsPhase = (dsPhase + R.Desync.Speed * 0.0166) % TAU
         local dest = rcf
         if dest == nil then
@@ -42529,6 +42544,51 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             return best or (mr and mr.Position)
         end
+        -- v1.3.1 anti-voider: a target hiding in the void (under the map, or millions of
+        -- studs out) is chased where it is: a spot a few studs off it, placed and fired in
+        -- the same frame, held just long enough for the server, then back to our hide.
+        -- Returns true when it struck (or is holding the strike), false to let the
+        -- normal cycle run (e.g. our weapon isn't ready yet, so we stay hidden).
+        function RG.voidStrike(plr, it, now, live)
+            local C = cfg()
+            local ch = plr.Character
+            local root = ch and ch:FindFirstChild("HumanoidRootPart")
+            if not root then return false end
+            if RG.vHold and now < RG.vHold and RG.vSpot then
+                RV._rageCF = RG.vSpot
+                RG.action = "anti-voider: struck"
+                return true
+            end
+            local melee = it ~= nil and RG.isMelee(it)
+            if not (live and it ~= nil and RG.readyIn(it) <= 0 and (not melee or C.Melee)) then return false end
+            local tgt = (not melee and ch:FindFirstChild("Head")) or root
+            local look = root.CFrame.LookVector
+            local flat = Vector3.new(look.X, 0, look.Z)
+            flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
+            local cands = melee and { root.Position - flat * 0.75 }
+                or { tgt.Position - flat * 6 + Vector3.new(0, 1, 0), tgt.Position + Vector3.new(0, 6, 0),
+                    tgt.Position + flat * 6 + Vector3.new(0, 1, 0), tgt.Position + flat:Cross(Vector3.yAxis) * 6 }
+            for _, pos in ipairs(cands) do
+                local cf = melee and CFrame.lookAt(pos, pos + flat) or CFrame.lookAt(pos, tgt.Position)
+                if RV.cfValid(cf) and RG.safe(pos) then
+                    RG.placeNow(cf)
+                    RV._rageCF = cf
+                    if melee then
+                        if tostring(it.Name) == "Knife" then RG.knifeSwing(it, pos, tgt, flat) else RG.swing(pos, tgt, it) end
+                        local delay = 0
+                        pcall(function() delay = tonumber(rawget(it.Info, "AttackDelay")) or 0 end)
+                        RG.vHold = now + delay + RG.ping() + 0.1
+                    else
+                        RG.fire(it, pos, tgt)
+                        RG.vHold = now + 0.08
+                    end
+                    RG.vSpot = cf
+                    RG.action = "anti-voider: struck"
+                    return true
+                end
+            end
+            return false
+        end
         function RG.clearOfEnemies(pos, r)
             for _, plr in ipairs(Plrs:GetPlayers()) do
                 local ch = plr ~= LocalPlayer and plr.Character
@@ -42658,7 +42718,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     and not RV.isDeflecting(plr) and RG.sameDuel(plr) and (RG.allow == nil or RG.allow[plr]) then
                     local part = partOf(ch, R.LockPart)
                     local t = RG.track[plr]
-                    if part and not (t and t.sub and not C.CounterVoid) then
+                    if part and not (t and t.sub and not C.CounterVoid and C.AntiVoider == false) then
                         local d = (part.Position - mr.Position).Magnitude
                         local score = d
                         if C.Smart then
@@ -42668,7 +42728,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                             if C.CounterTP and t and now - t.freshAt < 0.35 then score = score - 30 end
                             if plr == RG.lastTarget then score = score - 6 end   -- no flicker
                         end
-                        if d < 6000 and score < bs then best, bp, bs = plr, part, score end
+                        if (d < 6000 or C.AntiVoider ~= false) and score < bs then best, bp, bs = plr, part, score end
                     end
                 end
             end
@@ -42901,6 +42961,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         RG.intr = { ev = {}, last = {}, quiet = {} }
         function RG.intrudeStep(home, spot)
             if RV.counter or RG.intr.prompt or not on("rv_rage") then return end
+            -- v1.3.1: map vote / countdown / review put everyone close together; only a
+            -- live round counts, and only someone who teleported in during the last second
+            if not (RV.inRound() and RG.live()) then return end
             if (spot - home).Magnitude < 10 then return end
             local now = os.clock()
             local I = RG.intr
@@ -42908,9 +42971,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ch = plr ~= LocalPlayer and plr.Character
                 local root = ch and ch:FindFirstChild("HumanoidRootPart")
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local tk = RG.track[plr]
                 if root and hum and hum.Health > 0 and (root.Position - home).Magnitude < 5
                     and (root.Position - spot).Magnitude > 8 and not RV.isAlly(plr) and RG.sameDuel(plr)
-                    and now - (I.last[plr] or 0) > 0.75 then
+                    and tk and now - (tk.jumpAt or 0) < 1 and now - (I.last[plr] or 0) > 0.75 then
                     I.last[plr] = now
                     local ev = I.ev[plr] or {}
                     I.ev[plr] = ev
@@ -43046,7 +43110,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             RG.freecam(false)
             -- back to the logged home, only on the same life (a respawn already moved us)
             local mr = myRoot()
-            if mr and LocalPlayer.Character == c.char then
+            if mr and LocalPlayer.Character == c.char and RV.cfValid(c.home) and mr:IsDescendantOf(Workspace) then
                 pcall(function()
                     mr.CFrame = c.home
                     mr.AssemblyLinearVelocity = Vector3.zero
@@ -43445,7 +43509,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- and the shot leave together. Needs the desync restore bound this frame.
         function RG.placeNow(cf)
             local mr = myRoot()
-            if not (mr and RV._dsLast ~= nil) then return false end
+            if not (mr and RV._dsLast ~= nil and mr:IsDescendantOf(Workspace)) then return false end
             if not RV.cfValid(cf) then return false end
             RV._dsLast = cf
             return pcall(function() mr.CFrame = cf end)
@@ -44040,6 +44104,16 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ready = it ~= nil and RG.readyIn(it) <= 0 and (not melee or C.Melee)
                 RG.phase = "idle"
                 local tgtPart = surfaced and ((not melee and ch:FindFirstChild("Head")) or root) or part
+                -- v1.3.1: not surfaced but alive (voiding): chase them where they are
+                if not surfaced and root and hum and hum.Health > 0 and C.AntiVoider ~= false
+                    and RG.voidStrike(plr, it, now, live) then
+                    local from = RV._rageCF and RV._rageCF.Position
+                    if from then
+                        local p, y = RV.anglesTo(from, (ch:FindFirstChild("Head") or root).Position)
+                        if p then RV.setAngles(RV.slots.Rage, p, y) end
+                    end
+                    return
+                end
                 if surfaced and ready and live and not (cn.hold and now < cn.hold) then
                     local spot, flat
                     if melee then
@@ -44090,6 +44164,20 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     if p then RV.setAngles(RV.slots.Rage, p, y) end
                 end
                 return
+            end
+            -- v1.3.1 anti-voider for every target: in the void or more than 1500 studs out
+            if C.AntiVoider ~= false then
+                local tr = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+                if tr and ((t and t.sub) or (tr.Position - mr.Position).Magnitude > 1500)
+                    and RG.voidStrike(plr, it, now, live) then
+                    RG.phase = "idle"
+                    local from = RV._rageCF and RV._rageCF.Position
+                    if from then
+                        local p, y = RV.anglesTo(from, part.Position)
+                        if p then RV.setAngles(RV.slots.Rage, p, y) end
+                    end
+                    return
+                end
             end
             -- v0.99.5 anti-melee: they came to us, so shoot from where we stand, then
             -- dodge to a fresh sky spot so the swing lands on air
@@ -48638,11 +48726,9 @@ end)()
         end
     end)
     local major = tonumber(tostring(Koffee.Version):match("^(%d+)")) or 0
-    if not force then
-        if major < 1 or seen[FLAG] == true then return end
-        if getgenv and getgenv()["\6_rt_cel10"] then return end
-    end
-    if getgenv then getgenv()["\6_rt_cel10"] = true; getgenv().KoffeeCelebrate = nil end
+    -- v1.3.1: the gate only decides the one-time auto show; Options can replay it any time
+    local auto = force or not (major < 1 or seen[FLAG] == true or (getgenv and getgenv()["\6_rt_cel10"]))
+    if auto and getgenv then getgenv()["\6_rt_cel10"] = true; getgenv().KoffeeCelebrate = nil end
 
     local P = Theme.Palette
     local STATS = {
@@ -48990,10 +49076,13 @@ end)()
         end)
     end
 
-    task.spawn(function()
-        task.wait(1.2)
-        if not Koffee.dead() then show() end
-    end)
+    Shared.showCelebration = function() if not Koffee.dead() then show() end end
+    if auto then
+        task.spawn(function()
+            task.wait(1.2)
+            if not Koffee.dead() then show() end
+        end)
+    end
 end)()
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
