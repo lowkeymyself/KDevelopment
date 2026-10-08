@@ -26178,17 +26178,56 @@ registerConfig("item_skins", Koffee.ItemSkins)
             if t <= b[1] then
                 local span = b[1] - a[1]
                 local al = span > 0 and (t - a[1]) / span or 1
-                return cf(a):Lerp(cf(b), al * al * (3 - 2 * al))
+                return cf(a):Lerp(cf(b), AN.kease(al, a[3]))
             end
         end
         return cf(keys[n])
+    end
+    -- v1.4.0 per-key easing (key[3]): how the move from this key into the next one goes
+    AN.EASES = { "Smooth", "Linear", "Ease In", "Ease Out", "Constant" }
+    function AN.kease(a, name)
+        if name == "Linear" then return a end
+        if name == "Constant" then return 0 end
+        if name == "Ease In" then return a * a end
+        if name == "Ease Out" then return 1 - (1 - a) * (1 - a) end
+        return a * a * (3 - 2 * a)
+    end
+    -- Replace (edit.rep[joint]): your keys are the motion. Each key's pose is the original
+    -- at its time times your offset, and between keys only your keys count. Outside them
+    -- the original comes back over Blend.
+    function AN.replace(list, keys, t, blend, b)
+        local n = #keys
+        local function P(k) return AN.sample(list, k[1]) * CFrame.new(table.unpack(k[2])) end
+        blend = math.max(blend, 0.01)
+        if t < keys[1][1] then
+            local d = keys[1][1] - t
+            if d >= blend then return b end
+            return b:Lerp(P(keys[1]), 1 - d / blend)
+        end
+        if t > keys[n][1] then
+            local d = t - keys[n][1]
+            if d >= blend then return b end
+            return P(keys[n]):Lerp(b, d / blend)
+        end
+        for i = 1, n - 1 do
+            local a, c = keys[i], keys[i + 1]
+            if t <= c[1] then
+                local span = c[1] - a[1]
+                local al = span > 0 and (t - a[1]) / span or 1
+                return P(a):Lerp(P(c), AN.kease(al, a[3]))
+            end
+        end
+        return P(keys[n])
     end
     function AN.pose(base, edit, joint, t)
         local list = base.joints[joint]
         local b = list and AN.sample(list, t)
         if not b then return nil end
-        local off = edit and type(edit.k) == "table"
-            and AN.offset(edit.k[joint], t, tonumber(edit.blend) or 0.2, edit.smooth ~= false)
+        local keys = edit and type(edit.k) == "table" and edit.k[joint]
+        if type(keys) ~= "table" or #keys == 0 then return b end
+        local blend = tonumber(edit.blend) or 0.2
+        if type(edit.rep) == "table" and edit.rep[joint] then return AN.replace(list, keys, t, blend, b) end
+        local off = AN.offset(keys, t, blend, edit.smooth ~= false)
         return off and (b * off) or b
     end
     function AN.motors(model)
@@ -27974,8 +28013,10 @@ end)()
         for n in pairs(A.rig.motors) do names[#names + 1] = n end
         table.sort(names)
         for i, n in ipairs(names) do
-            A.jointRows[n] = button(A.jointBox, n, i, function() selectTarget("j:" .. n) end, 206)
+            A.jointRows[n] = button(A.jointBox, n, i, function() A.pickJoint(n, ED.ctrl()) end, 200)
+            A.jointRows[n].TextXAlignment = Enum.TextXAlignment.Left
         end
+        A.jointBox.Size = UDim2.new(1, 0, 0, math.min(#names * 29, 232))
     end
     function ED.A.toggle()
         local A = ED.A
@@ -28007,25 +28048,350 @@ end)()
         end
         ED.mzMk.Visible = false
         ED.outP.Visible, ED.inspP.Visible, ED.tlP.Visible = not A.on, not A.on, not A.on
-        A.panel.Visible, A.tl.Visible = A.on, A.on
+        A.panel.Visible, A.tl.Visible, A.insp.Visible = A.on, A.on, A.on
+        A.jsel = {}
         selectTarget(nil)
+        A.onionSet(A.on and A.onion == true)
         if A.on then ED.view.focus = A.rig.focus end
+    end
+    -- v1.4.0 :: keyframing :: joint selection (primary = ED.sel, extras in A.jsel), your
+    -- keys as their own track, poses you can key, copy, paste, ease and retime
+    function ED.A.joints()
+        local A, out = ED.A, {}
+        local jk = A.jkey()
+        if not jk then return out end
+        out[1] = jk
+        for n in pairs(A.jsel or {}) do if n ~= jk then out[#out + 1] = n end end
+        return out
+    end
+    function ED.A.pickJoint(name, additive)
+        local A = ED.A
+        if not name then A.jsel = {}; selectTarget(nil); return end
+        local jk = A.jkey()
+        if additive and jk then
+            A.jsel = A.jsel or {}
+            A.jsel[jk] = true
+            if A.jsel[name] then
+                A.jsel[name] = nil
+                if jk == name then
+                    local nx = next(A.jsel)
+                    selectTarget(nx and ("j:" .. nx) or nil)
+                elseif refreshUi then
+                    refreshUi()
+                end
+                return
+            end
+            A.jsel[name] = true
+            if refreshUi then refreshUi() end
+            return
+        end
+        A.jsel = { [name] = true }
+        selectTarget("j:" .. name)
+    end
+    function ED.A.base() return ED.A.id and X.AN.load(ED.A.id) or nil end
+    -- nearest original frame (keys always sit on one, so the length never changes)
+    function ED.A.nearest(t)
+        local base = ED.A.base()
+        if not base or #base.times == 0 then return t end
+        local best, bd = base.times[1], math.huge
+        for _, tt in ipairs(base.times) do
+            local d = math.abs(tt - t)
+            if d < bd then best, bd = tt, d end
+        end
+        return best
+    end
+    -- what the joint shows at t (original + your edits), and that as an offset
+    function ED.A.shown(name, t)
+        local base = ED.A.base()
+        return base and X.AN.pose(base, ED.A.entry(false), name, t) or nil
+    end
+    function ED.A.offAt(name, t)
+        local base = ED.A.base()
+        local list = base and base.joints[name]
+        local b = list and X.AN.sample(list, t)
+        local d = ED.A.shown(name, t)
+        return (b and d) and (b:Inverse() * d) or nil
+    end
+    function ED.A.keyAt(name, tk)
+        local e = ED.A.entry(false)
+        local list = e and e.k[name]
+        if type(list) ~= "table" then return nil end
+        for i, k in ipairs(list) do
+            if math.abs(k[1] - tk) < 1e-4 then return k, i, list end
+        end
+        return nil
+    end
+    function ED.A.writeKey(name, tk, off, ease)
+        local e = ED.A.entry(true)
+        if not e then return end
+        e.k[name] = e.k[name] or {}
+        local k = ED.A.keyAt(name, tk)
+        if k then
+            k[2] = { off:GetComponents() }
+            if ease then k[3] = ease end
+            return
+        end
+        local list = e.k[name]
+        list[#list + 1] = { tk, { off:GetComponents() }, ease }
+        table.sort(list, function(a, b) return a[1] < b[1] end)
+    end
+    -- the joints an action works on: the picked ones, else every joint the animation has
+    function ED.A.targets()
+        local js = ED.A.joints()
+        if #js > 0 then return js end
+        local base, out = ED.A.base(), {}
+        if base and ED.A.rig then
+            for n in pairs(ED.A.rig.motors) do if base.joints[n] then out[#out + 1] = n end end
+        end
+        return out
+    end
+    -- key times on the picked joints (every joint when none is picked)
+    function ED.A.keyTimes(all)
+        local e = ED.A.entry(false)
+        if not e then return {} end
+        local names = {}
+        if not all and ED.A.jkey() then
+            for _, n in ipairs(ED.A.joints()) do names[#names + 1] = n end
+        else
+            for n in pairs(e.k) do names[#names + 1] = n end
+        end
+        local set, out = {}, {}
+        for _, n in ipairs(names) do
+            for _, k in ipairs(type(e.k[n]) == "table" and e.k[n] or {}) do
+                local key = math.floor(k[1] * 10000 + 0.5)
+                if not set[key] then set[key] = true; out[#out + 1] = k[1] end
+            end
+        end
+        table.sort(out)
+        return out
+    end
+    function ED.A.keyNow()
+        local A = ED.A
+        if not A.base() then return end
+        A.playing = false
+        local tk = A.snap()
+        local js = A.targets()
+        if #js == 0 then return end
+        pushUndo()
+        for _, n in ipairs(js) do
+            local off = A.offAt(n, tk)
+            if off then A.writeKey(n, tk, off) end
+        end
+        note("Keyed " .. #js .. (#js == 1 and " joint" or " joints") .. string.format(" at %.2fs", tk))
+    end
+    function ED.A.delKey()
+        local A = ED.A
+        local e = A.entry(false)
+        if not e then return end
+        local tk = A.snap()
+        local hit = false
+        for _, n in ipairs(A.targets()) do
+            local k, i, list = A.keyAt(n, tk)
+            if k then
+                if not hit then pushUndo(); hit = true end
+                table.remove(list, i)
+                if #list == 0 then e.k[n] = nil end
+            end
+        end
+        if not hit then note("No key here on those joints") end
+    end
+    function ED.A.copyPose()
+        local A, clip = ED.A, {}
+        local n = 0
+        for _, j in ipairs(A.targets()) do
+            local d = A.shown(j, A.t)
+            if d then clip[j] = d; n = n + 1 end
+        end
+        A.clip = clip
+        note("Copied the pose of " .. n .. (n == 1 and " joint" or " joints"))
+    end
+    function ED.A.pastePose()
+        local A = ED.A
+        local base = A.base()
+        if not (A.clip and next(A.clip) and base) then note("Copy a pose first"); return end
+        A.playing = false
+        local tk = A.snap()
+        pushUndo()
+        for j, d in pairs(A.clip) do
+            local list = base.joints[j]
+            local b = list and X.AN.sample(list, tk)
+            if b then A.writeKey(j, tk, b:Inverse() * d) end
+        end
+    end
+    function ED.A.setEase(v)
+        local A = ED.A
+        local tk = A.nearest(A.t)
+        local hit = false
+        for _, n in ipairs(A.joints()) do
+            local k = A.keyAt(n, tk)
+            if k then
+                if not hit then pushUndo(); hit = true end
+                k[3] = (v ~= "Smooth") and v or nil
+            end
+        end
+        if not hit then note("Easing belongs to a key: go to one (the diamonds) first") end
+    end
+    function ED.A.setMode(v)
+        local A = ED.A
+        local e = A.entry(true)
+        if not e then return end
+        pushUndo()
+        e.rep = type(e.rep) == "table" and e.rep or {}
+        for _, n in ipairs(A.joints()) do e.rep[n] = (v == "Replace") or nil end
+        if not next(e.rep) then e.rep = nil end
+    end
+    function ED.A.navKey(dir)
+        local A = ED.A
+        A.playing = false
+        local ts = A.keyTimes(false)
+        if dir > 0 then
+            for _, tt in ipairs(ts) do if tt > A.t + 1e-4 then A.t = tt; return end end
+        else
+            for i = #ts, 1, -1 do if ts[i] < A.t - 1e-4 then A.t = ts[i]; return end end
+        end
+    end
+    function ED.A.ends(dir)
+        local base = ED.A.base()
+        ED.A.playing = false
+        ED.A.t = (dir > 0 and base) and base.len or 0
+    end
+    -- one slider on the primary joint: rebuild its offset with that value changed
+    function ED.A.slide(k, v)
+        local A = ED.A
+        local jk = A.jkey()
+        if not (jk and A.base()) then return end
+        edit()
+        A.playing = false
+        local tk = A.snap()
+        local off = A.offAt(jk, tk) or CFrame.identity
+        local p = off.Position
+        local rx, ry, rz = off:ToEulerAnglesXYZ()
+        local c = { x = p.X, y = p.Y, z = p.Z, rx = math.deg(rx), ry = math.deg(ry), rz = math.deg(rz) }
+        c[k] = v
+        A.writeKey(jk, tk, CFrame.new(c.x, c.y, c.z) * CFrame.Angles(math.rad(c.rx), math.rad(c.ry), math.rad(c.rz)))
+    end
+    -- the timeline: a click near a diamond grabs that key (drag to retime), else scrubs
+    function ED.A.markerAt(x)
+        local A = ED.A
+        local base = A.base()
+        local w = A.bar and A.bar.AbsoluteSize.X or 0
+        if not base or base.len <= 0 or w <= 0 then return nil end
+        local best, bd = nil, 7
+        for _, tt in ipairs(A.keyTimes(true)) do
+            local d = math.abs(A.bar.AbsolutePosition.X + tt / base.len * w - x)
+            if d < bd then best, bd = tt, d end
+        end
+        return best
+    end
+    function ED.A.kdragStart(tt)
+        local A = ED.A
+        A.playing, A.t = false, tt
+        local e = A.entry(false)
+        local names = {}
+        for _, n in ipairs(A.joints()) do if A.keyAt(n, tt) then names[#names + 1] = n end end
+        if #names == 0 and e then
+            for n in pairs(e.k) do if A.keyAt(n, tt) then names[#names + 1] = n end end
+        end
+        A.kdrag = { from = tt, to = tt, names = names }
+    end
+    function ED.A.kdragAt(x)
+        local A = ED.A
+        local base = A.base()
+        local w = A.bar.AbsoluteSize.X
+        if not (A.kdrag and base and w > 0) then return end
+        local t = A.nearest(math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len)
+        A.kdrag.to, A.t = t, t
+    end
+    function ED.A.kdrop()
+        local A = ED.A
+        local d = A.kdrag
+        A.kdrag = nil
+        if not d or math.abs(d.to - d.from) < 1e-4 then return end
+        pushUndo()
+        for _, n in ipairs(d.names) do
+            local k, _, list = A.keyAt(n, d.from)
+            if k then
+                local old, oi = A.keyAt(n, d.to)
+                if old then table.remove(list, oi) end
+                k[1] = d.to
+                table.sort(list, function(a, b) return a[1] < b[1] end)
+            end
+        end
+    end
+    -- onion skin: the rig again, ghosted, at the key before and after the playhead
+    function ED.A.onionSet(on)
+        local A = ED.A
+        A.onion = on
+        for _, o in ipairs(A.onions or {}) do pcall(function() o.model:Destroy() end) end
+        A.onions = {}
+        if not (on and A.on and A.rig and A.rig.model.Parent) then return end
+        local tints = { Color3.fromRGB(96, 160, 255), Color3.fromRGB(255, 150, 90) }
+        for i = 1, 2 do
+            local c
+            pcall(function()
+                A.rig.model.Archivable = true
+                for _, d in ipairs(A.rig.model:GetDescendants()) do pcall(function() d.Archivable = true end) end
+                c = A.rig.model:Clone()
+            end)
+            if c then
+                local map = {}
+                for _, d in ipairs(c:GetDescendants()) do
+                    if d:IsA("Motor6D") and d.Part1 then
+                        map[d.Part1.Name] = d
+                    elseif d:IsA("BasePart") then
+                        pcall(function() d.CanQuery = false end)
+                        d.LocalTransparencyModifier = 0
+                        if d.Transparency < 1 then d.Transparency = math.max(d.Transparency, 0.7) end
+                    elseif d:IsA("Decal") or d:IsA("Highlight") or FXC[d.ClassName] then
+                        pcall(d.Destroy, d)
+                    end
+                end
+                local hl = Instance.new("Highlight")
+                hl.FillColor, hl.FillTransparency, hl.OutlineTransparency = tints[i], 0.55, 1
+                hl.DepthMode = Enum.HighlightDepthMode.Occluded
+                hl.Parent = c
+                A.onions[i] = { model = c, motors = map }
+            end
+        end
     end
     function ED.A.frame(dt)
         local A = ED.A
-        local base = A.id and X.AN.load(A.id)
+        local base = A.base()
         local len = base and base.len or 0
-        if A.playing and len > 0 then A.t = (A.t + dt) % len end
+        if A.playing and len > 0 then
+            A.t = A.t + dt * (A.speed or 1)
+            if A.t > len then
+                if A.loop ~= false then A.t = A.t % len else A.t, A.playing = len, false end
+            end
+        end
+        local e = A.entry(false)
         if base and A.rig then
-            local e = A.entry(false)
             for name, mo in pairs(A.rig.motors) do
                 local pose = X.AN.pose(base, e, name, A.t)
                 if pose then pcall(function() mo.Transform = pose end) end
             end
         end
+        -- onions follow the picked joints' keys (every key when none is picked)
+        if A.onion and base and A.onions then
+            local ts = A.keyTimes(false)
+            local prev, nxt
+            for _, tt in ipairs(ts) do
+                if tt < A.t - 1e-4 then prev = tt elseif tt > A.t + 1e-4 and not nxt then nxt = tt end
+            end
+            for i, o in ipairs(A.onions) do
+                local tt = (i == 1) and prev or nxt
+                o.model.Parent = tt and ED.stage or nil
+                if tt then
+                    for name, mo in pairs(o.motors) do
+                        local pose = X.AN.pose(base, e, name, tt)
+                        if pose then pcall(function() mo.Transform = pose end) end
+                    end
+                end
+            end
+        end
         local f = len > 0 and math.clamp(A.t / len, 0, 1) or 0
         A.fill.Size = UDim2.new(f, 0, 1, 0)
-        A.knob.Position = UDim2.new(f, 0, 0.5, 0)
+        A.head.Position = UDim2.new(f, 0, 0, 0)
         if not base then
             A.timeLbl.Text = A.id and "loading..." or "pick an animation"
         elseif base.failed then
@@ -28033,13 +28399,52 @@ end)()
         else
             local idx = 1
             for i, tt in ipairs(base.times) do if tt <= A.t + 1e-4 then idx = i end end
-            A.timeLbl.Text = string.format("%s  %.2f / %.2fs  ·  key %d / %d", A.key or "", A.t, len, idx, #base.times)
+            A.timeLbl.Text = string.format("%s  %.2f / %.2fs  frame %d / %d", A.key or "", A.t, len, idx, #base.times)
+        end
+        -- ticks once per animation, diamonds whenever the keys or the pick change
+        if base and len > 0 and A.tickId ~= A.id then
+            A.tickId = A.id
+            for _, c in ipairs(A.ticks:GetChildren()) do c:Destroy() end
+            local step = len > 6 and 0.5 or 0.1
+            local n = math.floor(len / step + 1e-6)
+            for i = 0, n do
+                local tt = i * step
+                local major = math.abs(tt / 0.5 - math.floor(tt / 0.5 + 0.5)) < 1e-6
+                new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(tt / len, 0, 0, 0),
+                    Size = UDim2.fromOffset(1, major and 8 or 4), BackgroundColor3 = Theme.Palette.Border,
+                    BorderSizePixel = 0, ZIndex = 6, Parent = A.ticks })
+                if major and step < 0.5 or (step == 0.5 and i % 2 == 0) then
+                    new("TextLabel", { Text = string.format("%.1f", tt), FontFace = Theme.Fonts.Mono,
+                        TextSize = Theme.Text.Small - 3, TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                        AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(tt / len, 0, 0, 8),
+                        Size = UDim2.fromOffset(30, 10), ZIndex = 6, Parent = A.ticks })
+                end
+            end
+        end
+        if base and len > 0 then
+            local mine = {}
+            for _, tt in ipairs(A.keyTimes(false)) do mine[math.floor(tt * 10000 + 0.5)] = true end
+            local all = A.keyTimes(true)
+            local parts = {}
+            for _, tt in ipairs(all) do parts[#parts + 1] = string.format("%.4f%s", tt, mine[math.floor(tt * 10000 + 0.5)] and "*" or "") end
+            local sig = tostring(A.id) .. "|" .. table.concat(parts, ",")
+            if A.mkSig ~= sig then
+                A.mkSig = sig
+                for _, c in ipairs(A.marks:GetChildren()) do c:Destroy() end
+                for _, tt in ipairs(all) do
+                    local on = mine[math.floor(tt * 10000 + 0.5)] and A.jkey() ~= nil
+                    new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(tt / len, 0, 0.5, 0),
+                        Size = UDim2.fromOffset(on and 10 or 8, on and 10 or 8), Rotation = 45,
+                        BackgroundColor3 = on and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 8, Parent = A.marks },
+                        { stroke(Theme.Palette.Background, 1) })
+                end
+            end
         end
     end
     function ED.A.scrubAt(x)
         local A = ED.A
         local w = A.bar.AbsoluteSize.X
-        local base = A.id and X.AN.load(A.id)
+        local base = A.base()
         if w > 0 and base then
             A.playing = false
             A.t = math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len
@@ -28061,8 +28466,10 @@ end)()
             text(ap, "no animations found for this weapon", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 50, true)
         end
         text(ap, "JOINTS", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 100)
-        A.jointBox = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
-            AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 101, ZIndex = 6, Parent = ap })
+        A.jointBox = new("ScrollingFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 120),
+            CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
+            ScrollBarImageColor3 = Theme.Palette.Border, ScrollingDirection = Enum.ScrollingDirection.Y,
+            LayoutOrder = 101, ZIndex = 6, Parent = ap })
         list(A.jointBox, nil, 3)
         A.blend = slider(ap, "Blend in / out (s)", 0.02, 1.5, 0.2, 2, function(v)
             local e = A.entry(true)
@@ -28070,41 +28477,94 @@ end)()
         end)
         A.blend.row.LayoutOrder = 200
         -- smooth: edits fade in / out and blend into each other; off: only the edited
-        -- keyframe changes, the frames around it stay the original
+        -- keyframe changes, the frames around it stay the original (Layer joints only)
         A.smooth = configCheckbox(ap, "Smooth edits", true, function(v)
             local e = A.entry(true)
             if e then edit(); e.smooth = (v == false) and false or nil end
         end)
         A.smooth.row.LayoutOrder = 199
-        local rb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 201, ZIndex = 6, Parent = ap })
-        list(rb, Enum.FillDirection.Horizontal, 6)
-        button(rb, "Reset key", 1, function() A.resetKey() end)
-        button(rb, "Reset joint", 2, function() A.resetJoint() end)
         button(ap, "Reset animation", 202, function() A.resetAnim() end)
-        text(ap, "pick a joint (here or click it), go to a moment, drag the gizmo. each edit blends in and out around its key, and only plays while this skin is on.",
+        text(ap, "Ctrl-click joints to pick several. Layer adds your keys on top of the original, Replace makes your keys the motion. K key, Del delete key, [ ] your keys, , . frames, Ctrl+C / Ctrl+V pose.",
             Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 203, true)
         A.panel = ap
+
+        -- joint inspector (right)
+        local ins = new("ScrollingFrame", {
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 70), Size = UDim2.new(0, 290, 0, 200),
+            BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.06, ScrollBarThickness = 3,
+            ScrollBarImageColor3 = Theme.Palette.Border, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, Active = true, ZIndex = 5, Visible = false, Parent = ED.gui,
+        }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
+        ED.panels[#ED.panels + 1] = ins
+        pad(ins, 12, 14)
+        local lay = list(ins, nil, 6)
+        lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            ins.Size = UDim2.new(0, 290, 0, math.min(lay.AbsoluteContentSize.Y + 26, viewport().Y - 190))
+        end)
+        A.jTitle = text(ins, "No joint picked", Theme.Text.Body, Theme.Palette.Text, Theme.Fonts.Bold, 1)
+        A.jSub = text(ins, "", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 2, true)
+        A.modeDd = dropdown(ins, "Mode", { "Layer", "Replace" }, "Layer", function(v) A.setMode(v) end)
+        A.modeDd.frame.LayoutOrder = 3
+        A.easeDd = dropdown(ins, "Ease into the next key", X.AN.EASES, "Smooth", function(v) A.setEase(v) end)
+        A.easeDd.frame.LayoutOrder = 4
+        A.js = {}
+        local JS = { { "x", "Move X", -3, 3, 3 }, { "y", "Move Y", -3, 3, 3 }, { "z", "Move Z", -3, 3, 3 },
+            { "rx", "Turn X", -180, 180, 1 }, { "ry", "Turn Y", -180, 180, 1 }, { "rz", "Turn Z", -180, 180, 1 } }
+        for i, d in ipairs(JS) do
+            local k = d[1]
+            A.js[k] = slider(ins, d[2], d[3], d[4], 0, d[5], function(v) A.slide(k, v) end)
+            A.js[k].row.LayoutOrder = 10 + i
+        end
+        local kb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 30, ZIndex = 6, Parent = ins })
+        list(kb, Enum.FillDirection.Horizontal, 6)
+        button(kb, "Key", 1, function() A.keyNow() end)
+        button(kb, "Delete key", 2, function() A.delKey() end)
+        button(kb, "Reset joint", 3, function() A.resetJoint() end)
+        local pb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 31, ZIndex = 6, Parent = ins })
+        list(pb, Enum.FillDirection.Horizontal, 6)
+        button(pb, "Copy pose", 1, function() A.copyPose() end)
+        button(pb, "Paste pose", 2, function() A.pastePose() end)
+        A.onionCb = configCheckbox(ins, "Onion skin (previous / next key)", A.onion == true, function(v) A.onionSet(v == true) end)
+        A.onionCb.row.LayoutOrder = 40
+        text(ins, "with no joint picked, Key / Delete key / Copy pose work on the whole body", Theme.Text.Small - 1,
+            Theme.Palette.TextMuted, Theme.Fonts.Regular, 41, true)
+        A.insp = ins
+
+        -- timeline (bottom)
         local at = mkPanel({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
-            Size = UDim2.new(0, 640, 0, 68), Visible = false })
+            Size = UDim2.new(0, 780, 0, 84), Visible = false })
         pad(at, 8, 12)
         local ctr = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), ZIndex = 6, Parent = at })
-        list(ctr, Enum.FillDirection.Horizontal, 6)
-        A.playBtn = button(ctr, "Play", 1, function() A.playing = not A.playing end, 70)
-        button(ctr, "<", 2, function() A.step(-1) end, 30)
-        button(ctr, ">", 3, function() A.step(1) end, 30)
-        A.timeLbl = text(ctr, "", Theme.Text.Small, Theme.Palette.Text, Theme.Fonts.Mono, 10)
+        list(ctr, Enum.FillDirection.Horizontal, 4)
+        button(ctr, "|<", 1, function() A.ends(-1) end, 34)
+        button(ctr, "<<", 2, function() A.navKey(-1) end, 34)
+        button(ctr, "<", 3, function() A.step(-1) end, 30)
+        A.playBtn = button(ctr, "Play", 4, function() A.playing = not A.playing end, 64)
+        button(ctr, ">", 5, function() A.step(1) end, 30)
+        button(ctr, ">>", 6, function() A.navKey(1) end, 34)
+        button(ctr, ">|", 7, function() A.ends(1) end, 34)
+        A.speedBtn = {}
+        for i, sp in ipairs({ 0.25, 0.5, 1 }) do
+            A.speedBtn[sp] = button(ctr, sp .. "x", 10 + i, function() A.speed = sp end, 46)
+        end
+        A.loopBtn = button(ctr, "Loop", 20, function() A.loop = A.loop == false end, 50)
+        A.timeLbl = text(ctr, "", Theme.Text.Small, Theme.Palette.Text, Theme.Fonts.Mono, 30)
         local track = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
-            Position = UDim2.new(0, 0, 0, 32), Size = UDim2.new(1, 0, 0, 18), ZIndex = 6, Parent = at })
-        local bar = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
-            Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = Theme.Palette.PanelElevated, ZIndex = 6, Parent = track },
-            { pillCorner() })
-        A.fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Theme.Palette.Accent, ZIndex = 7, Parent = bar },
-            { pillCorner() })
-        A.knob = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
-            Size = UDim2.fromOffset(12, 12), BackgroundColor3 = Theme.Palette.Accent, ZIndex = 8, Parent = bar },
-            { pillCorner(), stroke(Theme.Palette.Border, 1) })
+            Position = UDim2.new(0, 0, 0, 32), Size = UDim2.new(1, 0, 0, 36), ZIndex = 6, Parent = at })
+        local bar = new("Frame", { Position = UDim2.new(0, 0, 0, 2), Size = UDim2.new(1, 0, 0, 16),
+            BackgroundColor3 = Theme.Palette.PanelElevated, ZIndex = 6, Parent = track }, { corner(4) })
+        A.fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Theme.Palette.Accent,
+            BackgroundTransparency = 0.8, ZIndex = 6, Parent = bar }, { corner(4) })
+        A.marks = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), ZIndex = 8, Parent = bar })
+        A.head = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Size = UDim2.new(0, 2, 1, 6), Position = UDim2.new(0, 0, 0, 0),
+            BackgroundColor3 = Theme.Palette.Snow, BorderSizePixel = 0, ZIndex = 9, Parent = bar })
+        A.ticks = new("Frame", { BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 20), Size = UDim2.new(1, 0, 0, 16),
+            ZIndex = 6, Parent = track })
+        A.tickId, A.mkSig = nil, nil
         track.InputBegan:Connect(function(io)
-            if io.UserInputType == Enum.UserInputType.MouseButton1 then A.scrub = true; A.scrubAt(io.Position.X) end
+            if io.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            local tt = A.markerAt(io.Position.X)
+            if tt then A.kdragStart(tt) else A.scrub = true; A.scrubAt(io.Position.X) end
         end)
         A.bar, A.tl = bar, at
     end
@@ -28112,17 +28572,47 @@ end)()
         local A = ED.A
         if not A.panel then return end
         A.playBtn.Text = A.playing and "Pause" or "Play"
+        for sp, b in pairs(A.speedBtn or {}) do lit(b, (A.speed or 1) == sp) end
+        lit(A.loopBtn, A.loop ~= false)
         for key, b in pairs(A.animRows or {}) do
             local e = type(ED.s.anims) == "table" and ED.s.anims[key]
             b.Text = key .. ((e and type(e.k) == "table" and next(e.k)) and "  (edited)" or "")
             lit(b, A.key == key)
         end
         local jk = A.jkey()
-        for name, b in pairs(A.jointRows or {}) do lit(b, jk == name) end
         local e = A.entry(false)
+        for name, b in pairs(A.jointRows or {}) do
+            lit(b, jk == name)
+            if jk ~= name and A.jsel and A.jsel[name] and jk then b.BackgroundColor3 = Theme.Palette.Border end
+            local n = e and type(e.k[name]) == "table" and #e.k[name] or 0
+            local rep = e and type(e.rep) == "table" and e.rep[name]
+            b.Text = name .. (n > 0 and ("  (" .. n .. ")") or "") .. (rep and "  R" or "")
+        end
         A.blend.set(e and tonumber(e.blend) or 0.2)
         A.blend.row.Visible = not (e and e.smooth == false)
         if A.smooth.setState then A.smooth.setState(not (e and e.smooth == false)) end
+        -- joint inspector
+        local js = A.joints()
+        A.jTitle.Text = jk and (jk .. (#js > 1 and ("  (+" .. (#js - 1) .. " more)") or "")) or "No joint picked"
+        local tk = A.nearest(A.t)
+        local key = jk and A.keyAt(jk, tk)
+        local nk = jk and e and type(e.k[jk]) == "table" and #e.k[jk] or 0
+        A.jSub.Text = not jk and "click a joint on the model or in the list"
+            or key and string.format("key at %.2fs  (%d on this joint)", tk, nk)
+            or (nk > 0 and (nk .. " keys on this joint, none at the playhead") or "no keys yet: move it or press K")
+        A.modeDd.frame.Visible, A.easeDd.frame.Visible = jk ~= nil, key ~= nil
+        if jk then
+            A.modeDd.setValue((e and type(e.rep) == "table" and e.rep[jk]) and "Replace" or "Layer")
+            if key then A.easeDd.setValue(key[3] or "Smooth") end
+            local off = A.offAt(jk, A.t)
+            if off then
+                local p = off.Position
+                local rx, ry, rz = off:ToEulerAnglesXYZ()
+                local v = { x = p.X, y = p.Y, z = p.Z, rx = math.deg(rx), ry = math.deg(ry), rz = math.deg(rz) }
+                for k, sl in pairs(A.js) do sl.set(v[k]) end
+            end
+        end
+        for _, sl in pairs(A.js) do sl.row.Visible = jk ~= nil end
     end
     local close
     local function buildGui()
@@ -28856,7 +29346,7 @@ end)()
     local SINK = {}
     for _, n in ipairs({ "W", "A", "S", "D", "Q", "E", "R", "F", "G", "T", "V", "X", "Z", "C", "B", "L", "Space",
         "LeftShift", "LeftControl", "H", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero",
-        "Delete", "LeftAlt" }) do
+        "Delete", "LeftAlt", "K", "Comma", "Period", "LeftBracket", "RightBracket" }) do
         SINK[#SINK + 1] = Enum.KeyCode[n]
     end
     local function onDown(m)
@@ -28866,7 +29356,7 @@ end)()
         if ED.A.on then
             local hp = pickModel()
             local j = hp and ED.A.jointFor(hp)
-            selectTarget(j and ("j:" .. j) or nil)
+            ED.A.pickJoint(j, ED.ctrl())
             return
         end
         local rec = pickMarker(m)
@@ -28888,6 +29378,18 @@ end)()
             if ED.drag then ED.drag = nil elseif ED.sel then selectTarget(nil) end
         elseif ctrl and k == K.Z then
             undo()
+        elseif ED.A.on and not ED.rmb and (k == K.K or k == K.Delete or k == K.Comma or k == K.Period
+            or k == K.LeftBracket or k == K.RightBracket or (ctrl and (k == K.C or k == K.V))) then
+            -- v1.4.0 animation keys
+            local A = ED.A
+            if k == K.K then A.keyNow()
+            elseif k == K.Delete then A.delKey()
+            elseif k == K.Comma then A.step(-1)
+            elseif k == K.Period then A.step(1)
+            elseif k == K.LeftBracket then A.navKey(-1)
+            elseif k == K.RightBracket then A.navKey(1)
+            elseif k == K.C then A.copyPose()
+            else A.pastePose() end
         elseif ctrl and k == K.G then
             ED.groupSel()
         elseif k == K.Delete and not ED.A.on then
@@ -28925,6 +29427,8 @@ end)()
                 local m = UserInputService:GetMouseLocation()
                 if ED.scrub then
                     ED.scrubAt(io.Position.X)
+                elseif ED.A.kdrag then
+                    ED.A.kdragAt(io.Position.X)
                 elseif ED.A.scrub then
                     ED.A.scrubAt(io.Position.X)
                 elseif ED.drag then
@@ -28949,7 +29453,9 @@ end)()
         end)
         cs[#cs + 1] = UserInputService.InputEnded:Connect(function(io)
             local t = io.UserInputType
-            if t == Enum.UserInputType.MouseButton1 then ED.drag, ED.scrub, ED.A.scrub = nil, false, false
+            if t == Enum.UserInputType.MouseButton1 then
+                if ED.A.kdrag then ED.A.kdrop() end
+                ED.drag, ED.scrub, ED.A.scrub = nil, false, false
             elseif t == Enum.UserInputType.MouseButton2 then ED.rmb = false
             elseif t == Enum.UserInputType.MouseButton3 then ED.mmb = false end
         end)
@@ -29025,6 +29531,7 @@ end)()
         ED.lpre = (h.kind == "Arms" and h.arms and h.arms[1].Parent) and h.root.CFrame:ToObjectSpace(h.arms[1].CFrame) or nil
         ED.undo, ED.lastEdit, ED.sel = {}, 0, nil
         ED.A.on, ED.A.rig, ED.A.key, ED.A.id, ED.A.t, ED.A.playing, ED.A.cacheList = false, nil, nil, nil, 0, false, nil
+        ED.A.jsel, ED.A.onions, ED.A.kdrag, ED.A.tickId, ED.A.mkSig = {}, nil, nil, nil, nil
         ED.msel, ED.mboxes = {}, {}
         ED.S = CFrame.new(cam.CFrame.Position + Vector3.new(0, 400, 0))
         local ok, built = pcall(buildStage)
