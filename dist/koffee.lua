@@ -1,7 +1,7 @@
--- koffee v1.3.0
+-- koffee v1.4.0
 
 local Koffee = {}
-Koffee.Version = "1.3.1"
+Koffee.Version = "1.4.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -22415,7 +22415,7 @@ registerConfig("self_auras", Koffee.Auras)
             if rt and rt.model and rt.model.Parent then return rt.model end
         end
         if IS then
-            local ok, cur = pcall(IS.current)
+            local ok, cur = pcall(IS.currentItem or IS.current)
             if ok and cur and cur.obj and cur.obj.Parent then return cur.obj end
         end
         return ctx.char:FindFirstChildOfClass("Tool")
@@ -25075,18 +25075,20 @@ registerConfig("item_skins", Koffee.ItemSkins)
         end
         return nil
     end
-    local function findRivals()
+    -- v1.4.0: arms and the held item are found separately, so both can wear a skin at once
+    local function findRivalsArms()
         local vm, third = rivalsVM()
+        -- third-person arms are invisible stand-ins; your character's own arms show
+        if not vm or third then return nil end
+        local l, r = vm:FindFirstChild("LeftArm"), vm:FindFirstChild("RightArm")
+        if not (l and r and l:IsA("BasePart") and r:IsA("BasePart")) then return nil end
+        local h = held("Arms", r, { l, r }, "RIVALS Arms")
+        if h then h.root, h.arms = r, { l, r } end
+        return h
+    end
+    local function findRivals()
+        local vm = rivalsVM()
         if not vm then return nil end
-        if IS.Target == "Arms" then
-            -- third-person arms are invisible stand-ins; your character's own arms show
-            if third then return nil end
-            local l, r = vm:FindFirstChild("LeftArm"), vm:FindFirstChild("RightArm")
-            if not (l and r and l:IsA("BasePart") and r:IsA("BasePart")) then return nil end
-            local h = held("Arms", r, { l, r }, "RIVALS Arms")
-            if h then h.root, h.arms = r, { l, r } end
-            return h
-        end
         local iv = vm:FindFirstChild("ItemVisual")
         if not iv then return nil end
         local weapon = vm.Name:match("^.- %- (.-) %- ") or vm.Name:match("^.- %- (.+)$") or vm.Name
@@ -25131,7 +25133,6 @@ registerConfig("item_skins", Koffee.ItemSkins)
         if Koffee._isRivals then
             local ok, r = pcall(findRivals)
             if ok and r then return r end
-            if IS.Target == "Arms" then return nil end
         end
         local char = LocalPlayer.Character
         local mode = IS.Bind or "Auto"
@@ -25147,7 +25148,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
         return nil
     end
     IS.detect = detect
-    IS.current = function()
+    IS.currentItem = function()
         local now = os.clock()
         local h = IS_RT.held
         if now - IS_RT.heldAt > 0.25 or (h and not (h.root and h.root.Parent)) then
@@ -25156,6 +25157,22 @@ registerConfig("item_skins", Koffee.ItemSkins)
             IS_RT.held = ok and r or nil
         end
         return IS_RT.held
+    end
+    IS.currentArms = function()
+        if not Koffee._isRivals then return nil end
+        local now = os.clock()
+        local h = IS_RT.armsHeld
+        if now - (IS_RT.armsAt or 0) > 0.25 or (h and not (h.root and h.root.Parent and h.arms[1].Parent)) then
+            IS_RT.armsAt = now
+            local ok, r = pcall(findRivalsArms)
+            IS_RT.armsHeld = ok and r or nil
+        end
+        return IS_RT.armsHeld
+    end
+    -- what the panel and the editor work on: the Editing pick (both still render)
+    IS.current = function()
+        if IS.Target == "Arms" then return IS.currentArms() end
+        return IS.currentItem()
     end
 
     -- :: serialization :: KIM1 strings carry parts, meshes, colours, materials and
@@ -25211,7 +25228,8 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 d:Destroy()
             elseif d:IsA("BasePart") then
                 d.Anchored = true; d.CanCollide = false; d.CastShadow = false
-                pcall(function() d.CanQuery = false; d.CanTouch = false; d.Massless = true end)
+                -- v1.4.0: a copy of a part we hid would come out hidden too
+                pcall(function() d.CanQuery = false; d.CanTouch = false; d.Massless = true; d.LocalTransparencyModifier = 0 end)
             end
         end
     end
@@ -25284,22 +25302,31 @@ registerConfig("item_skins", Koffee.ItemSkins)
 
     -- :: skin lifecycle ::
     local fxRestoreRef
-    local function unhide()
-        for p in pairs(IS_RT.hidden) do
+    IS_RT.ahidden = {}
+    local function unhideSet(set)
+        for p in pairs(set) do
             if p.Parent then pcall(function() p.LocalTransparencyModifier = 0 end) end
         end
-        table.clear(IS_RT.hidden)
+        table.clear(set)
+    end
+    local function unhideArms() unhideSet(IS_RT.ahidden) end
+    local function unhideItem()
+        unhideSet(IS_RT.hidden)
         if fxRestoreRef then fxRestoreRef() end
     end
-    local function dropModel()
+    local function unhide() unhideItem(); unhideArms() end
+    local function dropArms()
         if IS_RT.arms then
             for _, b in ipairs(IS_RT.arms) do pcall(function() b.model:Destroy() end) end
         end
         IS_RT.arms, IS_RT.armsKey = nil, nil
+    end
+    local function dropItem()
         if IS_RT.model then pcall(function() IS_RT.model:Destroy() end) end
         IS_RT.model, IS_RT.modelKey, IS_RT.rel, IS_RT.grip = nil, nil, nil, nil
         IS_RT.root, IS_RT.weld, IS_RT.weldAnchor, IS_RT.b, IS_RT.pw = nil, nil, nil, nil, nil
     end
+    local function dropModel() dropArms(); dropItem() end
     local function skinKey(s) return table.concat({ s.src or "", tostring(s.asset or ""), s.data and #s.data or 0,
         s.data and s.data:sub(-24) or "", tostring(s.scale or 1) }, "|") end
     -- v0.99.52 per-part edits, s.parts[key] = { p = {x,y,z} (unscaled studs), r = {deg x,y,z},
@@ -25320,6 +25347,23 @@ registerConfig("item_skins", Koffee.ItemSkins)
     function PT.edit(s, k)
         local t = type(s.parts) == "table" and s.parts[k]
         return type(t) == "table" and t or nil
+    end
+    -- v1.4.0: the pieces a part rides. An explicit "Body" pins it to the gun; nothing
+    -- set falls back to the piece it came from on a self skin (its own magazine...)
+    function PT.piecesOf(s, b, p)
+        local e = PT.edit(s, b.keys[p] or "")
+        if e and e.piece then
+            if e.piece == "Body" then return {} end
+            return PT.pieceList(e.piece)
+        end
+        local a = b.auto and b.auto[p]
+        return a and { a } or {}
+    end
+    -- v1.4.0 arms skins: "Left" / "Right" rides that arm only, nil = a copy on each
+    function PT.armOf(s, b, p)
+        local e = PT.edit(s, b.keys[p] or "")
+        local a = e and e.arm
+        return (a == "Left" or a == "Right") and a or nil
     end
     function PT.delta(b, e)
         if not e then return CFrame.identity end
@@ -25465,9 +25509,17 @@ registerConfig("item_skins", Koffee.ItemSkins)
         end
     end
     -- one unparented skin: the live one and the editor's preview both come from here
-    local function makeTemplate(s)
+    -- src: the live instance a "self" skin copies (your current model, edits on top)
+    local function makeTemplate(s, src)
         local tpl
-        if s.src == "asset" and s.asset then
+        if s.src == "self" then
+            tpl = src and src.Parent and templateFromInst(src)
+            -- both arms copy as "Arm", so one set of part edits fits either
+            if tpl and src:IsA("BasePart") then
+                local p = tpl:FindFirstChildWhichIsA("BasePart")
+                if p then p.Name = "Arm" end
+            end
+        elseif s.src == "asset" and s.asset then
             local obj = loadAsset(s.asset)
             tpl = obj and templateFromInst(obj)
         elseif s.data then
@@ -25525,12 +25577,35 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 end
             end
         end
+        -- v1.4.0 self skin of a RIVALS gun: every part keeps riding the piece it came
+        -- from (the template's top-level models are Body, Magazine, Bolt...)
+        if s.src == "self" then
+            b.auto = {}
+            for p in pairs(rel) do
+                local x = p
+                while x.Parent and x.Parent ~= tpl do x = x.Parent end
+                if x ~= p and x:IsA("Model") and x.Name ~= "Body" then b.auto[p] = x.Name end
+            end
+        end
+        -- v1.4.0 deleted parts are gone for good (the root stays, it carries the rest)
+        if type(s.parts) == "table" then
+            for p, k in pairs(b.keys) do
+                local e = s.parts[k]
+                if type(e) == "table" and e.del and p ~= root then
+                    rel[p], b.keys[p], b.byKey[k] = nil, nil, nil
+                    for _, c in ipairs(p:GetChildren()) do
+                        if c:IsA("BasePart") or c:IsA("Model") then c.Parent = p.Parent end
+                    end
+                    pcall(p.Destroy, p)
+                end
+            end
+        end
         PT.capture(b)
         PT.apply(b, s, false)
         return b
     end
-    local function build(s)
-        local b = makeTemplate(s)
+    local function build(s, src)
+        local b = makeTemplate(s, src)
         if not b then return false end
         b.model.Parent = Workspace.CurrentCamera
         IS_RT.b, IS_RT.grip = b, b.grip
@@ -25789,72 +25864,97 @@ registerConfig("item_skins", Koffee.ItemSkins)
         end
         table.clear(FXS.sized)
     end
-    local function step()
-        local m = Modules.itemskins
-        if not (m and m.Enabled) then
-            if IS_RT.model then dropModel() end
-            unhide()
-            return
+    -- v1.4.0 one arm's copy of an arms skin: parts set to the other arm are dropped (the
+    -- root only goes invisible, it holds the welds), everything else welds to the root
+    local function armBuild(s, arm, side, src)
+        local b = makeTemplate(s, src)
+        if not b then return nil end
+        for q in pairs(b.rel) do
+            local a = PT.armOf(s, b, q)
+            if a and a ~= side then
+                if q == b.root then
+                    q.Transparency = 1
+                    for _, c in ipairs(q:GetChildren()) do
+                        if c:GetAttribute("_kd") or c:IsA("Decal") then pcall(c.Destroy, c) end
+                    end
+                else
+                    for _, c in ipairs(q:GetChildren()) do
+                        if c:IsA("BasePart") or c:IsA("Model") then c.Parent = q.Parent end
+                    end
+                    local k = b.keys[q]
+                    b.rel[q], b.keys[q] = nil, nil
+                    if k then b.byKey[k] = nil end
+                    pcall(q.Destroy, q)
+                end
+            end
         end
-        -- the editor owns the scene while it's open
-        if IS_RT.editing then return end
-        local h = IS.current()
+        for part in pairs(b.rel) do part.Anchored = false; part.Massless = true end
+        local rr = b.rel[b.root] or CFrame.identity
+        for part, rel in pairs(b.rel) do
+            if part ~= b.root then
+                local w = Instance.new("Weld")
+                w.Part0, w.Part1, w.C0 = b.root, part, rr:Inverse() * rel
+                w.Parent = b.model
+            end
+        end
+        local w = Instance.new("Weld")
+        w.Part0, w.Part1 = arm, b.root
+        w.Parent = b.model
+        b.weld, b.arm = w, arm
+        return b
+    end
+    -- v0.99.51 arms, v1.4.0 alongside the held item: one copy of the skin per arm,
+    -- offsets shared, each part on the arm it's set to (or both)
+    local function stepArms()
+        local h = IS.currentArms()
         local s = h and IS.Skins[h.sig]
         if not s then
-            if IS_RT.model then dropModel() end
-            unhide()
+            if IS_RT.arms then dropArms() end
+            if next(IS_RT.ahidden) then unhideArms() end
             return
         end
-        -- v0.99.51 arms: one copy of the skin welded to each arm, offsets shared
-        if h.kind == "Arms" then
-            local akey = h.sig .. "#" .. skinKey(s) .. "#" .. tostring(h.arms[1]) .. tostring(h.arms[2])
-            if IS_RT.armsKey ~= akey then
-                dropModel()
-                unhide()
-                local built = {}
-                for i, arm in ipairs(h.arms) do
-                    local b = makeTemplate(s)
-                    if not b then
-                        for _, x in ipairs(built) do pcall(function() x.model:Destroy() end) end
-                        return
-                    end
-                    for part in pairs(b.rel) do part.Anchored = false; part.Massless = true end
-                    local rr = b.rel[b.root] or CFrame.identity
-                    for part, rel in pairs(b.rel) do
-                        if part ~= b.root then
-                            local w = Instance.new("Weld")
-                            w.Part0, w.Part1, w.C0 = b.root, part, rr:Inverse() * rel
-                            w.Parent = b.model
-                        end
-                    end
-                    local w = Instance.new("Weld")
-                    w.Part0, w.Part1 = arm, b.root
-                    w.Parent = b.model
-                    b.weld = w
-                    b.model.Parent = Workspace.CurrentCamera
-                    built[i] = b
+        local akey = h.sig .. "#" .. skinKey(s) .. "#" .. tostring(h.arms[1]) .. tostring(h.arms[2])
+        if IS_RT.armsKey ~= akey then
+            dropArms()
+            unhideArms()
+            local built = {}
+            for i, arm in ipairs(h.arms) do
+                local b = armBuild(s, arm, i == 1 and "Left" or "Right", arm)
+                if not b then
+                    for _, x in ipairs(built) do pcall(function() x.model:Destroy() end) end
+                    return
                 end
-                IS_RT.arms, IS_RT.armsKey = built, akey
+                b.model.Parent = Workspace.CurrentCamera
+                built[i] = b
             end
-            local aoff = offOf(s)
-            for _, b in ipairs(IS_RT.arms) do b.weld.C0 = aoff * (b.rel[b.root] or CFrame.identity) end
-            if IS.HideOriginal ~= false then
-                for _, part in ipairs(h.parts) do
-                    if part.Parent then
-                        IS_RT.hidden[part] = true
-                        part.LocalTransparencyModifier = 1
-                    end
+            IS_RT.arms, IS_RT.armsKey = built, akey
+        end
+        local aoff = offOf(s)
+        for _, b in ipairs(IS_RT.arms) do b.weld.C0 = aoff * (b.rel[b.root] or CFrame.identity) end
+        if IS.HideOriginal ~= false then
+            for _, part in ipairs(h.parts) do
+                if part.Parent then
+                    IS_RT.ahidden[part] = true
+                    part.LocalTransparencyModifier = 1
                 end
-            elseif next(IS_RT.hidden) then
-                unhide()
             end
+        elseif next(IS_RT.ahidden) then
+            unhideArms()
+        end
+    end
+    local function stepItem()
+        local h = IS.currentItem()
+        local s = h and IS.Skins[h.sig]
+        if not s then
+            if IS_RT.model then dropItem() end
+            unhideItem()
             return
         end
         local key = h.sig .. "#" .. skinKey(s)
         if IS_RT.modelKey ~= key then
-            dropModel()
-            unhide()
-            if not build(s) then return end
+            dropItem()
+            unhideItem()
+            if not build(s, h.obj) then return end
             IS_RT.modelKey = key
         end
         -- follow the real part every frame, after animations have posed it
@@ -25869,13 +25969,11 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 end
                 for p in pairs(IS_RT.rel) do p.Anchored = false; p.Massless = true end
                 local rr = IS_RT.rel[IS_RT.root] or CFrame.identity
-                local keys = IS_RT.b and IS_RT.b.keys or {}
                 IS_RT.pw = {}
                 for p, rel in pairs(IS_RT.rel) do
                     if p ~= IS_RT.root then
                         local w = Instance.new("Weld")
-                        local e = PT.edit(s, keys[p] or "")
-                        local names = PT.pieceList(e and e.piece)
+                        local names = IS_RT.b and PT.piecesOf(s, IS_RT.b, p) or {}
                         local pc = names[1] and h.pieces and h.pieces[names[1]]
                         if pc and pc.prim and pc.prim.Parent then
                             -- v0.99.61: rides its RIVALS piece (magazine, bolt...)
@@ -25934,8 +26032,22 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 end
             end
         elseif next(IS_RT.hidden) then
-            unhide()
+            unhideItem()
         end
+    end
+    local function step()
+        local m = Modules.itemskins
+        if not (m and m.Enabled) then
+            if IS_RT.model or IS_RT.arms then dropModel() end
+            unhide()
+            return
+        end
+        -- the editor owns the scene while it's open
+        if IS_RT.editing then return end
+        -- one failing never stops the other
+        local ok, err = pcall(stepArms)
+        stepItem()
+        if not ok then error(err, 0) end
     end
 
     -- :: public API (UI + NPC picker) ::
@@ -26095,9 +26207,13 @@ registerConfig("item_skins", Koffee.ItemSkins)
         if Koffee.dead() or IS_RT.editing then return end
         local m = Modules.itemskins
         if not (m and m.Enabled) then return end
-        local h = IS_RT.held
-        local sk = h and IS.Skins[h.sig]
-        if not (sk and type(sk.anims) == "table" and next(sk.anims)) then return end
+        -- v1.4.0: the held item's skin and the arms skin can both carry edits (arms last)
+        local list = {}
+        for _, h in ipairs({ IS_RT.held, IS_RT.armsHeld or false }) do
+            local sk = h and IS.Skins[h.sig]
+            if sk and type(sk.anims) == "table" and next(sk.anims) then list[#list + 1] = sk end
+        end
+        if #list == 0 then return end
         pcall(function()
             local lf = Shared.RV and Shared.RV.localFighter and Shared.RV.localFighter()
             local cvm = lf and lf.EquippedItem and lf.EquippedItem.ViewModel
@@ -26105,9 +26221,17 @@ registerConfig("item_skins", Koffee.ItemSkins)
             local model = cvm and cvm.Model
             if not (animr and model and animr._animation_tracks) then return end
             local mot = AN.motors(model)
-            for key, edit in pairs(sk.anims) do
+            for _, sk in ipairs(list) do for key, edit in pairs(sk.anims) do
                 local tr = animr._animation_tracks[key]
-                if tr and tr.IsPlaying and type(edit) == "table" and edit.id and type(edit.k) == "table" and next(edit.k) then
+                -- an arms skin is shared by every weapon: an edit only plays on the exact
+                -- animation it was made on, not on another gun's "Reload"
+                local same = true
+                if tr and type(edit) == "table" and edit.id then
+                    local a = tostring(tr.Animation and tr.Animation.AnimationId or ""):match("%d+")
+                    local b = tostring(edit.id):match("%d+")
+                    same = not (a and b) or a == b
+                end
+                if same and tr and tr.IsPlaying and type(edit) == "table" and edit.id and type(edit.k) == "table" and next(edit.k) then
                     local base = AN.load(edit.id)
                     if base then
                         local t, w = tr.TimePosition, math.clamp(tr.WeightCurrent, 0, 1)
@@ -26118,13 +26242,13 @@ registerConfig("item_skins", Koffee.ItemSkins)
                         end
                     end
                 end
-            end
+            end end
         end)
     end)
     IS._ed = { makeTemplate = makeTemplate, templateFromInst = templateFromInst, partsOf = partsOf, fxList = fxList,
         fxTarget = fxTarget, fxEntry = fxEntry, restRel = restRel, muzzleSkin = muzzleSkin, offOf = offOf,
         seatFor = seatFor, fxRestore = fxRestore, scaleSeq = scaleSeq, FXC = FXC, rt = IS_RT, ours = ours,
-        hideOne = hideOne, hostOf = hostOf, cleanClone = cleanClone, PT = PT, AN = AN }
+        hideOne = hideOne, hostOf = hostOf, cleanClone = cleanClone, PT = PT, AN = AN, armBuild = armBuild }
     -- v0.99.63 :: Copy Any :: an explorer of the game (search + tree) with a live 3D
     -- preview on the right; copy any model or part as KIM1, or put it on what you hold
     local EX = {}
@@ -26329,8 +26453,9 @@ registerConfig("item_skins", Koffee.ItemSkins)
                 function(v) IS.Bind = v; IS_RT.heldAt = 0 end)
             popup:toggle("Hide Original", IS.HideOriginal ~= false, function(v) IS.HideOriginal = v end)
         end)
-        -- v0.99.51: what the skin goes on. Arms = both viewmodel arms (RIVALS)
-        dropdown(card, "Apply To", { "Held Item", "Arms" }, IS.Target == "Arms" and "Arms" or "Held Item", function(v)
+        -- v0.99.51 Arms = both viewmodel arms (RIVALS). v1.4.0: both wear their skins at
+        -- once; this only picks which one the buttons, sliders and editor work on
+        dropdown(card, "Editing", { "Held Item", "Arms" }, IS.Target == "Arms" and "Arms" or "Held Item", function(v)
             IS.Target = v == "Arms" and "Arms" or "Item"
             IS_RT.heldAt = 0
         end)
@@ -26386,9 +26511,9 @@ registerConfig("item_skins", Koffee.ItemSkins)
         end)
         actBtn("Copy Any", function() if IS.openExplorer then IS.openExplorer() end end)
         actBtn("Copy Skin", function()
-            local sk0 = IS.skinFor()
+            local sk0, h0 = IS.skinFor()
             if not sk0 then note("Item Models", "No skin on this item"); return end
-            local b = makeTemplate(sk0)
+            local b = makeTemplate(sk0, h0 and h0.obj)
             if not b then note("Item Models", "Skin isn't loaded yet, try again"); return end
             for q, rel in pairs(b.rel) do q.CFrame = rel end
             local str = encodeInst(b.model)
@@ -26460,8 +26585,6 @@ registerConfig("item_skins", Koffee.ItemSkins)
         end)
         refreshLib()
         actBtn("Edit in 3D", function()
-            local h = IS.current()
-            if h and h.kind == "Arms" then note("Item Models", "Arms use the sliders below, the 3D editor is for items"); return end
             if IS.openEditor then IS.openEditor() end
         end)
         -- sliders edit the skin of whatever is held right now
@@ -26488,8 +26611,11 @@ registerConfig("item_skins", Koffee.ItemSkins)
                         if type(h2) == "table" then h2.set(tonumber(s[k]) or (k == "scale" and 1 or 0)) end
                     end
                 end
-                status.Text = h and ("Holding: " .. h.name .. "  (" .. h.kind .. (s and ", skinned" or "") .. ")")
-                    or "Holding: nothing"
+                local other = IS.Target == "Arms" and IS.currentItem() or IS.currentArms()
+                local oS = other and IS.Skins[other.sig]
+                status.Text = (h and ("Editing: " .. h.name .. "  (" .. h.kind .. (s and ", skinned" or "") .. ")")
+                    or (IS.Target == "Arms" and "Editing: arms not found (first person only)" or "Editing: nothing held"))
+                    .. (oS and ((IS.Target == "Arms" and "  |  item" or "  |  arms") .. " skinned too") or "")
                 task.wait(0.25)
             end
         end)
@@ -26592,7 +26718,19 @@ end)()
         for k, v in pairs(t) do o[k] = copy(v) end
         return o
     end
-    local SNAP_KEYS = { "ox", "oy", "oz", "rx", "ry", "rz", "scale", "fx", "parts", "anims" }
+    local SNAP_KEYS = { "ox", "oy", "oz", "rx", "ry", "rz", "scale", "fx", "parts", "anims", "dups", "groups" }
+    -- v1.4.0: what changes the stage's part set (copies, deletes); undoing one rebuilds it
+    function ED.structSig()
+        local t = {}
+        if type(ED.s.dups) == "table" then
+            for id, from in pairs(ED.s.dups) do t[#t + 1] = "d" .. tostring(id) .. "=" .. tostring(from) end
+        end
+        if type(ED.s.parts) == "table" then
+            for k, e in pairs(ED.s.parts) do if type(e) == "table" and e.del then t[#t + 1] = "x" .. k end end
+        end
+        table.sort(t)
+        return table.concat(t, "|")
+    end
     -- v0.99.52 a single part of the skin is selected as ED.sel = "p:<key>"
     function ED.pkey()
         local sl = ED.sel
@@ -26640,6 +26778,70 @@ end)()
     ED.MATS = { "Original", "SmoothPlastic", "Plastic", "Neon", "ForceField", "Glass", "Metal", "DiamondPlate", "Foil",
         "Marble", "Granite", "Wood", "WoodPlanks", "Slate", "Concrete", "Brick", "Fabric", "Ice", "Sand", "CrackedLava",
         "Pebble", "Cobblestone", "Grass", "CorrodedMetal" }
+    -- v1.4.0 :: solid selections :: a part's skin-space spot straight from its edit (what
+    -- PT.apply will build), so repeated writes in one frame never compound
+    function ED.relOf(key)
+        local part = key and ED.b.byKey[key]
+        if not part then return nil end
+        return ED.b.base[part] * X.PT.delta(ED.b, ED.pentryFor(key, false))
+    end
+    function ED.writeRel(key, rel)
+        local part = ED.b.byKey[key]
+        if not part then return end
+        local d = ED.b.base[part]:Inverse() * rel
+        local e = ED.pentryFor(key, true)
+        local sc = ED.b.scale or 1
+        e.p = { r3(d.X / sc), r3(d.Y / sc), r3(d.Z / sc) }
+        local ax, ay, az = d:ToEulerAnglesXYZ()
+        e.r = { r2(math.deg(ax)), r2(math.deg(ay)), r2(math.deg(az)) }
+    end
+    -- the selection as one piece: centre of every picked part, turned like the primary
+    function ED.pivot()
+        local keys = ED.selKeys()
+        local pr = ED.relOf(keys[1])
+        if not pr then return nil end
+        if #keys == 1 then return pr end
+        local sum, n = Vector3.zero, 0
+        for _, k in ipairs(keys) do
+            local r = ED.relOf(k)
+            if r then sum += r.Position; n += 1 end
+        end
+        return CFrame.new(sum / n) * pr.Rotation
+    end
+    function ED.moveSel(newPivot)
+        local old = ED.pivot()
+        if not old then return end
+        local D = newPivot * old:Inverse()
+        for _, k in ipairs(ED.selKeys()) do
+            local r = ED.relOf(k)
+            if r then ED.writeRel(k, D * r) end
+        end
+    end
+    -- arms skins: a part set to the left arm is drawn on the left arm's ghost
+    function ED.preOf(part)
+        if ED.lpre and part and X.PT.armOf(ED.s, ED.b, part) == "Left" then return ED.lpre end
+        return CFrame.identity
+    end
+    -- v1.4.0 groups: s.groups["g<n>"] = { n = name, keys = { part keys }, open = bool }
+    function ED.groupOf(key)
+        if type(ED.s.groups) ~= "table" then return nil end
+        for id, g in pairs(ED.s.groups) do
+            if type(g) == "table" and type(g.keys) == "table" then
+                for _, k in ipairs(g.keys) do if k == key then return id, g end end
+            end
+        end
+        return nil
+    end
+    function ED.liveKeys(g)
+        local out = {}
+        for _, k in ipairs(type(g) == "table" and type(g.keys) == "table" and g.keys or {}) do
+            if ED.b.byKey[k] then out[#out + 1] = k end
+        end
+        return out
+    end
+    function ED.alt()
+        return UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt) or UserInputService:IsKeyDown(Enum.KeyCode.RightAlt)
+    end
     local function pushUndo()
         local o = {}
         for _, k in ipairs(SNAP_KEYS) do o[k] = copy(ED.s[k]) end
@@ -26660,16 +26862,31 @@ end)()
         local idx = PIDX[k]
         local move = k == "x" or k == "y" or k == "z"
         local turn = k == "rx" or k == "ry" or k == "rz"
-        local delta = (move or turn) and (v - ED.pvals(pk)[k]) or 0
-        for _, key in ipairs(ED.selKeys()) do
-            local e = ED.pentryFor(key, true)
+        if move or turn then
+            -- v1.4.0: the primary takes the value, the rest follow it as one solid piece
+            local keys = ED.selKeys()
+            local before = ED.relOf(pk)
+            local e = ED.pentryFor(pk, true)
             if move then
                 e.p = e.p or { 0, 0, 0 }
-                e.p[idx] = math.floor(((e.p[idx] or 0) + delta) * 1000 + 0.5) / 1000
-            elseif turn then
+                e.p[idx] = math.floor(v * 1000 + 0.5) / 1000
+            else
                 e.r = e.r or { 0, 0, 0 }
-                e.r[idx] = math.floor(((e.r[idx] or 0) + delta) * 100 + 0.5) / 100
-            elseif k == "k" then
+                e.r[idx] = math.floor(v * 100 + 0.5) / 100
+            end
+            local after = ED.relOf(pk)
+            if before and after and #keys > 1 then
+                local D = after * before:Inverse()
+                for i = 2, #keys do
+                    local r = ED.relOf(keys[i])
+                    if r then ED.writeRel(keys[i], D * r) end
+                end
+            end
+            return
+        end
+        for _, key in ipairs(ED.selKeys()) do
+            local e = ED.pentryFor(key, true)
+            if k == "k" then
                 e.k = math.clamp(v, 0.05, 20)
             elseif k == "t" or k == "rf" then
                 e[k] = math.clamp(math.floor(v * 100 + 0.5) / 100, 0, 1)
@@ -26698,12 +26915,21 @@ end)()
         for _, key in ipairs(ED.selKeys()) do ED.pentryFor(key, true)[field] = value end
     end
     -- pick a part: plain click selects it alone, Ctrl-click adds / removes it
+    -- v1.4.0: a grouped part brings its whole group (Alt-click picks just that part)
     function ED.pick(key, additive)
         ED.msel = ED.msel or {}
+        local keys = { key }
+        if not ED.alt() then
+            local _, g = ED.groupOf(key)
+            if g then
+                keys = ED.liveKeys(g)
+                if #keys == 0 then keys = { key } end
+            end
+        end
         if additive and ED.pkey() then
             if ED.msel[key] then
-                ED.msel[key] = nil
-                if ED.pkey() == key then
+                for _, k in ipairs(keys) do ED.msel[k] = nil end
+                if not ED.msel[ED.pkey()] then
                     local nxt = next(ED.msel)
                     ED._select(nxt and ("p:" .. nxt) or nil)
                 else
@@ -26711,11 +26937,76 @@ end)()
                 end
                 return
             end
-            ED.msel[key] = true
+            for _, k in ipairs(keys) do ED.msel[k] = true end
         else
-            ED.msel = { [key] = true }
+            ED.msel = {}
+            for _, k in ipairs(keys) do ED.msel[k] = true end
         end
         ED._select("p:" .. key)
+    end
+    -- the group the selection is, exactly (every live member picked, nothing else)
+    function ED.selGroup()
+        local pk = ED.pkey()
+        if not pk then return nil end
+        local id, g = ED.groupOf(pk)
+        if not g then return nil end
+        local live, keys = ED.liveKeys(g), ED.selKeys()
+        if #live ~= #keys then return nil end
+        for _, k in ipairs(live) do if not (ED.msel and ED.msel[k]) then return nil end end
+        return id, g
+    end
+    function ED.groupSel()
+        local keys = ED.selKeys()
+        if #keys < 2 then note("Pick two or more parts to group (Ctrl-click)"); return end
+        pushUndo()
+        if type(ED.s.groups) ~= "table" then ED.s.groups = {} end
+        local G, picked = ED.s.groups, {}
+        for _, k in ipairs(keys) do picked[k] = true end
+        -- a part lives in one group: take the picked ones out of any old group
+        for id, g in pairs(G) do
+            local keep = {}
+            for _, k in ipairs(type(g) == "table" and type(g.keys) == "table" and g.keys or {}) do
+                if not picked[k] then keep[#keep + 1] = k end
+            end
+            if #keep < 2 then G[id] = nil else g.keys = keep end
+        end
+        ED.s.gN = (tonumber(ED.s.gN) or 0) + 1
+        G["g" .. ED.s.gN] = { n = "Group " .. ED.s.gN, keys = keys }
+        if ED.fillParts then ED.fillParts() end
+        note("Grouped " .. #keys .. " parts, click any of them to pick the whole group")
+    end
+    function ED.ungroupSel()
+        if type(ED.s.groups) ~= "table" then return end
+        local hit = false
+        for _, k in ipairs(ED.selKeys()) do
+            local id = ED.groupOf(k)
+            if id then
+                if not hit then pushUndo(); hit = true end
+                ED.s.groups[id] = nil
+            end
+        end
+        if hit and ED.fillParts then ED.fillParts() end
+    end
+    function ED.delParts()
+        local keys = ED.selKeys()
+        if #keys == 0 then return end
+        pushUndo()
+        local sk, root = ED.s, false
+        for _, k in ipairs(keys) do
+            if ED.b.byKey[k] == ED.b.root then
+                root = true
+            else
+                local id = k:match("^d(%d+):")
+                if id and type(sk.dups) == "table" and sk.dups[id] then
+                    sk.dups[id] = nil
+                    if type(sk.parts) == "table" then sk.parts[k] = nil end
+                else
+                    ED.pentryFor(k, true).del = true
+                end
+            end
+        end
+        if root then note("The root part holds the skin together, hide it instead (H)") end
+        if ED.reopen then ED.reopen(nil) end
     end
     function ED.ctrl()
         return UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
@@ -26754,16 +27045,22 @@ end)()
     local function undo()
         local o = table.remove(ED.undo)
         if not o then note("Nothing to undo"); return end
+        local before = ED.structSig()
         for _, k in ipairs(SNAP_KEYS) do ED.s[k] = o[k] end
         ED.b.mzKey = nil
+        if ED.structSig() ~= before and ED.reopen then
+            ED.reopen(ED.pkey())
+        elseif ED.fillParts then
+            ED.fillParts()
+        end
     end
     local function selWorld()
         local jk = ED.A.jkey()
         if jk then return ED.A.world(jk) end
         local pk = ED.pkey()
         if pk then
-            local part = ED.b.byKey[pk]
-            return part and ED.S * skinItem() * ED.b.rel[part] or nil
+            local part, pv = ED.b.byKey[pk], ED.pivot()
+            return (part and pv) and ED.S * ED.preOf(part) * skinItem() * pv or nil
         end
         if ED.sel == "model" then return ED.S * skinItem() end
         -- surface effects have no single point to drag
@@ -26783,27 +27080,10 @@ end)()
         if jk then ED.A.setWorld(jk, W); return end
         local pk = ED.pkey()
         if pk then
+            -- v1.4.0: the whole selection moves and turns as one solid piece
             local part = ED.b.byKey[pk]
             if not part then return end
-            local d = ED.b.base[part]:Inverse() * ((ED.S * skinItem()):Inverse() * W)
-            local e = ED.pentry(true)
-            local sc = ED.b.scale or 1
-            local op, orr = e.p or { 0, 0, 0 }, e.r or { 0, 0, 0 }
-            e.p = { r3(d.X / sc), r3(d.Y / sc), r3(d.Z / sc) }
-            local ax, ay, az = d:ToEulerAnglesXYZ()
-            e.r = { r2(math.deg(ax)), r2(math.deg(ay)), r2(math.deg(az)) }
-            -- v0.99.64: the rest of the selection moves / turns by the same amount
-            for _, key in ipairs(ED.selKeys()) do
-                if key ~= pk then
-                    local o = ED.pentryFor(key, true)
-                    local p0, r0 = o.p or { 0, 0, 0 }, o.r or { 0, 0, 0 }
-                    o.p, o.r = {}, {}
-                    for i = 1, 3 do
-                        o.p[i] = r3((p0[i] or 0) + (e.p[i] - (op[i] or 0)))
-                        o.r[i] = r2((r0[i] or 0) + (e.r[i] - (orr[i] or 0)))
-                    end
-                end
-            end
+            ED.moveSel((ED.S * ED.preOf(part) * skinItem()):Inverse() * W)
             return
         end
         if ED.sel == "model" then
@@ -26830,7 +27110,22 @@ end)()
         v = math.clamp(r2(v), 0.05, 20)
         if ED.A.jkey() then return end
         if ED.pkey() then
-            for _, key in ipairs(ED.selKeys()) do ED.pentryFor(key, true).k = v end
+            local keys = ED.selKeys()
+            if #keys > 1 then
+                -- v1.4.0: a selection scales as one piece, spreading out from its centre
+                local e0 = ED.pentryFor(keys[1], false)
+                local f = v / (e0 and tonumber(e0.k) or 1)
+                local pv = ED.pivot()
+                local c = pv and pv.Position or Vector3.zero
+                for _, key in ipairs(keys) do
+                    local e = ED.pentryFor(key, true)
+                    local r = ED.relOf(key)
+                    e.k = math.clamp((tonumber(e.k) or 1) * f, 0.05, 20)
+                    if r then ED.writeRel(key, CFrame.new(c + (r.Position - c) * f) * r.Rotation) end
+                end
+                return
+            end
+            ED.pentryFor(keys[1], true).k = v
             return
         end
         if ED.sel == "model" then ED.s.scale = v; return end
@@ -26937,14 +27232,34 @@ end)()
         anchor.CFrame = ED.S
         anchor.Parent = stage
         ED.stage, ED.anchor = stage, anchor
-        local b = X.makeTemplate(ED.s)
+        local b = X.makeTemplate(ED.s, h.obj)
         if not b then stage:Destroy(); return false end
         for p in pairs(b.rel) do pcall(function() p.CanQuery = true end) end
         b.model.Parent = stage
         ED.b = b
         measure()
         -- the original, as a ghost, to line the skin up against
-        local ghost = X.templateFromInst(h.obj)
+        local ghost = (h.kind ~= "Arms") and X.templateFromInst(h.obj) or nil
+        if h.kind == "Arms" and h.arms then
+            -- v1.4.0: both arms, posed as they are now (the right arm is the stage origin)
+            local gm = Instance.new("Model")
+            for _, arm in ipairs(h.arms) do
+                local g = X.templateFromInst(arm)
+                if g then
+                    for _, d in ipairs(g:GetDescendants()) do
+                        if d:IsA("Decal") or d:IsA("SurfaceAppearance") or FXC[d.ClassName] then pcall(d.Destroy, d) end
+                    end
+                    for _, q in ipairs(X.partsOf(g)) do
+                        q.CFrame = ED.S * h.root.CFrame:ToObjectSpace(arm.CFrame)
+                        q.Material, q.Color, q.Transparency = Enum.Material.ForceField, GHOST, 0.55
+                    end
+                    g.Parent = gm
+                end
+            end
+            gm.Parent = stage
+            ED.ghost = gm
+            ED.ghostR = gm:GetExtentsSize().Magnitude / 2
+        end
         if ghost then
             local src, dst = X.partsOf(h.obj), X.partsOf(ghost)
             if #src == #dst then
@@ -27474,6 +27789,33 @@ end)()
         local hrp = c.HumanoidRootPart
         hrp.Anchored = true
         hrp.CFrame = ED.S * ED.h.root.CFrame:ToObjectSpace(vm.HumanoidRootPart.CFrame)
+        if ED.h.kind == "Arms" then
+            -- v1.4.0: the arms skin on the copy's arms, split the way the live one is
+            local la, ra = c:FindFirstChild("LeftArm"), c:FindFirstChild("RightArm")
+            if not (la and ra and ED.h.arms) then c:Destroy(); return false end
+            if IS.HideOriginal ~= false then
+                for _, a in ipairs({ la, ra }) do
+                    a.Transparency = 1
+                    for _, d in ipairs(a:GetDescendants()) do if d:IsA("Decal") then d.Transparency = 1 end end
+                end
+            end
+            local armOf, off = {}, X.offOf(ED.s)
+            for i, a in ipairs({ la, ra }) do
+                local b = X.armBuild(ED.s, a, i == 1 and "Left" or "Right", ED.h.arms[i])
+                if b then
+                    b.weld.C0 = off * (b.rel[b.root] or CFrame.identity)
+                    for q in pairs(b.rel) do
+                        armOf[q] = a.Name
+                        pcall(function() q.CanQuery = true end)
+                    end
+                    b.model.Parent = c
+                end
+            end
+            c.Parent = ED.stage
+            A.rig = { model = c, motors = X.AN.motors(c), armOf = armOf, focus = ra.Position }
+            X.AN.mcache = nil
+            return true
+        end
         local iv = c:FindFirstChild("ItemVisual")
         local body = iv and iv:FindFirstChild("Body")
         local bodyPrim = body and body.PrimaryPart
@@ -27486,7 +27828,7 @@ end)()
         for _, ch in ipairs(iv:GetChildren()) do
             if ch:IsA("Model") and ch.PrimaryPart then pieces[ch.Name] = ch.PrimaryPart end
         end
-        local b = X.makeTemplate(ED.s)
+        local b = X.makeTemplate(ED.s, ED.h.obj)
         if b then
             local off = X.offOf(ED.s)
             local rr = b.rel[b.root] or CFrame.identity
@@ -27496,8 +27838,7 @@ end)()
                 if q == b.root then
                     w.Part0, w.Part1, w.C0 = bodyPrim, q, off * rr
                 else
-                    local e = X.PT.edit(ED.s, b.keys[q] or "")
-                    local names = X.PT.pieceList(e and e.piece)
+                    local names = X.PT.piecesOf(ED.s, b, q)
                     local prim = names[1] and pieces[names[1]]
                     local info = names[1] and ED.h.pieces and ED.h.pieces[names[1]]
                     if prim and info then
@@ -27533,10 +27874,10 @@ end)()
     function ED.A.jointFor(part)
         local A = ED.A
         local mot = A.rig.motors
+        if A.rig.armOf and A.rig.armOf[part] then return A.rig.armOf[part] end
         local bb = A.rig.b
         if bb and bb.keys[part] then
-            local e = X.PT.edit(ED.s, bb.keys[part])
-            local first = X.PT.pieceList(e and e.piece)[1]
+            local first = X.PT.piecesOf(ED.s, bb, part)[1]
             local pc = first and ED.h.pieces and ED.h.pieces[first]
             local nm = pc and pc.prim and pc.prim.Name
             return (nm and mot[nm]) and nm or "BodyPrimary"
@@ -27639,7 +27980,7 @@ end)()
     function ED.A.toggle()
         local A = ED.A
         if not A.on then
-            if ED.h.kind ~= "Viewmodel" or not (ED.h.obj and ED.h.obj.Parent) then
+            if (ED.h.kind ~= "Viewmodel" and ED.h.kind ~= "Arms") or not (ED.h.obj and ED.h.obj.Parent) then
                 note("Animations work on a RIVALS viewmodel")
                 return
             end
@@ -27844,22 +28185,16 @@ end)()
             b.MouseButton1Click:Connect(function() selectTarget(target) end)
             ED.rows[#ED.rows + 1] = { b = b, dot = dot, sub = t2, target = target }
         end
-        row("Skin", ED.s.src == "asset" and ("asset " .. tostring(ED.s.asset)) or "item model", 1, "model")
+        row("Skin", ED.s.src == "asset" and ("asset " .. tostring(ED.s.asset))
+            or ED.s.src == "self" and "your current model" or "item model", 1, "model")
         for i, rec in ipairs(ED.fx) do row(rec.c.name, rec.kinds, 1 + i, rec) end
         if #ED.fx == 0 then
             text(out, "no effect points on this item", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 99, true)
         end
-        -- v0.99.52 every part of the skin, picked one by one
-        local plist = {}
-        for part, k in pairs(ED.b.keys) do
-            local di = k:match("^d(%d+)")
-            plist[#plist + 1] = { k = k, i = tonumber(k:match("^(%d+)")) or (10000 + (tonumber(di) or 0)),
-                name = di and (part.Name .. " (copy)") or part.Name }
-        end
-        table.sort(plist, function(a, b) return a.i < b.i end)
-        text(out, "PARTS (" .. #plist .. ")", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 200)
-        text(out, "click one on the skin, Ctrl-click to pick several, Shift-click for the whole skin", Theme.Text.Small - 2,
-            Theme.Palette.TextMuted, Theme.Fonts.Regular, 201, true)
+        -- v0.99.52 every part of the skin; v1.4.0 groups fold parts into one row
+        ED.partsTitle = text(out, "PARTS", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 200)
+        text(out, "click one on the skin, Ctrl-click to pick several, Shift-click for the whole skin, Alt-click one part of a group",
+            Theme.Text.Small - 2, Theme.Palette.TextMuted, Theme.Fonts.Regular, 201, true)
         -- v0.99.57: search + hide / show every part
         local srch = new("TextBox", { Text = "", PlaceholderText = "search parts", ClearTextOnFocus = false,
             FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
@@ -27867,12 +28202,7 @@ end)()
             BackgroundTransparency = 0.15, Size = UDim2.new(1, 0, 0, 24), TextXAlignment = Enum.TextXAlignment.Left,
             LayoutOrder = 201, ZIndex = 6, Parent = out },
             { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
-        srch:GetPropertyChangedSignal("Text"):Connect(function()
-            local q = string.lower(srch.Text or "")
-            for _, r in ipairs(ED.rows) do
-                if r.part then r.b.Visible = q == "" or string.find(string.lower(r.name or ""), q, 1, true) ~= nil end
-            end
-        end)
+        srch:GetPropertyChangedSignal("Text"):Connect(function() if ED.fillParts then ED.fillParts() end end)
         local hs = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 201, ZIndex = 6, Parent = out })
         list(hs, Enum.FillDirection.Horizontal, 6)
         local function every(hide)
@@ -27892,28 +28222,111 @@ end)()
             for _, key in pairs(ED.b.keys) do ED.msel[key] = true; first = first or key end
             if first then selectTarget("p:" .. first) end
         end)
-        local ps = new("ScrollingFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, math.min(#plist * 28, 280)),
+        local hs2 = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 201, ZIndex = 6, Parent = out })
+        list(hs2, Enum.FillDirection.Horizontal, 6)
+        button(hs2, "Group", 1, function() ED.groupSel() end)
+        button(hs2, "Ungroup", 2, function() ED.ungroupSel() end)
+        ED.restoreBtn = button(hs2, "Restore deleted", 3, function()
+            if type(ED.s.parts) ~= "table" then return end
+            pushUndo()
+            for _, e in pairs(ED.s.parts) do if type(e) == "table" then e.del = nil end end
+            if ED.reopen then ED.reopen(nil) end
+        end)
+        local ps = new("ScrollingFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 28),
             CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
             ScrollBarImageColor3 = Theme.Palette.Border, ScrollingDirection = Enum.ScrollingDirection.Y,
             LayoutOrder = 202, ZIndex = 6, Parent = out })
         list(ps, nil, 2)
-        for i, it in ipairs(plist) do
-            local tgt = "p:" .. it.k
-            local pb = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Theme.Palette.Pill,
-                BackgroundTransparency = 1, Size = UDim2.new(1, -6, 0, 26), LayoutOrder = i, ZIndex = 6, Parent = ps },
-                { corner(6) })
-            local dot = new("Frame", { Size = UDim2.fromOffset(6, 6), Position = UDim2.new(0, 9, 0.5, -3),
-                BackgroundColor3 = Theme.Palette.TextMuted, ZIndex = 7, Parent = pb }, { pillCorner() })
-            new("TextLabel", { Text = it.i .. "  " .. it.name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-                TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, Position = UDim2.fromOffset(22, 0),
-                Size = UDim2.new(1, -90, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
-                TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7, Parent = pb })
-            local t2 = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small - 2,
-                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
-                Position = UDim2.new(1, -8, 0, 0), Size = UDim2.new(0, 60, 1, 0),
-                TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 7, Parent = pb })
-            pb.MouseButton1Click:Connect(function() ED.pick(it.k, ED.ctrl()) end)
-            ED.rows[#ED.rows + 1] = { b = pb, dot = dot, sub = t2, target = tgt, part = it.k, name = it.i .. " " .. it.name }
+        ED.prows = {}
+        function ED.fillParts()
+            if not ps.Parent then return end
+            for _, c in ipairs(ps:GetChildren()) do if c:IsA("GuiButton") then c:Destroy() end end
+            ED.prows = {}
+            local q = string.lower(srch.Text or "")
+            local plist, byKey = {}, {}
+            for part, k in pairs(ED.b.keys) do
+                local di = k:match("^d(%d+)")
+                local it = { k = k, i = tonumber(k:match("^(%d+)")) or (10000 + (tonumber(di) or 0)),
+                    name = di and (part.Name .. " (copy)") or part.Name }
+                plist[#plist + 1], byKey[k] = it, it
+            end
+            table.sort(plist, function(x, y) return x.i < y.i end)
+            local function hit(it) return q == "" or string.find(string.lower(it.i .. " " .. it.name), q, 1, true) ~= nil end
+            local order = 0
+            local function prow(it, indent)
+                order = order + 1
+                local pb = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Theme.Palette.Pill,
+                    BackgroundTransparency = 1, Size = UDim2.new(1, -6, 0, 26), LayoutOrder = order, ZIndex = 6, Parent = ps },
+                    { corner(6) })
+                local dot = new("Frame", { Size = UDim2.fromOffset(6, 6), Position = UDim2.new(0, 9 + indent, 0.5, -3),
+                    BackgroundColor3 = Theme.Palette.TextMuted, ZIndex = 7, Parent = pb }, { pillCorner() })
+                new("TextLabel", { Text = it.i .. "  " .. it.name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                    TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, Position = UDim2.fromOffset(22 + indent, 0),
+                    Size = UDim2.new(1, -90 - indent, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7, Parent = pb })
+                local t2 = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small - 2,
+                    TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
+                    Position = UDim2.new(1, -8, 0, 0), Size = UDim2.new(0, 60, 1, 0),
+                    TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 7, Parent = pb })
+                pb.MouseButton1Click:Connect(function() ED.pick(it.k, ED.ctrl()) end)
+                ED.prows[#ED.prows + 1] = { b = pb, dot = dot, sub = t2, target = "p:" .. it.k, part = it.k }
+            end
+            local function grow(g, members)
+                order = order + 1
+                local gb = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Theme.Palette.Pill,
+                    BackgroundTransparency = 1, Size = UDim2.new(1, -6, 0, 26), LayoutOrder = order, ZIndex = 6, Parent = ps },
+                    { corner(6) })
+                local tog = new("TextButton", { Text = g.open and "-" or "+", FontFace = Theme.Fonts.Bold,
+                    TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Accent, BackgroundColor3 = Theme.Palette.PanelElevated,
+                    AutoButtonColor = true, Position = UDim2.new(0, 4, 0.5, -9), Size = UDim2.fromOffset(18, 18),
+                    ZIndex = 8, Parent = gb }, { corner(4) })
+                tog.MouseButton1Click:Connect(function() g.open = not g.open or nil; ED.fillParts() end)
+                new("TextLabel", { Text = tostring(g.n or "Group"), FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+                    TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1, Position = UDim2.fromOffset(28, 0),
+                    Size = UDim2.new(1, -96, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7, Parent = gb })
+                local t2 = new("TextLabel", { Text = #members .. " parts", FontFace = Theme.Fonts.Regular,
+                    TextSize = Theme.Text.Small - 2, TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+                    AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 0), Size = UDim2.new(0, 60, 1, 0),
+                    TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 7, Parent = gb })
+                gb.MouseButton1Click:Connect(function()
+                    if members[1] then ED.pick(members[1].k, ED.ctrl()) end
+                end)
+                ED.prows[#ED.prows + 1] = { b = gb, dot = tog, sub = t2, gmembers = members }
+            end
+            local done = {}
+            for _, it in ipairs(plist) do
+                if not done[it.k] then
+                    local _, g = ED.groupOf(it.k)
+                    if g then
+                        local members, shown = {}, {}
+                        for _, k in ipairs(g.keys) do
+                            local m = byKey[k]
+                            if m and not done[k] then members[#members + 1] = m; done[k] = true end
+                        end
+                        table.sort(members, function(x, y) return x.i < y.i end)
+                        for _, m in ipairs(members) do if hit(m) then shown[#shown + 1] = m end end
+                        local named = q ~= "" and string.find(string.lower(tostring(g.n or "")), q, 1, true) ~= nil
+                        if q == "" or named or #shown > 0 then
+                            grow(g, members)
+                            if g.open or (q ~= "" and not named) then
+                                for _, m in ipairs((q ~= "" and not named) and shown or members) do prow(m, 14) end
+                            end
+                        end
+                    else
+                        done[it.k] = true
+                        if hit(it) then prow(it, 0) end
+                    end
+                end
+            end
+            ps.Size = UDim2.new(1, 0, 0, math.min(math.max(order, 1) * 28, 280))
+            local dels = 0
+            if type(ED.s.parts) == "table" then
+                for _, e in pairs(ED.s.parts) do if type(e) == "table" and e.del then dels = dels + 1 end end
+            end
+            ED.partsTitle.Text = "PARTS (" .. #plist .. ")" .. (dels > 0 and ("  " .. dels .. " deleted") or "")
+            ED.restoreBtn.Visible = dels > 0
+            if refreshUi then refreshUi() end
         end
 
         -- inspector
@@ -28048,8 +28461,43 @@ end)()
         for _, c in ipairs(combos) do pieceNames[#pieceNames + 1] = c end
         table.insert(pieceNames, 1, "Body")
         ED.pieceDd = dropdown(gp, "Animated by", pieceNames, "Body", function(v)
-            ED.pall("piece", (v ~= "Body") and v or nil)
+            -- a self skin needs "Body" stored, or the part falls back to its own piece
+            ED.pall("piece", (v ~= "Body" or ED.b.auto) and v or nil)
         end)
+        -- v1.4.0 arms skins: which arm a part rides (Both = a copy on each)
+        ED.armDd = dropdown(gp, "Arm", { "Both", "Left", "Right" }, "Both", function(v)
+            ED.pall("arm", (v ~= "Both") and v or nil)
+        end)
+        ED.armDd.frame.LayoutOrder = 37
+        ED.armDd.frame.Visible = ED.h.kind == "Arms"
+        local gar = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 38, ZIndex = 6, Parent = gp })
+        list(gar, Enum.FillDirection.Horizontal, 6)
+        gar.Visible = ED.h.kind == "Arms"
+        button(gar, "Snap to arm", 1, function()
+            local pv = ED.pkey() and ED.pivot()
+            if not pv then return end
+            pushUndo()
+            -- the arm itself sits at the skin frame's origin, so that is where the centre goes
+            ED.moveSel(CFrame.new(skinItem():Inverse().Position) * pv.Rotation)
+        end)
+        -- v1.4.0 a picked group: rename it or break it up
+        ED.grpRow = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 3, ZIndex = 6, Parent = gp })
+        list(ED.grpRow, Enum.FillDirection.Horizontal, 6)
+        ED.grpBox = new("TextBox", { Text = "", PlaceholderText = "group name", ClearTextOnFocus = false,
+            TextTruncate = Enum.TextTruncate.AtEnd, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+            BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.15, Size = UDim2.new(1, -140, 0, 26),
+            TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, ZIndex = 6, Parent = ED.grpRow },
+            { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        button(ED.grpRow, "Rename", 2, function()
+            local _, g = ED.selGroup()
+            local nm = (ED.grpBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+            if not g or nm == "" then return end
+            pushUndo()
+            g.n = nm
+            ED.fillParts()
+        end, 64)
+        button(ED.grpRow, "Ungroup", 3, function() ED.ungroupSel() end, 64)
         ED.pieceDd.frame.LayoutOrder = 39
         ED.pieceDd.frame.Visible = #pieceNames > 1
         local function boxRow(order, ph, label, onGo)
@@ -28089,6 +28537,7 @@ end)()
         button(gdp, "Duplicate", 1, function()
             local k = ED.pkey()
             if not k then return end
+            pushUndo()
             local sk = ED.s
             sk.dups = type(sk.dups) == "table" and sk.dups or {}
             sk.dupN = (tonumber(sk.dupN) or 0) + 1
@@ -28103,14 +28552,8 @@ end)()
             end
             if ED.reopen then ED.reopen("d" .. id .. ":" .. (ED.b.byKey[k] and ED.b.byKey[k].Name or "")) end
         end)
-        ED.delCopyBtn = button(gdp, "Delete copy", 2, function()
-            local k = ED.pkey()
-            local id = k and k:match("^d(%d+):")
-            if not id then return end
-            if type(ED.s.dups) == "table" then ED.s.dups[id] = nil end
-            if type(ED.s.parts) == "table" then ED.s.parts[k] = nil end
-            if ED.reopen then ED.reopen(nil) end
-        end)
+        -- v1.4.0: delete takes the part off the skin for good (Restore deleted brings it back)
+        button(gdp, "Delete", 2, function() ED.delParts() end)
         ED.gPart = gp
 
         local gn = group(insp, 3)
@@ -28166,9 +28609,10 @@ end)()
         end)
         ED.scrubAt = scrubAt
 
-        text(gui, "RMB orbit    MMB pan    wheel zoom    RMB + WASD/QE fly    1 2 3 tools    F focus    H hide part    Shift-click whole skin    Space play    Ctrl+Z undo",
+        text(gui, "RMB orbit    MMB pan    wheel zoom    RMB + WASD/QE fly    1 2 3 tools    F focus    H hide part    Del delete    Ctrl+G group    Shift-click whole skin    Space play    Ctrl+Z undo",
             Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 0).Position = UDim2.new(0, 16, 1, -24)
         ED.A.buildGui()
+        ED.fillParts()
         -- marker labels follow their dots
         for _, rec in ipairs(ED.fx) do
             rec.lbl = new("TextLabel", { Text = rec.c.name, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small - 1,
@@ -28187,16 +28631,23 @@ end)()
         lit(ED.loopBtn, TL.loop)
         for sp, b in pairs(ED.speedBtn) do lit(b, TL.speed == sp) end
         ED.playBtn.Text = TL.playing and "Pause" or "Play"
-        for _, r in ipairs(ED.rows) do
+        local all = {}
+        for _, r in ipairs(ED.rows) do all[#all + 1] = r end
+        for _, r in ipairs(ED.prows or {}) do all[#all + 1] = r end
+        for _, r in ipairs(all) do
             r.b.BackgroundTransparency = (ED.sel == r.target and 0)
                 or (r.part and ED.msel and ED.msel[r.part] and 0.45) or 1
-            if type(r.target) == "table" then
+            if r.gmembers then
+                local full = #r.gmembers > 0
+                for _, m in ipairs(r.gmembers) do if not (ED.msel and ED.msel[m.k]) then full = false; break end end
+                r.b.BackgroundTransparency = full and 0.3 or 1
+            elseif type(r.target) == "table" then
                 local m = r.target.mode or "Leave"
                 r.dot.BackgroundColor3 = MODE_COL[m]
                 r.sub.Text = r.target.kinds .. "  /  " .. string.lower(m)
             elseif r.part then
                 local e = type(ED.s.parts) == "table" and ED.s.parts[r.part] or nil
-                r.sub.Text = e and (e.hide and "hidden" or "edited") or ""
+                r.sub.Text = e and (((e.arm and (string.sub(e.arm, 1, 1) .. " arm, ")) or "") .. (e.hide and "hidden" or "edited")) or ""
                 r.dot.BackgroundColor3 = e and (e.hide and MODE_COL.Hide or Theme.Palette.Accent) or Theme.Palette.TextMuted
             end
         end
@@ -28213,9 +28664,18 @@ end)()
             local e = ED.pentry(false)
             ED.hideBtn.Text = (e and e.hide) and "Show" or "Hide"
             ED.matDd.setValue((e and e.m) or "Original")
-            ED.delCopyBtn.Visible = pk:match("^d%d+:") ~= nil
             ED.fxDd.setValue((e and e.fx) or "None")
-            ED.pieceDd.setValue((e and e.piece) or "Body")
+            ED.pieceDd.setValue((e and e.piece) or (ED.b.auto and part and ED.b.auto[part]) or "Body")
+            ED.armDd.setValue((e and e.arm) or "Both")
+            local gid, g = ED.selGroup()
+            ED.grpRow.Visible = gid ~= nil
+            if g and ED.lastGrp ~= gid then
+                ED.lastGrp = gid
+                ED.grpBox.Text = tostring(g.n or "")
+            elseif not g then
+                ED.lastGrp = nil
+            end
+            if g then ED.pTitle.Text = tostring(g.n or "Group") .. "  (" .. #ED.selKeys() .. " parts)" end
             if ED.lastPk ~= pk then
                 -- the text boxes follow the selection, not every refresh (so typing isn't eaten)
                 ED.lastPk = pk
@@ -28337,7 +28797,7 @@ end)()
         X.PT.apply(ED.b, ED.s, true)
         local si = skinItem()
         local W = ED.S * si
-        for p, rel in pairs(ED.b.rel) do p.CFrame = W * rel end
+        for p, rel in pairs(ED.b.rel) do p.CFrame = (ED.lpre and ED.S * ED.preOf(p) * si or W) * rel end
         for _, rec in ipairs(ED.fx) do
             local T, mode, e
             if rec.part then
@@ -28395,7 +28855,8 @@ end)()
     -- :: input ::
     local SINK = {}
     for _, n in ipairs({ "W", "A", "S", "D", "Q", "E", "R", "F", "G", "T", "V", "X", "Z", "C", "B", "L", "Space",
-        "LeftShift", "LeftControl", "H", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero" }) do
+        "LeftShift", "LeftControl", "H", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero",
+        "Delete", "LeftAlt" }) do
         SINK[#SINK + 1] = Enum.KeyCode[n]
     end
     local function onDown(m)
@@ -28427,6 +28888,10 @@ end)()
             if ED.drag then ED.drag = nil elseif ED.sel then selectTarget(nil) end
         elseif ctrl and k == K.Z then
             undo()
+        elseif ctrl and k == K.G then
+            ED.groupSel()
+        elseif k == K.Delete and not ED.A.on then
+            ED.delParts()
         elseif ED.rmb then
             return
         elseif k == K.One then setTool("Move")
@@ -28500,11 +28965,14 @@ end)()
     local function liveParts()
         local h = ED.h
         local top = h.obj
-        if h.kind == "Viewmodel" then
+        if h.kind == "Viewmodel" or h.kind == "Arms" then
             while top.Parent and top.Parent ~= Workspace and top.Parent ~= Workspace.CurrentCamera do top = top.Parent end
         end
         local out = X.partsOf(top)
         if X.rt.model then for _, p in ipairs(X.partsOf(X.rt.model)) do out[#out + 1] = p end end
+        for _, b in ipairs(X.rt.arms or {}) do
+            if b.model then for _, p in ipairs(X.partsOf(b.model)) do out[#out + 1] = p end end
+        end
         return out
     end
     close = function()
@@ -28533,8 +29001,8 @@ end)()
             end)
         end
         ED.gui, ED.stage, ED.G, ED.ghost, ED.sel, ED.drag, ED.rmb, ED.mmb = nil, nil, nil, nil, nil, nil, false, false
-        -- the live skin rebuilds from the edited values on its next step
-        X.rt.modelKey = nil
+        -- the live skins rebuild from the edited values on their next step
+        X.rt.modelKey, X.rt.armsKey = nil, nil
         X.rt.editing = false
     end
     local function open()
@@ -28542,12 +29010,19 @@ end)()
         local h = IS.current()
         if not h then note("Hold an item first"); return end
         local s = IS.Skins[h.sig]
-        if not s then note("Apply a skin to this item first"); return end
+        if not s then
+            -- v1.4.0: no skin needed, edits go on top of your current model
+            s = { src = "self" }
+            IS.Skins[h.sig] = s
+            note("Editing your current model")
+        end
         local cam = Workspace.CurrentCamera
         if not cam then return end
         X.rt.editing = true
         X.fxRestore()
         ED.h, ED.s, ED.cam = h, s, cam
+        -- arms: where the left arm sits from the right one, frozen for the session
+        ED.lpre = (h.kind == "Arms" and h.arms and h.arms[1].Parent) and h.root.CFrame:ToObjectSpace(h.arms[1].CFrame) or nil
         ED.undo, ED.lastEdit, ED.sel = {}, 0, nil
         ED.A.on, ED.A.rig, ED.A.key, ED.A.id, ED.A.t, ED.A.playing, ED.A.cacheList = false, nil, nil, nil, 0, false, nil
         ED.msel, ED.mboxes = {}, {}
@@ -28562,7 +29037,7 @@ end)()
         ED.prevType, ED.prevCF = cam.CameraType, cam.CFrame
         ED.hidden = liveParts()
         local top = h.obj
-        if h.kind == "Viewmodel" then
+        if h.kind == "Viewmodel" or h.kind == "Arms" then
             while top.Parent and top.Parent ~= Workspace and top.Parent ~= Workspace.CurrentCamera do top = top.Parent end
         end
         for _, d in ipairs(top:GetDescendants()) do
@@ -28625,11 +29100,12 @@ end)()
     IS.closeEditor = function() close() end
     -- rebuild the stage (after a part is duplicated or a copy deleted), keeping the view
     function ED.reopen(selKey)
-        local view = ED.view
+        local view, hist = ED.view, ED.undo
         close()
         open()
         if ED.open then
             if view then ED.view = view end
+            if hist then ED.undo = hist end
             if selKey and ED.b and ED.b.byKey[selKey] then selectTarget("p:" .. selKey) end
         end
     end
