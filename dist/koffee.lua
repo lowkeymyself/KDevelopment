@@ -1,7 +1,7 @@
--- koffee v1.2.0
+-- koffee v1.2.1
 
 local Koffee = {}
-Koffee.Version = "1.2.0"
+Koffee.Version = "1.2.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -16051,7 +16051,7 @@ local Combat = {
             end
             for n, cf in pairs(content) do
                 pads[n] = pads[n] or new("UIPadding", { Parent = cf })
-                local v = UDim.new(0, g and 2 or 0)
+                local v = UDim.new(0, (g or rail) and 2 or 0)
                 pads[n].PaddingLeft, pads[n].PaddingRight, pads[n].PaddingTop, pads[n].PaddingBottom = v, v, v, v
             end
             bar.BackgroundTransparency = rail and 1 or (g and 0.55 or 0.35)
@@ -47693,7 +47693,7 @@ end)()
         R.fade = { label(rail, { Text = "koffee", FontFace = Theme.Fonts.Bold, TextSize = 16, Position = UDim2.new(0, 56, 0, 26),
             Size = UDim2.new(0, 120, 0, 20), TextTransparency = 1, ZIndex = 41 }) }
         local function railBtn(name, parent, order)
-            local b = new("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.new(1, -12, 0, 40), Position = UDim2.new(0, 6, 0, 0),
+            local b = new("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 40),
                 BackgroundColor3 = P.Snow, BackgroundTransparency = 1, LayoutOrder = order, ZIndex = 41, Parent = parent }, { corner(10) })
             local ic = Koffee.lucideIcon(b, ICON[name] or "box", 19, P.TextMuted, 42)
             ic.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -47707,7 +47707,8 @@ end)()
             b.MouseButton1Click:Connect(function() selectTab(name) end)
         end
         local top = new("Frame", { Position = UDim2.new(0, 0, 0, 68), Size = UDim2.new(1, 0, 1, -128), BackgroundTransparency = 1,
-            ZIndex = 41, Parent = rail }, { new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+            ZIndex = 41, Parent = rail }, { new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
         local order = 0
         for gi, grp in ipairs(GROUPS) do
             for _, name in ipairs(grp) do
@@ -47716,7 +47717,7 @@ end)()
             if gi < #GROUPS then
                 order += 1
                 local sep = new("Frame", { Size = UDim2.new(1, 0, 0, 13), BackgroundTransparency = 1, LayoutOrder = order, ZIndex = 41, Parent = top })
-                new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 16, 0.5, 0), Size = UDim2.new(1, -32, 0, 1),
+                new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 23, 0.5, 0), Size = UDim2.new(0, 22, 0, 1),
                     BackgroundColor3 = P.Border, BorderSizePixel = 0, ZIndex = 41, Parent = sep })
             end
         end
@@ -47728,7 +47729,7 @@ end)()
             if not known then order += 1; railBtn(name, top, order) end
         end
         local bottom = new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -10), Size = UDim2.new(1, 0, 0, 40),
-            BackgroundTransparency = 1, ZIndex = 41, Parent = rail })
+            BackgroundTransparency = 1, ZIndex = 41, Parent = rail }, { new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }) })
         if tabs.Options then railBtn("Options", bottom, 1) end
         local function widen(open)
             tween(rail, TweenInfo.new(0.26, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
