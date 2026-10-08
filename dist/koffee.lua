@@ -27940,6 +27940,7 @@ end)()
     end
     -- nearest keyframe to the playhead (edits always land on one)
     function ED.A.snap()
+        if not ED.A.snaps() then return ED.A.t end
         local base = ED.A.id and X.AN.load(ED.A.id)
         if not base or #base.times == 0 then return ED.A.t end
         local best, bd = base.times[1], math.huge
@@ -28089,6 +28090,18 @@ end)()
         selectTarget("j:" .. name)
     end
     function ED.A.base() return ED.A.id and X.AN.load(ED.A.id) or nil end
+    -- v1.4.0 snapping: on = the playhead and keys land on the original's frames.
+    -- Holding Shift flips it for that move.
+    function ED.A.snaps()
+        local on = ED.A.snapOn ~= false
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then on = not on end
+        return on
+    end
+    function ED.A.tpick(t) return ED.A.snaps() and ED.A.nearest(t) or t end
+    -- the key spot under the playhead: its frame when snapping, else the exact time
+    function ED.A.here() return (ED.A.snapOn ~= false) and ED.A.nearest(ED.A.t) or ED.A.t end
+    local function tid(t) return math.floor(t * 10000 + 0.5) end
+    ED.A.tid = tid
     -- nearest original frame (keys always sit on one, so the length never changes)
     function ED.A.nearest(t)
         local base = ED.A.base()
@@ -28183,17 +28196,80 @@ end)()
         local A = ED.A
         local e = A.entry(false)
         if not e then return end
-        local tk = A.snap()
+        local times = A.selTimes()
+        if #times == 0 then times = { A.here() } end
+        local names = A.jkey() and A.joints() or {}
+        if #names == 0 then for n in pairs(e.k) do names[#names + 1] = n end end
         local hit = false
-        for _, n in ipairs(A.targets()) do
-            local k, i, list = A.keyAt(n, tk)
-            if k then
-                if not hit then pushUndo(); hit = true end
-                table.remove(list, i)
-                if #list == 0 then e.k[n] = nil end
+        for _, tk in ipairs(times) do
+            for _, n in ipairs(names) do
+                local k, i, list = A.keyAt(n, tk)
+                if k then
+                    if not hit then pushUndo(); hit = true end
+                    table.remove(list, i)
+                    if #list == 0 then e.k[n] = nil end
+                end
             end
         end
+        A.ksel = {}
         if not hit then note("No key here on those joints") end
+    end
+    -- selected key times (Shift-click diamonds), dropping any that no longer exist
+    function ED.A.selTimes()
+        local A, out = ED.A, {}
+        local live = {}
+        for _, tt in ipairs(A.keyTimes(true)) do live[tid(tt)] = tt end
+        for id in pairs(A.ksel or {}) do
+            if live[id] then out[#out + 1] = live[id] else A.ksel[id] = nil end
+        end
+        table.sort(out)
+        return out
+    end
+    -- move every selected key time by d (keys of the picked joints, else every joint);
+    -- a key already sitting where one lands is replaced
+    function ED.A.shiftKeys(times, d)
+        local A = ED.A
+        local e, base = A.entry(false), A.base()
+        if not (e and base) or #times == 0 or math.abs(d) < 1e-5 then return end
+        local lo, hi = times[1], times[#times]
+        d = math.clamp(d, -lo, base.len - hi)
+        if math.abs(d) < 1e-5 then return end
+        pushUndo()
+        local names = A.jkey() and A.joints() or {}
+        if #names == 0 then for n in pairs(e.k) do names[#names + 1] = n end end
+        local moving = {}
+        for _, tt in ipairs(times) do moving[tid(tt)] = true end
+        for _, n in ipairs(names) do
+            local list = e.k[n]
+            if type(list) == "table" then
+                local moved, kept = {}, {}
+                for _, k in ipairs(list) do
+                    if moving[tid(k[1])] then moved[#moved + 1] = k else kept[#kept + 1] = k end
+                end
+                if #moved > 0 then
+                    local land = {}
+                    for _, k in ipairs(moved) do k[1] = k[1] + d; land[tid(k[1])] = true end
+                    local out = {}
+                    for _, k in ipairs(kept) do if not land[tid(k[1])] then out[#out + 1] = k end end
+                    for _, k in ipairs(moved) do out[#out + 1] = k end
+                    table.sort(out, function(a, b) return a[1] < b[1] end)
+                    e.k[n] = out
+                end
+            end
+        end
+        local ns = {}
+        for _, tt in ipairs(times) do ns[tid(tt + d)] = true end
+        A.ksel = ns
+    end
+    -- Alt + , / . : nudge the selected keys one original frame
+    function ED.A.nudge(dir)
+        local A = ED.A
+        local times = A.selTimes()
+        if #times == 0 then note("Shift-click diamonds to pick keys first"); return end
+        local base = A.base()
+        local step = (base and #base.times > 1) and (base.len / (#base.times - 1)) or (1 / 60)
+        A.shiftKeys(times, dir * step)
+        A.t = times[1] + dir * step
     end
     function ED.A.copyPose()
         local A, clip = ED.A, {}
@@ -28220,7 +28296,7 @@ end)()
     end
     function ED.A.setEase(v)
         local A = ED.A
-        local tk = A.nearest(A.t)
+        local tk = A.here()
         local hit = false
         for _, n in ipairs(A.joints()) do
             local k = A.keyAt(n, tk)
@@ -28286,37 +28362,32 @@ end)()
     function ED.A.kdragStart(tt)
         local A = ED.A
         A.playing, A.t = false, tt
-        local e = A.entry(false)
-        local names = {}
-        for _, n in ipairs(A.joints()) do if A.keyAt(n, tt) then names[#names + 1] = n end end
-        if #names == 0 and e then
-            for n in pairs(e.k) do if A.keyAt(n, tt) then names[#names + 1] = n end end
+        A.ksel = A.ksel or {}
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+            if A.ksel[tid(tt)] then A.ksel[tid(tt)] = nil; return end
+            A.ksel[tid(tt)] = true
+        elseif not A.ksel[tid(tt)] then
+            A.ksel = { [tid(tt)] = true }
         end
-        A.kdrag = { from = tt, to = tt, names = names }
+        A.kdrag = { from = tt, to = tt, times = A.selTimes() }
     end
     function ED.A.kdragAt(x)
         local A = ED.A
         local base = A.base()
         local w = A.bar.AbsoluteSize.X
         if not (A.kdrag and base and w > 0) then return end
-        local t = A.nearest(math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len)
+        -- snap the grabbed key (Shift here would also flip snapping, so it only reads the toggle)
+        local raw = math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len
+        local t = (A.snapOn ~= false) and A.nearest(raw) or raw
         A.kdrag.to, A.t = t, t
     end
     function ED.A.kdrop()
         local A = ED.A
         local d = A.kdrag
         A.kdrag = nil
-        if not d or math.abs(d.to - d.from) < 1e-4 then return end
-        pushUndo()
-        for _, n in ipairs(d.names) do
-            local k, _, list = A.keyAt(n, d.from)
-            if k then
-                local old, oi = A.keyAt(n, d.to)
-                if old then table.remove(list, oi) end
-                k[1] = d.to
-                table.sort(list, function(a, b) return a[1] < b[1] end)
-            end
-        end
+        if not d then return end
+        A.shiftKeys(d.times, d.to - d.from)
+        A.t = d.to
     end
     -- onion skin: the rig again, ghosted, at the key before and after the playhead
     function ED.A.onionSet(on)
@@ -28427,16 +28498,24 @@ end)()
             local all = A.keyTimes(true)
             local parts = {}
             for _, tt in ipairs(all) do parts[#parts + 1] = string.format("%.4f%s", tt, mine[math.floor(tt * 10000 + 0.5)] and "*" or "") end
-            local sig = tostring(A.id) .. "|" .. table.concat(parts, ",")
+            local dd = A.kdrag and (A.kdrag.to - A.kdrag.from) or 0
+            local ks = {}
+            for id in pairs(A.ksel or {}) do ks[#ks + 1] = id end
+            table.sort(ks)
+            local sig = tostring(A.id) .. "|" .. table.concat(parts, ",") .. "|" .. table.concat(ks, ",")
+                .. "|" .. string.format("%.4f", dd)
             if A.mkSig ~= sig then
                 A.mkSig = sig
                 for _, c in ipairs(A.marks:GetChildren()) do c:Destroy() end
                 for _, tt in ipairs(all) do
-                    local on = mine[math.floor(tt * 10000 + 0.5)] and A.jkey() ~= nil
-                    new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(tt / len, 0, 0.5, 0),
-                        Size = UDim2.fromOffset(on and 10 or 8, on and 10 or 8), Rotation = 45,
-                        BackgroundColor3 = on and Theme.Palette.Accent or Theme.Palette.TextMuted, ZIndex = 8, Parent = A.marks },
-                        { stroke(Theme.Palette.Background, 1) })
+                    local picked = A.ksel and A.ksel[tid(tt)]
+                    local on = mine[tid(tt)] and A.jkey() ~= nil
+                    local at = math.clamp((tt + (picked and dd or 0)) / len, 0, 1)
+                    new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(at, 0, 0.5, 0),
+                        Size = UDim2.fromOffset((on or picked) and 10 or 8, (on or picked) and 10 or 8), Rotation = 45,
+                        BackgroundColor3 = picked and Theme.Palette.Snow or on and Theme.Palette.Accent or Theme.Palette.TextMuted,
+                        ZIndex = picked and 9 or 8, Parent = A.marks },
+                        { stroke(picked and Theme.Palette.Accent or Theme.Palette.Background, picked and 2 or 1) })
                 end
             end
         end
@@ -28447,7 +28526,7 @@ end)()
         local base = A.base()
         if w > 0 and base then
             A.playing = false
-            A.t = math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len
+            A.t = A.tpick(math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len)
         end
     end
     function ED.A.buildGui()
@@ -28484,7 +28563,7 @@ end)()
         end)
         A.smooth.row.LayoutOrder = 199
         button(ap, "Reset animation", 202, function() A.resetAnim() end)
-        text(ap, "Ctrl-click joints to pick several. Layer adds your keys on top of the original, Replace makes your keys the motion. K key, Del delete key, [ ] your keys, , . frames, Ctrl+C / Ctrl+V pose.",
+        text(ap, "Ctrl-click joints to pick several. Layer adds your keys on top of the original, Replace makes your keys the motion. K key, Del delete key, [ ] your keys, , . frames, Ctrl+C / Ctrl+V pose. On the timeline: drag a diamond to move it, Shift-click to pick several, Alt + , . nudges them, Shift flips Snap.",
             Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 203, true)
         A.panel = ap
 
@@ -28548,6 +28627,7 @@ end)()
             A.speedBtn[sp] = button(ctr, sp .. "x", 10 + i, function() A.speed = sp end, 46)
         end
         A.loopBtn = button(ctr, "Loop", 20, function() A.loop = A.loop == false end, 50)
+        A.snapBtn = button(ctr, "Snap", 21, function() A.snapOn = A.snapOn == false end, 50)
         A.timeLbl = text(ctr, "", Theme.Text.Small, Theme.Palette.Text, Theme.Fonts.Mono, 30)
         local track = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
             Position = UDim2.new(0, 0, 0, 32), Size = UDim2.new(1, 0, 0, 36), ZIndex = 6, Parent = at })
@@ -28564,7 +28644,13 @@ end)()
         track.InputBegan:Connect(function(io)
             if io.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
             local tt = A.markerAt(io.Position.X)
-            if tt then A.kdragStart(tt) else A.scrub = true; A.scrubAt(io.Position.X) end
+            if tt then
+                A.kdragStart(tt)
+            else
+                if not UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then A.ksel = {} end
+                A.scrub = true
+                A.scrubAt(io.Position.X)
+            end
         end)
         A.bar, A.tl = bar, at
     end
@@ -28574,6 +28660,7 @@ end)()
         A.playBtn.Text = A.playing and "Pause" or "Play"
         for sp, b in pairs(A.speedBtn or {}) do lit(b, (A.speed or 1) == sp) end
         lit(A.loopBtn, A.loop ~= false)
+        lit(A.snapBtn, A.snapOn ~= false)
         for key, b in pairs(A.animRows or {}) do
             local e = type(ED.s.anims) == "table" and ED.s.anims[key]
             b.Text = key .. ((e and type(e.k) == "table" and next(e.k)) and "  (edited)" or "")
@@ -28594,7 +28681,7 @@ end)()
         -- joint inspector
         local js = A.joints()
         A.jTitle.Text = jk and (jk .. (#js > 1 and ("  (+" .. (#js - 1) .. " more)") or "")) or "No joint picked"
-        local tk = A.nearest(A.t)
+        local tk = A.here()
         local key = jk and A.keyAt(jk, tk)
         local nk = jk and e and type(e.k[jk]) == "table" and #e.k[jk] or 0
         A.jSub.Text = not jk and "click a joint on the model or in the list"
@@ -29384,8 +29471,8 @@ end)()
             local A = ED.A
             if k == K.K then A.keyNow()
             elseif k == K.Delete then A.delKey()
-            elseif k == K.Comma then A.step(-1)
-            elseif k == K.Period then A.step(1)
+            elseif k == K.Comma then if ED.alt() then A.nudge(-1) else A.step(-1) end
+            elseif k == K.Period then if ED.alt() then A.nudge(1) else A.step(1) end
             elseif k == K.LeftBracket then A.navKey(-1)
             elseif k == K.RightBracket then A.navKey(1)
             elseif k == K.C then A.copyPose()
@@ -29531,7 +29618,7 @@ end)()
         ED.lpre = (h.kind == "Arms" and h.arms and h.arms[1].Parent) and h.root.CFrame:ToObjectSpace(h.arms[1].CFrame) or nil
         ED.undo, ED.lastEdit, ED.sel = {}, 0, nil
         ED.A.on, ED.A.rig, ED.A.key, ED.A.id, ED.A.t, ED.A.playing, ED.A.cacheList = false, nil, nil, nil, 0, false, nil
-        ED.A.jsel, ED.A.onions, ED.A.kdrag, ED.A.tickId, ED.A.mkSig = {}, nil, nil, nil, nil
+        ED.A.jsel, ED.A.onions, ED.A.kdrag, ED.A.tickId, ED.A.mkSig, ED.A.ksel = {}, nil, nil, nil, nil, {}
         ED.msel, ED.mboxes = {}, {}
         ED.S = CFrame.new(cam.CFrame.Position + Vector3.new(0, 400, 0))
         local ok, built = pcall(buildStage)
