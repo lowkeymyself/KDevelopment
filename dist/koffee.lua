@@ -1,7 +1,7 @@
--- koffee v1.1.0
+-- koffee v1.2.0
 
 local Koffee = {}
-Koffee.Version = "1.1.0"
+Koffee.Version = "1.2.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2623,14 +2623,18 @@ end
 
 -- v1.1.0: UI modes. Each widget registers a skin fn that restyles it in place, so a
 -- switch is live with no tab rebuild (Extra included). Mode lives in startup.json.
-Koffee.UI = { mode = "Classic", modes = { "Classic", "Glass" }, reg = {}, n = 0, texCache = {} }
+Koffee.UI = { mode = "Classic", modes = { "Classic", "Glass", "Rail" }, reg = {}, n = 0, texCache = {},
+    -- v1.2.0: what Rail and Ctrl+K need to know about the built UI
+    cards = {}, cardN = 0, cardSubs = {}, subShow = {}, subCur = {}, items = {}, modRows = {}, cfgLabels = {},
+    shells = {}, tabHooks = {}, openHooks = {}, subHooks = {}, beforeRebuild = {}, afterRebuild = {} }
 pcall(function()
     if isfile and readfile and isfile("Koffee/startup.json") then
         local d = game:GetService("HttpService"):JSONDecode(readfile("Koffee/startup.json"))
-        if type(d) == "table" and d.UiMode == "Glass" then Koffee.UI.mode = "Glass" end
+        if type(d) == "table" and (d.UiMode == "Glass" or d.UiMode == "Rail") then Koffee.UI.mode = d.UiMode end
     end
 end)
 function Koffee.UI.glass() return Koffee.UI.mode == "Glass" end
+function Koffee.UI.styled() return Koffee.UI.mode ~= "Classic" end
 function Koffee.UI.tex(name)
     local c = Koffee.UI.texCache[name]
     if c ~= nil then return c end
@@ -2655,8 +2659,9 @@ function Koffee.UI.skin(inst, fn)
 end
 function Koffee.UI.setMode(m)
     local U = Koffee.UI
-    if m ~= "Glass" then m = "Classic" end
+    if m ~= "Glass" and m ~= "Rail" then m = "Classic" end
     if m == U.mode then return end
+    local old = U.mode
     U.mode = m
     pcall(function()
         local HS, d = game:GetService("HttpService"), {}
@@ -2667,7 +2672,8 @@ function Koffee.UI.setMode(m)
         d.UiMode = m
         writefile("Koffee/startup.json", HS:JSONEncode(d))
     end)
-    if U.shell then pcall(U.shell, m) end
+    if U.shells[old] then pcall(U.shells[old].exit) end
+    if U.shells[m] then pcall(U.shells[m].enter) end
     for inst, fn in pairs(U.reg) do
         if inst.Parent == nil then U.reg[inst] = nil else pcall(fn, m) end
     end
@@ -3228,7 +3234,7 @@ local function selectTab(name)
     if activeTab == name then return end
     if activeTab ~= nil then Koffee.Sfx.play("tab") end
     activeTab = name
-    if Koffee.UI.onTab then pcall(Koffee.UI.onTab, name) end
+    for _, f in ipairs(Koffee.UI.tabHooks) do pcall(f, name) end
     -- v0.48.0: tab switches honour Animations > Tab Switching; off snaps the
     -- colours, panels and pill straight to their resting states.
     local tabsAnim = Koffee.Anim.spot("AnimTabs")
@@ -3538,6 +3544,7 @@ local function rebuildTabPanel(name)
     local entry = tabs[name]
     if not (entry and entry.Build) then return end
     local p = entry.Panel
+    for _, f in ipairs(Koffee.UI.beforeRebuild) do pcall(f, name) end
     for _, c in ipairs(p:GetChildren()) do c:Destroy() end
     new("UIListLayout", {
         FillDirection = Enum.FillDirection.Vertical,
@@ -3548,6 +3555,7 @@ local function rebuildTabPanel(name)
     new("UIPadding", { PaddingBottom = UDim.new(0, 12), Parent = p })
     if Koffee.UI.padPanel then pcall(Koffee.UI.padPanel, p, Koffee.UI.glass()) end
     pcall(entry.Build, p)
+    for _, f in ipairs(Koffee.UI.afterRebuild) do pcall(f, name) end
 end
 rebuildConfigTabs = function()
     for _, m in pairs(Modules) do m.Watchers = {} end
@@ -3632,11 +3640,33 @@ local function panel(parent, title)
         if not card.Parent then return end
         tween(sc, Theme.Animation.Normal, { Scale = 1 })
     end)
-    -- v1.1.0: glass skin
+    Koffee.UI.cardN += 1
+    Koffee.UI.cards[card] = { title = title, n = Koffee.UI.cardN }
+    -- v1.1.0: glass skin. v1.2.0: rail skin
     local cr, st = card:FindFirstChildOfClass("UICorner"), card:FindFirstChildOfClass("UIStroke")
     local tl = title and card:FindFirstChildOfClass("TextLabel")
     local hi
     Koffee.UI.skin(card, function(mode)
+        if mode == "Rail" then
+            local nested, p = false, card.Parent
+            while p do
+                if Koffee.UI.cards[p] then nested = true; break end
+                p = p.Parent
+            end
+            card.BackgroundTransparency = nested and 0.45 or 1
+            if cr then cr.CornerRadius = UDim.new(0, nested and 10 or 0) end
+            if hi then hi.Enabled = false end
+            if st then st.Color = Theme.Palette.BorderSubtle; st.Transparency = nested and 0 or 1 end
+            if tl then
+                tl.Visible = nested
+                tl.Text = title:upper()
+                tl.FontFace = Theme.Fonts.Bold
+                tl.TextSize = Theme.Text.Tiny
+                tl.TextColor3 = Theme.Palette.TextMuted
+            end
+            return
+        end
+        if tl then tl.Visible = true end
         local g = mode == "Glass"
         card.BackgroundTransparency = g and 0.55 or 0.15
         if cr then cr.CornerRadius = UDim.new(0, g and 16 or Theme.Radius.XLarge) end
@@ -3777,6 +3807,7 @@ local function checkboxVisual(parent, label, initialOn)
     })
     attachHover(row, btn)
     popFx(btn)   -- v0.0.98: checkbox rows squash on press
+    Koffee.UI.items[row] = label
 
     -- v1.1.0: glass switch, built the first time glass shows this row
     local sw
@@ -3797,7 +3828,7 @@ local function checkboxVisual(parent, label, initialOn)
         end
     end
     Koffee.UI.skin(row, function(mode)
-        local g = mode == "Glass"
+        local g = mode ~= "Classic"
         if g and not sw then
             sw = {}
             sw.glow = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 15, 0.5, 0),
@@ -3833,7 +3864,7 @@ local function checkboxVisual(parent, label, initialOn)
         if activeFade then activeFade:Cancel(); activeFade = nil end
         -- v0.48.0: Toggles off snaps the fill + label straight to rest.
         local togAnim = Koffee.Anim.spot("AnimToggles")
-        if Koffee.UI.glass() then
+        if Koffee.UI.styled() then
             paintSwitch(togAnim)
             innerFill.Size = state and UDim2.new(0, CBOX.inner, 0, CBOX.inner) or UDim2.new(0, 0, 0, 0)
             innerFill.BackgroundTransparency = state and 0 or 1
@@ -3896,6 +3927,7 @@ end
 local function moduleCheckbox(parent, label, moduleId)
     local mod = Modules[moduleId]
     local ctrl = checkboxVisual(parent, label, mod and mod.Enabled or false)
+    Koffee.UI.modRows[ctrl.row] = moduleId
     ctrl.button.MouseButton1Click:Connect(function()
         toggleModule(moduleId)
         Koffee.Sfx.play(Modules[moduleId] and Modules[moduleId].Enabled and "toggle_on" or "toggle_off")
@@ -4633,8 +4665,9 @@ local function dropdown(parent, label, options, initial, onChange)
     local caretRoot = chevron(btn, 10)
     -- v1.1.0: glass skin
     local dCr, dSt = btn:FindFirstChildOfClass("UICorner"), btn:FindFirstChildOfClass("UIStroke")
+    Koffee.UI.items[wrap] = label
     Koffee.UI.skin(wrap, function(mode)
-        local g = mode == "Glass"
+        local g = mode ~= "Classic"
         btn.BackgroundTransparency = g and 0.5 or 0.15
         if dCr then dCr.CornerRadius = UDim.new(0, g and 9 or 4) end
         if dSt then dSt.Color = g and Theme.Palette.Snow or Theme.Palette.BorderSubtle; dSt.Transparency = g and 0.88 or 0 end
@@ -5004,8 +5037,9 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     local dragging = false
     -- v1.1.0: glass skin
     local kSt = knob:FindFirstChildOfClass("UIStroke")
+    Koffee.UI.items[row] = label
     Koffee.UI.skin(row, function(mode)
-        local g = mode == "Glass"
+        local g = mode ~= "Classic"
         track.Size = UDim2.new(1, 0, 0, g and 4 or 6)
         track.Position = UDim2.new(0, 0, 0, g and 31 or 30)
         track.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.PanelElevated
@@ -15950,17 +15984,25 @@ local Combat = {
         })
         local buttons, content = {}, {}
         local cur
+        local unders = {}
+        Koffee.UI.cardSubs[card] = names
         -- v0.0.32: fade content in on switch (CanvasGroup GroupTransparency).
         local function showCol(name)
             cur = name
+            Koffee.UI.subCur[card] = name
+            for _, f in ipairs(Koffee.UI.subHooks) do pcall(f, card, name) end
             local g = Koffee.UI.glass()
+            local rail = Koffee.UI.mode == "Rail"
             for n, b in pairs(buttons) do
                 local on = (n == name)
                 b.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.PanelElevated
                 tween(b, Theme.Animation.Fast, {
-                    BackgroundTransparency = on and (g and 0.86 or 0.15) or 1,
-                    TextColor3 = on and Theme.Palette.Text or Theme.Palette.TextMuted,
+                    BackgroundTransparency = rail and 1 or (on and (g and 0.86 or 0.15) or 1),
+                    TextColor3 = on and (rail and Theme.Palette.Accent or Theme.Palette.Text) or Theme.Palette.TextMuted,
                 })
+                if unders[n] then
+                    tween(unders[n], Theme.Animation.Normal, { Size = UDim2.new(on and 1 or 0, 0, 0, 2) })
+                end
                 local cf = content[n]
                 if on then
                     cf.Visible = true
@@ -15985,6 +16027,7 @@ local Combat = {
             }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 6),
                 SortOrder = Enum.SortOrder.LayoutOrder }) })
             content[name] = cf
+            Koffee.UI.subShow[cf] = function() showCol(name) end
             b.MouseButton1Click:Connect(function() showCol(name) end)
         end
         showCol(names[1])
@@ -15993,18 +16036,31 @@ local Combat = {
         local pads = {}
         Koffee.UI.skin(bar, function(mode)
             local g = mode == "Glass"
+            local rail = mode == "Rail"
+            for n, b in pairs(buttons) do
+                if rail and not unders[n] then
+                    unders[n] = new("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 2),
+                        Size = UDim2.new(0, 0, 0, 2), BackgroundColor3 = Theme.Palette.Accent, BorderSizePixel = 0,
+                        ZIndex = 36, Parent = b }, { pillCorner() })
+                end
+                if unders[n] then
+                    unders[n].Visible = rail
+                    unders[n].Size = UDim2.new(n == cur and 1 or 0, 0, 0, 2)
+                end
+                b.TextColor3 = n == cur and (rail and Theme.Palette.Accent or Theme.Palette.Text) or Theme.Palette.TextMuted
+            end
             for n, cf in pairs(content) do
                 pads[n] = pads[n] or new("UIPadding", { Parent = cf })
                 local v = UDim.new(0, g and 2 or 0)
                 pads[n].PaddingLeft, pads[n].PaddingRight, pads[n].PaddingTop, pads[n].PaddingBottom = v, v, v, v
             end
-            bar.BackgroundTransparency = g and 0.55 or 0.35
+            bar.BackgroundTransparency = rail and 1 or (g and 0.55 or 0.35)
             if bCr then bCr.CornerRadius = g and UDim.new(1, 0) or UDim.new(0, 6) end
             for n, b in pairs(buttons) do
                 local c = b:FindFirstChildOfClass("UICorner")
                 if c then c.CornerRadius = g and UDim.new(1, 0) or UDim.new(0, 5) end
                 b.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.PanelElevated
-                b.BackgroundTransparency = n == cur and (g and 0.86 or 0.15) or 1
+                b.BackgroundTransparency = (n == cur and not rail) and (g and 0.86 or 0.15) or 1
             end
         end)
         return content
@@ -38438,7 +38494,7 @@ local function setWindowOpen(open)
     -- drag gate ("only draggable while the main UI is open") needs no chunk upvalue.
     if Koffee.Windows then Koffee.Windows._setPrimary(open) end
     Koffee.Sfx.play(open and "open" or "close")
-    if Koffee.UI.onOpen then pcall(Koffee.UI.onOpen, open) end
+    for _, f in ipairs(Koffee.UI.openHooks) do pcall(f, open) end
     if open then
         window.Visible = true
         -- v0.48.0: window open honours the Animations > Window Open flag; off
@@ -47119,6 +47175,42 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
         pd.PaddingRight = UDim.new(0, g and 9 or 2)
     end
 
+    -- v1.2.0: one config menu for every shell, anchored under whichever button opened it
+    local menu
+    function U.closeConfigMenu()
+        if menu then menu:Destroy(); menu = nil end
+    end
+    function U.openConfigMenu(cfgBtn)
+        if menu then U.closeConfigMenu(); return end
+        local names2 = Koffee.Config.list()
+        local rowH = 28
+        local h = math.min(math.max(#names2, 1) * rowH + 8, 260)
+        local ap, as = cfgBtn.AbsolutePosition - popupScreen.AbsolutePosition, cfgBtn.AbsoluteSize
+        local w = math.max(as.X, 180)
+        menu = new("ScrollingFrame", { Position = UDim2.new(0, ap.X, 0, ap.Y + as.Y + 6), Size = UDim2.new(0, w, 0, h),
+            CanvasSize = UDim2.new(0, 0, 0, #names2 * rowH + 8), ScrollBarThickness = 3, ScrollBarImageColor3 = P.Border,
+            BackgroundColor3 = P.Panel, BackgroundTransparency = 0.04, BorderSizePixel = 0, ZIndex = 262, Parent = popupScreen },
+            { corner(10), stroke(P.Border), new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingLeft = UDim.new(0, 4),
+                PaddingRight = UDim.new(0, 4) }), new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }) })
+        Koffee.popIn(menu, 0.95)
+        if #names2 == 0 then
+            new("TextLabel", { Text = "No saved configs", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                TextColor3 = P.TextMuted, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, rowH), ZIndex = 263, Parent = menu })
+        end
+        for i, n in ipairs(names2) do
+            local r = new("TextButton", { Text = n, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = n == U.cfgName and P.Accent or P.Text, TextXAlignment = Enum.TextXAlignment.Left,
+                AutoButtonColor = false, BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 0, rowH), LayoutOrder = i, ZIndex = 263, Parent = menu },
+                { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 10) }) })
+            Koffee.attachBtnHover(r, 0.2, 1)
+            r.MouseButton1Click:Connect(function()
+                U.closeConfigMenu()
+                pcall(function() Koffee.Config.load(n) end)
+            end)
+        end
+    end
+
     local function build()
         if G.built then return end
         G.built = true
@@ -47206,44 +47298,13 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
         G.cfgLbl = new("TextLabel", { Text = U.cfgName or "No config", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             TextColor3 = P.Text, BackgroundTransparency = 1, Position = UDim2.new(0, 30, 0, 0), Size = UDim2.new(1, -52, 1, 0),
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 34, Parent = cfgBtn })
+        U.cfgLabels[#U.cfgLabels + 1] = G.cfgLbl
         local cv = Koffee.lucideIcon(cfgBtn, "chevron-down", 14, P.TextMuted, 34)
         cv.AnchorPoint = Vector2.new(1, 0.5)
         cv.Position = UDim2.new(1, -9, 0.5, 0)
         Koffee.attachBtnHover(cfgBtn, 0.86, 0.93)
-        local menu
-        local function closeMenu()
-            if menu then menu:Destroy(); menu = nil end
-        end
-        cfgBtn.MouseButton1Click:Connect(function()
-            if menu then closeMenu(); return end
-            local names2 = Koffee.Config.list()
-            local rowH = 28
-            local h = math.min(math.max(#names2, 1) * rowH + 8, 260)
-            local ap, as = cfgBtn.AbsolutePosition - popupScreen.AbsolutePosition, cfgBtn.AbsoluteSize
-            menu = new("ScrollingFrame", { Position = UDim2.new(0, ap.X, 0, ap.Y + as.Y + 6), Size = UDim2.new(0, as.X, 0, h),
-                CanvasSize = UDim2.new(0, 0, 0, #names2 * rowH + 8), ScrollBarThickness = 3, ScrollBarImageColor3 = P.Border,
-                BackgroundColor3 = P.Panel, BackgroundTransparency = 0.04, BorderSizePixel = 0, ZIndex = 262, Parent = popupScreen },
-                { corner(10), stroke(P.Border), new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingLeft = UDim.new(0, 4),
-                    PaddingRight = UDim.new(0, 4) }), new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }) })
-            Koffee.popIn(menu, 0.95)
-            if #names2 == 0 then
-                new("TextLabel", { Text = "No saved configs", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
-                    TextColor3 = P.TextMuted, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, rowH), ZIndex = 263, Parent = menu })
-            end
-            for i, n in ipairs(names2) do
-                local r = new("TextButton", { Text = n, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
-                    TextColor3 = n == U.cfgName and P.Accent or P.Text, TextXAlignment = Enum.TextXAlignment.Left,
-                    AutoButtonColor = false, BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 1,
-                    Size = UDim2.new(1, 0, 0, rowH), LayoutOrder = i, ZIndex = 263, Parent = menu },
-                    { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 10) }) })
-                Koffee.attachBtnHover(r, 0.2, 1)
-                r.MouseButton1Click:Connect(function()
-                    closeMenu()
-                    pcall(function() Koffee.Config.load(n) end)
-                end)
-            end
-        end)
-        G.closeMenu = closeMenu
+        cfgBtn.MouseButton1Click:Connect(function() U.openConfigMenu(cfgBtn) end)
+        G.closeMenu = U.closeConfigMenu
 
         G.content = new("Frame", { Position = UDim2.new(0, 0, 0, 62), Size = UDim2.new(1, 0, 1, -62), BackgroundTransparency = 1,
             ClipsDescendants = true, ZIndex = 31, Parent = sheet }, {
@@ -47276,12 +47337,12 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
         local t = tabs[name]
         if t then G.pad(t.Panel, true) end
     end
-    U.onTab = onTab
+    U.tabHooks[#U.tabHooks + 1] = onTab
     U.padPanel = G.pad
 
     -- sidebar slides in a beat before the sheet
-    function U.onOpen(open)
-        if not open and G.closeMenu then G.closeMenu() end
+    U.openHooks[#U.openHooks + 1] = function(open)
+        if not open then U.closeConfigMenu() end
         if not (open and G.built and U.glass() and Koffee.Anim.spot("AnimWindow")) then return end
         G.side.Position = UDim2.new(0, -18, 0, 0)
         G.sheet.Position = UDim2.new(0, SIDE + GAP + 22, 0, 0)
@@ -47292,7 +47353,7 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
         end)
     end
 
-    function U.shell(mode)
+    local function shell(mode)
         local g = mode == "Glass"
         if g then build() end
         local w = g and (SIDE + GAP + CLASSIC_W) or CLASSIC_W
@@ -47321,7 +47382,9 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
         local ok, r = ld(name, ...)
         if ok then
             U.cfgName = name
-            if G.cfgLbl then G.cfgLbl.Text = name end
+            for _, l in ipairs(U.cfgLabels) do
+                if l.Parent then l.Text = name end
+            end
         end
         return ok, r
     end
@@ -47361,7 +47424,598 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
         end
     end)
 
-    if U.glass() then U.shell("Glass") end
+    U.shells.Glass = { enter = function() shell("Glass") end, exit = function() shell("Classic") end }
+    if U.glass() then shell("Glass") end
+end)()
+
+-- v1.2.0: Rail shell, a landscape deck: icon rail, the tab's Feature Boxes as a list, one
+-- box at a time in the detail pane (moved there, handed back on leave). Ctrl+K searches
+-- every registered setting and jumps to it.
+;(function()
+    local U = Koffee.UI
+    local P = Theme.Palette
+    local RAIL, RAIL_OPEN, LIST, HEAD = 58, 196, 252, 66
+    local ICON = { Combat = "crosshair", Visuals = "eye", World = "globe", Character = "user", Options = "settings",
+        Custom = "pencil", Configs = "folder", NPC = "bot", Extra = "sparkles" }
+    local GROUPS = { { "Combat", "Visuals", "World", "Character" }, { "Custom", "Configs", "NPC", "Extra" } }
+    local R = { built = false, btns = {}, remember = {}, entries = {} }
+    local wCorner = window:FindFirstChildOfClass("UICorner")
+    local function isRail() return U.mode == "Rail" end
+    local function label(parent, props)
+        props.BackgroundTransparency = 1
+        props.Parent = parent
+        props.FontFace = props.FontFace or Theme.Fonts.Medium
+        props.TextColor3 = props.TextColor3 or P.Text
+        props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+        props.ZIndex = props.ZIndex or 34
+        return new("TextLabel", props)
+    end
+
+    -- top-level Feature Boxes of a tab in build order (the moved one counts as its tab's)
+    local function nestedCard(card, stop)
+        local p = card.Parent
+        while p and p ~= stop do
+            if U.cards[p] then return true end
+            p = p.Parent
+        end
+        return false
+    end
+    local function topCards(name)
+        local t = tabs[name]
+        if not t then return {} end
+        local out = {}
+        for card in pairs(U.cards) do
+            if card.Parent == nil then
+                U.cards[card] = nil
+            elseif (R.moved and R.moved.card == card and R.moved.tab == name)
+                or (card:IsDescendantOf(t.Panel) and not nestedCard(card, t.Panel)) then
+                out[#out + 1] = card
+            end
+        end
+        table.sort(out, function(a, b) return U.cards[a].n < U.cards[b].n end)
+        return out
+    end
+    local function cardTitle(card)
+        local m, subs = U.cards[card], U.cardSubs[card]
+        if m and m.title then return m.title end
+        if subs and subs[1] then return subs[1] end
+        return "General"
+    end
+    local function cardSub(card)
+        local m, subs = U.cards[card], U.cardSubs[card]
+        if subs and #subs > 1 then return table.concat(subs, "  ·  ", (m and m.title) and 1 or 2) end
+        local n = 0
+        for row in pairs(U.items) do
+            if row.Parent and row:IsDescendantOf(card) then n += 1 end
+        end
+        return n == 1 and "1 setting" or (n .. " settings")
+    end
+    local function cardLive(card)
+        for row, id in pairs(U.modRows) do
+            if row.Parent == nil then
+                U.modRows[row] = nil
+            elseif Modules[id] and Modules[id].Enabled and row:IsDescendantOf(card) then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- the detail pane borrows one card at a time and always hands it back
+    local function returnCard()
+        local m = R.moved
+        if not m then return end
+        R.moved = nil
+        if not pcall(function() m.card.Parent = m.parent end) or m.parent.Parent == nil then
+            pcall(function() m.card:Destroy() end)
+        end
+    end
+    local function paintList()
+        for card, e in pairs(R.entries) do
+            local on = R.moved and R.moved.card == card
+            e.b.BackgroundTransparency = on and 0.9 or 1
+            e.bar.Visible = on
+            e.t.TextColor3 = on and P.Text or P.TextMuted
+        end
+    end
+    local function showCard(card)
+        if R.moved and R.moved.card == card then return end
+        returnCard()
+        if not card then
+            R.title.Text = "Nothing here"
+            R.crumbSub.Text = ""
+            return
+        end
+        R.moved = { card = card, parent = card.Parent, tab = R.tab }
+        R.remember[R.tab] = cardTitle(card)
+        card.Parent = R.detail
+        R.detail.CanvasPosition = Vector2.new(0, 0)
+        R.title.Text = cardTitle(card)
+        R.crumbTab.Text = string.upper(R.tab or "")
+        local subs = U.cardSubs[card]
+        R.crumbSub.Text = (subs and U.subCur[card] and U.subCur[card] ~= R.title.Text) and ("›  " .. string.upper(U.subCur[card])) or ""
+        paintList()
+        if Koffee.Anim.spot("AnimTabs") then
+            R.dwrap.GroupTransparency = 0.6
+            R.dwrap.Position = UDim2.new(0, 14, 0, HEAD)
+            tween(R.dwrap, Theme.Animation.Slow, { GroupTransparency = 0, Position = UDim2.new(0, 0, 0, HEAD) })
+        end
+    end
+
+    local function rebuildList()
+        for _, c in ipairs(R.list:GetChildren()) do
+            if c:IsA("GuiObject") then c:Destroy() end
+        end
+        R.entries = {}
+        local cards = topCards(R.tab)
+        R.listTitle.Text = R.tab or ""
+        R.listCount.Text = #cards == 1 and "1 box" or (#cards .. " boxes")
+        local pick
+        for i, card in ipairs(cards) do
+            local b = new("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 50), BackgroundColor3 = P.Snow,
+                BackgroundTransparency = 1, LayoutOrder = i, ZIndex = 33, Parent = R.list }, { corner(10) })
+            local bar = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0), Size = UDim2.new(0, 3, 0, 22),
+                BackgroundColor3 = P.Accent, BorderSizePixel = 0, Visible = false, ZIndex = 34, Parent = b }, { pillCorner() })
+            local t = label(b, { Text = cardTitle(card), FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body, TextColor3 = P.TextMuted,
+                Position = UDim2.new(0, 14, 0, 9), Size = UDim2.new(1, -40, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
+            label(b, { Text = cardSub(card), TextSize = Theme.Text.Small, TextColor3 = P.TextFaint or P.TextMuted, FontFace = Theme.Fonts.Regular,
+                Position = UDim2.new(0, 14, 0, 27), Size = UDim2.new(1, -40, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd })
+            local dot = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0), Size = UDim2.new(0, 7, 0, 7),
+                BackgroundColor3 = P.Success, BorderSizePixel = 0, Visible = cardLive(card), ZIndex = 34, Parent = b }, { pillCorner() })
+            R.entries[card] = { b = b, bar = bar, t = t, dot = dot }
+            Koffee.attachBtnHover(b, 0.94, 1)
+            b.MouseLeave:Connect(function() paintList() end)
+            b.MouseButton1Click:Connect(function()
+                Koffee.Sfx.play("tab")
+                showCard(card)
+            end)
+            if R.remember[R.tab] == cardTitle(card) then pick = card end
+        end
+        showCard(pick or cards[1])
+        paintList()
+    end
+
+    local function paintRail()
+        for name, e in pairs(R.btns) do
+            local on = name == R.tab
+            e.b.BackgroundTransparency = on and 0.86 or 1
+            e.b.BackgroundColor3 = on and P.Accent or P.Snow
+            e.ic.ImageColor3 = on and P.Accent or P.TextMuted
+            e.l.TextColor3 = on and P.Accent or P.Text
+        end
+    end
+    local function onTab(name)
+        if not (R.built and isRail()) then return end
+        R.tab = name
+        paintRail()
+        rebuildList()
+    end
+
+    local function build()
+        if R.built then return end
+        R.built = true
+        R.root = new("Frame", { Name = KID.name("rl"), Position = UDim2.new(0, 2, 0, 2), Size = UDim2.new(1, -4, 1, -4),
+            BackgroundTransparency = 1, Visible = false, ZIndex = 31, Parent = window })
+        R.hold = new("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = false, Parent = R.root })
+
+        -- feature list column
+        local col = new("Frame", { Position = UDim2.new(0, RAIL, 0, 0), Size = UDim2.new(0, LIST, 1, 0), BackgroundColor3 = P.Panel,
+            BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 32, Parent = R.root })
+        new("Frame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.new(0, 1, 1, 0),
+            BackgroundColor3 = P.Border, BackgroundTransparency = 0.3, BorderSizePixel = 0, ZIndex = 33, Parent = col })
+        R.col = col
+        local lhead = new("Frame", { Size = UDim2.new(1, 0, 0, HEAD), BackgroundTransparency = 1, ZIndex = 33, Parent = col })
+        makeDraggable(lhead, window)
+        R.listTitle = label(lhead, { Text = "", FontFace = Theme.Fonts.Title or Theme.Fonts.Bold, TextSize = 20,
+            Position = UDim2.new(0, 18, 0, 16), Size = UDim2.new(1, -36, 0, 24) })
+        R.listCount = label(lhead, { Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = P.TextMuted,
+            Position = UDim2.new(0, 18, 0, 40), Size = UDim2.new(1, -36, 0, 14) })
+        local search = new("TextButton", { Text = "", AutoButtonColor = false, Position = UDim2.new(0, 12, 0, HEAD),
+            Size = UDim2.new(1, -24, 0, 34), BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.25, ZIndex = 33, Parent = col },
+            { corner(9), stroke(P.BorderSubtle) })
+        local si = Koffee.lucideIcon(search, "search", 14, P.TextMuted, 34)
+        si.AnchorPoint = Vector2.new(0, 0.5)
+        si.Position = UDim2.new(0, 11, 0.5, 0)
+        label(search, { Text = "Search settings", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = P.TextMuted,
+            Position = UDim2.new(0, 32, 0, 0), Size = UDim2.new(1, -90, 1, 0) })
+        label(search, { Text = "Ctrl K", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny, TextColor3 = P.TextMuted,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.new(0, 44, 0, 18),
+            TextXAlignment = Enum.TextXAlignment.Center, BackgroundColor3 = P.Pill })
+        Koffee.attachBtnHover(search, 0, 0.25)
+        R.search = search
+        R.list = new("ScrollingFrame", { Position = UDim2.new(0, 0, 0, HEAD + 46), Size = UDim2.new(1, 0, 1, -(HEAD + 46) - 64),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = P.Border,
+            CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 33, Parent = col }, {
+            new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), PaddingTop = UDim.new(0, 2) }) })
+
+        -- you + the active config, bottom of the list column
+        local me = new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 10, 1, -10), Size = UDim2.new(1, -20, 0, 50),
+            BackgroundColor3 = P.Background, BackgroundTransparency = 0.35, ZIndex = 33, Parent = col }, { corner(12), stroke(P.BorderSubtle) })
+        local av = new("ImageLabel", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 9, 0.5, 0), Size = UDim2.new(0, 32, 0, 32),
+            BackgroundColor3 = P.PanelElevated, ZIndex = 34, Parent = me,
+            Image = "rbxthumb://type=AvatarHeadShot&id=" .. LocalPlayer.UserId .. "&w=48&h=48" }, { pillCorner() })
+        -- initial underneath, for places where thumbnails never arrive
+        label(av, { Text = string.upper(LocalPlayer.Name:sub(1, 1)), FontFace = Theme.Fonts.Bold, TextSize = 14, TextColor3 = P.Accent,
+            Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 33 })
+        label(me, { Text = LocalPlayer.Name, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            Position = UDim2.new(0, 50, 0, 8), Size = UDim2.new(1, -60, 0, 15), TextTruncate = Enum.TextTruncate.AtEnd })
+        local cfg = new("TextButton", { Text = "", AutoButtonColor = false, Position = UDim2.new(0, 50, 0, 25), Size = UDim2.new(1, -58, 0, 17),
+            BackgroundTransparency = 1, ZIndex = 34, Parent = me })
+        local cl = label(cfg, { Text = U.cfgName or "No config", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = P.Accent, Size = UDim2.new(1, -14, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 35 })
+        local cv = Koffee.lucideIcon(cfg, "chevron-down", 12, P.TextMuted, 35)
+        cv.AnchorPoint = Vector2.new(1, 0.5)
+        cv.Position = UDim2.new(1, 0, 0.5, 0)
+        U.cfgLabels[#U.cfgLabels + 1] = cl
+        cfg.MouseButton1Click:Connect(function() if U.openConfigMenu then U.openConfigMenu(cfg) end end)
+
+        -- detail pane
+        local det = new("Frame", { Position = UDim2.new(0, RAIL + LIST, 0, 0), Size = UDim2.new(1, -(RAIL + LIST), 1, 0),
+            BackgroundTransparency = 1, ZIndex = 32, Parent = R.root })
+        R.det = det
+        local dhead = new("Frame", { Size = UDim2.new(1, 0, 0, HEAD), BackgroundTransparency = 1, ZIndex = 33, Parent = det })
+        makeDraggable(dhead, window)
+        R.crumbTab = label(dhead, { Text = "", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Tiny, TextColor3 = P.Accent,
+            Position = UDim2.new(0, 24, 0, 17), AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 12) })
+        R.crumbSub = label(dhead, { Text = "", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Tiny, TextColor3 = P.TextMuted,
+            Position = UDim2.new(0, 24, 0, 17), Size = UDim2.new(0, 300, 0, 12) })
+        R.crumbTab:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+            R.crumbSub.Position = UDim2.new(0, 24 + R.crumbTab.AbsoluteSize.X + 8, 0, 17)
+        end)
+        R.title = label(dhead, { Text = "", FontFace = Theme.Fonts.Title or Theme.Fonts.Bold, TextSize = 22,
+            Position = UDim2.new(0, 24, 0, 30), Size = UDim2.new(1, -140, 0, 26), TextTruncate = Enum.TextTruncate.AtEnd })
+        label(dhead, { Text = "v" .. Koffee.Version, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny, TextColor3 = P.TextMuted,
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -24, 0, 20), Size = UDim2.new(0, 80, 0, 12),
+            TextXAlignment = Enum.TextXAlignment.Right })
+        new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 20, 1, 0), Size = UDim2.new(1, -40, 0, 1),
+            BackgroundColor3 = P.Border, BackgroundTransparency = 0.4, BorderSizePixel = 0, ZIndex = 33, Parent = dhead })
+        R.dwrap = new("CanvasGroup", { Position = UDim2.new(0, 0, 0, HEAD), Size = UDim2.new(1, 0, 1, -HEAD), BackgroundTransparency = 1,
+            ZIndex = 32, Parent = det })
+        R.detail = new("ScrollingFrame", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 4, ScrollBarImageColor3 = P.TextFaint or P.Border, ScrollBarImageTransparency = 0.4, CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 33, Parent = R.dwrap }, {
+            new("UIListLayout", { Padding = UDim.new(0, 12), SortOrder = Enum.SortOrder.LayoutOrder }),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 16), PaddingTop = UDim.new(0, 4),
+                PaddingBottom = UDim.new(0, 18) }) })
+
+        -- icon rail, widens over the list on hover
+        local rail = new("Frame", { Size = UDim2.new(0, RAIL, 1, 0), BackgroundColor3 = P.Background, BackgroundTransparency = 0,
+            BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 40, Parent = R.root }, { corner(12) })
+        local railStroke = stroke(P.Border, 1)
+        railStroke.Transparency = 1
+        railStroke.Parent = rail
+        R.rail = rail
+        R.logo = new("Frame", { Position = UDim2.new(0, 11, 0, 16), Size = UDim2.new(0, 36, 0, 36), BackgroundTransparency = 1,
+            ZIndex = 41, Parent = rail })
+        new("ImageLabel", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Image = Koffee.icon("koffee-k"),
+            ImageColor3 = P.Accent, ScaleType = Enum.ScaleType.Fit, ZIndex = 42, Parent = R.logo })
+        R.fade = { label(rail, { Text = "koffee", FontFace = Theme.Fonts.Bold, TextSize = 16, Position = UDim2.new(0, 56, 0, 26),
+            Size = UDim2.new(0, 120, 0, 20), TextTransparency = 1, ZIndex = 41 }) }
+        local function railBtn(name, parent, order)
+            local b = new("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.new(1, -12, 0, 40), Position = UDim2.new(0, 6, 0, 0),
+                BackgroundColor3 = P.Snow, BackgroundTransparency = 1, LayoutOrder = order, ZIndex = 41, Parent = parent }, { corner(10) })
+            local ic = Koffee.lucideIcon(b, ICON[name] or "box", 19, P.TextMuted, 42)
+            ic.AnchorPoint = Vector2.new(0.5, 0.5)
+            ic.Position = UDim2.new(0, 23, 0.5, 0)
+            local l = label(b, { Text = name, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body, Position = UDim2.new(0, 48, 0, 0),
+                Size = UDim2.new(0, 130, 1, 0), TextTransparency = 1, ZIndex = 42 })
+            R.fade[#R.fade + 1] = l
+            R.btns[name] = { b = b, ic = ic, l = l }
+            b.MouseEnter:Connect(function() if name ~= R.tab then tween(b, Theme.Animation.Fast, { BackgroundTransparency = 0.94 }) end end)
+            b.MouseLeave:Connect(function() paintRail() end)
+            b.MouseButton1Click:Connect(function() selectTab(name) end)
+        end
+        local top = new("Frame", { Position = UDim2.new(0, 0, 0, 68), Size = UDim2.new(1, 0, 1, -128), BackgroundTransparency = 1,
+            ZIndex = 41, Parent = rail }, { new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local order = 0
+        for gi, grp in ipairs(GROUPS) do
+            for _, name in ipairs(grp) do
+                if tabs[name] then order += 1; railBtn(name, top, order) end
+            end
+            if gi < #GROUPS then
+                order += 1
+                local sep = new("Frame", { Size = UDim2.new(1, 0, 0, 13), BackgroundTransparency = 1, LayoutOrder = order, ZIndex = 41, Parent = top })
+                new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 16, 0.5, 0), Size = UDim2.new(1, -32, 0, 1),
+                    BackgroundColor3 = P.Border, BorderSizePixel = 0, ZIndex = 41, Parent = sep })
+            end
+        end
+        for name in pairs(tabs) do
+            local known = name == "Options"
+            for _, grp in ipairs(GROUPS) do
+                for _, n in ipairs(grp) do if n == name then known = true end end
+            end
+            if not known then order += 1; railBtn(name, top, order) end
+        end
+        local bottom = new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -10), Size = UDim2.new(1, 0, 0, 40),
+            BackgroundTransparency = 1, ZIndex = 41, Parent = rail })
+        if tabs.Options then railBtn("Options", bottom, 1) end
+        local function widen(open)
+            tween(rail, TweenInfo.new(0.26, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+                { Size = UDim2.new(0, open and RAIL_OPEN or RAIL, 1, 0) })
+            tween(railStroke, Theme.Animation.Normal, { Transparency = open and 0.2 or 1 })
+            for _, l in ipairs(R.fade) do
+                tween(l, TweenInfo.new(open and 0.22 or 0.1), { TextTransparency = open and 0 or 1 })
+            end
+        end
+        rail.MouseEnter:Connect(function() widen(true) end)
+        rail.MouseLeave:Connect(function() widen(false) end)
+        new("Frame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(0, RAIL, 0, 0), Size = UDim2.new(0, 1, 1, 0),
+            BackgroundColor3 = P.Border, BackgroundTransparency = 0.3, BorderSizePixel = 0, ZIndex = 39, Parent = R.root })
+    end
+
+    -- Ctrl+K: index the live settings, rank, jump, flash
+    local PAL = {}
+    local function closePalette()
+        if PAL.root then PAL.root:Destroy() end
+        PAL.root = nil
+    end
+    local function tabOf(inst)
+        if R.moved and inst:IsDescendantOf(R.moved.card) then return R.moved.tab end
+        for name, t in pairs(tabs) do
+            if inst:IsDescendantOf(t.Panel) then return name end
+        end
+        return nil
+    end
+    local function index()
+        local out = {}
+        for row, lbl in pairs(U.items) do
+            if row.Parent == nil then
+                U.items[row] = nil
+            else
+                local tab = tabOf(row)
+                if tab then
+                    local top, subs = nil, {}
+                    local p = row.Parent
+                    while p do
+                        if U.subShow[p] then table.insert(subs, 1, p) end
+                        if U.cards[p] then top = p end
+                        p = p.Parent
+                    end
+                    if top then
+                        local path = { tab, cardTitle(top) }
+                        local last = subs[#subs]
+                        if last and last.Name ~= path[2] then path[#path + 1] = last.Name end
+                        out[#out + 1] = { label = lbl, low = lbl:lower(), path = table.concat(path, "  ›  "), tab = tab, top = top, subs = subs, row = row }
+                    end
+                end
+            end
+        end
+        for name in pairs(tabs) do
+            for _, card in ipairs(topCards(name)) do
+                local t = cardTitle(card)
+                out[#out + 1] = { label = t, low = t:lower(), path = name .. "  ›  box", tab = name, top = card, subs = {}, box = true }
+            end
+        end
+        return out
+    end
+    local function rank(q)
+        q = q:lower():gsub("^%s+", ""):gsub("%s+$", "")
+        local res = {}
+        if q == "" then return res end
+        local words = {}
+        for w in q:gmatch("%S+") do words[#words + 1] = w end
+        for _, e in ipairs(PAL.idx) do
+            local hay = e.low .. " " .. e.path:lower()
+            local ok = true
+            for _, w in ipairs(words) do
+                if not hay:find(w, 1, true) then ok = false; break end
+            end
+            if ok then
+                local s = 10
+                if e.low == q then s = 100
+                elseif e.low:sub(1, #q) == q then s = 80
+                elseif e.low:find(" " .. words[1], 1, true) then s = 60
+                elseif e.low:find(words[1], 1, true) then s = 40 end
+                if e.box then s += 5 end
+                res[#res + 1] = { e = e, s = s - #e.low * 0.1 }
+            end
+        end
+        table.sort(res, function(a, b) return a.s > b.s end)
+        return res
+    end
+    local function flash(row)
+        local f = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(1, 14, 1, 6),
+            BackgroundColor3 = P.Accent, BackgroundTransparency = 0.62, BorderSizePixel = 0, ZIndex = 33, Parent = row }, { corner(7) })
+        local s = stroke(P.Accent, 1)
+        s.Parent = f
+        task.delay(0.35, function()
+            tween(f, TweenInfo.new(1.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundTransparency = 1 })
+            tween(s, TweenInfo.new(1.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Transparency = 1 })
+            task.delay(1.2, function() f:Destroy() end)
+        end)
+    end
+    local function jump(e)
+        closePalette()
+        Koffee.Sfx.play("select")
+        if e.tab ~= activeTab then selectTab(e.tab) end
+        task.defer(function()
+            showCard(e.top)
+            for _, cf in ipairs(e.subs) do pcall(U.subShow[cf]) end
+            if not e.row then return end
+            task.wait()
+            task.wait()
+            if not e.row.Parent then return end
+            local y = e.row.AbsolutePosition.Y - R.detail.AbsolutePosition.Y + R.detail.CanvasPosition.Y - 90
+            tween(R.detail, Theme.Animation.Slow, { CanvasPosition = Vector2.new(0, math.max(0, y)) })
+            flash(e.row)
+        end)
+    end
+    local function paintResults()
+        for _, c in ipairs(PAL.res:GetChildren()) do
+            if c:IsA("GuiObject") then c:Destroy() end
+        end
+        local list = PAL.hits
+        if #list == 0 then
+            label(PAL.res, { Text = PAL.q == "" and "Type to search every setting in Koffee" or "No settings match",
+                FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = P.TextMuted, Size = UDim2.new(1, 0, 0, 40),
+                TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 304 })
+        end
+        for i = 1, math.min(#list, 8) do
+            local e, on = list[i].e, i == PAL.sel
+            local b = new("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = P.Accent,
+                BackgroundTransparency = on and 0.86 or 1, LayoutOrder = i, ZIndex = 303, Parent = PAL.res }, { corner(9) })
+            local ic = Koffee.lucideIcon(b, e.box and "box" or (ICON[e.tab] or "box"), 15, on and P.Accent or P.TextMuted, 304)
+            ic.AnchorPoint = Vector2.new(0, 0.5)
+            ic.Position = UDim2.new(0, 12, 0.5, 0)
+            local name = label(b, { Text = e.label, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body, AutomaticSize = Enum.AutomaticSize.X,
+                Position = UDim2.new(0, 38, 0, 0), Size = UDim2.new(0, 0, 1, 0), ZIndex = 304 })
+            local path = label(b, { Text = e.path, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = P.TextMuted,
+                Position = UDim2.new(0, 38, 0, 0), Size = UDim2.new(1, -150, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 304 })
+            task.defer(function()
+                if path.Parent then path.Position = UDim2.new(0, 38 + name.AbsoluteSize.X + 10, 0, 0) end
+            end)
+            if on then
+                label(b, { Text = "Enter", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny, TextColor3 = P.Accent,
+                    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 46, 0, 18),
+                    TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 304 })
+            end
+            b.MouseEnter:Connect(function()
+                if PAL.sel ~= i then PAL.sel = i; paintResults() end
+            end)
+            b.MouseButton1Click:Connect(function() jump(e) end)
+        end
+        PAL.box.Size = UDim2.new(0, 620, 0, 64 + math.max(1, math.min(#list, 8)) * 44 + 40)
+    end
+    local function openPalette()
+        if PAL.root or not (R.built and isRail()) then return end
+        PAL.idx, PAL.hits, PAL.sel, PAL.q = index(), {}, 1, ""
+        local root = new("TextButton", { Name = KID.name("pal"), Text = "", AutoButtonColor = false, Size = UDim2.new(1, 0, 1, 0),
+            BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5, ZIndex = 300, Parent = popupScreen })
+        PAL.root = root
+        root.MouseButton1Click:Connect(closePalette)
+        local box = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.16, 0), Size = UDim2.new(0, 620, 0, 148),
+            BackgroundColor3 = P.Panel, BorderSizePixel = 0, Active = true, ZIndex = 301, Parent = root }, { corner(14), stroke(P.Border) })
+        PAL.box = box
+        Koffee.popIn(box, 0.96)
+        local si = Koffee.lucideIcon(box, "search", 17, P.Accent, 302)
+        si.Position = UDim2.new(0, 18, 0, 20)
+        local tb = new("TextBox", { Text = "", PlaceholderText = "Search settings and boxes", PlaceholderColor3 = P.TextMuted,
+            FontFace = Theme.Fonts.Bold, TextSize = 16, TextColor3 = P.Text, BackgroundTransparency = 1, ClearTextOnFocus = false,
+            TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.new(0, 46, 0, 8), Size = UDim2.new(1, -64, 0, 42), ZIndex = 302, Parent = box })
+        new("Frame", { Position = UDim2.new(0, 0, 0, 56), Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = P.Border, BorderSizePixel = 0,
+            ZIndex = 302, Parent = box })
+        PAL.res = new("Frame", { Position = UDim2.new(0, 8, 0, 62), Size = UDim2.new(1, -16, 1, -102), BackgroundTransparency = 1,
+            ZIndex = 302, Parent = box }, { new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        label(box, { Text = "↑ ↓  move      Enter  jump      Esc  close", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Tiny,
+            TextColor3 = P.TextMuted, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 14),
+            ZIndex = 302 })
+        tb:GetPropertyChangedSignal("Text"):Connect(function()
+            PAL.q, PAL.sel = tb.Text, 1
+            PAL.hits = rank(tb.Text)
+            paintResults()
+        end)
+        tb.FocusLost:Connect(function(enter)
+            if enter and PAL.root and PAL.hits[PAL.sel] then jump(PAL.hits[PAL.sel].e) end
+        end)
+        paintResults()
+        task.defer(function() if tb.Parent then tb:CaptureFocus() end end)
+    end
+    UserInputService.InputBegan:Connect(function(io)
+        if Koffee.dead() or io.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        if PAL.root then
+            if io.KeyCode == Enum.KeyCode.Escape then closePalette()
+            elseif io.KeyCode == Enum.KeyCode.Down or io.KeyCode == Enum.KeyCode.Up then
+                local n = math.min(#PAL.hits, 8)
+                if n > 0 then
+                    PAL.sel = ((PAL.sel - 1 + (io.KeyCode == Enum.KeyCode.Down and 1 or -1)) % n) + 1
+                    paintResults()
+                end
+            end
+            return
+        end
+        if io.KeyCode == Enum.KeyCode.K and isRail() and window.Visible and window.GroupTransparency < 1
+            and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then
+            openPalette()
+        end
+    end)
+
+    -- keep the borrowed card honest across rebuilds and Secondary Tab switches
+    U.beforeRebuild[#U.beforeRebuild + 1] = function(name)
+        if R.moved and R.moved.tab == name then returnCard() end
+    end
+    U.afterRebuild[#U.afterRebuild + 1] = function(name)
+        if R.built and isRail() and R.tab == name then rebuildList() end
+    end
+    U.subHooks[#U.subHooks + 1] = function(card, name)
+        if R.moved and R.moved.card == card then
+            R.crumbSub.Text = name ~= R.title.Text and ("›  " .. string.upper(name)) or ""
+        end
+    end
+    U.tabHooks[#U.tabHooks + 1] = onTab
+    U.openHooks[#U.openHooks + 1] = function(open)
+        if not open then closePalette() end
+        if not (open and R.built and isRail() and Koffee.Anim.spot("AnimWindow")) then return end
+        R.rail.Position = UDim2.new(0, -14, 0, 0)
+        R.col.Position = UDim2.new(0, RAIL - 10, 0, 0)
+        R.det.Position = UDim2.new(0, RAIL + LIST + 18, 0, 0)
+        local ti = TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+        tween(R.rail, ti, { Position = UDim2.new(0, 0, 0, 0) })
+        task.delay(0.04, function() tween(R.col, ti, { Position = UDim2.new(0, RAIL, 0, 0) }) end)
+        task.delay(0.08, function() tween(R.det, ti, { Position = UDim2.new(0, RAIL + LIST, 0, 0) }) end)
+    end
+    -- the live dots follow module state while the list is up
+    task.spawn(function()
+        while not Koffee.dead() do
+            if R.built and isRail() and window.Visible then
+                for card, e in pairs(R.entries) do
+                    if card.Parent then e.dot.Visible = cardLive(card) end
+                end
+            end
+            task.wait(0.5)
+        end
+    end)
+
+    U.shells.Rail = {
+        enter = function()
+            build()
+            local vp = viewport()
+            R.prevH = window.Size.Y.Offset
+            local w, h = math.min(1060, vp.X - 40), math.min(640, vp.Y - 80)
+            window.Size = UDim2.new(window.Size.X.Scale, w, window.Size.Y.Scale, h)
+            if wCorner then R.prevR = wCorner.CornerRadius; wCorner.CornerRadius = UDim.new(0, 14) end
+            titleBar.Visible, tabBar.Visible, content.Visible = false, false, false
+            R.root.Visible = true
+            for _, t in pairs(tabs) do t.Wrap.Parent = R.hold end
+            if activeTab then onTab(activeTab) end
+        end,
+        exit = function()
+            closePalette()
+            returnCard()
+            if R.root then R.root.Visible = false end
+            window.Size = UDim2.new(window.Size.X.Scale, Theme.Sizes.WindowWidth, window.Size.Y.Scale, R.prevH or Theme.Sizes.WindowHeight)
+            if wCorner and R.prevR then wCorner.CornerRadius = R.prevR end
+            titleBar.Visible, tabBar.Visible, content.Visible = true, true, true
+            for _, t in pairs(tabs) do t.Wrap.Parent = content end
+            if activeTab and tabs[activeTab] then
+                local b = tabs[activeTab].Button
+                task.defer(function() movePillTo(b, true) end)
+            end
+        end,
+    }
+
+    -- steam over the rail logo, outside the canvas like Glass
+    local front = new("Frame", { Name = KID.name("rf"), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, ZIndex = 40, Parent = screen })
+    local steam = {}
+    for i = 1, 2 do
+        steam[i] = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 36, 0, 36), BackgroundTransparency = 1,
+            Image = Koffee.icon("koffee-steam"), ImageColor3 = P.Snow, ImageTransparency = 1, ZIndex = 41, Parent = front })
+    end
+    RunService.RenderStepped:Connect(function()
+        if Koffee.dead() then front.Visible = false; return end
+        local live = isRail() and R.built and window.Visible and window.GroupTransparency < 1 and not PAL.root
+        front.Visible = live
+        if not live then return end
+        local a, t = 1 - window.GroupTransparency, os.clock()
+        local lp, ls = R.logo.AbsolutePosition - front.AbsolutePosition, R.logo.AbsoluteSize
+        for i, im in ipairs(steam) do
+            local ph = (t / 2.6 + (i - 1) * 0.5) % 1
+            im.Position = UDim2.fromOffset(lp.X + ls.X * 0.5 + math.sin(ph * 6.28) * 1.2, lp.Y + ls.Y * 0.5 - ph * 7)
+            im.ImageTransparency = 1 - math.sin(ph * math.pi) * 0.55 * a
+        end
+    end)
+
+    if isRail() then U.shells.Rail.enter() end
 end)()
 
 -- v1.0.0: one-time celebration after the first 1.0 load (confetti, fanfare, the road
