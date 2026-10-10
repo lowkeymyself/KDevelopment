@@ -437,10 +437,7 @@ do
             return cg
         end)
         if hostOk and host then
-            -- v0.67.0: loader UI lives in an IIFE for its own register budget.
-            -- The main chunk rides the 200-local ceiling at O0; this block used
-            -- to spend ~20 of those slots. Flow below is unchanged (manifest loop,
-            -- retry/skip, fade close, no-file-API fallthrough).
+            -- v0.67.0: loader UI lives in an IIFE for its own register budget. The main chunk rides the 200-local ceiling at O0; this block used to spend ~20 of those slots. Flow below is unchanged (manifest loop, retry/skip, fade close, no-file-API fallthrough).
             (function()
             local TweenService = game:GetService("TweenService")
             local ACCENT  = Color3.fromRGB(212, 145, 90)
@@ -611,10 +608,7 @@ do
             local retryBtn = mkBtn(0, 128, "Retry", TEXT)
             local skipBtn  = mkBtn(136, 128, "Skip", MUTED)
 
-            -- v0.93.16: Skip only skips CHECKING cached files. It fades out the moment a
-            -- download starts and back in when checking resumes; missing files still download.
-            -- v0.99.50: Options > Startup > Skip Loading starts with the check pass skipped
-            -- (Koffee/startup.json, outside configs); missing files still download
+            -- v0.93.16: Skip only skips CHECKING cached files. It fades out the moment a download starts and back in when checking resumes; missing files still download. v0.99.50: Options > Startup > Skip Loading starts with the check pass skipped (Koffee/startup.json, outside configs); missing files still download
             local skipCheck = false
             pcall(function()
                 if isfile("Koffee/startup.json") then
@@ -806,10 +800,7 @@ do
     end
 end
 
--- Hood Customs speed-anchor neutra. Framework anchors YOUR hrp for 1s when
--- horizontal velocity >= 100 (private-server toggle). Un-anchor on sight;
--- fly/velocity reassert motion per frame, so the stop never sticks. CFrame
--- fly uses head.Anchored, TP Walk touches nothing: neither is disturbed.
+-- Hood Customs speed-anchor neutra. Framework anchors YOUR hrp for 1s when horizontal velocity >= 100 (private-server toggle). Un-anchor on sight; fly/velocity reassert motion per frame, so the stop never sticks. CFrame fly uses head.Anchored, TP Walk touches nothing: neither is disturbed.
 if game.PlaceId == 9825515356 then pcall(function()
     -- chunk locals (RunService/LocalPlayer) don't exist this early; resolve
     -- everything off game so the neutra actually runs instead of no-op'ing.
@@ -825,12 +816,7 @@ if game.PlaceId == 9825515356 then pcall(function()
     end)
 end) end
 
--- v0.0.96 EXECUTOR PROFILING + SAFE MODE PROMPT. Weak executors crash when
--- silent aim installs the full __namecall hook (newcclosure+hookmetamethod is a
--- known bricker). If the executor isn't on the known-good list (Potassium/Volt),
--- prompt for the SAFE variant: __index-only redirect (Mouse.Hit/Target/UnitRay
--- only, no __namecall, no Camera/pos spoof) -> the game doesn't crash, but
--- wallbang + forced-mb stay disabled. Prompt yields on a BindableEvent.
+-- v0.0.96 EXECUTOR PROFILING + SAFE MODE PROMPT. Weak executors crash when silent aim installs the full __namecall hook (newcclosure+hookmetamethod is a known bricker). If the executor isn't on the known-good list (Potassium/Volt), prompt for the SAFE variant: __index-only redirect (Mouse.Hit/Target/UnitRay only, no __namecall, no Camera/pos spoof) -> the game doesn't crash, but wallbang + forced-mb stay disabled. Prompt yields on a BindableEvent.
 Koffee._safeMode = false
 Koffee._exec     = "Unknown"
 do
@@ -843,10 +829,7 @@ do
         end
     end)
     Koffee._exec = execName
-    -- v0.1.1: case-insensitive lookup. identifyexecutor() casing isn't contractual
-    -- across runtimes ("Potassium" vs "potassium" both seen in the wild); a strict
-    -- match sends whitelisted users into the safe-mode BindableEvent gate, which
-    -- yields the load thread until they click a button they don't know they need.
+    -- v0.1.1: case-insensitive lookup. identifyexecutor() casing isn't contractual across runtimes ("Potassium" vs "potassium" both seen in the wild); a strict match sends whitelisted users into the safe-mode BindableEvent gate, which yields the load thread until they click a button they don't know they need.
     local KNOWN_STRONG = { potassium = true, volt = true }
     if not (type(execName) == "string" and KNOWN_STRONG[execName:lower()]) then
         local ok, answer = pcall(function()
@@ -978,25 +961,10 @@ local Theme = {
     },
     Fonts = (function()
         local MONO  = "rbxasset://fonts/families/RobotoMono.json"
-        -- v0.0.29: Matcha's ACTUAL face is Proxima Soft Bold. We auto-download the .ttf once
-        -- (cached to executor workspace), wrap it in a font-family JSON for getcustomasset.
-        -- Everything is pcall'd with a Nunito fallback: locked-down executors still render.
-        -- Font is a nicety, never a hard dep.
-        -- v0.1.1: SYNC path is CACHE-ONLY. If the cached ttf+json are already on
-        -- disk, we register them synchronously. If NOT, we return nil (Nunito
-        -- fallback) and kick off the download in a background task so the NEXT
-        -- session finds the cache. This kills a ~700KB HTTP-download-on-main-
-        -- thread that friend's game froze on when a first-run happened after a
-        -- fresh executor cache wipe.
+        -- v0.0.29: Matcha's ACTUAL face is Proxima Soft Bold. We auto-download the .ttf once (cached to executor workspace), wrap it in a font-family JSON for getcustomasset. Everything is pcall'd with a Nunito fallback: locked-down executors still render. Font is a nicety, never a hard dep. v0.1.1: SYNC path is CACHE-ONLY. If the cached ttf+json are already on disk, we register them synchronously. If NOT, we return nil (Nunito fallback) and kick off the download in a background task so the NEXT session finds the cache. This kills a ~700KB HTTP-download-on-main- thread that friend's game froze on when a first-run happened after a fresh executor cache wipe.
         local FONT_URL  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProximaSoft-Bold.ttf"
         local FONT_FILE = "koffee_proximasoft.ttf"
-        -- v0.2.1: versioned filename + always-rebuild. The OLD `koffee_proximasoft.json`
-        -- cached across sessions was the source of the "font shows as Nunito" bug:
-        -- `getcustomasset()` produces a per-session asset URL for the ttf, but the
-        -- JSON on disk still held the PRIOR session's URL, which Roblox couldn't
-        -- resolve this session, silently falling back to the engine default (Nunito).
-        -- Bumping the filename ignores every stale cache in the wild; regenerating
-        -- unconditionally on every load keeps the assetId inside the JSON fresh.
+        -- v0.2.1: versioned filename + always-rebuild. The OLD `koffee_proximasoft.json` cached across sessions was the source of the "font shows as Nunito" bug: `getcustomasset()` produces a per-session asset URL for the ttf, but the JSON on disk still held the PRIOR session's URL, which Roblox couldn't resolve this session, silently falling back to the engine default (Nunito). Bumping the filename ignores every stale cache in the wild; regenerating unconditionally on every load keeps the assetId inside the JSON fresh.
         local FONT_JSON = "koffee_proximasoft_v2.json"
         local FONT_JSON_OLD = "koffee_proximasoft.json"
         local customFam = (function()
@@ -1037,11 +1005,7 @@ local Theme = {
                 -- v0.2.1: nuke the v1 cache from prior sessions: if it survived to
                 -- disk here, its embedded ttf assetId is guaranteed stale by now.
                 if delfile and isf(FONT_JSON_OLD) then pcall(delfile, FONT_JSON_OLD) end
-                -- CACHE HIT: rebuild the family JSON synchronously every load. The
-                -- ttfId embedded below MUST come from THIS session's getasset() call:
-                -- caching the JSON across sessions was the "font renders as Nunito"
-                -- bug (see comment above FONT_JSON). Cheap: one getasset + JSONEncode
-                -- + writefile per load. No HTTP, all local.
+                -- CACHE HIT: rebuild the family JSON synchronously every load. The ttfId embedded below MUST come from THIS session's getasset() call: caching the JSON across sessions was the "font renders as Nunito" bug (see comment above FONT_JSON). Cheap: one getasset + JSONEncode + writefile per load. No HTTP, all local.
                 local ttfId = getasset(target)
                 local fam = {
                     name  = "ProximaSoft",
@@ -1067,14 +1031,7 @@ local Theme = {
             Mono    = Font.new(MONO, Enum.FontWeight.Medium),
         }
     end)(),
-    -- v0.0.97 FEATURE-INTERFACE FONT SYSTEM (custom font for everything outside the
-    -- main Koffee window). The main interface (the window you open with Delete) keeps
-    -- using Theme.Fonts (ProximaSoft). Feature interface things: arraylist, ESP
-    -- name/distance/health tags, HUD stats labels, etc.: register their TextLabels
-    -- via Theme.fei(label, fontKey, baseSize) so when the user picks a custom font +
-    -- size in Options we hot-swap FontFace + scale TextSize across all of them at
-    -- once without touching each call site. Defaults to FontTable: the system is a
-    -- no-op while FeiOn is false, so feature elements look exactly like before.
+    -- v0.0.97 FEATURE-INTERFACE FONT SYSTEM (custom font for everything outside the main Koffee window). The main interface (the window you open with Delete) keeps using Theme.Fonts (ProximaSoft). Feature interface things: arraylist, ESP name/distance/health tags, HUD stats labels, etc.: register their TextLabels via Theme.fei(label, fontKey, baseSize) so when the user picks a custom font + size in Options we hot-swap FontFace + scale TextSize across all of them at once without touching each call site. Defaults to FontTable: the system is a no-op while FeiOn is false, so feature elements look exactly like before.
     FeiOn     = false,
     FeiSize   = 12,                       -- global text size used when FeiOn
     FeiScale  = 1.0,                      -- FeiSize / Text.Body: multiplies base sizes
@@ -1110,12 +1067,7 @@ local Theme = {
     },
 }
 
--- v0.0.97 FEATURE-INTERFACE FONT SYSTEM: the custom font table + helpers live
--- OUTSIDE the Theme literal (they close over the Theme local). FeiFonts starts as
--- an opaque alias of Fonts; setFeiFont swaps entries and applyFei re-applies them to
--- the registered feature-interface TextLabels (arraylist / ESP tags / HUD stats /
--- health bar text, etc.). While FeiOn is false, the FeiFonts table is never read,
--- so this whole system is a no-op for users who keep the custom font off.
+-- v0.0.97 FEATURE-INTERFACE FONT SYSTEM: the custom font table + helpers live OUTSIDE the Theme literal (they close over the Theme local). FeiFonts starts as an opaque alias of Fonts; setFeiFont swaps entries and applyFei re-applies them to the registered feature-interface TextLabels (arraylist / ESP tags / HUD stats / health bar text, etc.). While FeiOn is false, the FeiFonts table is never read, so this whole system is a no-op for users who keep the custom font off.
 Theme.FeiFonts = {
     Regular = Theme.Fonts.Regular,
     Medium  = Theme.Fonts.Medium,
@@ -1124,11 +1076,7 @@ Theme.FeiFonts = {
     Mono    = Theme.Fonts.Mono,
 }
 
--- register a feature-interface TextLabel so its FontFace + TextSize follow the
--- custom-font toggle. Returns (FontFace, TextSize) to set right now.
--- `fontKey` is Regular / Medium / Bold / Title / Mono; `baseSize` is the Theme.Text
--- size the label would normally use: scaled by FeiScale while FeiOn (preserves the
--- name/is-on/detail hierarchy of the arraylist and the ESP tag sizes).
+-- register a feature-interface TextLabel so its FontFace + TextSize follow the custom-font toggle. Returns (FontFace, TextSize) to set right now. `fontKey` is Regular / Medium / Bold / Title / Mono; `baseSize` is the Theme.Text size the label would normally use: scaled by FeiScale while FeiOn (preserves the name/is-on/detail hierarchy of the arraylist and the ESP tag sizes).
 function Theme.fei(label, fontKey, baseSize)
     -- v0.22.0 leak fix: labels re-register per CharacterAdded / per module toggle,
     -- and applyFei() only prunes when the user touches a font setting. Sweep the
@@ -1195,14 +1143,7 @@ function Theme.setFeiSize(n)
     Theme.applyFei()
 end
 
--- v0.0.97 custom feature font catalog. Hosted on the koffee-assets repo (same as
--- ProximaSoft + the sound pack). Each spec is a URL + a workspace cache path under
--- the Koffee/ folder. The Size of the custom font itself is controlled by FeiSize
--- via the Options slider, not here.
---
--- Wrapped in do/end so FONTS_CATALOG / feiFontCache / loadFeiFont don't add to the
--- chunk-local count: the file sits at Luau's 200-register ceiling. Only the
--- Theme.setFeiFont assignment below escapes to chunk scope.
+-- v0.0.97 custom feature font catalog. Hosted on the koffee-assets repo (same as ProximaSoft + the sound pack). Each spec is a URL + a workspace cache path under the Koffee/ folder. The Size of the custom font itself is controlled by FeiSize via the Options slider, not here. Wrapped in do/end so FONTS_CATALOG / feiFontCache / loadFeiFont don't add to the chunk-local count: the file sits at Luau's 200-register ceiling. Only the Theme.setFeiFont assignment below escapes to chunk scope.
 do
     local FONTS_CATALOG = {
         ["Minecraft Bold"] = {
@@ -1222,12 +1163,7 @@ do
             url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/BurbankBigCondensed-Black.otf",
             file = "Koffee/fonts/BurbankBigCondensed-Black.otf",
         },
-        -- v0.4.0: built-in roblox font families: zero download, register a single
-        -- Font.new pointing at the rbxasset family JSON. Roblox ships all of these.
-        -- Curated for a real range: aaa game (Sarpanch), clean chrome (Ubuntu / Roboto),
-        -- rounded sans (Nunito / Fredoka), serif (Merriweather), display (Luckiest Guy /
-        -- Bangers / Permanent Marker / Creepster / Indie Flower), technical (Michroma),
-        -- default roblox (Source Sans Pro), + the two monos.
+        -- v0.4.0: built-in roblox font families: zero download, register a single Font.new pointing at the rbxasset family JSON. Roblox ships all of these. Curated for a real range: aaa game (Sarpanch), clean chrome (Ubuntu / Roboto), rounded sans (Nunito / Fredoka), serif (Merriweather), display (Luckiest Guy / Bangers / Permanent Marker / Creepster / Indie Flower), technical (Michroma), default roblox (Source Sans Pro), + the two monos.
         ["Sarpanch"]         = { builtin = "rbxasset://fonts/families/Sarpanch.json" },
         ["Ubuntu"]           = { builtin = "rbxasset://fonts/families/Ubuntu.json" },
         ["Roboto"]           = { builtin = "rbxasset://fonts/families/Roboto.json" },
@@ -1305,16 +1241,7 @@ do
                 end
             end
 
-            -- v0.0.97: register as a font-family JSON (one face per weight) so Roblox
-            -- renders at all sizes: a bare single-face URL with Font.new(id, weight)
-            -- silently falls back to the system default at sizes/weights it can't find,
-            -- which is why the custom font looked like a generic default before. mirror
-            -- the ProximaSoft path: build a family JSON, write it, point Font.new at the
-            -- JSON URL with the desired weight.
-            -- v0.2.1: bumped filename (_v2) + always-rebuild. Same stale-assetId bug as
-            -- ProximaSoft's: getcustomasset() gives per-session ttf URLs, so a JSON
-            -- cached across sessions rendered as the engine default. Ignore the v1
-            -- cache in the wild; regenerate every load with THIS session's ttfId.
+            -- v0.0.97: register as a font-family JSON (one face per weight) so Roblox renders at all sizes: a bare single-face URL with Font.new(id, weight) silently falls back to the system default at sizes/weights it can't find, which is why the custom font looked like a generic default before. mirror the ProximaSoft path: build a family JSON, write it, point Font.new at the JSON URL with the desired weight. v0.2.1: bumped filename (_v2) + always-rebuild. Same stale-assetId bug as ProximaSoft's: getcustomasset() gives per-session ttf URLs, so a JSON cached across sessions rendered as the engine default. Ignore the v1 cache in the wild; regenerate every load with THIS session's ttfId.
             local famFile    = "koffee_fei_" .. name:gsub("%s","_"):lower() .. "_v2.json"
             local famFileOld = "koffee_fei_" .. name:gsub("%s","_"):lower() .. ".json"
             if delfile and isf(famFileOld) then pcall(delfile, famFileOld) end
@@ -1364,12 +1291,7 @@ do
     -- expose the loader so the Main-Interface mirror can reuse the same catalog.
     function Theme.loadFeiFont(name) return loadFeiFont(name) end
 
-    -- v0.0.99 MAIN-INTERFACE FONT MIRROR: "Custom Font (MI)". Same catalog as the
-    -- feature font, but applied to the main window's OWN text (labels, buttons,
-    -- textboxes) instead of the feature interface. Original FontFace + TextSize per
-    -- label is snapshotted on first touch, so the mirror is fully reversible.
-    -- v0.1.0: independent name + size. Size swaps TextSize on the same labels
-    -- (TextSize stays a plain number swap; the rows don't reflow, same as before).
+    -- v0.0.99 MAIN-INTERFACE FONT MIRROR: "Custom Font (MI)". Same catalog as the feature font, but applied to the main window's OWN text (labels, buttons, textboxes) instead of the feature interface. Original FontFace + TextSize per label is snapshotted on first touch, so the mirror is fully reversible. v0.1.0: independent name + size. Size swaps TextSize on the same labels (TextSize stays a plain number swap; the rows don't reflow, same as before).
     Theme._miface_cache = {}
     Theme.MIFontOn = false
     function Theme.applyMIFont(root, face, size)
@@ -1419,11 +1341,7 @@ local LocalPlayer = Players.LocalPlayer
 -- Workspace.CurrentCamera fresh, so games that swap CurrentCamera (custom
 -- camera systems) don't leave us projecting through a dead camera.
 
--- v0.12.1 palette role tagging. The colour changer used to repaint by matching
--- VALUES, which dies the moment two roles hold the same colour: the first role in
--- the list claims every instance and the later one can never repaint again. Roles
--- are stamped as attributes at construction instead, so the repaint is exact.
--- Hung off Theme rather than chunk locals: the file is near Luau's register cap.
+-- v0.12.1 palette role tagging. The colour changer used to repaint by matching VALUES, which dies the moment two roles hold the same colour: the first role in the list claims every instance and the later one can never repaint again. Roles are stamped as attributes at construction instead, so the repaint is exact. Hung off Theme rather than chunk locals: the file is near Luau's register cap.
 Theme._roleKeys = { "Accent", "Background", "Panel", "PanelElevated", "Border",
                     "Text", "TextMuted" }
 Theme._roleProps = { BackgroundColor3 = true, TextColor3 = true, ImageColor3 = true,
@@ -1541,11 +1459,7 @@ local function textStroke(color, thick)
         ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
     })
 end
--- v0.0.24: the global Outline effect as a border around a thin feature line-frame
--- (skeleton, cube edge, tracer, corner, head dot). A UIStroke around the frame
--- renders as a separate dark edge on every side: an outline that is truly its
--- OWN line, independent of the feature's fill colour. Disabled by default; the
--- render loop enables/colours/sizes it per frame. Named so it's findable.
+-- v0.0.24: the global Outline effect as a border around a thin feature line-frame (skeleton, cube edge, tracer, corner, head dot). A UIStroke around the frame renders as a separate dark edge on every side: an outline that is truly its OWN line, independent of the feature's fill colour. Disabled by default; the render loop enables/colours/sizes it per frame. Named so it's findable.
 local function lineOutline()
     return new("UIStroke", {
         Name = "KOutline",
@@ -1575,14 +1489,7 @@ local function tween(inst, info, props)
     return t
 end
 
--- v0.0.98: MAIN-INTERFACE ANIMATION LAYER. Every widget class in the window gets
--- a short, quick motion: nothing here touches the Second Interface (top bar /
--- HUD / toast / arraylist / ESP). Three primitives, all built on a per-instance
--- UIScale (visual-only, never fights UIListLayout / AutomaticSize):
---   uScaleOf(inst): lazily attaches one UIScale per instance
---   popFx(btn): press feedback: squash to 0.95 while held, spring back
---   popIn(inst, f): entrance: scale f -> 1 (fades transparency too if asked)
---   pulse(inst, s): one-shot: to f then back to 1 (ticks, pops, catches)
+-- v0.0.98: MAIN-INTERFACE ANIMATION LAYER. Every widget class in the window gets a short, quick motion: nothing here touches the Second Interface (top bar / HUD / toast / arraylist / ESP). Three primitives, all built on a per-instance UIScale (visual-only, never fights UIListLayout / AutomaticSize): uScaleOf(inst): lazily attaches one UIScale per instance popFx(btn): press feedback: squash to 0.95 while held, spring back popIn(inst, f): entrance: scale f -> 1 (fades transparency too if asked) pulse(inst, s): one-shot: to f then back to 1 (ticks, pops, catches)
 local _us_cache = {}
 setmetatable(_us_cache, { __mode = "k" })   -- v0.48.0: weak keys: destroyed
 -- instances (rescan rows, rebuilt nodes) must not be pinned alive by this cache.
@@ -1624,10 +1531,7 @@ local function pulse(inst, to)
     tween(sc, Theme.Animation.Fast, { Scale = 1 })
 end
 
--- v0.48.0: pop-in entrance for things that appear on user action (new graph
--- nodes, scanned rows, cards). Scale-only so UIListLayout never fights it.
--- A Koffee field, not a chunk local (register ceiling: see Anim above).
--- Call sites gate on their own Anim spot; this only honours the master.
+-- v0.48.0: pop-in entrance for things that appear on user action (new graph nodes, scanned rows, cards). Scale-only so UIListLayout never fights it. A Koffee field, not a chunk local (register ceiling: see Anim above). Call sites gate on their own Anim spot; this only honours the master.
 function Koffee.popIn(inst, from)
     local sc = uScaleOf(inst)
     if not (Koffee.Anim and Koffee.Anim.enabled()) then sc.Scale = 1; return end
@@ -1721,12 +1625,7 @@ function Koffee.dead()
     return Koffee._unloaded == true or KID.ctx.gen ~= Koffee._gen
 end
 
--- v0.3.8: broader executor GUI-parent discovery + protection call.
--- Passive ACs that iterate CoreGui:GetChildren()/PlayerGui:GetChildren()
--- (or listen on ChildAdded) flag Koffee if we land there. gethui() puts
--- us in a container that isn't in the CoreGui tree at all; when that's
--- unavailable we still try every known "hidden GUI" API before falling
--- back to CoreGui/PlayerGui.
+-- v0.3.8: broader executor GUI-parent discovery + protection call. Passive ACs that iterate CoreGui:GetChildren()/PlayerGui:GetChildren() (or listen on ChildAdded) flag Koffee if we land there. gethui() puts us in a container that isn't in the CoreGui tree at all; when that's unavailable we still try every known "hidden GUI" API before falling back to CoreGui/PlayerGui.
 local function pickHiddenHost()
     local candidates = { gethui, get_hidden_gui, get_hidden_ui, gethiddenui }
     for _, fn in ipairs(candidates) do
@@ -1814,14 +1713,7 @@ local dim = new("Frame", {
 })
 dim:SetAttribute("KUserColor", true)
 
--- v0.56.0: full-screen input guard. An Active, invisible TextButton under the
--- window swallows every click that lands off the menu, so changing settings can
--- never leak a click through to the game (no accidental shots) and clicking
--- empty space does nothing. Any GUI element under the cursor makes the click
--- gameProcessed, so this catches the whole screen behind the window. Toggled with
--- the menu-open state; gated by KoffeeOptions.MenuBlockInput (nil means on).
--- v0.58.0: lives on Koffee (not a chunk local) -- the main chunk is at the 200
--- register ceiling and a plain local tipped it over at the executor's O0 compile.
+-- v0.56.0: full-screen input guard. An Active, invisible TextButton under the window swallows every click that lands off the menu, so changing settings can never leak a click through to the game (no accidental shots) and clicking empty space does nothing. Any GUI element under the cursor makes the click gameProcessed, so this catches the whole screen behind the window. Toggled with the menu-open state; gated by KoffeeOptions.MenuBlockInput (nil means on). v0.58.0: lives on Koffee (not a chunk local) -- the main chunk is at the 200 register ceiling and a plain local tipped it over at the executor's O0 compile.
 Koffee._clickGuard = new("TextButton", {
     Name = KID.name("guard"),
     Text = "", AutoButtonColor = false, Active = true, Modal = false,
@@ -1831,13 +1723,7 @@ Koffee._clickGuard = new("TextButton", {
 })
 Koffee._clickGuard.MouseButton1Click:Connect(function() end)   -- absorb, do nothing
 
--- v0.3.8: park the BlurEffect on CurrentCamera instead of Lighting.
--- Post-processing effects work under either, and Lighting:GetChildren()
--- is a common passive-AC scan target: unexpected BlurEffects in
--- Lighting are a giveaway even with a random Name. CurrentCamera swaps
--- occasionally (custom camera systems) so a re-parent hook keeps blur
--- attached to whatever's active. Falls back to Lighting only if we
--- can't get a camera at all.
+-- v0.3.8: park the BlurEffect on CurrentCamera instead of Lighting. Post-processing effects work under either, and Lighting:GetChildren() is a common passive-AC scan target: unexpected BlurEffects in Lighting are a giveaway even with a random Name. CurrentCamera swaps occasionally (custom camera systems) so a re-parent hook keeps blur attached to whatever's active. Falls back to Lighting only if we can't get a camera at all.
 local function currentBlurHost()
     local cam = Workspace.CurrentCamera
     if cam then return cam end
@@ -1872,16 +1758,7 @@ local function viewport()
     return cam and cam.ViewportSize or Vector2.new(0, 0)
 end
 
--- v0.0.22 popup placement fix. Popups (dropdown lists, color picker, tooltips)
--- live in `popupScreen`, but their anchor buttons/swatches live in the main
--- `screen`. Empirically these two top-level ScreenGuis report AbsolutePosition in
--- DIFFERENT reference frames (offset by the GUI inset, e.g. 58px) even though both
--- set IgnoreGuiInset=true: so writing a button's AbsolutePosition straight into a
--- popup's Position.Offset lands it `inset` px too high (the old "dropdown opens in
--- the middle of the button" bug). Given a desired screen-space TOP-LEFT, this
--- returns the Position offset that makes the popup's AbsolutePosition hit that
--- point, by subtracting the popup's live drift (Absolute - Offset). Self-
--- calibrating: collapses to a no-op when there's no mismatch, so it's always safe.
+-- v0.0.22 popup placement fix. Popups (dropdown lists, color picker, tooltips) live in `popupScreen`, but their anchor buttons/swatches live in the main `screen`. Empirically these two top-level ScreenGuis report AbsolutePosition in DIFFERENT reference frames (offset by the GUI inset, e.g. 58px) even though both set IgnoreGuiInset=true: so writing a button's AbsolutePosition straight into a popup's Position.Offset lands it `inset` px too high (the old "dropdown opens in the middle of the button" bug). Given a desired screen-space TOP-LEFT, this returns the Position offset that makes the popup's AbsolutePosition hit that point, by subtracting the popup's live drift (Absolute - Offset). Self- calibrating: collapses to a no-op when there's no mismatch, so it's always safe.
 local function popupOffsetFor(popupFrame, screenX, screenY)
     local dx = popupFrame.AbsolutePosition.X - popupFrame.Position.X.Offset
     local dy = popupFrame.AbsolutePosition.Y - popupFrame.Position.Y.Offset
@@ -2434,12 +2311,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3 }   -- registered 
     end)
 end)()
 
--- MODULE SYSTEM + ACTIVE-MODULES TYPEWRITER ARRAY
--- markdown-blockquote-style module list:
---   |  ESP
---   |  Aimbot
--- vertical line on the left grows/shrinks smoothly with content,
--- each label fades in + settles up from a small y-offset.
+-- MODULE SYSTEM + ACTIVE-MODULES TYPEWRITER ARRAY markdown-blockquote-style module list: | ESP | Aimbot vertical line on the left grows/shrinks smoothly with content, each label fades in + settles up from a small y-offset.
 local activeArray = new("Frame", {
     Name = "ActiveModules",
     AnchorPoint = Vector2.new(0, 0),
@@ -2728,10 +2600,7 @@ local function buildArrayLabelText(mod)
     return s
 end
 
--- v0.0.73: arraylist is sorted by visible-text LENGTH descending (longer feature names on
--- top: "Silent Aim" above "ESP"), tie-broken alphabetically ascending ("A" above "B",
--- "ESP box" above "ESP tracer"). `shown` holds every live entry; resortArray reassigns
--- LayoutOrder so the UIListLayout reflows.
+-- v0.0.73: arraylist is sorted by visible-text LENGTH descending (longer feature names on top: "Silent Aim" above "ESP"), tie-broken alphabetically ascending ("A" above "B", "ESP box" above "ESP tracer"). `shown` holds every live entry; resortArray reassigns LayoutOrder so the UIListLayout reflows.
 local shown = {}
 local function arrayLess(a, b)
     local ta, tb = arrayPlainText(a), arrayPlainText(b)
@@ -2781,10 +2650,7 @@ local function addToActiveArray(mod)
         TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text,
         BackgroundTransparency = 1,
-        -- v0.0.95 arraylist gradient hook: UIGradient child fed by the ESP Text
-        -- Gradient system (below the addToActiveArray block). Disabled by default;
-        -- the sync heartbeat flips it on + updates Color/Rotation/Offset per frame
-        -- when ESP.Config.TextGradient is true.
+        -- v0.0.95 arraylist gradient hook: UIGradient child fed by the ESP Text Gradient system (below the addToActiveArray block). Disabled by default; the sync heartbeat flips it on + updates Color/Rotation/Offset per frame when ESP.Config.TextGradient is true.
         Size = UDim2.new(1, 0, 1, 0),
         Position = UDim2.new(0, -10, 0, 0),  -- start slightly to the left, slide in right
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -2837,10 +2703,7 @@ local function addToActiveArray(mod)
             if accum < 0.2 then return end
             accum = 0
             if not (mod._arrayLabel and mod._arrayLabel.Parent) then return end
-            -- v0.0.97: the gradient heartbeat toggles RichText off when the text
-            -- gradient is active (UIGradient is ignored on RichText labels). Match
-            -- the label's current RichText state here so the detail poll doesn't
-            -- write tagged text onto a non-RichText label (would show raw <font>).
+            -- v0.0.97: the gradient heartbeat toggles RichText off when the text gradient is active (UIGradient is ignored on RichText labels). Match the label's current RichText state here so the detail poll doesn't write tagged text onto a non-RichText label (would show raw <font>).
             local newText = mod._arrayLabel.RichText
                 and buildArrayLabelText(mod)
                 or  arrayPlainText(mod)
@@ -2855,14 +2718,7 @@ end
 local function removeFromActiveArray(mod)
     local w = mod._wrapper
     if not w then return end
-    -- v0.0.16: do NOT nil mod._wrapper here. addToActiveArray needs the
-    -- reference to destroy the dying wrapper if the module is re-enabled
-    -- during the 0.14s destroy-delay window (the fade itself is 0.10s; the
-    -- wrapper lingers until the task.delay(0.14) below). Nilling it here orphaned the wrapper
-    -- (the canceled destroy thread never ran, the frame stayed parented to
-    -- labelsColumn consuming a LayoutOrder slot and ROW_HEIGHT pixels).
-    -- If the destroy thread completes normally, mod._wrapper.Parent becomes
-    -- nil and addToActiveArray's existence check skips the Destroy call.
+    -- v0.0.16: do NOT nil mod._wrapper here. addToActiveArray needs the reference to destroy the dying wrapper if the module is re-enabled during the 0.14s destroy-delay window (the fade itself is 0.10s; the wrapper lingers until the task.delay(0.14) below). Nilling it here orphaned the wrapper (the canceled destroy thread never ran, the frame stayed parented to labelsColumn consuming a LayoutOrder slot and ROW_HEIGHT pixels). If the destroy thread completes normally, mod._wrapper.Parent becomes nil and addToActiveArray's existence check skips the Destroy call.
     mod._arrayLabel = nil
     shownRemove(mod)   -- v0.0.73: drop from the sorted set immediately so the rest reflow
     resortArray()
@@ -2920,17 +2776,7 @@ local function subscribeModule(id, fn)
     end
 end
 
--- v0.0.14: toggleModule was blocking the click for as long as OnEnable took
--- (makeRig's WaitForChild("Head", 3) on each player in a full server -> up to
--- ~90s to release the checkbox). The user saw this as "Enabled takes YEARS to
--- toggle." Now the flow is:
---   1. flip the boolean         (instant)
---   2. update the arraylist     (instant, animation starts this frame)
---   3. fire watchers            (instant, checkbox visual + any observers)
---   4. run OnEnable/OnDisable   (task.spawn'd: any yielding it does is
---                                 isolated from the click path)
--- The visual feedback is immediate; the actual module wiring races along
--- behind it.
+-- v0.0.14: toggleModule was blocking the click for as long as OnEnable took (makeRig's WaitForChild("Head", 3) on each player in a full server -> up to ~90s to release the checkbox). The user saw this as "Enabled takes YEARS to toggle." Now the flow is: 1. flip the boolean (instant) 2. update the arraylist (instant, animation starts this frame) 3. fire watchers (instant, checkbox visual + any observers) 4. run OnEnable/OnDisable (task.spawn'd: any yielding it does is isolated from the click path) The visual feedback is immediate; the actual module wiring races along behind it.
 local function toggleModule(id)
     local m = Modules[id]
     if not m then return end
@@ -2957,10 +2803,7 @@ local function toggleModule(id)
     end)
 end
 
--- MAIN WINDOW
--- CanvasGroup so GroupTransparency can fade every child in one shot
--- (frame trees have no group opacity; per-child tweening every label +
---  stroke + corner is a nightmare).
+-- MAIN WINDOW CanvasGroup so GroupTransparency can fade every child in one shot (frame trees have no group opacity; per-child tweening every label + stroke + corner is a nightmare).
 local window = new("CanvasGroup", {
     Name = "Window",
     AnchorPoint = Vector2.new(0.5, 0.5),
@@ -3148,11 +2991,7 @@ local tabOrder = 0        -- explicit LayoutOrder per tab
 local activeTab = nil
 local pillFirstShow = true
 
--- v0.0.98/99 pill machinery. Follower pill: resting state is ALWAYS the active
--- tab button's live rect; on switch it pops (stretch past destination) then
--- contracts; snaps via pillResync whenever button geometry moves. v0.0.99:
--- a generation token lets stale tween completions bail instead of fighting a
--- newer switch (the "pill flickers every other click" fix).
+-- v0.0.98/99 pill machinery. Follower pill: resting state is ALWAYS the active tab button's live rect; on switch it pops (stretch past destination) then contracts; snaps via pillResync whenever button geometry moves. v0.0.99: a generation token lets stale tween completions bail instead of fighting a newer switch (the "pill flickers every other click" fix).
 local PILL_STRETCH  = TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 local PILL_CONTRACT = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local pillAnimating = false
@@ -3188,11 +3027,7 @@ local function movePillTo(button, snap)
     pillGen = pillGen + 1
     local gen = pillGen
     pillAnimating = true
-    -- v0.0.98: the pill POP: grows only HALF A PILL past the destination (hard
-    -- cap, centered on the target so it reads as the pill swelling, not moving
-    -- across), then the only move left is shrinking to the exact resting rect.
-    -- No walk-span, no accumulation: a switch mid-flight cancels both tweens and
-    -- the pop restarts from the CURRENT rect, so the pill can never grow forever.
+    -- v0.0.98: the pill POP: grows only HALF A PILL past the destination (hard cap, centered on the target so it reads as the pill swelling, not moving across), then the only move left is shrinking to the exact resting rect. No walk-span, no accumulation: a switch mid-flight cancels both tweens and the pop restarts from the CURRENT rect, so the pill can never grow forever.
     local w    = targetSize.X.Offset
     local ow   = w + w * 0.5
     local ox   = targetPos.X.Offset - (ow - w) * 0.5
@@ -3221,10 +3056,7 @@ local function movePillTo(button, snap)
     end)
 end
 
--- single geometry watcher: re-snap the pill to the active button whenever anything
--- shifts its rect (font reflow, window drag/resize) UNLESS a switch animation owns
--- the pill right now. Fed by the tabBar move signal + each button's own size/pos
--- signals (hooked in addTab).
+-- single geometry watcher: re-snap the pill to the active button whenever anything shifts its rect (font reflow, window drag/resize) UNLESS a switch animation owns the pill right now. Fed by the tabBar move signal + each button's own size/pos signals (hooked in addTab).
 local function pillResync()
     if pillAnimating or not activeTab then return end
     local tab = tabs[activeTab]
@@ -3249,12 +3081,7 @@ local function selectTab(name)
         else
             tab.Button.TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted
         end
-        -- v0.0.99: pure crossfade: the outgoing panel fades out, the incoming
-        -- fades in. No scale pop, no scroll jump: panels are ScrollingFrames so
-        -- the fade lives on each tab's CanvasGroup wrapper (GroupTransparency).
-        -- Panels get CanvasGroup wrappers in addTab; the wrapper's Visible flag
-        -- is the real show/hide (GroupTransparency = 1 is not enough: children
-        -- of an invisible canvas can still eat input).
+        -- v0.0.99: pure crossfade: the outgoing panel fades out, the incoming fades in. No scale pop, no scroll jump: panels are ScrollingFrames so the fade lives on each tab's CanvasGroup wrapper (GroupTransparency). Panels get CanvasGroup wrappers in addTab; the wrapper's Visible flag is the real show/hide (GroupTransparency = 1 is not enough: children of an invisible canvas can still eat input).
         local w = tab.Wrap
         if isActive then
             tab.Panel.CanvasPosition = Vector2.new(0, 0)
@@ -3281,19 +3108,9 @@ local function selectTab(name)
     end
 end
 
--- v0.0.34: forward-declared shared upvalues. Config + team/friend helpers live inside
--- IIFEs so their locals get their OWN register budget (Luau's 200-local ceiling is
--- per-function; main chunk is already close). Only these handles are promoted so
--- ESP / World / Combat can call them.
--- Options flag + Team Check config:
---   MyTeams      : Team NAMES the user marked "my team" (allies -> skipped)
---   AdvancedTeam : use automatic isSameTeam heuristic instead of manual list
+-- v0.0.34: forward-declared shared upvalues. Config + team/friend helpers live inside IIFEs so their locals get their OWN register budget (Luau's 200-local ceiling is per-function; main chunk is already close). Only these handles are promoted so ESP / World / Combat can call them. Options flag + Team Check config: MyTeams : Team NAMES the user marked "my team" (allies -> skipped) AdvancedTeam : use automatic isSameTeam heuristic instead of manual list
 local Shared = { IgnoreFriends = false, IgnoreFriendsScope = "Everything", AdvancedTeam = false, MyTeams = {} }
--- v0.0.97 Target Lock: type a player name, toggle the feature on, hit the keybind
--- to "activate": while active, the named player is the ONLY target for aimbot,
--- silent aim, trigger bot AND the only player ESP renders. Deactivate (hit the
--- keybind again) -> normal multi-target behaviour resumes. The toggle (Enabled)
--- arms the feature; the keybind (Active) engages / disengages the lock at runtime.
+-- v0.0.97 Target Lock: type a player name, toggle the feature on, hit the keybind to "activate": while active, the named player is the ONLY target for aimbot, silent aim, trigger bot AND the only player ESP renders. Deactivate (hit the keybind again) -> normal multi-target behaviour resumes. The toggle (Enabled) arms the feature; the keybind (Active) engages / disengages the lock at runtime.
 Shared.TargetLock = {
     Enabled  = false,   -- master toggle (arms the keybind)
     Name     = "",      -- target's username or display name (case-insensitive substring match)
@@ -3306,22 +3123,7 @@ registerModule("targetlock", "Target Lock",
     function() Shared.TargetLock.Enabled = true end,
     function() Shared.TargetLock.Enabled = false; Shared.TargetLock._active = false end)
 Modules.targetlock.IsActive = function() return Shared.TargetLock._active end
--- resolve the current TargetLock.Name to a live Player or nil.
--- v0.3.1: match ranking. Previous first-match-wins picked whoever appeared
--- earliest in the Players list: typing "a" could lock onto "Anna" when
--- the intended target was "alice". Now every player is scored and the
--- best is returned:
---   6 = exact Name              (case-insensitive)
---   5 = exact DisplayName
---   4 = Name starts with query
---   3 = DisplayName starts with query
---   2 = Name contains query
---   1 = DisplayName contains query
---   0 = no match
--- Ties break on the FIRST player scored (arbitrary but deterministic).
--- v0.63.2: Target Lock now locks onto the player-list PRIORITIZE set (multi-target)
--- instead of a single typed name. `targetMark` (defined just below) is the resolver;
--- these two just ask "is the lock engaged, and is this player prioritized?".
+-- resolve the current TargetLock.Name to a live Player or nil. v0.3.1: match ranking. Previous first-match-wins picked whoever appeared earliest in the Players list: typing "a" could lock onto "Anna" when the intended target was "alice". Now every player is scored and the best is returned: 6 = exact Name (case-insensitive) 5 = exact DisplayName 4 = Name starts with query 3 = DisplayName starts with query 2 = Name contains query 1 = DisplayName contains query 0 = no match Ties break on the FIRST player scored (arbitrary but deterministic). v0.63.2: Target Lock now locks onto the player-list PRIORITIZE set (multi-target) instead of a single typed name. `targetMark` (defined just below) is the resolver; these two just ask "is the lock engaged, and is this player prioritized?".
 function Shared.targetLockPlayer()
     if not (Shared.TargetLock.Enabled and Shared.TargetLock._active) then return nil end
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -3349,10 +3151,7 @@ function Shared.targetMark(plr)
     if pl and pl.statusFor then return pl.statusFor(plr) end
     return nil
 end
--- is `plr` a legal aim / trigger target? Exclude = never; lock engaged = ONLY the
--- Prioritize set; otherwise the normal team-check + ignore-friends filters apply.
--- (Prioritize is dormant while the lock is off; None defers to those filters.)
--- v0.90.0: Ignore Friends can cover only combat, only visuals, or everything (default)
+-- is `plr` a legal aim / trigger target? Exclude = never; lock engaged = ONLY the Prioritize set; otherwise the normal team-check + ignore-friends filters apply. (Prioritize is dormant while the lock is off; None defers to those filters.) v0.90.0: Ignore Friends can cover only combat, only visuals, or everything (default)
 function Shared.friendIgnored(plr, kind)
     if not (Shared.IgnoreFriends and isFriend and isFriend(plr)) then return false end
     local sc = Shared.IgnoreFriendsScope or "Everything"
@@ -3387,12 +3186,7 @@ function Shared._customTargetMark(plr)
     return nil
 end
 
--- v0.0.37: OS-level input from the Koffee Helper (Roblox can't see mouse 4/5).
--- The poll loop at the bottom of the file fills XB1/XB2; binds can be the virtual
--- strings "XButton1"/"XButton2" which the helper-driven Heartbeats resolve.
--- v0.22.0: single source for the helper contract. :7912 feeds XButton state,
--- :27374 is the External silent-aim bridge. Both now send the key header.
--- NOTE: Key is a constant in a distributed script: a seam, not real auth.
+-- v0.0.37: OS-level input from the Koffee Helper (Roblox can't see mouse 4/5). The poll loop at the bottom of the file fills XB1/XB2; binds can be the virtual strings "XButton1"/"XButton2" which the helper-driven Heartbeats resolve. v0.22.0: single source for the helper contract. :7912 feeds XButton state, :27374 is the External silent-aim bridge. Both now send the key header. NOTE: Key is a constant in a distributed script: a seam, not real auth.
 local Helper = {
     Connected = false, XB1 = false, XB2 = false,
     Host = "http://127.0.0.1", PortInput = 7912, PortAim = 27374,
@@ -3457,11 +3251,7 @@ local function addTab(name, buildFn)
     button:GetPropertyChangedSignal("AbsoluteSize"):Connect(pillResync)
     button:GetPropertyChangedSignal("AbsolutePosition"):Connect(pillResync)
 
-    -- ScrollingFrame per tab so long panel stacks don't clip. AutomaticCanvasSize
-    -- reads its own children's total height so we don't have to size manually.
-    -- v0.0.99: each panel sits inside a CanvasGroup wrapper so tab switches can
-    -- CROSSFADE (ScrollingFrames have no GroupTransparency of their own). The
-    -- wrap owns Visible; the panel owns scroll.
+    -- ScrollingFrame per tab so long panel stacks don't clip. AutomaticCanvasSize reads its own children's total height so we don't have to size manually. v0.0.99: each panel sits inside a CanvasGroup wrapper so tab switches can CROSSFADE (ScrollingFrames have no GroupTransparency of their own). The wrap owns Visible; the panel owns scroll.
     local wrap = new("CanvasGroup", {
         Name = "Wrap",
         Size = UDim2.new(1, 0, 1, 0),
@@ -3538,10 +3328,7 @@ local function addTab(name, buildFn)
     tabs[name] = { Button = button, Panel = panel, Wrap = wrap, Build = buildFn }
 end
 
--- v0.0.34: rebuild the config-driven tabs after a config load so sliders /
--- dropdowns / checkboxes / keybind pills re-read the freshly applied state.
--- moduleCheckbox is the only Watchers subscriber, so clearing Watchers first
--- keeps the subscriber count flat across reloads (they re-subscribe here).
+-- v0.0.34: rebuild the config-driven tabs after a config load so sliders / dropdowns / checkboxes / keybind pills re-read the freshly applied state. moduleCheckbox is the only Watchers subscriber, so clearing Watchers first keeps the subscriber count flat across reloads (they re-subscribe here).
 local function rebuildTabPanel(name)
     local entry = tabs[name]
     if not (entry and entry.Build) then return end
@@ -3594,11 +3381,7 @@ local function panel(parent, title)
     }, {
         corner(Theme.Radius.XLarge),
         stroke(Theme.Palette.BorderSubtle),
-        -- v0.0.48: subtle top-lit gradient for depth. A UIGradient on a plain Frame
-        -- only tints THIS frame's own background fill (children render on top,
-        -- untouched: unlike a CanvasGroup, which flattens + tints everything). The
-        -- ramp is grayscale so it just darkens the card's lower half ~10%, giving each
-        -- panel a soft light-from-above read instead of a flat slab.
+        -- v0.0.48: subtle top-lit gradient for depth. A UIGradient on a plain Frame only tints THIS frame's own background fill (children render on top, untouched: unlike a CanvasGroup, which flattens + tints everything). The ramp is grayscale so it just darkens the card's lower half ~10%, giving each panel a soft light-from-above read instead of a flat slab.
         new("UIGradient", {
             Rotation = 90,
             Color = ColorSequence.new(
@@ -3631,11 +3414,7 @@ local function panel(parent, title)
             Parent = card,
         })
     end
-    -- v0.0.98: every card enters with a short fade + grow when its tab first
-    -- builds (rebuildConfigTabs re-runs build fns, so cards re-pop on reload too).
-    -- GroupTransparency only exists on CanvasGroups, and cards stay plain Frames
-    -- (their own UIGradient must not flatten children), so the entrance is a pure
-    -- scale pop: same quick-arrive feel, zero alpha dependency.
+    -- v0.0.98: every card enters with a short fade + grow when its tab first builds (rebuildConfigTabs re-runs build fns, so cards re-pop on reload too). GroupTransparency only exists on CanvasGroups, and cards stay plain Frames (their own UIGradient must not flatten children), so the entrance is a pure scale pop: same quick-arrive feel, zero alpha dependency.
     local sc = uScaleOf(card)
     sc.Scale = 0.96
     task.delay(0.03, function()
@@ -3745,13 +3524,7 @@ function Koffee.attachBtnHover(b, hovered, resting)
     end)
 end
 
--- CHECKBOX (visual primitive shared by module + config variants)
--- v0.0.12 semantics per he:
---   OFF -> ON  = fill GROWS OUTWARD from middle (size 0 -> INNER, opaque throughout)
---   ON  -> OFF = fill SHRINKS INWARD to middle (size INNER -> 0) with a super-fast
---                fade tail so it doesn't pop out of existence
--- Also cancels any in-flight tweens on each state change so rapid clicking can't
--- stack animations and desync the visual from the actual state.
+-- CHECKBOX (visual primitive shared by module + config variants) v0.0.12 semantics per he: OFF -> ON = fill GROWS OUTWARD from middle (size 0 -> INNER, opaque throughout) ON -> OFF = fill SHRINKS INWARD to middle (size INNER -> 0) with a super-fast fade tail so it doesn't pop out of existence Also cancels any in-flight tweens on each state change so rapid clicking can't stack animations and desync the visual from the actual state.
 local CBOX = { h = 22, outer = 16, inner = 12, off = 26, reserve = 74 }
 
 local function checkboxVisual(parent, label, initialOn)
@@ -4046,15 +3819,7 @@ local function completeRebind(keyCode)
     pendingRebind = nil
 end
 
--- COLOR PICKER (popup: SV area + hue slider + hex input)
--- Parented to `screen` so it renders above the window CanvasGroup.
--- Reused across all color swatches: one picker instance, retargeted.
--- v0.58.0: the whole section is an IIFE so its internal helpers (parseHex,
--- ColorPicker, makeRainbowSequence, buildColorPicker, openColorPicker) do NOT
--- consume main-chunk registers -- the main function is at the 200 local ceiling
--- and the executor compiles UNOPTIMIZED (O0), where every named local counts.
--- colorSwatch + closeColorPicker + the ColorPicker state (all touched by other
--- sections, e.g. the outside-click handler) are published as chunk upvalues.
+-- COLOR PICKER (popup: SV area + hue slider + hex input) Parented to `screen` so it renders above the window CanvasGroup. Reused across all color swatches: one picker instance, retargeted. v0.58.0: the whole section is an IIFE so its internal helpers (parseHex, ColorPicker, makeRainbowSequence, buildColorPicker, openColorPicker) do NOT consume main-chunk registers -- the main function is at the 200 local ceiling and the executor compiles UNOPTIMIZED (O0), where every named local counts. colorSwatch + closeColorPicker + the ColorPicker state (all touched by other sections, e.g. the outside-click handler) are published as chunk upvalues.
 local colorSwatch, closeColorPicker, ColorPicker
 ;(function()
 local function parseHex(str)
@@ -4595,11 +4360,7 @@ function colorSwatch(parent, initialColor, size, opts)
 end
 end)()   -- end COLOR PICKER IIFE (v0.58.0)
 
--- DROPDOWN (label above + button that opens popup list below)
--- Popup is parented to `screen` (NOT the panel/window) so it renders
--- above the CanvasGroup and isn't clipped by it. Positioned each open
--- from the button's AbsolutePosition. Slide+fade animation. Lucide
--- chevron-down glyph (rotates 180 on open). Closes on outside click.
+-- DROPDOWN (label above + button that opens popup list below) Popup is parented to `screen` (NOT the panel/window) so it renders above the CanvasGroup and isn't clipped by it. Positioned each open from the button's AbsolutePosition. Slide+fade animation. Lucide chevron-down glyph (rotates 180 on open). Closes on outside click.
 local openDropdowns = {}  -- popup frames -> close-fn
 
 local function chevron(parent, sizePx)
@@ -4678,12 +4439,7 @@ local function dropdown(parent, label, options, initial, onChange)
         if dSt then dSt.Color = g and Theme.Palette.Snow or Theme.Palette.BorderSubtle; dSt.Transparency = g and 0.88 or 0 end
     end)
 
-    -- popup lives in the dedicated popup ScreenGui, above everything: ZIndex 260
-    -- so it clears the settings popup (210) AND the colour picker (250) when a
-    -- dropdown is opened from inside one of them.
-    -- v0.10.1: ScrollingFrame, not Frame. The sound catalog is 43 entries: at 26px
-    -- a row that is a 1118px list, taller than most screens, and the tail was simply
-    -- unreachable. Capped at LIST_MAX with the full height as CanvasSize.
+    -- popup lives in the dedicated popup ScreenGui, above everything: ZIndex 260 so it clears the settings popup (210) AND the colour picker (250) when a dropdown is opened from inside one of them. v0.10.1: ScrollingFrame, not Frame. The sound catalog is 43 entries: at 26px a row that is a 1118px list, taller than most screens, and the tail was simply unreachable. Capped at LIST_MAX with the full height as CanvasSize.
     local LIST_MAX = 260
     local list = new("ScrollingFrame", {
         Size = UDim2.new(0, 100, 0, math.min(#options * 26, LIST_MAX)),
@@ -4906,10 +4662,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
     and input.UserInputType ~= Enum.UserInputType.Touch then return end
     local mp = input.Position
 
-    -- dropdowns. Skip the click that lands ON a list's own button: that click
-    -- is handled by the button's own toggle handler, so the closer must not close
-    -- first (otherwise: press closes on mouse-down via the closer, release
-    -- reopens on the button's click: the flicker/reopen the closer caused).
+    -- dropdowns. Skip the click that lands ON a list's own button: that click is handled by the button's own toggle handler, so the closer must not close first (otherwise: press closes on mouse-down via the closer, release reopens on the button's click: the flicker/reopen the closer caused).
     for list, entry in pairs(openDropdowns) do
         local abs = list.AbsolutePosition
         local siz = list.AbsoluteSize
@@ -5026,10 +4779,7 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         ZIndex = 36,
         Parent = track,
     }, { corner(6), stroke(Theme.Palette.Border, 1) })
-    -- v0.0.99: drag area is the ENTIRE row width (was reserving 86px for the value
-    -- box: when the fill sat far right, the last 86px of the track was dead
-    -- space and the knob end was unreachable). The value box lives at the top of
-    -- the row, nowhere near the track, so nothing needs reserving.
+    -- v0.0.99: drag area is the ENTIRE row width (was reserving 86px for the value box: when the fill sat far right, the last 86px of the track was dead space and the knob end was unreachable). The value box lives at the top of the row, nowhere near the track, so nothing needs reserving.
     local hitArea = new("TextButton", {
         Text = "",
         AutoButtonColor = false,
@@ -5184,16 +4934,10 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     end }
 end
 
--- RIGHT-CLICK SETTINGS POPUP (v0.0.25)
--- Right-click a config row to open a small floating panel of extra controls
--- (built by the caller via api:slider(...)). Lives in popupScreen like the
--- dropdowns / colour picker, positioned inset-safe, closes on outside click.
+-- RIGHT-CLICK SETTINGS POPUP (v0.0.25) Right-click a config row to open a small floating panel of extra controls (built by the caller via api:slider(...)). Lives in popupScreen like the dropdowns / colour picker, positioned inset-safe, closes on outside click.
 local openSettingsPopups = {}   -- frame -> close fn
 
--- v0.13.0: `alsoLeft` additionally opens on LEFT click. Used by Custom Features,
--- where the button IS the options button and hiding it behind RMB is a trap.
--- v0.19.1: `dynamic` rebuilds the body on every open. The default builds once,
--- which is right for fixed knobs and wrong for anything listing live state.
+-- v0.13.0: `alsoLeft` additionally opens on LEFT click. Used by Custom Features, where the button IS the options button and hiding it behind RMB is a trap. v0.19.1: `dynamic` rebuilds the body on every open. The default builds once, which is right for fixed knobs and wrong for anything listing live state.
 local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
     local btn
     for _, c in ipairs(row:GetDescendants()) do
@@ -5353,17 +5097,11 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         ensurePopup()
         if fresh or dynamic then buildBody() end
         for _, closer in pairs(openSettingsPopups) do closer() end
-        -- v0.5.3: openDropdowns stores { btn, close } tables, not bare functions
-        -- (see openList at ~3355). Old contract lingered here and tripped
-        -- "attempt to call a table value" the moment a right-click popup was
-        -- opened while any dropdown was open. Same access pattern openList uses.
+        -- v0.5.3: openDropdowns stores { btn, close } tables, not bare functions (see openList at ~3355). Old contract lingered here and tripped "attempt to call a table value" the moment a right-click popup was opened while any dropdown was open. Same access pattern openList uses.
         for _, entry in pairs(openDropdowns) do entry.close(true) end
         isOpen = true
         openSettingsPopups[popupFrame] = closePopup
-        -- v0.72.2: open at the cursor, not the row rect. v0.72.3: no guessed
-        -- sizes or offsets. GetMouseLocation includes the topbar inset while
-        -- popup space does not (that gap was the downward drift), and the
-        -- popup's real size is measured one frame after showing, then clamped.
+        -- v0.72.2: open at the cursor, not the row rect. v0.72.3: no guessed sizes or offsets. GetMouseLocation includes the topbar inset while popup space does not (that gap was the downward drift), and the popup's real size is measured one frame after showing, then clamped.
         local mp = UserInputService:GetMouseLocation()
         local inset = game:GetService("GuiService"):GetGuiInset()
         local vp = viewport()
@@ -5467,16 +5205,7 @@ local function teamCheckSettings(api)
     refreshDim()
 end
 
--- SHARED STATE + CONFIG SYSTEM (v0.0.34)
--- Wrapped in an IIFE so its ~20 locals get their own register budget (Luau's
--- 200-local limit is per-function; the main chunk is already near it). Only the
--- forward-declared upvalues (Shared/isSameTeam/isFriend/registerConfig/
--- rebuildConfigTabs) + Koffee.Config escape to the main chunk.
---   isSameTeam    : robust team check: Team instance first, TeamColor/Neutral
---                   fallback for games that never assign a Team object
---   isFriend      : cached friendship lookup (IsFriendsWith yields, so resolve
---                   async once per userId; render loops read the cache)
---   ConfigRegistry: name -> live state table, walked by the config save/load
+-- SHARED STATE + CONFIG SYSTEM (v0.0.34) Wrapped in an IIFE so its ~20 locals get their own register budget (Luau's 200-local limit is per-function; the main chunk is already near it). Only the forward-declared upvalues (Shared/isSameTeam/isFriend/registerConfig/ rebuildConfigTabs) + Koffee.Config escape to the main chunk. isSameTeam : robust team check: Team instance first, TeamColor/Neutral fallback for games that never assign a Team object isFriend : cached friendship lookup (IsFriendsWith yields, so resolve async once per userId; render loops read the cache) ConfigRegistry: name -> live state table, walked by the config save/load
 ;(function()
 
 -- Team check that survives games which never set Player.Team. If either player
@@ -5539,10 +5268,7 @@ function isFriend(plr)
     return false
 end
 
---== CONFIG SYSTEM: save / load / auto-load per PlaceId. Subsystems register
--- their live state tables; save serializes to a Lua literal (Color3 / EnumItem /
--- Vector aware), load applies back IN PLACE so every live reference keeps
--- working, then re-syncs modules + rebuilds the config-driven tabs.
+-- == CONFIG SYSTEM: save / load / auto-load per PlaceId. Subsystems register their live state tables; save serializes to a Lua literal (Color3 / EnumItem / Vector aware), load applies back IN PLACE so every live reference keeps working, then re-syncs modules + rebuilds the config-driven tabs.
 local ConfigRegistry = {}          -- name -> live table
 function registerConfig(name, tbl) ConfigRegistry[name] = tbl end
 
@@ -5621,20 +5347,7 @@ local function snapshotAll()
     return snap
 end
 
--- === apply ================================================================
--- v0.0.50: SET-shaped tables must be REPLACED, not deep-merged. `MyTeams` is a
--- name-set where unticking a team does `MyTeams[name] = nil`: an absent key IS
--- the "not my team" value. Deep-merging can only ADD keys, so loading a config
--- left every previously-ticked team behind and the player kept being treated as
--- an ally. (Flagged as a caveat when MyTeams shipped in v0.0.46.) Cleared IN
--- PLACE rather than reassigned so live references to the table keep working:
--- the same reason the whole loader applies in place.
--- Deep-merge stays the default: every other registered table is a fixed schema
--- where a missing key means "this config predates the field", not "unset it".
--- v0.13.0: Custom Features' node array is REPLACE too: it's a list, so merging
--- would resurrect every node the user deleted since the config was written.
--- v0.54.0: NPC Entries / Folders / a folder's Rules are lists, so REPLACE like
--- Nodes: merging would resurrect entries/rules the user deleted since the save.
+-- === apply ================================================================ v0.0.50: SET-shaped tables must be REPLACED, not deep-merged. `MyTeams` is a name-set where unticking a team does `MyTeams[name] = nil`: an absent key IS the "not my team" value. Deep-merging can only ADD keys, so loading a config left every previously-ticked team behind and the player kept being treated as an ally. (Flagged as a caveat when MyTeams shipped in v0.0.46.) Cleared IN PLACE rather than reassigned so live references to the table keep working: the same reason the whole loader applies in place. Deep-merge stays the default: every other registered table is a fixed schema where a missing key means "this config predates the field", not "unset it". v0.13.0: Custom Features' node array is REPLACE too: it's a list, so merging would resurrect every node the user deleted since the config was written. v0.54.0: NPC Entries / Folders / a folder's Rules are lists, so REPLACE like Nodes: merging would resurrect entries/rules the user deleted since the save.
 local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true,
     Entries = true, Folders = true, Rules = true, Accessories = true,
     ExcludeNames = true, ExcludeSigs = true,   -- v0.57.0: NPC learn exclusion lists
@@ -5677,11 +5390,7 @@ local function loadSnapshot(data)
     -- v0.75.0: gun-mod pins reseed from the loaded set (best resolving source
     -- re-scanned); the heartbeat re-hooks + enforces from there.
     if Shared._modsReconcile then pcall(Shared._modsReconcile) end
-    -- per-game custom-anim list (place 155615604): a config saved in another
-    -- game can carry an animation Name that doesn't exist in THIS game's list.
-    -- Snap it before the tab rebuild renders the dropdown (reads the live
-    -- registered table, freshly merged above; the per-game lists are seeded
-    -- onto Koffee by the character-visual IIFE).
+    -- per-game custom-anim list (place 155615604): a config saved in another game can carry an animation Name that doesn't exist in THIS game's list. Snap it before the tab rebuild renders the dropdown (reads the live registered table, freshly merged above; the per-game lists are seeded onto Koffee by the character-visual IIFE).
     local ca = ConfigRegistry and ConfigRegistry["custom_anim"]
     if ca then
         local ids = Koffee._animIDs
@@ -5693,11 +5402,7 @@ local function loadSnapshot(data)
     if data.keybinds then
         for k in pairs(Keybinds) do Keybinds[k] = nil end
         for id, key in pairs(data.keybinds) do
-            -- v0.66.1: combat has no toggle bind. v0.69.1: the HvH box is Blink
-            -- alone now. Skip stale entries from old saves.
-            -- v0.96.0: flickbot plus the folded native rows left the same way.
-            -- v0.96.11: rivals binds never load outside rivals. A global
-            -- auto-load could otherwise arm them where no engine reads them.
+            -- v0.66.1: combat has no toggle bind. v0.69.1: the HvH box is Blink alone now. Skip stale entries from old saves. v0.96.0: flickbot plus the folded native rows left the same way. v0.96.11: rivals binds never load outside rivals. A global auto-load could otherwise arm them where no engine reads them.
             if id ~= "aimbot" and id ~= "silentaim" and id ~= "triggerbot" and id ~= "hvh_flash"
                 and id ~= "rv_flick" and id ~= "rv_lock" and id ~= "rv_silent"
                 and (Koffee._isRivals or not (type(id) == "string" and id:sub(1, 3) == "rv_")) then
@@ -5713,10 +5418,7 @@ local function loadSnapshot(data)
     end
     if data.modules then
         for id, state in pairs(data.modules) do
-            -- v0.67.0: npc_* rows are owned by reconcile (fresh ids per load with
-            -- saved on/off already applied); the old ids below no longer exist.
-            -- v0.96.11: rivals modules never restore outside rivals, same reason
-            -- as the keybind guard above.
+            -- v0.67.0: npc_* rows are owned by reconcile (fresh ids per load with saved on/off already applied); the old ids below no longer exist. v0.96.11: rivals modules never restore outside rivals, same reason as the keybind guard above.
             if not (type(id) == "string" and id:sub(1, 4) == "npc_")
                 and (Koffee._isRivals or not (type(id) == "string" and id:sub(1, 3) == "rv_")) then
                 local m = Modules[id]
@@ -5813,10 +5515,7 @@ function ConfigIO.delete(name)
     end
     return false
 end
--- v0.12.3: rename = copy the file's bytes to the new name, then drop the old one.
--- Deliberately NOT a save() under the new name: that would snapshot whatever is
--- live right now and silently rewrite the config you were only renaming.
--- v0.99.57: a copy of a config under a new name (the original stays)
+-- v0.12.3: rename = copy the file's bytes to the new name, then drop the old one. Deliberately NOT a save() under the new name: that would snapshot whatever is live right now and silently rewrite the config you were only renaming. v0.99.57: a copy of a config under a new name (the original stays)
 function ConfigIO.duplicate(old, newName)
     if not filesReady() then return false, "no file access" end
     newName = tostring(newName):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -5917,11 +5616,7 @@ end
         return ok, r
     end
 end)()
--- v0.56.0: auto-load rules. One JSON sidecar holds ONE global rule (loads in any
--- game) plus any number of per-game rules keyed by PlaceId (each loads only in its
--- game). A game rule wins over the global when you are in that game. Each rule has
--- its own on/off switch. Shape: { global={name,on}, games={ ["<placeId>"]={name,on,place} } }.
---   Koffee/configs/_autoload.json
+-- v0.56.0: auto-load rules. One JSON sidecar holds ONE global rule (loads in any game) plus any number of per-game rules keyed by PlaceId (each loads only in its game). A game rule wins over the global when you are in that game. Each rule has its own on/off switch. Shape: { global={name,on}, games={ ["<placeId>"]={name,on,place} } }. Koffee/configs/_autoload.json
 local AUTO_PATH = CFG_DIR .. "/_autoload.json"
 local OLD_AUTO  = CFG_DIR .. "/_auto_" .. tostring(game.PlaceId) .. ".txt"   -- legacy per-place marker
 local autoStore = nil
@@ -6187,15 +5882,7 @@ Koffee.Config = ConfigIO
 
 end)()   -- end SHARED STATE + CONFIG SYSTEM IIFE
 
--- ESP MODULE (v0.0.10)
--- Master toggle ("Enabled") just turns on the ESP framework + render loop.
--- Nothing draws until a sub-feature (Box / Name / Indicators / Health /
--- Tracer) is enabled: the master applies no color to players on its own.
---
--- Config groups:
---   Config (ESP-level toggles): shared across future widgets
---   Boxes (Boxes widget config)
---   Colors (color pool)
+-- ESP MODULE (v0.0.10) Master toggle ("Enabled") just turns on the ESP framework + render loop. Nothing draws until a sub-feature (Box / Name / Indicators / Health / Tracer) is enabled: the master applies no color to players on its own. Config groups: Config (ESP-level toggles): shared across future widgets Boxes (Boxes widget config) Colors (color pool)
 local ESP = {
     Config = {
         -- TextBackground: shared bool for future text modules (Names/Distance/Health
@@ -6245,16 +5932,7 @@ local ESP = {
         -- shows the hittable area. Untouched rigs keep SizingType.
         HitboxBox      = false,
         RenderDistance = 1000,
-        -- v0.11.0 COLOR MODE. One master that resolves the colour for every
-        -- Second-Interface element (box, cube, corners, skeleton, tracer, head dot,
-        -- name/distance text, health bar) instead of each carrying a flat
-        -- swatch. "Static" returns nil so every element keeps its own configured
-        -- colour: i.e. exactly the pre-v0.11 behaviour, and the default.
-        --   Gradient  animated A2/B2 ramp, targets spread along it
-        --   Rainbow   hue cycle, targets spread across the wheel
-        --   Health    red -> amber -> green by the target's health fraction
-        --   Team      team colour for allies, visible/hidden colour otherwise
-        --   Distance  ColorNear -> ColorFar across RenderDistance
+        -- v0.11.0 COLOR MODE. One master that resolves the colour for every Second-Interface element (box, cube, corners, skeleton, tracer, head dot, name/distance text, health bar) instead of each carrying a flat swatch. "Static" returns nil so every element keeps its own configured colour: i.e. exactly the pre-v0.11 behaviour, and the default. Gradient animated A2/B2 ramp, targets spread along it Rainbow hue cycle, targets spread across the wheel Health red -> amber -> green by the target's health fraction Team team colour for allies, visible/hidden colour otherwise Distance ColorNear -> ColorFar across RenderDistance
         ColorMode      = "Static",
         ColorNear      = Color3.fromRGB(120, 255, 140),
         ColorFar       = Color3.fromRGB(255, 90, 90),
@@ -6266,11 +5944,7 @@ local ESP = {
         RainbowSat     = 0.85,
         RainbowVal     = 1,
     },
-    -- v0.0.22: shared Feature-Interface render model. One place drives the
-    -- thickness of every rendered feature (box lines, cube edges, skeleton,
-    -- tracer, corners, head dot, health bar). EqualSize on = constant thickness
-    -- regardless of distance; off = thickness scales with distance (thicker up
-    -- close, thinner far) so it reads like classic depth-scaled ESP.
+    -- v0.0.22: shared Feature-Interface render model. One place drives the thickness of every rendered feature (box lines, cube edges, skeleton, tracer, corners, head dot, health bar). EqualSize on = constant thickness regardless of distance; off = thickness scales with distance (thicker up close, thinner far) so it reads like classic depth-scaled ESP.
     Render = {
         Thickness = 1,       -- base px thickness for all feature lines
         EqualSize = true,    -- true = distance-invariant, false = distance-scaled
@@ -6329,11 +6003,7 @@ local ESP = {
                            Path = true, Blast = true, Labels = true },
         -- v0.0.28: right-click Profile Picture for Size / Outline Thickness / Y Offset.
         ProfilePicture = { Enabled = false, Size = 40, OutlineThickness = 1, YOffset = 0 },          -- avatar above name
-        -- v0.5.0: HitNumbers: floating damage text above hit target. Merges stacked
-        -- damage on the same victim within Window (12 -> 24 -> 36) or spawns literal
-        -- copies (12, 12, 12 stacked). Uses HitSounds attribution so any game that
-        -- clears Humanoid.Health via the standard path lights it up.
-        -- v0.90.0: arrows around the screen centre pointing at players you can't see
+        -- v0.5.0: HitNumbers: floating damage text above hit target. Merges stacked damage on the same victim within Window (12 -> 24 -> 36) or spawns literal copies (12, 12, 12 stacked). Uses HitSounds attribution so any game that clears Humanoid.Health via the standard path lights it up. v0.90.0: arrows around the screen centre pointing at players you can't see
         OffscreenArrows = { Enabled = false, Color = Color3.fromRGB(255, 255, 255), Size = 22, Radius = 150,
                             UseEspColor = true, Distance = false, Pulse = true },
         HitNumbers = {
@@ -6421,10 +6091,7 @@ registerConfig("esp_health",     ESP.Health)
 registerConfig("esp_tracer",     ESP.Tracer)
 registerConfig("esp_colors",     ESP.Colors)
 
--- v0.53.0: NPC ESP is a full mirror of the player ESP config, registered
--- separately so players and NPCs keep independent looks. The shared renderer
--- swaps ESP.* to this bundle per NPC rig (synchronous, restored same frame).
--- IIFE so the helper locals cost no main-chunk register (file rides the 200 cap).
+-- v0.53.0: NPC ESP is a full mirror of the player ESP config, registered separately so players and NPCs keep independent looks. The shared renderer swaps ESP.* to this bundle per NPC rig (synchronous, restored same frame). IIFE so the helper locals cost no main-chunk register (file rides the 200 cap).
 ;(function()
     local function espDeepCopy(t)
         local o = {}
@@ -6526,12 +6193,7 @@ Shared._cfgSkip = { Windows = true, RivalsSkins = true, Media = true, Suspects =
     RV = true,   -- v0.94.0: the rivals bridge holds game module tables and Instances
     AmbienceNames = true, HFX_NEW = true, KILL_ANIMS = true }
 
--- v0.5.0: Crosshair: custom on-screen crosshair renderer, sits between world
--- and Koffee UI. GUI-based (not Drawing.new) so it respects the ScreenGui
--- ZIndex hierarchy on kernel-driver runtimes. State stays flat here; the
--- container + arm/dot/outer frames are created lazily by ensureCrosshairLayer.
--- All render math (position, spin, follow-target lerp, pulse) runs in the
--- RenderStepped bound near the end of this file, right before addTab("Visuals").
+-- v0.5.0: Crosshair: custom on-screen crosshair renderer, sits between world and Koffee UI. GUI-based (not Drawing.new) so it respects the ScreenGui ZIndex hierarchy on kernel-driver runtimes. State stays flat here; the container + arm/dot/outer frames are created lazily by ensureCrosshairLayer. All render math (position, spin, follow-target lerp, pulse) runs in the RenderStepped bound near the end of this file, right before addTab("Visuals").
 local Crosshair = {
     Enabled       = false,
     Style         = "Cross",                       -- "Cross" | "T-Cross" | "Plus" | "Dot" | "Circle" | "Square"
@@ -6562,11 +6224,7 @@ local Crosshair = {
     Spin          = false,
     SpinSpeed     = 90,                            -- deg/sec
     SpinDir       = "CW",                          -- "CW" | "CCW"
-    -- v0.8.0: Crosshair follows ESP.Config.Gradient (same toggle + same
-    -- ColorA2/B2/Speed/Rotation/Spacing/Reverse tuning). One gradient master
-    -- toggle across features: no separate crosshair state.
-    -- v0.9.0: run the ramp outward from the centre along every arm at once instead
-    -- of as one linear sweep across the canvas: symmetric under spin.
+    -- v0.8.0: Crosshair follows ESP.Config.Gradient (same toggle + same ColorA2/B2/Speed/Rotation/Spacing/Reverse tuning). One gradient master toggle across features: no separate crosshair state. v0.9.0: run the ramp outward from the centre along every arm at once instead of as one linear sweep across the canvas: symmetric under spin.
     DoubleGradient = false,
     Follow = {
         Enabled    = false,
@@ -6607,14 +6265,7 @@ registerConfig("crosshair", Crosshair)
 -- the arraylist accent line stays at its default transparency (0.15) permanently.
 -- Future accent needs: build a dedicated "Accent Line" toggle, don't hijack Outline.
 
--- v0.0.76: Outline now ALSO drives an outline around every arraylist label. Each
--- label carries a KArrayStroke (added in addToActiveArray, disabled by default);
--- this heartbeat toggles + tints it live off ESP.Config.Outline + ESP.Boxes.OutlineColor.
--- Kept here (after ESP is defined) so the upvalue resolves cleanly: addToActiveArray
--- sits above ESP in the file and can't reference it directly.
--- v0.1.0: textGradSeq/gradOffset are defined further down (after makeGradSeqGetter),
--- so a bare reference here would bind to a nil GLOBAL and crash the heartbeat the
--- moment TextGradient toggles on. Pre-declare the slots; they get filled below.
+-- v0.0.76: Outline now ALSO drives an outline around every arraylist label. Each label carries a KArrayStroke (added in addToActiveArray, disabled by default); this heartbeat toggles + tints it live off ESP.Config.Outline + ESP.Boxes.OutlineColor. Kept here (after ESP is defined) so the upvalue resolves cleanly: addToActiveArray sits above ESP in the file and can't reference it directly. v0.1.0: textGradSeq/gradOffset are defined further down (after makeGradSeqGetter), so a bare reference here would bind to a nil GLOBAL and crash the heartbeat the moment TextGradient toggles on. Pre-declare the slots; they get filled below.
 local textGradSeq = nil
 local gradOffset = nil
 local lineGradSeq = nil
@@ -6622,10 +6273,7 @@ RunService.Heartbeat:Connect(function()
     if Koffee.dead() then return end
     local on = ESP.Config.Outline == true
     local col = ESP.Boxes.OutlineColor
-    -- v0.0.95: text gradient sync: same loop for the KArrayGrad UIGradient.
-    -- When ESP.Config.TextGradient is on, we apply the same gradient sequence
-    -- ESP text labels use (textGradSeq with GradientColorA/B, Rotation, Spacing,
-    -- animated offset) so arraylist reads exactly like the ESP text.
+    -- v0.0.95: text gradient sync: same loop for the KArrayGrad UIGradient. When ESP.Config.TextGradient is on, we apply the same gradient sequence ESP text labels use (textGradSeq with GradientColorA/B, Rotation, Spacing, animated offset) so arraylist reads exactly like the ESP text.
     local gradOn = ESP.Config.TextGradient == true
     -- v0.92.0: only the animated gradient needs every frame; the rest syncs at 10Hz
     -- (was ~0.8ms a frame with a dozen modules shown, mostly rebuilding label text)
@@ -6662,11 +6310,7 @@ RunService.Heartbeat:Connect(function()
             local g = ESP._getChild(lbl, "KArrayGrad")
             if g then
                 if g.Enabled ~= gradOn then g.Enabled = gradOn end
-                -- v0.0.97: UIGradient does not render on RichText labels (Roblox
-                -- limitation: the gradient is silently ignored when RichText is on).
-                -- When the gradient is active, flip RichText off + use the plain-text
-                -- label so the gradient's ColorSequence actually paints the glyphs.
-                -- When off, flip RichText back on for the per-span size/colour hierarchy.
+                -- v0.0.97: UIGradient does not render on RichText labels (Roblox limitation: the gradient is silently ignored when RichText is on). When the gradient is active, flip RichText off + use the plain-text label so the gradient's ColorSequence actually paints the glyphs. When off, flip RichText back on for the per-span size/colour hierarchy.
                 if gradOn then
                     if lbl.RichText then lbl.RichText = false end
                     local pt = arrayPlainText(m)
@@ -6748,26 +6392,11 @@ local function makeCubeEdges(parent)
     return edges
 end
 
--- v0.0.20: scanline hull fill for CUBE boxes. Roblox GUI can't fill an
--- arbitrary perspective-skewed quad with a single Frame, so the cube "3D fill"
--- is drawn as a stack of horizontal strips spanning the projected convex
--- silhouette of the 8 box corners. Reads as a translucent solid occupying the
--- box volume instead of the old flat AABB rectangle. Strips are pooled per rig.
--- v0.0.28: trimmed from 90/3. A 90-strip CanvasGroup PER RIG was heavy enough that
--- compositing them while the menu's own CanvasGroup faded in stalled the open
--- ("menu takes a second to open with fill on"). 40 strips at step 5 still reads as
--- a smooth solid (the cube edges draw on top and hide any stair-stepping) for a
--- fraction of the frames + fill/hull work.
--- v0.32.1: finer strips (was 40/5) so the intersection-bounded fill stays tight to
--- the silhouette up close, where a large box would otherwise get tall, gappy strips.
+-- v0.0.20: scanline hull fill for CUBE boxes. Roblox GUI can't fill an arbitrary perspective-skewed quad with a single Frame, so the cube "3D fill" is drawn as a stack of horizontal strips spanning the projected convex silhouette of the 8 box corners. Reads as a translucent solid occupying the box volume instead of the old flat AABB rectangle. Strips are pooled per rig. v0.0.28: trimmed from 90/3. A 90-strip CanvasGroup PER RIG was heavy enough that compositing them while the menu's own CanvasGroup faded in stalled the open ("menu takes a second to open with fill on"). 40 strips at step 5 still reads as a smooth solid (the cube edges draw on top and hide any stair-stepping) for a fraction of the frames + fill/hull work. v0.32.1: finer strips (was 40/5) so the intersection-bounded fill stays tight to the silhouette up close, where a large box would otherwise get tall, gappy strips.
 local FILL = { max = 64, step = 4 }
 
 local function makeFillRows(parent)
-    -- v0.0.22: CanvasGroup flattens overlapping strips into ONE layer before transparency,
-    -- killing the double-darkened seams the old stack produced. Strips are opaque;
-    -- the group carries ~0.72 translucency.
-    -- v0.0.29: group carries a KGrad for the Gradient toggle. UIGradient on a
-    -- CanvasGroup spans only the group's rect, so render resizes it to the fill AABB.
+    -- v0.0.22: CanvasGroup flattens overlapping strips into ONE layer before transparency, killing the double-darkened seams the old stack produced. Strips are opaque; the group carries ~0.72 translucency. v0.0.29: group carries a KGrad for the Gradient toggle. UIGradient on a CanvasGroup spans only the group's rect, so render resizes it to the fill AABB.
     local group = new("CanvasGroup", {
         Name = "FillGroup",
         Size = UDim2.new(1, 0, 1, 0),
@@ -6846,10 +6475,7 @@ local function hullSpanAtY(hull, y)
     return xl, xr
 end
 
--- v0.0.21 overlay pools + billboards --------------------------------------
--- Skeleton lines + head dot + health bar + tracer are 2D screen-space frames
--- living in ESP.BoxLayer (same layer as the box). Name / distance / profile
--- picture are world-anchored BillboardGuis parented to the character parts.
+-- v0.0.21 overlay pools + billboards -------------------------------------- Skeleton lines + head dot + health bar + tracer are 2D screen-space frames living in ESP.BoxLayer (same layer as the box). Name / distance / profile picture are world-anchored BillboardGuis parented to the character parts.
 
 local SKELETON_MAX = 24
 local function makeSkeletonLines(parent)
@@ -6941,11 +6567,7 @@ local function makeHealthBar(parent)
     return bg, fill, txt
 end
 
--- v0.0.26: name / profile picture / distance are SCREEN-SPACE (2D) elements in
--- the box layer, positioned each frame from the projected head/feet. A 3D
--- BillboardGui drifted onto the head at some camera angles ("name inside the
--- head"); screen-space keeps text ALWAYS directly above the head / below the feet
--- no matter where the camera points.
+-- v0.0.26: name / profile picture / distance are SCREEN-SPACE (2D) elements in the box layer, positioned each frame from the projected head/feet. A 3D BillboardGui drifted onto the head at some camera angles ("name inside the head"); screen-space keeps text ALWAYS directly above the head / below the feet no matter where the camera points.
 local function makeTextTag(parent, anchorY, textSize)
     local lbl = new("TextLabel", {
         Name = "KTag",
@@ -6968,10 +6590,7 @@ local function makeTextTag(parent, anchorY, textSize)
         textStroke(Color3.new(0, 0, 0), 1),
         new("UIGradient", { Enabled = false }),
     })
-    -- v0.0.97: feature-interface font system. The ESP render loop re-applies
-    -- textSize per-frame from ESP.Names.TextSize / Distance.TextSize; that loop
-    -- also honours FeiScale (see the render step), so registration here lets the
-    -- hot-swap propagate to every pooled name / distance tag automatically.
+    -- v0.0.97: feature-interface font system. The ESP render loop re-applies textSize per-frame from ESP.Names.TextSize / Distance.TextSize; that loop also honours FeiScale (see the render step), so registration here lets the hot-swap propagate to every pooled name / distance tag automatically.
     Theme.fei(lbl, "Medium", textSize)
     return lbl
 end
@@ -7057,10 +6676,7 @@ local function collectBodyParts(character)
     return parts
 end
 
--- v0.0.15: torso resolver. Prefers HumanoidRootPart (always present on
--- both R6 + R15 characters, sits at hip level = the true anchor for a
--- centered ESP box). Falls back to UpperTorso (R15) then Torso (R6) for
--- rigs without an HRP.
+-- v0.0.15: torso resolver. Prefers HumanoidRootPart (always present on both R6 + R15 characters, sits at hip level = the true anchor for a centered ESP box). Falls back to UpperTorso (R15) then Torso (R6) for rigs without an HRP.
 local function findTorso(character)
     return character:FindFirstChild("HumanoidRootPart")
         or character:FindFirstChild("UpperTorso")
@@ -7080,11 +6696,7 @@ local function npcAnchor(inst)
 end
 
 local function makeRig(plr, character, isNPC)
-    -- v0.0.15: anchor is torso, not head. Head is on top of the character;
-    -- anchoring distance / life-gate / static projection off it produced
-    -- boxes that drifted upward and read as "grabbing UI" (projected point
-    -- sat above the character silhouette when close). Torso (HRP) is at hip
-    -- level and centered on the visible body.
+    -- v0.0.15: anchor is torso, not head. Head is on top of the character; anchoring distance / life-gate / static projection off it produced boxes that drifted upward and read as "grabbing UI" (projected point sat above the character silhouette when close). Torso (HRP) is at hip level and centered on the visible body.
     local torso
     if isNPC then
         torso = npcAnchor(character)
@@ -7101,16 +6713,9 @@ local function makeRig(plr, character, isNPC)
     -- part-only NPC (not a Model): no GetBoundingBox, so it uses Static projection.
     local partOnly = isNPC and not character:IsA("Model")
 
-    -- box widget (screen-space, lives in ESP.BoxLayer)
-    -- boxRoot's own bg is the FILL now (was a separate boxFill child:
-    -- consolidating fixes a rendering quirk where the fill wouldn't show).
-    -- The UIStroke is the OUTLINE.
+    -- box widget (screen-space, lives in ESP.BoxLayer) boxRoot's own bg is the FILL now (was a separate boxFill child: consolidating fixes a rendering quirk where the fill wouldn't show). The UIStroke is the OUTLINE.
     ensureBoxLayer()
-    -- v0.0.26: the outline is a SEPARATE frame behind the box (its thicker stroke
-    -- shows around the main line). Two concentric UIStrokes on one frame rendered
-    -- unreliably: the black outline covered the white main line ("box is just
-    -- black on some people"). One stroke per frame renders correctly, like the
-    -- skeleton lines do.
+    -- v0.0.26: the outline is a SEPARATE frame behind the box (its thicker stroke shows around the main line). Two concentric UIStrokes on one frame rendered unreliably: the black outline covered the white main line ("box is just black on some people"). One stroke per frame renders correctly, like the skeleton lines do.
     local boxOutlineFrame = new("Frame", {
         Name = "BoxOutline_" .. plr.Name,
         BackgroundTransparency = 1,
@@ -7232,15 +6837,7 @@ local function cleanRig(rig)
     if rig.flagLbl then pcall(function() rig.flagLbl:Destroy() end) end
 end
 
--- v0.59.0: OVER-SCAN. Some games (Phantom Forces, etc.) do not expose the visible
--- rig as player.Character: the real, hittable model sits in the workspace named
--- after the username. When Over-scan is on, ESP resolves each player's character by
--- finding a workspace rig whose name matches their username, preferring that over
--- player.Character. The candidate list (rig-like Models with a Humanoid/HRP) is
--- built once per short window and shared, so a burst of resolves costs one
--- GetDescendants, never one per player, and nothing runs per frame.
--- lives on ESP (not chunk locals) to keep main-chunk registers free -- the main
--- function is at the 200 ceiling and the executor compiles unoptimized (O0).
+-- v0.59.0: OVER-SCAN. Some games (Phantom Forces, etc.) do not expose the visible rig as player.Character: the real, hittable model sits in the workspace named after the username. When Over-scan is on, ESP resolves each player's character by finding a workspace rig whose name matches their username, preferring that over player.Character. The candidate list (rig-like Models with a Humanoid/HRP) is built once per short window and shared, so a burst of resolves costs one GetDescendants, never one per player, and nothing runs per frame. lives on ESP (not chunk locals) to keep main-chunk registers free -- the main function is at the 200 ceiling and the executor compiles unoptimized (O0).
 ESP._osCache = { list = nil, at = 0 }
 function ESP.overScanMatch(plr)
     if plr == LocalPlayer then return nil end
@@ -7271,10 +6868,7 @@ function ESP.overScanMatch(plr)
     return exact or contains
 end
 
--- v0.0.13 orphan-box fix: previous applyESP didn't clean the old rig on CharacterAdded, so
--- boxRoot/cubeEdges/halo/bb from dead characters stayed in ESP.BoxLayer forever
--- ("boxes stick after death", "new round doesn't work"). Fix: clean before creating, and hook
--- CharacterRemoving so visuals disappear the frame the character despawns.
+-- v0.0.13 orphan-box fix: previous applyESP didn't clean the old rig on CharacterAdded, so boxRoot/cubeEdges/halo/bb from dead characters stayed in ESP.BoxLayer forever ("boxes stick after death", "new round doesn't work"). Fix: clean before creating, and hook CharacterRemoving so visuals disappear the frame the character despawns.
 local function applyESP(plr)
     if ESP.Rigs[plr] then return end
     local entry = { rig = nil, addedConn = nil, removingConn = nil }
@@ -7309,10 +6903,7 @@ local function applyESP(plr)
     attach(plr.Character)
 end
 
--- v0.18.4: a rig is stale when its character left Workspace (games reparent
--- corpses instead of destroying them, so .Parent stays truthy), when the player
--- swapped Character without CharacterAdded firing, or when the player is gone but
--- PlayerRemoving never reached us. Every case resolves to strip and rebuild.
+-- v0.18.4: a rig is stale when its character left Workspace (games reparent corpses instead of destroying them, so .Parent stays truthy), when the player swapped Character without CharacterAdded firing, or when the player is gone but PlayerRemoving never reached us. Every case resolves to strip and rebuild.
 local nextRescan = 0
 local function rescanRigs(applyFn, stripFn)
     local overscan = ESP.Config.OverScan
@@ -7365,19 +6956,7 @@ local function stripESP(plr)
     ESP.Rigs[plr] = nil
 end
 
--- project 8 bounding-box corners to viewport. returns:
---   screenCorners: list of {x, y, z} in viewport space
---   anyInFront: at least one corner visible
---   allInFront: every corner visible (safe for cube edge drawing)
--- Sizing modes (v0.0.13):
---   "Static": distance-linked, aspect-locked screen box. Width/height
---                   are LINKED (both derived from a single projected height
---                   scalar). Only shrinks / grows: never distorts. Uses a
---                   two-point vertical projection (top/bottom stud markers)
---                   so FOV + distance are respected but character animation
---                   and camera angle don't warp the aspect ratio.
---   "Bounding": fresh GetBoundingBox per frame (breathes with animation)
---   "Prediction": Bounding + velocity lookahead to reduce jitter at high ping
+-- project 8 bounding-box corners to viewport. returns: screenCorners: list of {x, y, z} in viewport space anyInFront: at least one corner visible allInFront: every corner visible (safe for cube edge drawing) Sizing modes (v0.0.13): "Static": distance-linked, aspect-locked screen box. Width/height are LINKED (both derived from a single projected height scalar). Only shrinks / grows: never distorts. Uses a two-point vertical projection (top/bottom stud markers) so FOV + distance are respected but character animation and camera angle don't warp the aspect ratio. "Bounding": fresh GetBoundingBox per frame (breathes with animation) "Prediction": Bounding + velocity lookahead to reduce jitter at high ping
 local CUBE_EDGE_INDICES = {
     {1,2},{3,4},{1,3},{2,4},   -- front face
     {5,6},{7,8},{5,7},{6,8},   -- back face
@@ -7390,19 +6969,7 @@ local CUBE_VERTEX_NEIGHBORS = {
     {1,6,7}, {2,5,8}, {3,5,8}, {4,6,7},
 }
 
--- v0.0.13 Static: aspect-locked, distance-linked, upward offset corrected.
---   Anchor is the character pivot (HumanoidRootPart). We project markers
---   above and below the torso. v0.0.16: markers are now SYMMETRIC (+3/-3).
---   The old +3/-4 was asymmetric: HRP sits at hip level (~3 studs), head
---   top is ~5.5, feet are at ~0. So +3 reaches head, -3 reaches feet. The
---   old -4 extended 1 stud below ground, shifting the box center 0.5 studs
---   below the visible character center. At range this read as "the top is
---   offset from the bottom" because the character sat in the upper portion
---   of the box with empty space at the bottom.
---   Screen height = |top2D - bot2D|. Width = height * STATIC_ASPECT.
---   Result: only ONE screen scalar drives everything, so width and height
---   are truly linked. Camera angle / character rotation / animation do NOT
---   change the box shape.
+-- v0.0.13 Static: aspect-locked, distance-linked, upward offset corrected. Anchor is the character pivot (HumanoidRootPart). We project markers above and below the torso. v0.0.16: markers are now SYMMETRIC (+3/-3). The old +3/-4 was asymmetric: HRP sits at hip level (~3 studs), head top is ~5.5, feet are at ~0. So +3 reaches head, -3 reaches feet. The old -4 extended 1 stud below ground, shifting the box center 0.5 studs below the visible character center. At range this read as "the top is offset from the bottom" because the character sat in the upper portion of the box with empty space at the bottom. Screen height = |top2D - bot2D|. Width = height * STATIC_ASPECT. Result: only ONE screen scalar drives everything, so width and height are truly linked. Camera angle / character rotation / animation do NOT change the box shape.
 local STATIC = { top = 3, bot = 3, aspect = 0.5 }   -- fallback width = height * 0.5 (used only if no bbox)
 
 local function projectStatic(torso, character)
@@ -7410,14 +6977,7 @@ local function projectStatic(torso, character)
     if not torso or not torso.Parent then return nil, false, false end
     local cam = ESP._cam or Workspace.CurrentCamera
     if not cam then return nil, false, false end
-    -- v0.0.26: derive the vertical extent from the ACTUAL character bounding box
-    -- (centred on the real body), not a fixed ±3 studs off the hip. HRP sits at
-    -- hip level, so ±3 was R6-calibrated and left R15 / non-blocky rigs offset.
-    -- v0.0.28: also derive a real WIDTH from the body instead of a flat 0.5 aspect
-    -- ("the snapshot static gets is really bad"). We take the body's horizontal
-    -- girth (min of X/Z so a gun-pointing pose's depth doesn't inflate it) and
-    -- project it along the camera's right axis, so the box actually hugs the body
-    -- yet never warps with camera yaw (a single world width, aspect-stable).
+    -- v0.0.26: derive the vertical extent from the ACTUAL character bounding box (centred on the real body), not a fixed ±3 studs off the hip. HRP sits at hip level, so ±3 was R6-calibrated and left R15 / non-blocky rigs offset. v0.0.28: also derive a real WIDTH from the body instead of a flat 0.5 aspect ("the snapshot static gets is really bad"). We take the body's horizontal girth (min of X/Z so a gun-pointing pose's depth doesn't inflate it) and project it along the camera's right axis, so the box actually hugs the body yet never warps with camera yaw (a single world width, aspect-stable).
     local centerWorld, topWorld, botWorld, girth
     if character then
         local ok, cf, size = pcall(character.GetBoundingBox, character)
@@ -7457,20 +7017,14 @@ local function projectStatic(torso, character)
     local y0 = centerY - height * 0.5
     local x1 = x0 + width
     local y1 = y0 + height
-    -- Emit 8 "corners" so the render pipeline can treat Static like the
-    -- other modes. Front and back use the same 2D rectangle since Static
-    -- has no depth information: Cube mode with Static will render as a
-    -- flat rect (Cube is really designed for Bounding / Prediction).
+    -- Emit 8 "corners" so the render pipeline can treat Static like the other modes. Front and back use the same 2D rectangle since Static has no depth information: Cube mode with Static will render as a flat rect (Cube is really designed for Bounding / Prediction).
     local avgZ = (top2D.Z + bot2D.Z) * 0.5
     local c = table.create(8)
     c[1] = { x = x1, y = y0, z = avgZ }
     c[2] = { x = x0, y = y0, z = avgZ }
     c[3] = { x = x1, y = y1, z = avgZ }
     c[4] = { x = x0, y = y1, z = avgZ }
-    -- v0.0.17: assign by VALUE (new tables), not by reference. The old
-    -- `c[5..8] = c[1..4]` shared table refs: a future mutation of c[1]
-    -- would silently corrupt c[5]. Nothing mutates today, but this kills
-    -- the latent footgun.
+    -- v0.0.17: assign by VALUE (new tables), not by reference. The old `c[5..8] = c[1..4]` shared table refs: a future mutation of c[1] would silently corrupt c[5]. Nothing mutates today, but this kills the latent footgun.
     c[5] = { x = x1, y = y0, z = avgZ }
     c[6] = { x = x0, y = y0, z = avgZ }
     c[7] = { x = x1, y = y1, z = avgZ }
@@ -7478,12 +7032,7 @@ local function projectStatic(torso, character)
     return c, true, true
 end
 
--- v0.0.13: manual bbox from cached body parts. Ignores accessories/tools.
--- v0.0.23: `refCF` makes it ORIENTED (Follow Direction). When given, every part
--- corner is measured in refCF-local space (the torso frame) so the box rotates
--- with the character instead of being a world-axis box. Without it, it falls back
--- to the old world-axis-aligned AABB. Returns cframe (center) + size, matching
--- the shape of character:GetBoundingBox.
+-- v0.0.13: manual bbox from cached body parts. Ignores accessories/tools. v0.0.23: `refCF` makes it ORIENTED (Follow Direction). When given, every part corner is measured in refCF-local space (the torso frame) so the box rotates with the character instead of being a world-axis box. Without it, it falls back to the old world-axis-aligned AABB. Returns cframe (center) + size, matching the shape of character:GetBoundingBox.
 local function characterOnlyBBox(bodyParts, refCF)
     local minX, minY, minZ =  math.huge,  math.huge,  math.huge
     local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
@@ -7552,24 +7101,14 @@ end
 local function project8(character, sizingType, characterOnly, bodyParts, rig)
     local cf, size
     if characterOnly then
-        -- v0.0.15: refresh the cached body-parts list if it's empty (rig was
-        -- created before parts fully loaded). Previously we silently fell
-        -- back to full GetBoundingBox in this case, which read as "Character
-        -- Only doesn't work": accessories still counted.
-        -- v0.0.25: re-collect when the cache looks INCOMPLETE (< 6 parts), not
-        -- only when empty. A rig created before the R15 limbs finished loading
-        -- would cache just HRP/torso and never refresh -> "Character Only shows
-        -- only the torso" on R15. 6 covers a minimal R6; a fuller rig refreshes up.
+        -- v0.0.15: refresh the cached body-parts list if it's empty (rig was created before parts fully loaded). Previously we silently fell back to full GetBoundingBox in this case, which read as "Character Only doesn't work": accessories still counted. v0.0.25: re-collect when the cache looks INCOMPLETE (< 6 parts), not only when empty. A rig created before the R15 limbs finished loading would cache just HRP/torso and never refresh -> "Character Only shows only the torso" on R15. 6 covers a minimal R6; a fuller rig refreshes up.
         if not bodyParts or #bodyParts < 6 then
             local fresh = collectBodyParts(character)
             if rig then rig.bodyParts = fresh end
             bodyParts = fresh
         end
         if #bodyParts == 0 then return nil, false, false end
-        -- v0.0.23: Follow Direction makes the Character-Only box ORIENTED to the
-        -- torso frame (so Cube tracks the player's facing). Without it, Character
-        -- Only built a world-axis box: the "Character Only kills Follow
-        -- Direction" bug. Falls back to world-axis when Follow Direction is off.
+        -- v0.0.23: Follow Direction makes the Character-Only box ORIENTED to the torso frame (so Cube tracks the player's facing). Without it, Character Only built a world-axis box: the "Character Only kills Follow Direction" bug. Falls back to world-axis when Follow Direction is off.
         local refCF = nil
         if ESP.Config.FollowDirection then
             local torso = (rig and rig.torso) or findTorso(character)
@@ -7591,10 +7130,7 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
         if not ok or not cframe then return nil, false, false end
         cf = cframe
         size = sz
-        -- v0.0.28: clamp the box DEPTH (front-back) to its width in the box's OWN
-        -- oriented frame, BEFORE any axis-align. A character aiming/pointing at the
-        -- camera extends its arms forward; that long depth otherwise projects as
-        -- extra screen width and the box reads "too big when looking forward".
+        -- v0.0.28: clamp the box DEPTH (front-back) to its width in the box's OWN oriented frame, BEFORE any axis-align. A character aiming/pointing at the camera extends its arms forward; that long depth otherwise projects as extra screen width and the box reads "too big when looking forward".
         size = Vector3.new(size.X, size.Y, math.min(size.Z, size.X))
         -- Follow Direction OFF: flatten the oriented GetBoundingBox to a plain
         -- world-axis box so the cube stops rotating with the character.
@@ -7605,13 +7141,7 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
     if sizingType == "Prediction" then
         local hrp = character:FindFirstChild("HumanoidRootPart")
         if hrp then
-            -- v0.0.15: prediction stretching fix. Two issues:
-            --   1. Vertical velocity (jumping / falling) shifted the box up
-            --      while GetBoundingBox stayed grounded -> visible stretch
-            --      as the projected corners diverged from ground contact.
-            --   2. 0.083s lead was too aggressive for real-world lag.
-            -- Fix: zero out Y velocity (predict horizontal motion only) and
-            -- drop the lead to 0.05s (~3 frames @ 60fps).
+            -- v0.0.15: prediction stretching fix. Two issues: 1. Vertical velocity (jumping / falling) shifted the box up while GetBoundingBox stayed grounded -> visible stretch as the projected corners diverged from ground contact. 2. 0.083s lead was too aggressive for real-world lag. Fix: zero out Y velocity (predict horizontal motion only) and drop the lead to 0.05s (~3 frames @ 60fps).
             local vel = hrp.AssemblyLinearVelocity
             local flat = Vector3.new(vel.X, 0, vel.Z)
             cf = cf + flat * 0.05
@@ -7643,20 +7173,7 @@ local function project8(character, sizingType, characterOnly, bodyParts, rig)
     return screenCorners, anyInFront, allInFront, cf, size
 end
 
--- v0.65.1: "Algorithm" sizing. project8 builds ONE 3D box (a world/oriented AABB
--- or GetBoundingBox) and projects its 8 corners; that single box is what makes
--- CharacterOnly "sometimes miss the head" (a depth-capped / axis-aligned box can
--- clip an extremity when projected) and makes the non-CharacterOnly path "way too
--- big" (GetBoundingBox swallows hats/held tools). Algorithm skips the single box
--- entirely: it projects EVERY body part's own 8 corners to the screen and takes
--- the 2D min/max across all of them. The result hugs the true on-screen
--- silhouette regardless of pose -> the head sets the top, the feet the bottom, and
--- whichever arm reaches furthest sets each side (exactly the extremity scan he
--- described, but generalised so R6/R15 and any pose fall out for free). It only
--- walks the rig parts when CharacterOnly is on, so accessories never inflate it.
--- Attached to ESP (not a new local) because the main chunk is at the 200-register
--- ceiling. Returns a flat 8-corner rect like projectStatic (no real depth), so
--- Cube falls through to Bounding upstream.
+-- v0.65.1: "Algorithm" sizing. project8 builds ONE 3D box (a world/oriented AABB or GetBoundingBox) and projects its 8 corners; that single box is what makes CharacterOnly "sometimes miss the head" (a depth-capped / axis-aligned box can clip an extremity when projected) and makes the non-CharacterOnly path "way too big" (GetBoundingBox swallows hats/held tools). Algorithm skips the single box entirely: it projects EVERY body part's own 8 corners to the screen and takes the 2D min/max across all of them. The result hugs the true on-screen silhouette regardless of pose -> the head sets the top, the feet the bottom, and whichever arm reaches furthest sets each side (exactly the extremity scan he described, but generalised so R6/R15 and any pose fall out for free). It only walks the rig parts when CharacterOnly is on, so accessories never inflate it. Attached to ESP (not a new local) because the main chunk is at the 200-register ceiling. Returns a flat 8-corner rect like projectStatic (no real depth), so Cube falls through to Bounding upstream.
 function ESP._algoParts(character, characterOnly, bodyParts, rig)
     if characterOnly then
         -- mirror project8's refresh: a rig cached before R15 limbs finished loading
@@ -7778,12 +7295,7 @@ local function hideRigVisuals(rig)
     rig.lastBoxSize = nil
 end
 
--- v0.0.22: single source of truth for Feature-Interface line thickness.
---   EqualSize on  -> return the flat base thickness (distance-invariant).
---   EqualSize off -> scale inversely with distance so lines are thick up close
---                    and thin far away, clamped so they never vanish or bloat.
--- REF_DIST is the distance at which scaled == base. Fractional px is fine (the
--- GUI renderer accepts it) and keeps the falloff smooth.
+-- v0.0.22: single source of truth for Feature-Interface line thickness. EqualSize on -> return the flat base thickness (distance-invariant). EqualSize off -> scale inversely with distance so lines are thick up close and thin far away, clamped so they never vanish or bloat. REF_DIST is the distance at which scaled == base. Fractional px is fine (the GUI renderer accepts it) and keeps the falloff smooth.
 local EQ_REF_DIST = 32
 local function featureThickness(dist)
     local base = ESP.Render.Thickness
@@ -7792,10 +7304,7 @@ local function featureThickness(dist)
     return math.clamp(s, math.max(0.1, base * 0.25), base * 5)   -- v0.0.23: sub-1 allowed
 end
 
--- v0.0.22: animated text gradient. The ColorSequence is built A->B->A so it's
--- periodic: sweeping Offset.X seamlessly loops with no snap at the wrap. Speed
--- is cycles/sec; we sweep offset 1 -> -1 (right to left) forever. Sequence is
--- rebuilt only when the endpoint colors actually change (cheap steady state).
+-- v0.0.22: animated text gradient. The ColorSequence is built A->B->A so it's periodic: sweeping Offset.X seamlessly loops with no snap at the wrap. Speed is cycles/sec; we sweep offset 1 -> -1 (right to left) forever. Sequence is rebuilt only when the endpoint colors actually change (cheap steady state).
 local function makeGradSeqGetter()
     local lastA, lastB, lastS, seq
     return function(a, b, spacing)
@@ -7896,14 +7405,7 @@ function ESP._hpGrad(rig, frac, H)
     return at(y0)
 end
 
--- v0.0.24: toggle/colour a line-frame's separate outline border (the KOutline
--- UIStroke added by lineOutline()). Called wherever a feature line is shown so
--- the global Outline effect reaches EVERY feature, in its own colour.
--- v0.0.28: pin a UIStroke's colour against a sibling UIGradient bleeding into it.
--- A UIGradient parented to a GuiObject also tints that object's UIStroke, so with
--- the feature Gradient on, every outline turned rainbow ("outline doesn't work with
--- gradient on"). A UIGradient placed INSIDE the stroke, holding a flat one-colour
--- sequence, overrides the bleed and keeps the outline its own solid colour.
+-- v0.0.24: toggle/colour a line-frame's separate outline border (the KOutline UIStroke added by lineOutline()). Called wherever a feature line is shown so the global Outline effect reaches EVERY feature, in its own colour. v0.0.28: pin a UIStroke's colour against a sibling UIGradient bleeding into it. A UIGradient parented to a GuiObject also tints that object's UIStroke, so with the feature Gradient on, every outline turned rainbow ("outline doesn't work with gradient on"). A UIGradient placed INSIDE the stroke, holding a flat one-colour sequence, overrides the bleed and keeps the outline its own solid colour.
 
 -- v0.75.2: per-feature FindFirstChild was a top ESP cost (12 cube edges + up to 19
 -- skeleton bones + name/dist/pfp each with 2-3 lookups). Weak-keyed cache; cleaned
@@ -7996,11 +7498,7 @@ local function applyTextOutline(lbl, on, color, thick)
     pinStrokeColor(s, on and gOn, color)
 end
 
--- v0.0.28: gradient that lives INSIDE a UIStroke (colours the stroke itself). The
--- 2D box's visible line IS a UIStroke; a UIGradient on the parent Frame did not
--- reliably tint it, so the box sat forced-white with the gradient invisible ("2D
--- box stuck white, colour/gradient don't work"). Driving the gradient from within
--- the stroke makes it show, and lets the flat-colour fallback restore any colour.
+-- v0.0.28: gradient that lives INSIDE a UIStroke (colours the stroke itself). The 2D box's visible line IS a UIStroke; a UIGradient on the parent Frame did not reliably tint it, so the box sat forced-white with the gradient invisible ("2D box stuck white, colour/gradient don't work"). Driving the gradient from within the stroke makes it show, and lets the flat-colour fallback restore any colour.
 local function applyStrokeGradient(stroke, on, a, b)
     local g = ESP._getChildOfClass(stroke, "UIGradient")
     if not on then
@@ -8083,10 +7581,7 @@ local function updateBillboards(rig, plr, dist, overrideColor)
     local showName = nameStr ~= ""
 
     local cam = ESP._cam or Workspace.CurrentCamera
-    -- v0.0.26: project the head TOP (world) so the tags sit directly above the
-    -- head on screen at any camera angle. Fall back to the torso if no head.
-    -- v0.56.0: an NPC has no "Head"; anchor its name to the TOP of its bounding
-    -- box (model or bare part) so the name always sits above the ESP box.
+    -- v0.0.26: project the head TOP (world) so the tags sit directly above the head on screen at any camera angle. Fall back to the torso if no head. v0.56.0: an NPC has no "Head"; anchor its name to the TOP of its bounding box (model or bare part) so the name always sits above the ESP box.
     local headTopWorld
     local bcf, bsz   -- v0.92.0: one bounding box per NPC per frame, shared with distance
     if rig.isNPC then
@@ -8457,12 +7952,7 @@ local function updateLookLine(rig, overrideColor, dist)
     for i = used + 1, #segs do segs[i].Visible = false end
 end
 
--- v0.0.13 render: gates are strict (dead / despawned / out-of-range / ancestry
--- broken -> hide immediately). Every visible ESP element is opt-in via its own
--- config toggle: master ESP shows nothing on its own. v0.0.17: Outline is a
--- thickness accent, NOT a gate for box line existence.
--- v0.31.1: one reusable params for the per-rig occlusion ray: was allocated fresh
--- per rig per frame (one GC-churning table per player, every frame).
+-- v0.0.13 render: gates are strict (dead / despawned / out-of-range / ancestry broken -> hide immediately). Every visible ESP element is opt-in via its own config toggle: master ESP shows nothing on its own. v0.0.17: Outline is a thickness accent, NOT a gate for box line existence. v0.31.1: one reusable params for the per-rig occlusion ray: was allocated fresh per rig per frame (one GC-churning table per player, every frame).
 local espRayParams = RaycastParams.new()
 espRayParams.FilterType = Enum.RaycastFilterType.Exclude
 -- v0.53.0: per-rig draw, shared by players and NPCs. NPC rigs pass isNPC=true
@@ -8470,11 +7960,7 @@ espRayParams.FilterType = Enum.RaycastFilterType.Exclude
 -- swapped to Shared.NPCESP by the caller. continue became return on extraction.
 function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         local rig = entry.rig
-        -- v0.0.15 hard life gate. Torso (HRP) replaces head as the anchor:
-        -- head is above the visible body so anchoring there produced boxes
-        -- offset upward + reading as "grabbing UI." Torso sits at hip level,
-        -- centered on the visible body. If the torso reference goes stale
-        -- (rig-swapping games, respawn mid-frame), re-resolve from character.
+        -- v0.0.15 hard life gate. Torso (HRP) replaces head as the anchor: head is above the visible body so anchoring there produced boxes offset upward + reading as "grabbing UI." Torso sits at hip level, centered on the visible body. If the torso reference goes stale (rig-swapping games, respawn mid-frame), re-resolve from character.
         if not rig then return end
         -- v0.90.0: the ESP preview window draws its dummy through this same path,
         -- so every gate below (workspace, team, distance, walls) is skipped for it
@@ -8542,13 +8028,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- their gradient but stop animating it; at that size the motion does not show.
         ESP._animGrad = pv or rig._scrH == nil or rig._scrH >= 110
 
-        -- v0.0.21: shared color override, computed once per rig.
-        --   team-based color (same team) wins, else Visible Check's visible/hidden
-        --   color, else nil -> each element falls back to its own configured color.
-        -- Visible Check does a single camera->torso raycast, excluding the local
-        -- and target characters so only environment occlusion counts.
-        -- v0.30.0: also raycast when Through Walls is off, so the box can be hidden
-        -- behind geometry even with Visible Check (colour mode) switched off.
+        -- v0.0.21: shared color override, computed once per rig. team-based color (same team) wins, else Visible Check's visible/hidden color, else nil -> each element falls back to its own configured color. Visible Check does a single camera->torso raycast, excluding the local and target characters so only environment occlusion counts. v0.30.0: also raycast when Through Walls is off, so the box can be hidden behind geometry even with Visible Check (colour mode) switched off.
         local hidden = false
         if not pv and (ESP.Config.VisibleCheck or not ESP.Boxes.ThroughWalls) and rig.torso and rig.torso.Parent then
             espRayParams.FilterDescendantsInstances = { rig.character, LocalPlayer.Character }
@@ -8594,10 +8074,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             return
         end
 
-        -- BOX projection dispatch:
-        --   Static -> aspect-locked, distance-linked screen box (no camera-angle warp).
-        --             Cube auto-falls-through to Bounding (Static has no depth info).
-        --   Bounding / Prediction -> 8-corner world projection with optional CharacterOnly.
+        -- BOX projection dispatch: Static -> aspect-locked, distance-linked screen box (no camera-angle warp). Cube auto-falls-through to Bounding (Static has no depth info). Bounding / Prediction -> 8-corner world projection with optional CharacterOnly.
         local corners, anyInFront, allInFront, worldCF, worldSize
         local isCube = ESP.Boxes.BoxType == "Cube"
         local effectiveSizing = ESP.Config.SizingType
@@ -8671,11 +8148,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         end
         local w, h = maxX - minX, maxY - minY
 
-        -- v0.0.13 Immediate Mode:
-        --   true  = snap box pos/size to target each frame (matches character
-        --           movement 1:1, no lag, may jitter slightly on fast pans)
-        --   false = lerp pos/size toward target at 0.35 per frame (smoother,
-        --           slight visible drag when the character teleports)
+        -- v0.0.13 Immediate Mode: true = snap box pos/size to target each frame (matches character movement 1:1, no lag, may jitter slightly on fast pans) false = lerp pos/size toward target at 0.35 per frame (smoother, slight visible drag when the character teleports)
         local tX, tY, tW, tH
         if ESP.Config.ImmediateMode then
             tX, tY, tW, tH = minX, minY, w, h
@@ -8698,13 +8171,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
 
         if isCube then
             rig._cubeHid = false
-            -- v0.0.20: boxRoot (a flat AABB rectangle) is NO LONGER the cube
-            -- fill: that's exactly what made "Fill + Cube" read as a 2D box.
-            -- The fill is now a scanline of horizontal strips spanning the
-            -- projected convex silhouette of the 8 corners, so it looks like a
-            -- translucent solid occupying the 3D box, matching the 2D fill's
-            -- 0.72 transparency. Cube edges draw on top and hide the strip stair-
-            -- stepping on the slanted sides.
+            -- v0.0.20: boxRoot (a flat AABB rectangle) is NO LONGER the cube fill: that's exactly what made "Fill + Cube" read as a 2D box. The fill is now a scanline of horizontal strips spanning the projected convex silhouette of the 8 corners, so it looks like a translucent solid occupying the 3D box, matching the 2D fill's 0.72 transparency. Cube edges draw on top and hide the strip stair- stepping on the slanted sides.
             rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
             if rig.boxOutline then ESP._set(rig.boxOutline, "Enabled", false) end
             ESP._hideCorners(rig)
@@ -8751,10 +8218,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                     local f = rig.fillRows[i]
                     if i <= rowCount then
                         local yTop = hy0 + (i - 1) * rowH
-                        -- v0.32.1: bound each strip by the NARROWER of its top+bottom
-                        -- spans (intersection), so it stays inside the slanted
-                        -- silhouette. The old union overshot outward: fill squares
-                        -- poked past the edges up close, where strips are tall.
+                        -- v0.32.1: bound each strip by the NARROWER of its top+bottom spans (intersection), so it stays inside the slanted silhouette. The old union overshot outward: fill squares poked past the edges up close, where strips are tall.
                         local l1, r1 = hullSpanAtY(hull, yTop + 0.5)
                         local l2, r2 = hullSpanAtY(hull, yTop + rowH - 0.5)
                         local xl, xr
@@ -8762,10 +8226,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                         elseif l1 then xl, xr = l1, r1
                         elseif l2 then xl, xr = l2, r2 end
                         if xl and xr and xl < xr then
-                            -- opaque strip; the CanvasGroup carries the translucency
-                            -- so overlaps don't double-darken (no seams). +1 height
-                            -- overlap defeats fractional-rounding gaps for free.
-                            -- coords are RELATIVE to the group's AABB origin now.
+                            -- opaque strip; the CanvasGroup carries the translucency so overlaps don't double-darken (no seams). +1 height overlap defeats fractional-rounding gaps for free. coords are RELATIVE to the group's AABB origin now.
                             f.Position = UDim2.new(0, xl - hx0, 0, yTop - hy0)
                             f.Size = UDim2.new(0, math.max(xr - xl, 1), 0, rowH + 1)
                             f.BackgroundColor3 = stripCol
@@ -8782,18 +8243,11 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                 if rig.fill3D then rig.fill3D.Visible = false end
             end
 
-            -- v0.0.17: cube edges always render when box visible: they ARE
-            -- the box in cube mode. Corners mode changes the line STYLE
-            -- (vertex brackets instead of full edges), not existence. Outline
-            -- adds thickness via lineThick (computed above).
+            -- v0.0.17: cube edges always render when box visible: they ARE the box in cube mode. Corners mode changes the line STYLE (vertex brackets instead of full edges), not existence. Outline adds thickness via lineThick (computed above).
             local thick = boxThick
             local CORNER_MAX_PX = 28
             if cornersMode then
-                -- v0.0.23: draw brackets ONLY at the 4 corners nearest the camera,
-                -- each radiating its 3 incident edges. Bracketing all 8 corners made
-                -- the front + back corner of each edge project onto nearly the same
-                -- screen point and pile their stubs into a 6-line "star". Four front
-                -- corners x 3 edges = clean 3-line 3D corners with no overlap.
+                -- v0.0.23: draw brackets ONLY at the 4 corners nearest the camera, each radiating its 3 incident edges. Bracketing all 8 corners made the front + back corner of each edge project onto nearly the same screen point and pile their stubs into a 6-line "star". Four front corners x 3 edges = clean 3-line 3D corners with no overlap.
                 local order = { 1, 2, 3, 4, 5, 6, 7, 8 }
                 table.sort(order, function(p, q) return corners[p].z < corners[q].z end)
                 local slot = 0
@@ -8866,16 +8320,10 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             else
                 ESP._set(rig.boxRoot, "BackgroundColor3", fillColor)
             end
-            -- v0.0.29: 2D fill obeys the Gradient toggle. boxRoot's own KGrad
-            -- tints its background (the fill); off -> falls back to fillColor.
-            -- The KGrad bleeds onto the KMain stroke, but that stroke carries its
-            -- own inner gradient (applyStrokeGradient below) which overrides it.
+            -- v0.0.29: 2D fill obeys the Gradient toggle. boxRoot's own KGrad tints its background (the fill); off -> falls back to fillColor. The KGrad bleeds onto the KMain stroke, but that stroke carries its own inner gradient (applyStrokeGradient below) which overrides it.
             applyLineGradient(rig.boxRoot, lineGradOn and fillOn)
 
-            -- v0.0.17: primary stroke ALWAYS enabled (suppressed only by
-            -- corners mode which replaces it with brackets). v0.0.28: the box line
-            -- is a UIStroke; colour it directly and drive the Gradient from INSIDE
-            -- the stroke (a parent-frame gradient didn't tint it -> "stuck white").
+            -- v0.0.17: primary stroke ALWAYS enabled (suppressed only by corners mode which replaces it with brackets). v0.0.28: the box line is a UIStroke; colour it directly and drive the Gradient from INSIDE the stroke (a parent-frame gradient didn't tint it -> "stuck white").
             if rig.boxOutline then
                 local strokeGrad = lineGradOn and not cornersMode
                 ESP._set(rig.boxOutline, "Color", strokeGrad and Color3.new(1, 1, 1) or boxColor)
@@ -8898,10 +8346,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                 end
             end
 
-            -- Corner brackets: the box's line STYLE alternative to the full
-            -- stroke. Uses lineThick so Outline emphasis applies here too.
-            -- v0.0.15: cap segment length at 28px so brackets don't dominate
-            -- huge close-up boxes.
+            -- Corner brackets: the box's line STYLE alternative to the full stroke. Uses lineThick so Outline emphasis applies here too. v0.0.15: cap segment length at 28px so brackets don't dominate huge close-up boxes.
             if cornersMode then
                 -- v0.93.15: brackets sit relative to the box, so their layout only changes with
                 -- the (whole pixel) bracket length or thickness; skip the rebuild otherwise
@@ -8965,10 +8410,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             if rig.fill3D then rig.fill3D.Visible = false end
         end
 
-        -- v0.0.22 HEAD DOT: centered on the REAL Head part (was pinned to the
-        -- top of the projected AABB, which sat above the head / on hats). Project
-        -- the head's world position directly and center the dot on it. Size rides
-        -- the render model so it scales with distance when Equal Size is off.
+        -- v0.0.22 HEAD DOT: centered on the REAL Head part (was pinned to the top of the projected AABB, which sat above the head / on hats). Project the head's world position directly and center the dot on it. Size rides the render model so it scales with distance when Equal Size is off.
         if ESP.Indicators.HeadDot.Enabled and rig.head and rig.head.Parent then
             local sp = cam:WorldToViewportPoint(rig.head.Position)
             if sp.Z > 0 then
@@ -8996,11 +8438,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- v0.0.21 HEALTH BAR: vertical bar just left of the box, full body
         -- height, fill grows up from the bottom by health %.
         if ESP.Health.Bar.Enabled then
-            -- v0.75.2: reuse the outer hum (was refetched here) and drop the per-frame
-            -- body-parts scan. The box corners already give the on-screen extent; the
-            -- scan added ~17 WorldToViewportPoint calls per rig per frame for a bar
-            -- that reads correctly off minX/minY/maxY alone (slight over-height with
-            -- Bounding + big hats, but the box is already that shape, so it lines up).
+            -- v0.75.2: reuse the outer hum (was refetched here) and drop the per-frame body-parts scan. The box corners already give the on-screen extent; the scan added ~17 WorldToViewportPoint calls per rig per frame for a bar that reads correctly off minX/minY/maxY alone (slight over-height with Bounding + big hats, but the box is already that shape, so it lines up).
             local frac = 1
             if hum and hum.MaxHealth > 0 then
                 frac = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
@@ -9010,11 +8448,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                 frac = rig._hpShown
             end
             local hbLeft, hbTop, hbBot = minX, minY, maxY
-            -- v0.0.81: bar width proportional to the ON-SCREEN body height so both
-            -- dimensions shrink together as the target moves away: reads correctly
-            -- at any range. Was distance-scaled in v0.0.76 which made the bar THICKER
-            -- as the body got SMALLER (opposite of natural). Clamp 1..6 keeps it
-            -- visible at extreme range without dominating at point-blank.
+            -- v0.0.81: bar width proportional to the ON-SCREEN body height so both dimensions shrink together as the target moves away: reads correctly at any range. Was distance-scaled in v0.0.76 which made the bar THICKER as the body got SMALLER (opposite of natural). Clamp 1..6 keeps it visible at extreme range without dominating at point-blank.
             local barW = math.clamp((hbBot - hbTop) * 0.04, 1, 6)
             local barLeft = ESP.Boxes.Enabled and tX or hbLeft
             rig.healthBg.Position = UDim2.new(0, barLeft - 2 - barW, 0, hbTop)
@@ -9081,10 +8515,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         end
 end
 
--- v0.53.0: NPC ESP rigs, keyed by model, drawn through the shared espDrawRig with
--- ESP.* config-swapped to Shared.NPCESP. Own render loop so it is independent of
--- the player ESP module toggle; a cheap no-op until NPCs exist and the master is on.
--- IIFE so its state costs no main-chunk register (the file rides the 200 ceiling).
+-- v0.53.0: NPC ESP rigs, keyed by model, drawn through the shared espDrawRig with ESP.* config-swapped to Shared.NPCESP. Own render loop so it is independent of the player ESP module toggle; a cheap no-op until NPCs exist and the master is on. IIFE so its state costs no main-chunk register (the file rides the 200 ceiling).
 ;(function()
     local npcRigs = {}
     function Shared.updateNpcRigs(cam, camPos)
@@ -9273,10 +8704,7 @@ end
 
 local espModule = registerModule("esp", "ESP",
     function()
-        -- v0.0.14: task.spawn per-player so makeRig's WaitForChild("HumanoidRootPart", 2)
-        -- doesn't cascade: each player's rig setup runs in its own coroutine.
-        -- Full-server initial attach is now roughly single-player-latency
-        -- instead of Nx it.
+        -- v0.0.14: task.spawn per-player so makeRig's WaitForChild("HumanoidRootPart", 2) doesn't cascade: each player's rig setup runs in its own coroutine. Full-server initial attach is now roughly single-player-latency instead of Nx it.
         for _, plr in ipairs(Players:GetPlayers()) do
             task.spawn(applyESP, plr)
         end
@@ -9311,10 +8739,7 @@ espModule.GetDetail = function()
     return "    " .. table.concat(parts, ", ")
 end
 
--- v0.0.25: ESP sub-features appear as their OWN lines in the arraylist (per he).
--- They aren't real modules (the ESP render loop draws them off config flags), so
--- these are display-only entries synced from the flags. Only shown while ESP
--- itself is enabled: an entry the render loop isn't drawing would be a lie.
+-- v0.0.25: ESP sub-features appear as their OWN lines in the arraylist (per he). They aren't real modules (the ESP render loop draws them off config flags), so these are display-only entries synced from the flags. Only shown while ESP itself is enabled: an entry the render loop isn't drawing would be a lie.
 local subFeatureDefs = {
     { id = "esp_name",     name = "Name",            get = function() return ESP.Names.Enabled end },
     { id = "esp_distance", name = "Distance",        get = function() return ESP.Indicators.Distance.Enabled end },
@@ -9349,10 +8774,7 @@ do
     end)
 end
 
--- WORLD MODULES: fullbright, no fog, custom time
--- Each module saves the original Lighting values on enable and restores on disable.
--- v0.0.17: all three now install a Heartbeat that re-asserts values so
--- server-side day/night cycles / dynamic weather can't override us.
+-- WORLD MODULES: fullbright, no fog, custom time Each module saves the original Lighting values on enable and restores on disable. v0.0.17: all three now install a Heartbeat that re-asserts values so server-side day/night cycles / dynamic weather can't override us.
 local World = {
     Fullbright = { Saved = nil, Conn = nil },
     NoFog      = { Saved = nil, Conn = nil },
@@ -9384,22 +8806,9 @@ registerConfig("world_time", World.Time)
 registerConfig("world_cc", World.CC)
 registerConfig("world_light", World.Light)
 
--- v0.7.0 WORLD FX: always-on client-side visuals (no server hook).
--- Each entry runs its own particle/overlay path in the World FX IIFE below.
--- v0.9.0: world-space ParticleEmitters now, not screen Frames (see the World FX
--- IIFE). Density is particles/second, not a Frame-pool size, so these numbers are
--- ~10x the v0.7 values and still cost less. Size / Wind are in studs. Vignette and
--- Fog Tint are gone: full-screen colour washes, the one kind of "world effect"
--- that can never sit in the world. Old configs carrying those keys land harmlessly.
+-- v0.7.0 WORLD FX: always-on client-side visuals (no server hook). Each entry runs its own particle/overlay path in the World FX IIFE below. v0.9.0: world-space ParticleEmitters now, not screen Frames (see the World FX IIFE). Density is particles/second, not a Frame-pool size, so these numbers are ~10x the v0.7 values and still cost less. Size / Wind are in studs. Vignette and Fog Tint are gone: full-screen colour washes, the one kind of "world effect" that can never sit in the world. Old configs carrying those keys land harmlessly.
 World.FX = {
-    -- defaults are chosen against LIVE particle count, not the rate alone: a rate of
-    -- N with a lifetime of L keeps N*L alive at once, so slow effects need a much
-    -- lower rate than fast ones to land in the same ~1-1.5k budget.
-    -- v0.10.0: Wind defaults to 0: these fall, they don't blow sideways. Sway is
-    -- the emission spread that gives the wobble without any net drift.
-    -- v0.12.3: Reach scales the emitter slab's footprint, so the weather covers a
-    -- wide area around you instead of only the patch you're standing in. Rate is
-    -- per-second regardless of area, so a big reach wants a matching Density.
+    -- defaults are chosen against LIVE particle count, not the rate alone: a rate of N with a lifetime of L keeps N*L alive at once, so slow effects need a much lower rate than fast ones to land in the same ~1-1.5k budget. v0.10.0: Wind defaults to 0: these fall, they don't blow sideways. Sway is the emission spread that gives the wobble without any net drift. v0.12.3: Reach scales the emitter slab's footprint, so the weather covers a wide area around you instead of only the patch you're standing in. Rate is per-second regardless of area, so a big reach wants a matching Density.
     Snow   = { Enabled = false, Density = 100, Speed = 1.0, Size = 0.35, Wind = 0,
                Sway = 16, Style = "Soft", Reach = 1,   -- Style: "Soft" | "Flake"
                Color = Color3.fromRGB(255, 253, 248) },
@@ -9423,11 +8832,7 @@ World.FX = {
                   Color = Color3.fromRGB(255, 140, 60) },
     Fireflies = { Enabled = false, Density = 22, Size = 0.35, Reach = 1,
                   Color = Color3.fromRGB(190, 255, 150) },
-    -- v0.90.0: the Shapes trail's stars as weather. Style "Stars" = rounded stars,
-    -- "Mixed" = stars, snowflakes, clouds, hearts and moons.
-    -- v0.90.0: thin wireframe shapes (constellations) drifting in the air around you
-    -- Speed = drift (travel), Turn = rotation, Shift / ShiftAmount = joints wandering
-    -- around their rest spots so the limbs reshape
+    -- v0.90.0: the Shapes trail's stars as weather. Style "Stars" = rounded stars, "Mixed" = stars, snowflakes, clouds, hearts and moons. v0.90.0: thin wireframe shapes (constellations) drifting in the air around you Speed = drift (travel), Turn = rotation, Shift / ShiftAmount = joints wandering around their rest spots so the limbs reshape
     Constellations = { Enabled = false, Count = 14, Size = 1, Speed = 1, Turn = 1, Shift = 1, ShiftAmount = 1,
                        Reach = 1, Alpha = 0.35, Dots = true, Color = Color3.fromRGB(225, 232, 255) },
     Stars     = { Enabled = false, Density = 30, Speed = 1.0, Size = 0.6, Sway = 30, Spin = 60, Wind = 0,
@@ -9790,11 +9195,7 @@ registerConfig("bullets", Koffee.Bullets)
         return 0, 1
     end
 
-    -- one ray per segment, cached. A bullet lives under a second and the camera
-    -- does not travel far in 70ms, so re-testing every frame buys nothing at five
-    -- rays per tracer per frame.
-    -- `ignore` is built once per frame by the caller: without every character in it
-    -- a tracer that ends in somebody's chest is occluded by that somebody.
+    -- one ray per segment, cached. A bullet lives under a second and the camera does not travel far in 70ms, so re-testing every frame buys nothing at five rays per tracer per frame. `ignore` is built once per frame by the caller: without every character in it a tracer that ends in somebody's chest is occluded by that somebody.
     local function occlude(s, cam, now, ignore)
         if s.mask and now < (s.maskAt or 0) then return s.mask end
         s.maskAt = now + 0.07
@@ -9824,10 +9225,7 @@ registerConfig("bullets", Koffee.Bullets)
         end
     end
 
-    -- a tracer spans hundreds of studs, so one end is regularly behind the camera
-    -- where WorldToViewportPoint mirrors through the origin. Clipping the world
-    -- segment to the near plane first is exact and costs one frame, where the ESP
-    -- look-ray's segment sampling would just drop the visible half.
+    -- a tracer spans hundreds of studs, so one end is regularly behind the camera where WorldToViewportPoint mirrors through the origin. Clipping the world segment to the near plane first is exact and costs one frame, where the ESP look-ray's segment sampling would just drop the visible half.
     local function clip(cam, a, b)
         local cf = cam.CFrame
         local o, f = cf.Position, cf.LookVector
@@ -9840,15 +9238,7 @@ registerConfig("bullets", Koffee.Bullets)
 
     -- :: intake ::
 
-    -- a game that DOES echo your own shot back sends it a round-trip later than the
-    -- outbound tap recorded it, so own shots get a much wider window than the plain
-    -- two-sources-one-shot case.
-    -- v0.19.2: the wide window exists ONLY to swallow the server's rebroadcast of a
-    -- shot we already recorded outbound, so it may only apply ACROSS sources. Two
-    -- outbound shots 100ms apart at the same wall are two bullets, not a duplicate:
-    -- the old shared window ate three of every four rounds from an automatic weapon,
-    -- which is why tracers showed "sometimes". Same-source now only catches a literal
-    -- repeat, so shotgun pellets and fast fire both survive.
+    -- a game that DOES echo your own shot back sends it a round-trip later than the outbound tap recorded it, so own shots get a much wider window than the plain two-sources-one-shot case. v0.19.2: the wide window exists ONLY to swallow the server's rebroadcast of a shot we already recorded outbound, so it may only apply ACROSS sources. Two outbound shots 100ms apart at the same wall are two bullets, not a duplicate: the old shared window ate three of every four rounds from an automatic weapon, which is why tracers showed "sometimes". Same-source now only catches a literal repeat, so shotgun pellets and fast fire both survive.
     local function dupe(o, t, now, tag)
         for i = #shots, math.max(1, #shots - 8), -1 do
             local s = shots[i]
@@ -9927,10 +9317,7 @@ registerConfig("bullets", Koffee.Bullets)
 
     -- :: own shots ::
 
-    -- for our own fire the shooter is never in doubt, so the origin does not have to
-    -- be guessed: if the remote sent one near us we use it (that is the real muzzle),
-    -- otherwise we fall back to our own head. That means a game which sends nothing
-    -- but a hit position still draws a correct tracer.
+    -- for our own fire the shooter is never in doubt, so the origin does not have to be guessed: if the remote sent one near us we use it (that is the real muzzle), otherwise we fall back to our own head. That means a game which sends nothing but a hit position still draws a correct tracer.
     local function ownShot(pts, dirs)
         local c = LocalPlayer.Character
         local r = c and (c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart"))
@@ -9969,11 +9356,7 @@ registerConfig("bullets", Koffee.Bullets)
             if not st then st = { n = 0, win = 0, hits = 0, dead = false, quiet = 0 }; statsOut[ev] = st end
             if blacklisted(ev) then st.dead = true end
             local now = os.clock()
-            -- v0.19.4: the flood gate exists to stop a chatty remote being PINNED, so
-            -- it must stop applying once one has proven itself. It used to keep
-            -- counting after the lock and latch st.dead for the rest of the session,
-            -- which is a weapon that works for a few seconds and then never again.
-            -- Blacklisting stays permanent; a flood is now a 5s backoff.
+            -- v0.19.4: the flood gate exists to stop a chatty remote being PINNED, so it must stop applying once one has proven itself. It used to keep counting after the lock and latch st.dead for the rest of the session, which is a weapon that works for a few seconds and then never again. Blacklisting stays permanent; a flood is now a 5s backoff.
             if not st.dead and now >= (st.quiet or 0)
                and not (pinnedOut and pinnedOut ~= ev) then
                 local flooding = false
@@ -9987,16 +9370,7 @@ registerConfig("bullets", Koffee.Bullets)
                 else
                     local pts, dirs = collect(args.n, args)
                     local o, t = ownShot(pts, dirs)
-                    -- pre-lock only: a shot goes roughly where you are looking, which
-                    -- is what stops a movement or camera remote from being pinned.
-                    -- Dropped once a remote wins, so silent aim's redirect (which
-                    -- deliberately points away from your crosshair) still draws.
-                    -- v0.19.4: this compared against the camera as it is NOW, but the
-                    -- queue drains a frame or more after the shot. Flick while firing
-                    -- and your own bullet failed its own aim test. The tap records the
-                    -- look direction from the firing frame instead. Threshold relaxed
-                    -- 0.4 -> 0.25 as well: the blacklist covers a bad pin now, so the
-                    -- gate does not have to be the only defence.
+                    -- pre-lock only: a shot goes roughly where you are looking, which is what stops a movement or camera remote from being pinned. Dropped once a remote wins, so silent aim's redirect (which deliberately points away from your crosshair) still draws. v0.19.4: this compared against the camera as it is NOW, but the queue drains a frame or more after the shot. Flick while firing and your own bullet failed its own aim test. The tap records the look direction from the firing frame instead. Threshold relaxed 0.4 -> 0.25 as well: the blacklist covers a bad pin now, so the gate does not have to be the only defence.
                     if o and not pinnedOut then
                         local lk, d = e.lk, t - o
                         if not lk or d.Magnitude < 1e-3
@@ -10076,12 +9450,7 @@ registerConfig("bullets", Koffee.Bullets)
         RF.DescendantAdded:Connect(hook)
     end
 
-    -- full reset: drops every hook so the Bindables toggle can go both ways, clears
-    -- the pin so a different remote can win, then re-sweeps from scratch
-    -- v0.19.3: the two paths pin INDEPENDENTLY and can hold different remotes, so
-    -- "blacklist the current one" was ambiguous and picked inbound whatever the
-    -- status line happened to be showing. Both pins are published instead and the
-    -- popup offers a button per pin, so the click is never a guess.
+    -- full reset: drops every hook so the Bindables toggle can go both ways, clears the pin so a different remote can win, then re-sweeps from scratch v0.19.3: the two paths pin INDEPENDENTLY and can hold different remotes, so "blacklist the current one" was ambiguous and picked inbound whatever the status line happened to be showing. Both pins are published instead and the popup offers a button per pin, so the click is never a guess.
     Shared._bulletPins = function()
         local out, seen = {}, {}
         local function add(ev, tag)
@@ -10727,11 +10096,7 @@ registerModule("colorcorrection", "Color Correction",
     end
 )
 
--- v0.10.0: indoor and outdoor ambient are separate colours now. They were pinned to
--- one swatch driving both, which throws away the only interesting thing about the
--- pair: Ambient lifts shadowed/indoor surfaces, OutdoorAmbient lifts sky-lit ones,
--- and splitting them is how you get a lit interior under a cold sky (or the reverse).
--- Split defaults to off so existing configs keep the single-colour behaviour.
+-- v0.10.0: indoor and outdoor ambient are separate colours now. They were pinned to one swatch driving both, which throws away the only interesting thing about the pair: Ambient lifts shadowed/indoor surfaces, OutdoorAmbient lifts sky-lit ones, and splitting them is how you get a lit interior under a cold sky (or the reverse). Split defaults to off so existing configs keep the single-colour behaviour.
 registerModule("ambientcolor", "Ambient Color",
     function()
         World.Light.Saved = {
@@ -10879,11 +10244,7 @@ registerModule("lowgfx", "Low Graphics",
     end
 )
 
--- v0.71.0 FREECAM. Detached Scriptable camera: RMB-hold to look, WASD + Space
--- / Ctrl to move, Shift for speed, wheel dollies along the look in snaps.
--- Runs one render notch AFTER the aimbot so it owns the final CFrame: camera
--- aimbot fights it (both write the camera), silent aim + triggerbot do not,
--- they read the weapon and the freecam view, so that is the pairing.
+-- v0.71.0 FREECAM. Detached Scriptable camera: RMB-hold to look, WASD + Space / Ctrl to move, Shift for speed, wheel dollies along the look in snaps. Runs one render notch AFTER the aimbot so it owns the final CFrame: camera aimbot fights it (both write the camera), silent aim + triggerbot do not, they read the weapon and the freecam view, so that is the pairing.
 ;(function()
 local FC = { Speed = 120, FastMul = 4, WheelStep = 20 }
 registerConfig("world_freecam", FC)
@@ -10960,10 +10321,7 @@ registerModule("freecam", "Freecam",
         grab()
         local c = cam()
         if c then pcall(function() c.CameraType = Enum.CameraType.Scriptable end) end
-        -- v0.72.0: park the body. Controls:Disable cuts movement input cleanly
-        -- (no physics touched, nothing replicates); anchored HRP is the fallback
-        -- for runtimes without a reachable PlayerModule. Either way WASD stops
-        -- walking the character while it flies the camera.
+        -- v0.72.0: park the body. Controls:Disable cuts movement input cleanly (no physics touched, nothing replicates); anchored HRP is the fallback for runtimes without a reachable PlayerModule. Either way WASD stops walking the character while it flies the camera.
         local ok = pcall(function()
             local ps = LocalPlayer:FindFirstChild("PlayerScripts")
             local pm = ps and ps:FindFirstChild("PlayerModule")
@@ -11005,15 +10363,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 end)()
 
--- MOVEMENT MODULES (v0.0.49)
--- No Jump Cooldown / Infinite Jump. Both bypass client anti-jumps that throttle via
--- GetPropertyChangedSignal("Jump"): we drive ChangeState(Jumping) instead, so their
--- watcher never fires.
---   Infinite Jump    = jump on every request, air included.
---   No Jump Cooldown = same bypass, grounded-only (kills throttle, keeps gravity).
--- One shared JumpRequest handler reads both states; OnEnable/OnDisable are no-ops.
--- JumpRequest is universal (keyboard/mobile/gamepad); humanoid re-resolved per press
--- for respawn-safety.
+-- MOVEMENT MODULES (v0.0.49) No Jump Cooldown / Infinite Jump. Both bypass client anti-jumps that throttle via GetPropertyChangedSignal("Jump"): we drive ChangeState(Jumping) instead, so their watcher never fires. Infinite Jump = jump on every request, air included. No Jump Cooldown = same bypass, grounded-only (kills throttle, keeps gravity). One shared JumpRequest handler reads both states; OnEnable/OnDisable are no-ops. JumpRequest is universal (keyboard/mobile/gamepad); humanoid re-resolved per press for respawn-safety.
 registerModule("nojumpcd", "No Jump Cooldown", function() end, function() end)
 registerModule("infjump",  "Infinite Jump",    function() end, function() end)
 
@@ -11180,12 +10530,7 @@ Shared.rage2UI = function(card)
         end
     end
 end
--- thin registrations: the bodies only flip state, since the engines are built with the
--- bridge and read Modules.* live. Enable order therefore never matters.
--- v0.95.0: Native Perfect Lock and Native Silent Aim are gone as separate
--- modules. Perfect Lock drives the native angle itself in rivals, and silent
--- runs the native redirect as Method Native. Rapid Fire and No Spread are
--- modules now (they mirror the RivalsGun flags) so they can take keybinds.
+-- thin registrations: the bodies only flip state, since the engines are built with the bridge and read Modules.* live. Enable order therefore never matters. v0.95.0: Native Perfect Lock and Native Silent Aim are gone as separate modules. Perfect Lock drives the native angle itself in rivals, and silent runs the native redirect as Method Native. Rapid Fire and No Spread are modules now (they mirror the RivalsGun flags) so they can take keybinds.
 registerModule("rv_rapid", "Rapid Fire", function()
     local C = Shared.Combat
     if C and C.RivalsGun then C.RivalsGun.RapidFire = true end
@@ -11242,13 +10587,7 @@ UserInputService.JumpRequest:Connect(function()
     hum:ChangeState(Enum.HumanoidStateType.Jumping)
 end)
 
--- MOVEMENT SUITE (v0.0.52)
--- Character-tab movement features with a two-step activation model (per He): the
--- checkbox ARMS a feature, a per-feature keybind ACTIVATES it (pill: left-click =
--- rebind, right-click = Hold/Toggle). Enable, then hold/press the key to use.
--- Antifling is the lone exception: no key, on = on. Own IIFE for the ~200-local
--- budget (same reason as Combat). Tab builder is published on Koffee._characterTab
--- so the Character addTab (below, in normal tab order) can call it.
+-- MOVEMENT SUITE (v0.0.52) Character-tab movement features with a two-step activation model (per He): the checkbox ARMS a feature, a per-feature keybind ACTIVATES it (pill: left-click = rebind, right-click = Hold/Toggle). Enable, then hold/press the key to use. Antifling is the lone exception: no key, on = on. Own IIFE for the ~200-local budget (same reason as Combat). Tab builder is published on Koffee._characterTab so the Character addTab (below, in normal tab order) can call it.
 ;(function()
 
 local UIS = UserInputService
@@ -11282,10 +10621,7 @@ local CFG = {
     spinbot = Move.Spin, noclip = Move.Noclip, float = Move.Float, clicktp = Move.ClickTP,
     jitterwalk = Move.Jitter, customanim = CustomAnimCFG, aajitter = Move.AAJitter,
 }
--- v0.0.96: CustomAnim got its own registry slot. Its Key/Mode live here (off
--- the movement CFG table) and the Name field must survive a config save/load just
--- like every other dropdown value: without this it only rode along implicitly
--- through Visual.CustomAnim and could be lost when the CFG was reloaded.
+-- v0.0.96: CustomAnim got its own registry slot. Its Key/Mode live here (off the movement CFG table) and the Name field must survive a config save/load just like every other dropdown value: without this it only rode along implicitly through Visual.CustomAnim and could be lost when the CFG was reloaded.
 registerConfig("custom_anim", CustomAnimCFG)
 
 -- held[id] = keybind-driven "active" flag; a feature RUNS only when its module is
@@ -11411,11 +10747,7 @@ FEAT.teleportwalk = {
     end,
 }
 
--- v0.70.0: Jitter-walk. Lateral blink-steps along the facing X axis, throttled
--- to 10/s. Every jump clears 4 studs minimum (wider than any rig), so it never
--- reads as sliding: resolvers lead the old spot, you are already sideways.
--- v0.70.1: velocity untouched. Zeroing it ate WalkSpeed momentum (slower) and
--- the jump impulse (no air): the CFrame jump is the whole move, keep momentum.
+-- v0.70.0: Jitter-walk. Lateral blink-steps along the facing X axis, throttled to 10/s. Every jump clears 4 studs minimum (wider than any rig), so it never reads as sliding: resolvers lead the old spot, you are already sideways. v0.70.1: velocity untouched. Zeroing it ate WalkSpeed momentum (slower) and the jump impulse (no air): the CFrame jump is the whole move, keep momentum.
 local lastJit = 0
 FEAT.jitterwalk = {
     step = function()
@@ -11521,10 +10853,7 @@ FEAT.fly = {
     end,
 }
 
--- v0.79.1 Spinbot + AA Jitter: one Last+1 writer, first-activated wins (ties
--- go to spinbot). Spin whirls the root; AA rides the camera yaw on the root
--- (shiftlock cooperates instead of fighting) while the twist joint oscillates.
--- Legs keep their anims in both modes.
+-- v0.79.1 Spinbot + AA Jitter: one Last+1 writer, first-activated wins (ties go to spinbot). Spin whirls the root; AA rides the camera yaw on the root (shiftlock cooperates instead of fighting) while the twist joint oscillates. Legs keep their anims in both modes.
 local function findRootJoint(char)
     if not char then return nil end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -11859,10 +11188,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
         if it == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Escape then
             pendingBind.cfg.Key = nil; clearPending(); return
         end
-        -- v0.3.3: skip mouse buttons routed to a GUI (gpe=true): prevents
-        -- clicking the pill (or any other koffee button) from binding
-        -- MouseButton1 as the key. See the pendingActivation head for the
-        -- same fix on the combat / target-lock activation pills.
+        -- v0.3.3: skip mouse buttons routed to a GUI (gpe=true): prevents clicking the pill (or any other koffee button) from binding MouseButton1 as the key. See the pendingActivation head for the same fix on the combat / target-lock activation pills.
         if gpe and (it == Enum.UserInputType.MouseButton1
                  or it == Enum.UserInputType.MouseButton2
                  or it == Enum.UserInputType.MouseButton3) then
@@ -11954,13 +11280,7 @@ reg("spinbot", "Spinbot"); reg("aajitter", "AA Jitter"); reg("noclip", "Noclip")
 reg("customanim", "Custom Anim")
 registerModule("antifling", "Antifling", function() end, function() end)   -- no keybind: on = on
 
--- VISUAL FEATURES (v0.0.54): plain toggles (no keybind), passive visual effects.
---   Arms Offset: universal, animation-safe. Custom arms on the player's character
---     (R6/R15 limbs, or custom meshes welded to them) all hang off the shoulder
---     Motor6D chain, so offsetting the shoulder C0 shifts the whole arm + anything
---     welded to it. Pre-multiplying by a pure-translation CFrame moves the offset in
---     TORSO space, so both shoulders shift the same world direction (not mirrored).
---   Character Material: force Material + Color on every BasePart; snapshot+restore.
+-- VISUAL FEATURES (v0.0.54): plain toggles (no keybind), passive visual effects. Arms Offset: universal, animation-safe. Custom arms on the player's character (R6/R15 limbs, or custom meshes welded to them) all hang off the shoulder Motor6D chain, so offsetting the shoulder C0 shifts the whole arm + anything welded to it. Pre-multiplying by a pure-translation CFrame moves the offset in TORSO space, so both shoulders shift the same world direction (not mirrored). Character Material: force Material + Color on every BasePart; snapshot+restore.
 local Visual = {
     Arms     = { X = 0, Y = 0, Z = 0, RX = 0, RY = 0, RZ = 0 },
     Head     = { X = 0, Y = 0, Z = 0, RX = 0, RY = 0, RZ = 0 },
@@ -11979,11 +11299,7 @@ local SHOULDER = { ["Right Shoulder"] = true, ["Left Shoulder"] = true,
 local NECK = { ["Neck"] = true }
 local armState  = { char = nil, joints = nil }
 local headState = { char = nil, joints = nil }
--- v0.0.76: force re-cache on every respawn so the offset reapplies after death.
--- CharacterAdded fires before the shoulders exist on the new rig, so we ALSO
--- rebuild whenever the joints table is empty on a tick where the module is on
--- (the shoulders show up a few frames later; the render loop keeps retrying).
--- v0.4.0: same rule extended to headState (Neck).
+-- v0.0.76: force re-cache on every respawn so the offset reapplies after death. CharacterAdded fires before the shoulders exist on the new rig, so we ALSO rebuild whenever the joints table is empty on a tick where the module is on (the shoulders show up a few frames later; the render loop keeps retrying). v0.4.0: same rule extended to headState (Neck).
 LocalPlayer.CharacterAdded:Connect(function()
     armState.char  = nil; armState.joints  = nil
     headState.char = nil; headState.joints = nil
@@ -12014,10 +11330,7 @@ local function restoreArms()
     armState.char = nil; armState.joints = nil
 end
 
--- v0.4.0: Head Offset. Same recipe as applyArms/restoreArms: snapshot the
--- Neck's original C0 on first touch (or after respawn), then multiply an offset
--- CFrame in every frame while the module is on. restoreHead puts the original
--- C0 back so disabling / respawn is fully reversible.
+-- v0.4.0: Head Offset. Same recipe as applyArms/restoreArms: snapshot the Neck's original C0 on first touch (or after respawn), then multiply an offset CFrame in every frame while the module is on. restoreHead puts the original C0 back so disabling / respawn is fully reversible.
 local function applyHead()
     local c = char()
     if not c then return end
@@ -12042,12 +11355,7 @@ local function restoreHead()
     headState.char = nil; headState.joints = nil
 end
 
--- v0.0.55: Material was tinting (Color worked) but not changing Material because a
--- BasePart's SurfaceAppearance (PBR texture) OVERRIDES Material visually, and a
--- MeshPart.TextureID likewise masks it. Modern avatar bodies (and games that keep your
--- real avatar meshes, e.g. Prison Life) have these -> forced Material never rendered.
--- Fix: while active, PARK the SurfaceAppearance (unparent) + clear MeshPart.TextureID
--- so the forced Material actually shows; restore both on disable.
+-- v0.0.55: Material was tinting (Color worked) but not changing Material because a BasePart's SurfaceAppearance (PBR texture) OVERRIDES Material visually, and a MeshPart.TextureID likewise masks it. Modern avatar bodies (and games that keep your real avatar meshes, e.g. Prison Life) have these -> forced Material never rendered. Fix: while active, PARK the SurfaceAppearance (unparent) + clear MeshPart.TextureID so the forced Material actually shows; restore both on disable.
 local matSnap = {}   -- part -> { Material, Color, TextureID|nil }
 local saSnap  = {}   -- SurfaceAppearance -> original parent (parked while active)
 local function matEnum()
@@ -12083,14 +11391,7 @@ local function restoreMaterial()
     matSnap = {}
 end
 
--- v0.0.66 -> v0.0.97: Static Forcefield shell. Originally a separate module with
--- its own toggle; v0.0.97 folded it into the Material dropdown as a "Static"
--- option so the user picks forcefield-look material once instead of toggling two
--- things. Clones each visible part's shape, sets Material = ForceField, welds it
--- on. Marked with the KFF attribute so Character Material skips it. v0.0.97:
--- skip MeshParts and parts whose descendants include a mesh: cloning those
--- produced a duplicate visible head/face floating at the same CFrame (the
--- "second head stuck on blue" bug the user reported).
+-- v0.0.66 -> v0.0.97: Static Forcefield shell. Originally a separate module with its own toggle; v0.0.97 folded it into the Material dropdown as a "Static" option so the user picks forcefield-look material once instead of toggling two things. Clones each visible part's shape, sets Material = ForceField, welds it on. Marked with the KFF attribute so Character Material skips it. v0.0.97: skip MeshParts and parts whose descendants include a mesh: cloning those produced a duplicate visible head/face floating at the same CFrame (the "second head stuck on blue" bug the user reported).
 local ffShell, ffChar = {}, nil
 local function clearFF()
     for _, shell in pairs(ffShell) do pcall(function() shell:Destroy() end) end
@@ -12133,12 +11434,7 @@ local function applyFF()
     end
 end
 
--- v0.0.76: Body Removal: makes every character body part invisible (and their
--- Decals/Textures, for classic R6 face + Shirt/Pants graphics). Snapshots the
--- original Transparency per instance so disable restores exactly what was there
--- (including intentionally-hidden parts). Skips the forcefield shell (KFF) so
--- Static Forcefield stays visible on top, and skips HumanoidRootPart (already
--- invisible). Respawn-safe: new-character parts fresh-snapshot on their first tick.
+-- v0.0.76: Body Removal: makes every character body part invisible (and their Decals/Textures, for classic R6 face + Shirt/Pants graphics). Snapshots the original Transparency per instance so disable restores exactly what was there (including intentionally-hidden parts). Skips the forcefield shell (KFF) so Static Forcefield stays visible on top, and skips HumanoidRootPart (already invisible). Respawn-safe: new-character parts fresh-snapshot on their first tick.
 local bodySnap = {}
 local function applyBodyRemoval()
     local c = char(); if not c then return end
@@ -12157,10 +11453,7 @@ local function restoreBodyRemoval()
     bodySnap = {}
 end
 
--- v0.0.94 THIRD PERSON. Universal over-the-shoulder camera. LTM stays off
--- (character hidden per game rules), camera writes at RenderPriority 200
--- (one below the aimbot's 201 so aimbot wins when armed), HRP.CFrame
--- written only while enabled, and camera/mouse restore on disable.
+-- v0.0.94 THIRD PERSON. Universal over-the-shoulder camera. LTM stays off (character hidden per game rules), camera writes at RenderPriority 200 (one below the aimbot's 201 so aimbot wins when armed), HRP.CFrame written only while enabled, and camera/mouse restore on disable.
 local TP = {
     Enabled     = false,
     Sensitivity = 0.25,
@@ -12259,14 +11552,7 @@ end)()
 registerModule("armsoffset",   "Arms Offset",       function() end, function() restoreArms() end)
 registerModule("headoffset",   "Head Offset",       function() end, function() restoreHead() end)
 registerModule("charmaterial", "Character Material", function() end, function() restoreMaterial() end)
--- v0.8.2: ANIM_IDS / ANIM_DROPDOWN were declared WITHOUT `local`, so they landed
--- in _G as static, predictable globals named exactly what they are. That is the
--- one footprint KID exists to prevent (every instance name + getgenv key in this
--- file is randomized per session); a name-scanning AC walking _G saw them for
--- free. Both are only ever read inside this IIFE, and the config loader reads the
--- published Koffee._animIDs / Koffee._animDropdown copies below, so localizing
--- them changes no behaviour. The per-place reassignments further down write the
--- same local slots.
+-- v0.8.2: ANIM_IDS / ANIM_DROPDOWN were declared WITHOUT `local`, so they landed in _G as static, predictable globals named exactly what they are. That is the one footprint KID exists to prevent (every instance name + getgenv key in this file is randomized per session); a name-scanning AC walking _G saw them for free. Both are only ever read inside this IIFE, and the config loader reads the published Koffee._animIDs / Koffee._animDropdown copies below, so localizing them changes no behaviour. The per-place reassignments further down write the same local slots.
 local ANIM_IDS = {
     ["Orbit 1"] = "118314972618293", ["Orbit 2"] = "133811691098518", ["Orbit 3"] = "138488217385385", ["Orbit 4"] = "91729309021707",
     ["Aura 1"] = "140445336277156", ["Aura 2"] = "107902247206226", ["Aura 3"] = "71799101103620",
@@ -12411,18 +11697,10 @@ end)
 local MATERIALS = { "Plastic", "SmoothPlastic", "Neon", "ForceField", "Static", "Glass", "Metal",
     "DiamondPlate", "Foil", "Wood", "WoodPlanks", "Marble", "Granite", "Slate", "Concrete",
     "Brick", "Cobblestone", "Ice", "Grass", "Sand", "Fabric", "Pebble", "CorrodedMetal" }
--- v0.10.0: MATERIALS is a local of the character IIFE, so the World Rules IIFE's
--- object-offset popup was reading a nil GLOBAL and dying on `#options` inside
--- dropdown(). Publish it instead of hoisting: a chunk-level local would eat one
--- of the 200 registers this file is already close to. Underscored because Shared is
--- a registered config table and a bare key would serialize 23 strings into every
--- saved config.
+-- v0.10.0: MATERIALS is a local of the character IIFE, so the World Rules IIFE's object-offset popup was reading a nil GLOBAL and dying on `#options` inside dropdown(). Publish it instead of hoisting: a chunk-level local would eat one of the 200 registers this file is already close to. Underscored because Shared is a registered config table and a bare key would serialize 23 strings into every saved config.
 Shared._materials = MATERIALS
 
--- v0.0.58: expandable material preview: click the small preview to open a mac-styled
--- (Koffee-coloured) floating window: drag the title bar to move, hold right-click on the
--- viewport to orbit the model, click the red dot (or the window is single-instance) to
--- close. Live-syncs to the current material + colour selection.
+-- v0.0.58: expandable material preview: click the small preview to open a mac-styled (Koffee-coloured) floating window: drag the title bar to move, hold right-click on the viewport to orbit the model, click the red dot (or the window is single-instance) to close. Live-syncs to the current material + colour selection.
 local expandedWin = nil
 local function closeMaterialPreview()
     if expandedWin then
@@ -12677,10 +11955,7 @@ Koffee._characterTab = function(root)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then openMaterialPreview() end
     end)
 
-    -- v0.0.97: Static Forcefield was removed as a separate toggle: it's now a
-    -- "Static" option inside the Material dropdown above. The shell logic
-    -- (applyFF / clearFF) lives on so saved configs that still have the old
-    -- toggle on can be cleared cleanly via the module's onDisable hook.
+    -- v0.0.97: Static Forcefield was removed as a separate toggle: it's now a "Static" option inside the Material dropdown above. The shell logic (applyFF / clearFF) lives on so saved configs that still have the old toggle on can be cleared cleanly via the module's onDisable hook.
 
     -- v0.0.76: Body Removal: makes every character body part invisible while enabled
     moduleCheckbox(vis, "Body Removal", "bodyremoval")
@@ -12726,15 +12001,7 @@ end
 
 end)()
 
--- TABS: build panels
--- tab order (per he): combat visuals world character options configs npc teams
--- COMBAT TAB (v0.0.31): two-column card (pill switcher):
---   left : Aimbot / Prediction / Smoothness / FOV + Misc(Resolver)
---   right: Silent Aim / Prediction / FOV          + Trigger Bot
--- Backends: shared targeting engine, camera/mouse aimbot, prediction, per-axis
--- smoothness, ragebot teleports, silent-aim hook, triggerbot, FOV circle.
--- IIFE (not do-block): Luau's 200-local limit is per FUNCTION; a do-block shares
--- the main chunk's registers (-> "Out of local registers"). IIFE = own budget.
+-- TABS: build panels tab order (per he): combat visuals world character options configs npc teams COMBAT TAB (v0.0.31): two-column card (pill switcher): left : Aimbot / Prediction / Smoothness / FOV + Misc(Resolver) right: Silent Aim / Prediction / FOV + Trigger Bot Backends: shared targeting engine, camera/mouse aimbot, prediction, per-axis smoothness, ragebot teleports, silent-aim hook, triggerbot, FOV circle. IIFE (not do-block): Luau's 200-local limit is per FUNCTION; a do-block shares the main chunk's registers (-> "Out of local registers"). IIFE = own budget.
 ;(function()
 local Combat = {
     Aim = {
@@ -12744,17 +12011,11 @@ local Combat = {
         Priority      = "Crosshair",                      -- "Nearest" | "Crosshair"
         HitPart       = "Head",
         AimType       = "Camera",                         -- "Camera" | "Mouse"
-        -- v0.0.36: third-person mode moves the MOUSE onto the target instead of the
-        -- camera: for games where the shot follows the cursor, not the camera
-        -- (Prison Life, Da Hood). Bind aimbot to a non-RMB key (e.g. XButton2) so
-        -- it doesn't fight the game's own RMB shift-lock; hold it to snap-aim.
+        -- v0.0.36: third-person mode moves the MOUSE onto the target instead of the camera: for games where the shot follows the cursor, not the camera (Prison Life, Da Hood). Bind aimbot to a non-RMB key (e.g. XButton2) so it doesn't fight the game's own RMB shift-lock; hold it to snap-aim.
         ThirdPerson   = false,
         Distance      = 500,
         Sensitivity   = 0.4,
-        -- v0.11.1: no longer moves the camera or the cursor at all. It publishes a
-        -- redirect point and the game's own Mouse.Hit/Target/UnitRay reads resolve
-        -- onto the target: zero travel, and Sensitivity / Smooth / Aim Type stop
-        -- applying. Needs the __index hook, which it installs on demand.
+        -- v0.11.1: no longer moves the camera or the cursor at all. It publishes a redirect point and the game's own Mouse.Hit/Target/UnitRay reads resolve onto the target: zero travel, and Sensitivity / Smooth / Aim Type stop applying. Needs the __index hook, which it installs on demand.
         PerfectLock   = false,
         -- v0.27.0: target players behind the camera too, by world distance (killaura).
         BehindCam     = false,
@@ -12827,20 +12088,12 @@ local Combat = {
         -- v0.51.0: PartMode picks from the enabled Parts pool; Spread sprays
         -- the redirect in a disc. Empty pool means everything enabled.
         Legit         = { Jitter = 0, HitChance = 100, PartMode = "Single Part", Parts = {}, Spread = 0, SpreadUnit = "Studs", Bloom = 0, ForceMiss = false },
-        -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default: fire-read is always
-        -- on. The ~90% of games that don't read mouse.Hit build their shot from
-        -- Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON
-        -- SCRIPT makes them, scoped by getcallingscript so the real camera (renderer/
-        -- Popper) is never touched and the view never moves. SpoofScope is the caller-
-        -- identification strategy (both exclude the PlayerModule camera).
+        -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default: fire-read is always on. The ~90% of games that don't read mouse.Hit build their shot from Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON SCRIPT makes them, scoped by getcallingscript so the real camera (renderer/ Popper) is never touched and the view never moves. SpoofScope is the caller- identification strategy (both exclude the PlayerModule camera).
         SpoofScope    = "Auto (Learn)",
         _hooked       = false,
     },
     Misc = { Resolver = false, DwellRadius = 16 },
-    -- v0.18.0: weapon extras. Name-matched and universal, not per-game.
-    --   AntiSpread/ShootInCar: attribute pin + seated-fire spoof (original pair)
-    --   NoRecoil/NoSpread/RapidFire/FastReload/InstantEquip: auto catalog engine
-    --   InfiniteAmmo: __index read spoof. HitboxExpander/Size: hitbox engine.
+    -- v0.18.0: weapon extras. Name-matched and universal, not per-game. AntiSpread/ShootInCar: attribute pin + seated-fire spoof (original pair) NoRecoil/NoSpread/RapidFire/FastReload/InstantEquip: auto catalog engine InfiniteAmmo: __index read spoof. HitboxExpander/Size: hitbox engine.
     Gun  = { AntiSpread = false, ShootInCar = false,
         NoRecoil = false, NoSpread = false,
         RapidFire = false, RapidFireRate = 0.05,
@@ -12850,14 +12103,7 @@ local Combat = {
         HitboxExpander = false, HitboxSize = 10 },
     -- v0.93.19: RIVALS weapon extras. Detection gated, not place id.
     RivalsGun = { RapidFire = false, FireDelay = 0.05, NoSpread = false },
-    -- v0.0.88 HIT / KILL SOUNDS. Detection: universal Humanoid.Health drop watcher
-    -- (A) per player. Attribution: "invisible target lock": each frame while LMB
-    -- held, the enemy CLOSEST to the mouse cursor (screen-space, within MouseRadius
-    -- pixels) is designated your current mouse target; when THAT enemy's Health
-    -- drops, it's YOUR hit. Independent of silent aim / aimbot lock state.
-    -- Presets = a small named-sound registry, Custom Id > 0 overrides. Cooldown
-    -- between plays (per-type) so rapid auto-fire hits don't stack into a buzz.
-    -- Suppresses when the Koffee window is open (per Jack: no ear fatigue in-UI).
+    -- v0.0.88 HIT / KILL SOUNDS. Detection: universal Humanoid.Health drop watcher (A) per player. Attribution: "invisible target lock": each frame while LMB held, the enemy CLOSEST to the mouse cursor (screen-space, within MouseRadius pixels) is designated your current mouse target; when THAT enemy's Health drops, it's YOUR hit. Independent of silent aim / aimbot lock state. Presets = a small named-sound registry, Custom Id > 0 overrides. Cooldown between plays (per-type) so rapid auto-fire hits don't stack into a buzz. Suppresses when the Koffee window is open (per Jack: no ear fatigue in-UI).
     HitSounds = {
         Hit = {
             Enabled  = false,
@@ -12885,22 +12131,12 @@ local Combat = {
             Cooldown = 0,
         },
         Overlap     = true,     -- v0.0.89: true = clone-per-play (real overlap); false = stop previous then play
-        -- v0.0.92 attribution window (seconds): after aiming at an enemy (LMB
-        -- press edge OR any Heartbeat while LMB held), that enemy stays valid as
-        -- YOUR target for this long. Handles snipers (fast tap, 200ms+ damage
-        -- delay before health drops) + multiple in-flight shots (each captured
-        -- target has its own timestamp).
+        -- v0.0.92 attribution window (seconds): after aiming at an enemy (LMB press edge OR any Heartbeat while LMB held), that enemy stays valid as YOUR target for this long. Handles snipers (fast tap, 200ms+ damage delay before health drops) + multiple in-flight shots (each captured target has its own timestamp).
         AttrWindow  = 2.0,
-        -- v0.0.93 pre-click damage window (ms). Bypasses the left-click delay
-        -- problem: if the target took damage in the last BeforeClick ms BEFORE
-        -- Koffee registered the LMB press, we still fire the sound on that press.
-        -- Slider 1..500. Handles input lag / roundtrip / game processing gaps.
+        -- v0.0.93 pre-click damage window (ms). Bypasses the left-click delay problem: if the target took damage in the last BeforeClick ms BEFORE Koffee registered the LMB press, we still fire the sound on that press. Slider 1..500. Handles input lag / roundtrip / game processing gaps.
         BeforeClick = 100,
     },
-    -- v0.7.0 HIT / KILL EFFECTS: client-side visuals that fire on attributed
-    -- hits. Shares HitSounds attribution (recentTargets + AttrWindow), so only
-    -- YOUR hits/kills trigger them. v0.9.0 presets: Impact / Sparks / Blood /
-    -- Shockwave / Nova / Ember, all world-space (occluded by geometry).
+    -- v0.7.0 HIT / KILL EFFECTS: client-side visuals that fire on attributed hits. Shares HitSounds attribution (recentTargets + AttrWindow), so only YOUR hits/kills trigger them. v0.9.0 presets: Impact / Sparks / Blood / Shockwave / Nova / Ember, all world-space (occluded by geometry).
     HitEffects = {
         Hit = {
             Enabled  = false,
@@ -12927,16 +12163,9 @@ local Combat = {
     local function defaultFovCfg()
         return {
             Enabled = false, Size = 100, Origin = "Center", Filled = false, Spin = false,
-            -- v0.4.0: HideVisual keeps the FOV size gate active for targeting but
-            -- suppresses the circle/outline/dots/fill entirely. Set via the Filled
-            -- right-click popup ("Hide Visual"). Independent of Enabled: turning
-            -- HideVisual on while Enabled is on means "invisible FOV, still gated".
+            -- v0.4.0: HideVisual keeps the FOV size gate active for targeting but suppresses the circle/outline/dots/fill entirely. Set via the Filled right-click popup ("Hide Visual"). Independent of Enabled: turning HideVisual on while Enabled is on means "invisible FOV, still gated".
             HideVisual = false,
-            -- v0.5.0: Follow the current target. Smoothness 0=snap, 0.98=very slow.
-            -- Lerp advances once per frame in stepFovFollow (called from the same
-            -- RenderStepped that drives drawFov). fovCenter reads _screenX/_screenY
-            -- straight out of this table so many-call sites don't over-step the lerp.
-            -- Underscores keep them out of the config serializer.
+            -- v0.5.0: Follow the current target. Smoothness 0=snap, 0.98=very slow. Lerp advances once per frame in stepFovFollow (called from the same RenderStepped that drives drawFov). fovCenter reads _screenX/_screenY straight out of this table so many-call sites don't over-step the lerp. Underscores keep them out of the config serializer.
             Follow = { Enabled = false, Smoothness = 0.15, _screenX = nil, _screenY = nil },
             Style = "Smooth", Color = Color3.new(1, 1, 1), FillColor = Color3.fromRGB(212, 145, 90),
             FillTransparency = 0.5, Thickness = 1, DotSize = 4, DotGap = 18,
@@ -12988,12 +12217,7 @@ local Combat = {
         return CFrame.new(from) * CFrame.fromEulerAnglesYXZ(np, ny, 0)
     end
 
-    -- :: targeting engine (shared by aimbot / trigger / silent) ::
-    -- v0.5.0: when cfg.Follow.Enabled, fovCenter returns the lerped follow-cache
-    -- (updated once per frame in stepFovFollow) instead of the plain Center/Mouse
-    -- origin. Falls back to origin when the cache is empty (first frame / no
-    -- target yet). Targeting also uses this center so the FOV gate follows the
-    -- visual ring consistently.
+    -- :: targeting engine (shared by aimbot / trigger / silent) :: v0.5.0: when cfg.Follow.Enabled, fovCenter returns the lerped follow-cache (updated once per frame in stepFovFollow) instead of the plain Center/Mouse origin. Falls back to origin when the cache is empty (first frame / no target yet). Targeting also uses this center so the FOV gate follows the visual ring consistently.
     local function fovCenter(cfg)
         local vp = viewport()
         local defX, defY = vp.X * 0.5, vp.Y * 0.5
@@ -13090,10 +12314,7 @@ local Combat = {
         return true
     end
 
-    -- v0.51.0 multi-part pool. Single Part keeps the Hit Part dropdown;
-    -- Closest Part takes the enabled pool part nearest the crosshair;
-    -- Random Part rolls one per target and holds it briefly, so the point
-    -- does not flicker every frame. Absent pool entries read enabled.
+    -- v0.51.0 multi-part pool. Single Part keeps the Hit Part dropdown; Closest Part takes the enabled pool part nearest the crosshair; Random Part rolls one per target and holds it briefly, so the point does not flicker every frame. Absent pool entries read enabled.
     local function poolPick(char, plr, cfg, center)
         local L = cfg.Legit
         -- v0.52.0: aim's Legit is master-gated, so its part pool only applies when
@@ -13193,10 +12414,7 @@ local Combat = {
                 local hum = char and char:FindFirstChildOfClass("Humanoid")
                 local alive = char and hum and hum.Health > 0
                 local hcOk = (not cfg.HealthCheck) or (char and healthOk(char, hum))
-                -- v0.0.46: team check (manual list / Advanced) + "Ignore Friends" gate
-                -- v0.63.2: unified resolver -- Exclude (never a target) / Prioritize
-                -- (lock engaged -> ONLY these), custom-graph then player-list, folded
-                -- in with the team-check + ignore-friends filters.
+                -- v0.0.46: team check (manual list / Advanced) + "Ignore Friends" gate v0.63.2: unified resolver -- Exclude (never a target) / Prioritize (lock engaged -> ONLY these), custom-graph then player-list, folded in with the team-check + ignore-friends filters.
                 if alive and hcOk and Shared.aimAllowed(plr, cfg.TeamCheck) then
                     do
                         local part = aimPart(char, cfg.HitPart)
@@ -13307,11 +12525,7 @@ local Combat = {
         local dy = math.max(tonumber(pr.Y) or 1, 0.01)
         return pos + Vector3.new(v.X / dx, v.Y / dy, v.Z / dx)
     end
-    -- v0.75.0: dwell-centroid resolver (stolen shape). Each engaged target grows
-    -- a root trail (0.25s samples, 120 cap); the aim point becomes the densest
-    -- 4+ cluster centroid instead of the live point, so teleport spammers get
-    -- shot where they dwell, not where they flash. Cold or clusterless trails
-    -- fall back to live. Hit-part offset rides along from the live point.
+    -- v0.75.0: dwell-centroid resolver (stolen shape). Each engaged target grows a root trail (0.25s samples, 120 cap); the aim point becomes the densest 4+ cluster centroid instead of the live point, so teleport spammers get shot where they dwell, not where they flash. Cold or clusterless trails fall back to live. Hit-part offset rides along from the live point.
     local dwellHist = {}
     local function dwellPos(plr, part, live)
         local now = os.clock()
@@ -13418,30 +12632,19 @@ local Combat = {
         return plPos ~= nil and Combat.Aim.Enabled and Combat.Aim.PerfectLock
     end
 
-    -- v0.0.39: fire-read resolver state + caller scoping. ONE local table so the
-    -- Combat chunk's ~200-local budget stays below the limit; resolvers read it
-    -- as an upvalue. cam/camPos/screen cached per frame (never re-read Camera.*
-    -- inside the hook: re-entry/recursion), mouse for identity compares, and
-    -- the learned weapon/camera-controller sets are only touched by namecall-safe
-    -- code (never lazily inside a hook: FindFirstChild is a namecall).
+    -- v0.0.39: fire-read resolver state + caller scoping. ONE local table so the Combat chunk's ~200-local budget stays below the limit; resolvers read it as an upvalue. cam/camPos/screen cached per frame (never re-read Camera.* inside the hook: re-entry/recursion), mouse for identity compares, and the learned weapon/camera-controller sets are only touched by namecall-safe code (never lazily inside a hook: FindFirstChild is a namecall).
     local SR = { cam = nil, camPos = nil, screen = nil, mouse = nil, pm = nil }
     Shared._SR = SR   -- v0.85.0: reachable for the Koffee Lab dev handle
     local getCS = getcallingscript   -- executor global; nil on runtimes without it
     SR.own = getCS and getCS()       -- Koffee's own script: never spoof its OWN camera
                                      -- reads (the aimbot loop) if silent is co-armed.
     pcall(function() SR.mouse = LocalPlayer:GetMouse() end)
-    -- PlayerModule (the standard camera root) is resolved HERE + in the heartbeat:
-    -- both namecall-safe contexts. NEVER resolve it lazily inside a hook (FindFirstChild
-    -- is a namecall; a nested namecall inside the __namecall hook corrupts the pending
-    -- dispatch and breaks the weapon after one shot).
+    -- PlayerModule (the standard camera root) is resolved HERE + in the heartbeat: both namecall-safe contexts. NEVER resolve it lazily inside a hook (FindFirstChild is a namecall; a nested namecall inside the __namecall hook corrupts the pending dispatch and breaks the weapon after one shot).
     pcall(function()
         local ps = LocalPlayer:FindFirstChild("PlayerScripts")
         SR.pm = ps and ps:FindFirstChild("PlayerModule")
     end)
-    -- is `src` the camera system? standard camera = a PlayerModule descendant: NEVER
-    -- spoofed, so the real view can't be rotated out from under the player.
-    -- CRITICAL: walks .Parent (property __index reads only): NO namecall: so this
-    -- is safe to call from inside the __namecall hook.
+    -- is `src` the camera system? standard camera = a PlayerModule descendant: NEVER spoofed, so the real view can't be rotated out from under the player. CRITICAL: walks .Parent (property __index reads only): NO namecall: so this is safe to call from inside the __namecall hook.
     function SR.isView(src)
         if not src then return false end
         local pm = SR.pm
@@ -13454,33 +12657,13 @@ local Combat = {
         end
         return false
     end
-    -- should THIS caller be handed the spoofed aim direction (Camera.CFrame / cursor /
-    -- camera-rays)? mouse.Hit/Target/UnitRay are handled separately + ungated (only aim
-    -- code reads those). Excludes Koffee's own reads and the camera system (PlayerModule)
-    -- so the real view / Popper are never touched.
-    -- v0.0.70: learned CONTROLLER set. Any non-Koffee script that WRITES Camera.CFrame
-    -- or the local root's CFrame/Position is a camera/position CONTROLLER (FpsController,
-    -- custom movement handlers, etc.): it must NEVER be handed the spoofed aim/position,
-    -- or the read-spoof rotates the real view / teleports you on games with custom handlers.
-    -- Populated by the __newindex writer-detector; only pure-READER (shooting) code is left
-    -- to be spoofed. Session-stable so re-exec keeps what it already learned.
-    -- v0.1.5 Second-Camera: the learned set is actually ENFORCED (v0.0.70 shipped the
-    -- detector but the revert removed enforcement). In SC mode a script that writes
-    -- Camera.CFrame is a RENDERER and always gets real data, while pure-reader weapon
-    -- scripts get bent continuously: that is the actual "two cameras" split: the game's
-    -- fire logic sees the locked direction, your view never moves. Merged handler+weapon
-    -- scripts land in the set too and degrade to MB (switch methods there).
+    -- should THIS caller be handed the spoofed aim direction (Camera.CFrame / cursor / camera-rays)? mouse.Hit/Target/UnitRay are handled separately + ungated (only aim code reads those). Excludes Koffee's own reads and the camera system (PlayerModule) so the real view / Popper are never touched. v0.0.70: learned CONTROLLER set. Any non-Koffee script that WRITES Camera.CFrame or the local root's CFrame/Position is a camera/position CONTROLLER (FpsController, custom movement handlers, etc.): it must NEVER be handed the spoofed aim/position, or the read-spoof rotates the real view / teleports you on games with custom handlers. Populated by the __newindex writer-detector; only pure-READER (shooting) code is left to be spoofed. Session-stable so re-exec keeps what it already learned. v0.1.5 Second-Camera: the learned set is actually ENFORCED (v0.0.70 shipped the detector but the revert removed enforcement). In SC mode a script that writes Camera.CFrame is a RENDERER and always gets real data, while pure-reader weapon scripts get bent continuously: that is the actual "two cameras" split: the game's fire logic sees the locked direction, your view never moves. Merged handler+weapon scripts land in the set too and degrade to MB (switch methods there).
     function SR.spoofAim(src)
         if not src then return false end
         if src == SR.own then return false end              -- never Koffee's own reads
         if SR.isView(src) then return false end             -- never the camera system
         if Combat.Silent.Method == "Second-Camera" then
-            -- v0.1.5: learned renderers ALWAYS see real data: absolute, no waivers.
-            -- (a v0.1.6 click-window waiver was ripped: bending a writer's reads at ANY
-            -- time bends the view, because it writes what it read straight back.)
-            -- These games are covered by the OUTBOUND path instead (FireServer arg
-            -- rewrite in resolveNamecall): the client sees truth, the wire carries
-            -- the lock.
+            -- v0.1.5: learned renderers ALWAYS see real data: absolute, no waivers. (a v0.1.6 click-window waiver was ripped: bending a writer's reads at ANY time bends the view, because it writes what it read straight back.) These games are covered by the OUTBOUND path instead (FireServer arg rewrite in resolveNamecall): the client sees truth, the wire carries the lock.
             local set = getgenv and getgenv()[KID.ctx.keys.ctrl]
             if set and rawget(set, src) then return false end  -- learned renderer: real data
         end
@@ -13512,10 +12695,7 @@ local Combat = {
 
     local pendingActivation = nil
     local actPills = {}
-    -- v0.66.1: Toggle visibly sticks. Each pill registers a held reader; accent
-    -- means latched or firing, muted means idle. Skipped mid-rebind ("..." state).
-    -- v0.67.0: writes only on change (the Heartbeat calls this every frame for
-    -- XButton-held state, so blind writes were 3 property sets at 60Hz).
+    -- v0.66.1: Toggle visibly sticks. Each pill registers a held reader; accent means latched or firing, muted means idle. Skipped mid-rebind ("..." state). v0.67.0: writes only on change (the Heartbeat calls this every frame for XButton-held state, so blind writes were 3 property sets at 60Hz).
     local function syncActPills(force)
         for _, e in ipairs(actPills) do
             if not (pendingActivation and pendingActivation.pill == e.pill) then
@@ -13630,12 +12810,7 @@ local Combat = {
         return pill
     end
 
-    -- :: firing / silent hooks (executor globals guarded: degrade cleanly) ::
-    -- v0.0.79: prefer VirtualInputManager per v0.0.35 finding: on Potassium (and
-    -- some other executors) mouse1click/mouse1press don't flip IsMouseButtonPressed
-    -- and don't fire the game's InputBegan handler, so the game's weapon never sees
-    -- a click. VIM's SendMouseButtonEvent DOES fire InputBegan reliably. Fall back
-    -- to mouse1click / mouse1press+release only if VIM isn't available.
+    -- :: firing / silent hooks (executor globals guarded: degrade cleanly) :: v0.0.79: prefer VirtualInputManager per v0.0.35 finding: on Potassium (and some other executors) mouse1click/mouse1press don't flip IsMouseButtonPressed and don't fire the game's InputBegan handler, so the game's weapon never sees a click. VIM's SendMouseButtonEvent DOES fire InputBegan reliably. Fall back to mouse1click / mouse1press+release only if VIM isn't available.
     local VIM = nil
     pcall(function() VIM = game:GetService("VirtualInputManager") end)
     -- v0.0.80: throttled LMB synthesis when the cursor is over the Koffee window,
@@ -13668,13 +12843,7 @@ local Combat = {
             pcall(mouse1press); task.wait(); pcall(mouse1release)
         end
     end
-    -- UNIVERSAL SILENT AIM: hooks the three fire-ray shapes (mouse reads,
-    -- camera-rays, direct Workspace rays). Camera-ray + mouse reads redirect
-    -- exactly; direct-cast rays only rotate the DIRECTION (never origin) and
-    -- only when forward-facing (dir . LookVector > 0.5) and long-range (> 20),
-    -- so camera-collision (Popper) and probe rays are skipped untouched.
-    -- Hooks install once per session; all logic lives in getgenv-published
-    -- resolvers so every re-exec just rewires the bodies.
+    -- UNIVERSAL SILENT AIM: hooks the three fire-ray shapes (mouse reads, camera-rays, direct Workspace rays). Camera-ray + mouse reads redirect exactly; direct-cast rays only rotate the DIRECTION (never origin) and only when forward-facing (dir . LookVector > 0.5) and long-range (> 20), so camera-collision (Popper) and probe rays are skipped untouched. Hooks install once per session; all logic lives in getgenv-published resolvers so every re-exec just rewires the bodies.
     local function installSilentHooks()
         if Combat.Silent._hooked then return end
         Combat.Silent._hooked = true
@@ -13684,18 +12853,10 @@ local Combat = {
         -- Each resolver returns (handled, value). handled=true short-circuits the
         -- game's real call; handled=false falls through to the original metamethod.
         local PASS_H, PASS_V = false, nil
-        -- v0.0.35: redirect only when actually armed. silentPos is now kept fresh
-        -- EVERY frame by the heartbeat (independent of LMB) so the redirect lands
-        -- the instant the weapon reads it: fixes "Require Left-Click misses" (the
-        -- old code set silentPos reactively, one frame behind the click). The LMB
-        -- gate is applied HERE via a tracked flag: never IsMouseButtonPressed,
-        -- which is a namecall and illegal inside these hooks.
+        -- v0.0.35: redirect only when actually armed. silentPos is now kept fresh EVERY frame by the heartbeat (independent of LMB) so the redirect lands the instant the weapon reads it: fixes "Require Left-Click misses" (the old code set silentPos reactively, one frame behind the click). The LMB gate is applied HERE via a tracked flag: never IsMouseButtonPressed, which is a namecall and illegal inside these hooks.
         local function isArmed()
             if not silentPos then return false end
-            -- v0.1.2 Second-Camera method: fully engagement-gated. Reads pass through
-            -- REAL unless an actual shot is happening (optional activation key held +
-            -- LMB down / post-click window). Between shots the game sees 100% vanilla
-            -- aim data; during the window the full spoof set runs (v0.1.4).
+            -- v0.1.2 Second-Camera method: fully engagement-gated. Reads pass through REAL unless an actual shot is happening (optional activation key held + LMB down / post-click window). Between shots the game sees 100% vanilla aim data; during the window the full spoof set runs (v0.1.4).
             if Combat.Silent.Method == "Second-Camera" then
                 if Combat.Silent.ActivationKey and not silentHeld then return false end
                 return lmbDown or (os.clock() - lmbClickAt) < 0.12
@@ -13703,12 +12864,7 @@ local Combat = {
             if Combat.Silent.RequireLMB and not lmbDown then return false end
             return true
         end
-        -- v0.0.64 Pos Spoof arm gate: active whenever a target is acquired (NO RequireLMB:
-        -- "doesn't need left-click"). Only gated by the module + an optional activation key.
-        -- v0.2.0: renamed Pos Spoof -> Wallbang and gated to the Raycast method ONLY. Under
-        -- Forced MB / Second-Camera this is a hard no-op (posFire() collapses to false), so
-        -- every legacy posFire()-guarded spoof block below is dormant unless the user picks
-        -- Method = "Raycast". Wallbang's actual effect lives in the workspace:Raycast branch.
+        -- v0.0.64 Pos Spoof arm gate: active whenever a target is acquired (NO RequireLMB: "doesn't need left-click"). Only gated by the module + an optional activation key. v0.2.0: renamed Pos Spoof -> Wallbang and gated to the Raycast method ONLY. Under Forced MB / Second-Camera this is a hard no-op (posFire() collapses to false), so every legacy posFire()-guarded spoof block below is dormant unless the user picks Method = "Raycast". Wallbang's actual effect lives in the workspace:Raycast branch.
         local function posArmed()
             if Combat.Silent.Method ~= "Raycast" then return false end
             if not Combat.Silent.Wallbang then return false end
@@ -13716,15 +12872,7 @@ local Combat = {
             if Combat.Silent.ActivationKey and not silentHeld then return false end
             return true
         end
-        -- v0.0.68: Pos Spoof only manipulates the ORIGIN during the actual shot (LMB frame).
-        -- Doing it every frame corrupted the viewmodel (FpsController reads Camera.CFrame for
-        -- BOTH the arms/gun render AND the shot): that broke the aim entirely. Gated to the
-        -- fire frame, the viewmodel is normal between shots and only the shot gets moved.
-        -- v0.0.75: RequireLMB OFF -> Pos Spoof fires continuously (matches silent aim's own
-        -- RequireLMB behaviour); RequireLMB ON -> gated to the click frame + 120ms window so
-        -- single-shot pistols/snipers that read one frame late still land. Fixes "pistols
-        -- don't wallbang unless you hold left click" on games where the weapon reads mouse.Hit
-        -- before our lmbDown flag flips.
+        -- v0.0.68: Pos Spoof only manipulates the ORIGIN during the actual shot (LMB frame). Doing it every frame corrupted the viewmodel (FpsController reads Camera.CFrame for BOTH the arms/gun render AND the shot): that broke the aim entirely. Gated to the fire frame, the viewmodel is normal between shots and only the shot gets moved. v0.0.75: RequireLMB OFF -> Pos Spoof fires continuously (matches silent aim's own RequireLMB behaviour); RequireLMB ON -> gated to the click frame + 120ms window so single-shot pistols/snipers that read one frame late still land. Fixes "pistols don't wallbang unless you hold left click" on games where the weapon reads mouse.Hit before our lmbDown flag flips.
         local function posFire()
             if not posArmed() then return false end
             -- v0.1.2: Second-Camera always rides the shot window (RequireLMB is
@@ -13735,12 +12883,7 @@ local Combat = {
             if not Combat.Silent.RequireLMB then return true end
             return lmbDown or (os.clock() - lmbClickAt) < 0.12
         end
-        -- Camera.CFrame spoof gate for Forced MB lives inline in resolveIndex now
-        -- (v0.1.8: RequireLMB-off is continuous for non-writer callers; learned camera
-        -- writers stay click-window gated). The old camFire() helper is gone.
-        -- the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past
-        -- any wall between you and them), aimed AT the target -> the client raycast hits them
-        -- with no wall in the way. Uses cached camPos (no Camera re-read inside the hook).
+        -- Camera.CFrame spoof gate for Forced MB lives inline in resolveIndex now (v0.1.8: RequireLMB-off is continuous for non-writer callers; learned camera writers stay click-window gated). The old camFire() helper is gone. the wallbang shot geometry: origin 3 studs IN FRONT of the target (your side, past any wall between you and them), aimed AT the target -> the client raycast hits them with no wall in the way. Uses cached camPos (no Camera re-read inside the hook).
         local function wallShot()
             local cp = SR.camPos
             if not cp then return silentPos, Vector3.new(0, 0, -1) end
@@ -13772,10 +12915,7 @@ local Combat = {
         -- from a learned-controller script: arg types + whether any shape matched. This is
         -- how you tell "rewrite never fired" from "fired but the game uses buffer blobs".
         local lastOutDbg = 0
-        -- SAFE default: redirect ONLY the Mouse's own aim reads (Hit / Target /
-        -- UnitRay). These are what FE weapons read and NOTHING else in the engine
-        -- touches, so cameras, Popper occlusion, physics and other scripts stay
-        -- untouched: this is why the default never breaks the game / camera.
+        -- SAFE default: redirect ONLY the Mouse's own aim reads (Hit / Target / UnitRay). These are what FE weapons read and NOTHING else in the engine touches, so cameras, Popper occlusion, physics and other scripts stay untouched: this is why the default never breaks the game / camera.
         local function resolveIndex(self, key)
             -- v0.18.0 SHOOT IN CAR (place-gated): spoof IsPlaying and SeatPart.
             -- Single __index hook delegates here (stacking hooks silently wins one).
@@ -13791,10 +12931,7 @@ local Combat = {
                 end
                 return PASS_H, PASS_V
             end
-            -- v0.77.0 INFINITE AMMO (universal): spoof .Value reads on HUD ammo
-            -- counters instead of writing them. Reads lie, writes pass through,
-            -- so regen and reload code never sees a dirty value to correct.
-            -- Scope is PlayerGui only (fail open when the gui cache is empty).
+            -- v0.77.0 INFINITE AMMO (universal): spoof .Value reads on HUD ammo counters instead of writing them. Reads lie, writes pass through, so regen and reload code never sees a dirty value to correct. Scope is PlayerGui only (fail open when the gui cache is empty).
             if Combat.Gun.InfiniteAmmo and key == "Value"
                and typeof(self) == "Instance" and self:IsA("ValueBase") then
                 local nm = string.lower(tostring(self.Name))
@@ -13821,13 +12958,7 @@ local Combat = {
                 if SR.camPos then return true, Ray.new(SR.camPos, (plPos - SR.camPos).Unit) end
                 return PASS_H, PASS_V
             end
-            -- v0.3.0: External method delegates ALL silent-aim work to KoffeeHelper.exe
-            -- over localhost HTTP. Under this method, every Lua-side spoof stays dormant
-            -- so the game sees 100% vanilla client behaviour: the raycast rewrite
-            -- happens inside Roblox via the helper's inline hook on the raycast bound
-            -- function, not here.
-            -- v0.95.0: same dormancy for Native. The CameraData rewrite owns the
-            -- shot there, so every Lua-side spoof stays off too.
+            -- v0.3.0: External method delegates ALL silent-aim work to KoffeeHelper.exe over localhost HTTP. Under this method, every Lua-side spoof stays dormant so the game sees 100% vanilla client behaviour: the raycast rewrite happens inside Roblox via the helper's inline hook on the raycast bound function, not here. v0.95.0: same dormancy for Native. The CameraData rewrite owns the shot there, so every Lua-side spoof stays off too.
             if Combat.Silent.Method == "External" or Combat.Silent.Method == "Native" then return PASS_H, PASS_V end
             -- (A) Mouse aim reads (Hit/Target/UnitRay): safe on every game, no caller
             -- scoping needed (nothing but aim code reads these). v0.0.35 behaviour.
@@ -13837,47 +12968,21 @@ local Combat = {
                 local pos, tgt = silentPos, silentTarget
                 if key == "Hit" then return true, CFrame.new(pos) end
                 if key == "Target" then return true, tgt end
-                -- UnitRay: Pos Spoof (fire frame) -> origin in front of the target (wallbang);
-                -- else the real camera origin (direction to target). Pos Spoof is
-                -- gated off in safe mode: keep the plain camera-origin ray.
-                -- v0.2.0: Raycast method's wallbang lives ONLY in the workspace:Raycast
-                -- branch (see resolveNamecall). Skip the UnitRay wallshot cascade so
-                -- the mouse.UnitRay fallback stays honest camera->target under Raycast.
+                -- UnitRay: Pos Spoof (fire frame) -> origin in front of the target (wallbang); else the real camera origin (direction to target). Pos Spoof is gated off in safe mode: keep the plain camera-origin ray. v0.2.0: Raycast method's wallbang lives ONLY in the workspace:Raycast branch (see resolveNamecall). Skip the UnitRay wallshot cascade so the mouse.UnitRay fallback stays honest camera->target under Raycast.
                 if not Combat.Silent._safe and Combat.Silent.Method ~= "Raycast"
                    and posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
                 if SR.camPos then return true, Ray.new(SR.camPos, (pos - SR.camPos).Unit) end
                 return PASS_H, PASS_V
             end
-            -- v0.0.96 SAFE MODE: everything below (Camera.CFrame spoof, Mouse.X/Y
-            -- spoof, Pos Spoof part reads) is skipped on weak execs: these paths
-            -- are the ones that freeze/dump the game on runtimes that can't hold a
-            -- stable hookmetamethod C-closure across the extra scoping work. Mouse
-            -- aim reads above are enough for basic silent aim on client-authoritative
-            -- games; server-authoritative wallbang stays disabled here.
+            -- v0.0.96 SAFE MODE: everything below (Camera.CFrame spoof, Mouse.X/Y spoof, Pos Spoof part reads) is skipped on weak execs: these paths are the ones that freeze/dump the game on runtimes that can't hold a stable hookmetamethod C-closure across the extra scoping work. Mouse aim reads above are enough for basic silent aim on client-authoritative games; server-authoritative wallbang stays disabled here.
             if Combat.Silent._safe then return PASS_H, PASS_V end
-            -- (B) v0.0.39 FIRE-READ: spoof the aim the instant the WEAPON SCRIPT reads
-            -- Camera.CFrame or the cursor: scoped by getcallingscript so the real
-            -- camera/renderer is never modified. Camera.CFrame is gated by camFire
-            -- (fire-frame window; continuous spoof froze custom camera controllers);
-            -- Mouse.X/Y uses isArmed (continuous: only aim code reads mouse coords).
-            -- v0.1.5 Second-Camera: the CFrame gate is ENGAGEMENT, not the click window.
-            -- While armed (target + activation key if set), weapon-facing callers get the
-            -- bent CFrame CONTINUOUSLY and learned renderers (writer-detector) always get
-            -- real CFrame via spoofAim: so a separate controller never moves your view,
-            -- spray or not. Merged handler+weapon games degrade (their script writes the
-            -- camera -> excluded -> switch to Forced MB there).
+            -- (B) v0.0.39 FIRE-READ: spoof the aim the instant the WEAPON SCRIPT reads Camera.CFrame or the cursor: scoped by getcallingscript so the real camera/renderer is never modified. Camera.CFrame is gated by camFire (fire-frame window; continuous spoof froze custom camera controllers); Mouse.X/Y uses isArmed (continuous: only aim code reads mouse coords). v0.1.5 Second-Camera: the CFrame gate is ENGAGEMENT, not the click window. While armed (target + activation key if set), weapon-facing callers get the bent CFrame CONTINUOUSLY and learned renderers (writer-detector) always get real CFrame via spoofAim: so a separate controller never moves your view, spray or not. Merged handler+weapon games degrade (their script writes the camera -> excluded -> switch to Forced MB there).
             local scCam = false
             if Combat.Silent.Method == "Second-Camera" then
                 scCam = silentPos ~= nil
                     and (not Combat.Silent.ActivationKey or silentHeld)
             elseif Combat.Silent.Method == "Forced Camera" and silentPos then
-                -- Forced Camera. v0.1.8: Require Left-Click OFF is now TRULY continuous:
-                -- v0.2.0: explicit method match: Raycast method never spoofs Camera.CFrame.
-                -- the CFrame bend no longer collapses to the click window, EXCEPT for
-                -- learned camera WRITERS (writer-detector set), which stay window-gated
-                -- so custom-camera games can't freeze/crash under continuous spoofing
-                -- (v0.0.89 lesson) while every pure-reader weapon script gets the
-                -- always-on bend RequireLMB-off promises.
+                -- Forced Camera. v0.1.8: Require Left-Click OFF is now TRULY continuous: v0.2.0: explicit method match: Raycast method never spoofs Camera.CFrame. the CFrame bend no longer collapses to the click window, EXCEPT for learned camera WRITERS (writer-detector set), which stay window-gated so custom-camera games can't freeze/crash under continuous spoofing (v0.0.89 lesson) while every pure-reader weapon script gets the always-on bend RequireLMB-off promises.
                 if Combat.Silent.RequireLMB then
                     scCam = lmbDown or (os.clock() - lmbClickAt) < 0.12
                 else
@@ -13891,11 +12996,7 @@ local Combat = {
                 end
             end
             if scCam then
-                -- Camera.CFrame spoof, scoped by spoofAim (never the camera system).
-                --   default (Forced MB): origin stays REAL, look-direction bends to target.
-                --   Pos Spoof + fire frame: camera moves to 3 studs in FRONT of the target,
-                --     looking at it, so a camera-origin gun raycasts into them through the wall
-                --     (WALLBANG). Only on the shot frame, so the viewmodel stays normal.
+                -- Camera.CFrame spoof, scoped by spoofAim (never the camera system). default (Forced MB): origin stays REAL, look-direction bends to target. Pos Spoof + fire frame: camera moves to 3 studs in FRONT of the target, looking at it, so a camera-origin gun raycasts into them through the wall (WALLBANG). Only on the shot frame, so the viewmodel stays normal.
                 if key == "CFrame" and self == SR.cam and SR.camPos and silentPos then
                     if SR.spoofAim(getCS and getCS()) then
                         -- crash-safety: skip spoof if SR.camPos and silentPos coincide
@@ -13925,17 +13026,7 @@ local Combat = {
                     end
                 end
             end
-            -- (C) v0.0.64/65 POS SPOOF: report YOUR character/tool part + attachment positions
-            -- as the target's, so the game's fire code builds the shot ORIGIN from inside the
-            -- enemy (wallbang: the server ray starts inside them, no wall in the way, any
-            -- range). Broad set = all character descendants incl. the gun's muzzle parts /
-            -- attachments, so guns reading the tool position (not just HRP) land too. Real
-            -- parts never move. Scoped by spoofAim (camera + Koffee excluded); no LMB gate.
-            -- v0.2.0: Raycast method owns origin manipulation via workspace:Raycast ONLY:
-            -- character/tool part reads stay honest so animations, IK and non-fire game
-            -- systems that peek at those parts see truth. This block is legacy for the
-            -- (now-dormant) Forced MB Pos Spoof; posFire() is already Raycast-gated but the
-            -- explicit method guard keeps the intent readable.
+            -- (C) v0.0.64/65 POS SPOOF: report YOUR character/tool part + attachment positions as the target's, so the game's fire code builds the shot ORIGIN from inside the enemy (wallbang: the server ray starts inside them, no wall in the way, any range). Broad set = all character descendants incl. the gun's muzzle parts / attachments, so guns reading the tool position (not just HRP) land too. Real parts never move. Scoped by spoofAim (camera + Koffee excluded); no LMB gate. v0.2.0: Raycast method owns origin manipulation via workspace:Raycast ONLY: character/tool part reads stay honest so animations, IK and non-fire game systems that peek at those parts see truth. This block is legacy for the (now-dormant) Forced MB Pos Spoof; posFire() is already Raycast-gated but the explicit method guard keeps the intent readable.
             if posFire() and Combat.Silent.Method ~= "Raycast" then
                 local sp = SR.spoofParts
                 if sp and sp[self] then
@@ -13963,17 +13054,7 @@ local Combat = {
             -- resolveIndex head comment). Every namecall passes through vanilla.
             -- v0.95.0: Native also passes through here; its rewrite is not a hook.
             if Combat.Silent.Method == "External" or Combat.Silent.Method == "Native" then return PASS_H, PASS_V end
-            -- v0.0.39 fire-read universal path (always on: "Forced Magic-Bullet").
-            -- CRITICAL: NOTHING in here may perform a Roblox namecall (a `:` method
-            -- call). getnamecallmethod reads one shared C state, so a nested namecall
-            -- while a real FireServer is dispatching corrupts it and bricks the weapon
-            -- after one shot (this was the "one bullet then the gun dies" bug). Only
-            -- global-fn calls, plain-table reads, property (__index) reads, equality
-            -- and constructors are used below: no namecalls.
-            -- v0.0.64 POS SPOOF: Character:GetPivot()/GetPrimaryPartCFrame -> target CFrame,
-            -- BEFORE the LMB gate (Pos Spoof doesn't require left-click). Namecall-free.
-            -- v0.2.0: legacy Forced-MB spoof: Raycast method skips this (same reasoning
-            -- as the part.Position block: origin manipulation is workspace:Raycast-only).
+            -- v0.0.39 fire-read universal path (always on: "Forced Magic-Bullet"). CRITICAL: NOTHING in here may perform a Roblox namecall (a `:` method call). getnamecallmethod reads one shared C state, so a nested namecall while a real FireServer is dispatching corrupts it and bricks the weapon after one shot (this was the "one bullet then the gun dies" bug). Only global-fn calls, plain-table reads, property (__index) reads, equality and constructors are used below: no namecalls. v0.0.64 POS SPOOF: Character:GetPivot()/GetPrimaryPartCFrame -> target CFrame, BEFORE the LMB gate (Pos Spoof doesn't require left-click). Namecall-free. v0.2.0: legacy Forced-MB spoof: Raycast method skips this (same reasoning as the part.Position block: origin manipulation is workspace:Raycast-only).
             if method == "GetPivot" or method == "GetPrimaryPartCFrame" then
                 if posFire() and Combat.Silent.Method ~= "Raycast"
                    and self == SR.char and SR.spoofAim(getCS and getCS()) then
@@ -13981,26 +13062,7 @@ local Combat = {
                 end
                 return PASS_H, PASS_V
             end
-            -- v0.1.6 OUTBOUND REWRITE (Second-Camera only): games whose weapon script
-            -- WRITES the camera while firing (recoil / ADS / sway) can't have their reads
-            -- bent at ALL without dragging the view (the writer-detector excludes them
-            -- absolutely: a click-window waiver was tried and ripped same-day: bending a
-            -- writer's reads at ANY time bends the view, because it writes back what it
-            -- read). So for those scripts the reads stay REAL forever and the shot
-            -- direction is rewritten inside the OUTGOING remote args instead: the client
-            -- sees truth, the wire carries the lock. Surgical rules (v0.0.43/72 lesson:
-            -- never clobber blind):
-            --   * only callers already in the learned controller set are touched
-            --   * direction-shaped Vector3s (sub-8 magnitude, within ~41 deg of the real
-            --     look dir) rotate to aim at the target from the shooter's root; the
-            --     original magnitude is preserved
-            --   * point-shaped Vector3s (>50 studs out, within 12 studs of the look ray)
-            --     move onto the target's hit point
-            --   * Rays keep their EXACT origin; only the direction rotates
-            --   * everything else passes untouched: args are never dropped/reordered/
-            --     invented, so unmatched schemas behave exactly vanilla
-            -- Namecall-safe: typeof / component math / constructors only: no :Dot(),
-            -- :Unit() etc. on vectors (same shared-C-state rule as everything else here).
+            -- v0.1.6 OUTBOUND REWRITE (Second-Camera only): games whose weapon script WRITES the camera while firing (recoil / ADS / sway) can't have their reads bent at ALL without dragging the view (the writer-detector excludes them absolutely: a click-window waiver was tried and ripped same-day: bending a writer's reads at ANY time bends the view, because it writes back what it read). So for those scripts the reads stay REAL forever and the shot direction is rewritten inside the OUTGOING remote args instead: the client sees truth, the wire carries the lock. Surgical rules (v0.0.43/72 lesson: never clobber blind): * only callers already in the learned controller set are touched * direction-shaped Vector3s (sub-8 magnitude, within ~41 deg of the real look dir) rotate to aim at the target from the shooter's root; the original magnitude is preserved * point-shaped Vector3s (>50 studs out, within 12 studs of the look ray) move onto the target's hit point * Rays keep their EXACT origin; only the direction rotates * everything else passes untouched: args are never dropped/reordered/ invented, so unmatched schemas behave exactly vanilla Namecall-safe: typeof / component math / constructors only: no :Dot(), :Unit() etc. on vectors (same shared-C-state rule as everything else here).
             if method == "FireServer" or method == "InvokeServer" then
                 if Combat.Silent.Method ~= "Second-Camera" then return PASS_H, PASS_V end
                 if not (silentPos and silentTarget and SR.camLook) then return PASS_H, PASS_V end
@@ -14081,27 +13143,9 @@ local Combat = {
                 if changed then return "call", args end
                 return PASS_H, PASS_V
             end
-            -- v0.0.81: Wallbang Raycast REMOVED (as an always-on Forced-MB add-on). Was
-            -- detected by some ACs, didn't work on Gun Grounds FFA (camera-baked-arg class
-            --: see v0.0.42/74 history), and didn't cover Jack's tested game (the
-            -- KoffeePosDebug log from v0.0.78 showed only Camera.CFrame spoofs + one stray
-            -- raycast intercept: the weapon doesn't call workspace raycasts at fire time).
-            -- v0.2.0: RE-ADDED, opt-in, as the "Raycast" method (see branch below). Now it
-            -- is a top-level Method choice instead of an always-on cascade: users pick it
-            -- specifically for FE FPS raycast weapons (Phantom Forces / Arsenal / Aimblox
-            -- class). Wallbang rides on this method exclusively.
+            -- v0.0.81: Wallbang Raycast REMOVED (as an always-on Forced-MB add-on). Was detected by some ACs, didn't work on Gun Grounds FFA (camera-baked-arg class : see v0.0.42/74 history), and didn't cover Jack's tested game (the KoffeePosDebug log from v0.0.78 showed only Camera.CFrame spoofs + one stray raycast intercept: the weapon doesn't call workspace raycasts at fire time). v0.2.0: RE-ADDED, opt-in, as the "Raycast" method (see branch below). Now it is a top-level Method choice instead of an always-on cascade: users pick it specifically for FE FPS raycast weapons (Phantom Forces / Arsenal / Aimblox class). Wallbang rides on this method exclusively.
             if not isArmed() then return PASS_H, PASS_V end
-            -- v0.2.0 RAYCAST METHOD: universal workspace:Raycast rewrite for games whose
-            -- weapon builds its own ray (muzzle attachment / camera vector) and passes it
-            -- straight into workspace:Raycast: these skip every Mouse/Camera read the
-            -- Forced-MB spoofs catch. Direction rotates to point at the target from the
-            -- caller's real origin; magnitude preserved so range checks pass. Wallbang
-            -- (posFire) additionally moves the origin to 3 studs in FRONT of the target so
-            -- the client ray reaches them through any wall. Gate order (namecall-safe: only
-            -- constructors + component math, zero `:` calls):
-            --   * dir.Magnitude > 20: skip probe/occlusion/IK rays
-            --   * dir approx aligned with camLook OR with (target - origin): fire-shaped only
-            -- Cheap comparisons short-circuit the 99% pass-through case.
+            -- v0.2.0 RAYCAST METHOD: universal workspace:Raycast rewrite for games whose weapon builds its own ray (muzzle attachment / camera vector) and passes it straight into workspace:Raycast: these skip every Mouse/Camera read the Forced-MB spoofs catch. Direction rotates to point at the target from the caller's real origin; magnitude preserved so range checks pass. Wallbang (posFire) additionally moves the origin to 3 studs in FRONT of the target so the client ray reaches them through any wall. Gate order (namecall-safe: only constructors + component math, zero `:` calls): * dir.Magnitude > 20: skip probe/occlusion/IK rays * dir approx aligned with camLook OR with (target - origin): fire-shaped only Cheap comparisons short-circuit the 99% pass-through case.
             if method == "Raycast" and self == Workspace then
                 if Combat.Silent.Method ~= "Raycast" then return PASS_H, PASS_V end
                 if not silentPos then return PASS_H, PASS_V end
@@ -14166,11 +13210,7 @@ local Combat = {
             -- v0.95.0: Native silent answers through the shoot callback, never
             -- this hook, so it must not keep the hooks installed on its own.
             if s and s.Enabled and s.Method ~= "Native" then return true end
-            -- v0.93.7: Perfect Lock answers its redirect through this hook too. Omitting
-            -- it removed the hook a second after the aim writer installed it, so the
-            -- camera snapped while every weapon read stayed vanilla.
-            -- v0.95.0: in rivals the lock owns the replicated angle instead, so no
-            -- hook is needed for it there.
+            -- v0.93.7: Perfect Lock answers its redirect through this hook too. Omitting it removed the hook a second after the aim writer installed it, so the camera snapped while every weapon read stayed vanilla. v0.95.0: in rivals the lock owns the replicated angle instead, so no hook is needed for it there.
             local native = Koffee._isRivals and Shared.RV and Shared.RV.ok
             if a and a.Enabled and a.PerfectLock and not native then return true end
             if g and (g.InfiniteAmmo or g.ShootInCar) then return true end
@@ -14182,10 +13222,7 @@ local Combat = {
             if type(h) ~= "table" then return end
             local mt = getrawmetatable and getrawmetatable(game)
             if not (mt and hookmetamethod) then return end
-            -- the executor does not preserve our closure's identity (measured: neither
-            -- rawget nor hookmetamethod's return compares equal to what we passed), so
-            -- compare the metatable against what it held right after we installed. If
-            -- something hooked on top since, leave it be rather than wiping it out.
+            -- the executor does not preserve our closure's identity (measured: neither rawget nor hookmetamethod's return compares equal to what we passed), so compare the metatable against what it held right after we installed. If something hooked on top since, leave it be rather than wiping it out.
             local done = true
             local function give(name, live, orig)
                 if not (live and orig) then return end
@@ -14206,16 +13243,7 @@ local Combat = {
             local ccaller  = checkcaller   -- true => called from our own executor thread
             if not hookmm then return end
 
-            -- v0.0.96 SAFE MODE branch. On runtimes flagged by the load-time exec
-            -- prompt (anything not on the known-good list), silent aim installs
-            -- ONLY the __index hook, without newcclosure wrapping, without the
-            -- __namecall hook, and the resolver never runs the Camera.CFrame /
-            -- pos-spoof / wallshot paths (see Combat.Silent._safe checks inside
-            -- resolveIndex). This avoids the newcclosure+__namecall pairing that
-            -- freezes lightweight runtimes when a weapon triggers a FireServer
-            -- redirect. Result: less powerful silent aim (no wallbang, no server-
-            -- side forced-mb via namecall), but the game doesn't crash. Trade-off
-            -- is what the popup asked the user about.
+            -- v0.0.96 SAFE MODE branch. On runtimes flagged by the load-time exec prompt (anything not on the known-good list), silent aim installs ONLY the __index hook, without newcclosure wrapping, without the __namecall hook, and the resolver never runs the Camera.CFrame / pos-spoof / wallshot paths (see Combat.Silent._safe checks inside resolveIndex). This avoids the newcclosure+__namecall pairing that freezes lightweight runtimes when a weapon triggers a FireServer redirect. Result: less powerful silent aim (no wallbang, no server- side forced-mb via namecall), but the game doesn't crash. Trade-off is what the popup asked the user about.
             local safe = Koffee._safeMode == true
             Combat.Silent._safe = safe
             local wrap = safe and function(f) return f end
@@ -14256,10 +13284,7 @@ local Combat = {
             if not safe then
                 local oldNc
                 local ourNc = wrap(function(self, ...)
-                    -- Capture method BEFORE anything else. NEVER do a nested namecall here:
-                    -- getnamecallmethod reads one shared C state; a nested namecall while a
-                    -- real FireServer is dispatching corrupts it and bricks the weapon after
-                    -- one shot ("one bullet then the gun dies" bug, fixed in v0.0.40).
+                    -- Capture method BEFORE anything else. NEVER do a nested namecall here: getnamecallmethod reads one shared C state; a nested namecall while a real FireServer is dispatching corrupts it and bricks the weapon after one shot ("one bullet then the gun dies" bug, fixed in v0.0.40).
                     local m = ncmethod and ncmethod() or ""
                     if not NC_METHODS[m] then return oldNc(self, ...) end
                     if not hookNeeded() then return oldNc(self, ...) end
@@ -14279,13 +13304,7 @@ local Combat = {
                 rec.onc = oldNc
                 if mt0 then rec.ncLive = rawget(mt0, "__namecall") end
 
-                -- v0.1.5 Second-Camera WRITER-DETECTOR: any game script that writes
-                -- Camera.CFrame is a camera RENDERER/CONTROLLER (FpsController, custom
-                -- orbit cams...). Recorded session-stable under K.ctrl (weak keys:
-                -- destroyed scripts GC out) and excluded from spoofing by SR.spoofAim.
-                -- Two cheap comparisons short-circuit the 99.9% case; only CFrame writes
-                -- on the current camera do work. getcallingscript is a plain read here
-                -- (no namecall involved), so this is hook-body safe.
+                -- v0.1.5 Second-Camera WRITER-DETECTOR: any game script that writes Camera.CFrame is a camera RENDERER/CONTROLLER (FpsController, custom orbit cams...). Recorded session-stable under K.ctrl (weak keys: destroyed scripts GC out) and excluded from spoofing by SR.spoofAim. Two cheap comparisons short-circuit the 99.9% case; only CFrame writes on the current camera do work. getcallingscript is a plain read here (no namecall involved), so this is hook-body safe.
                 local gcs = getcallingscript
                 local oldWi
                 local ourWi = wrap(function(self, k, v)
@@ -14333,12 +13352,7 @@ local Combat = {
         end
     end
 
-    -- :: render loops ::
-    -- aimbot: run AFTER every camera controller in the game (Last+1) so our
-    -- CFrame is the final write before render: fast mouse movement can't shake
-    -- a Perfect Lock. cold-start safety: a prior run's binding survives re-exec
-    -- and re-binding the same name throws: unbind first so the loader can be
-    -- re-run cleanly.
+    -- :: render loops :: aimbot: run AFTER every camera controller in the game (Last+1) so our CFrame is the final write before render: fast mouse movement can't shake a Perfect Lock. cold-start safety: a prior run's binding survives re-exec and re-binding the same name throws: unbind first so the loader can be re-run cleanly.
     pcall(function() RunService:UnbindFromRenderStep(KID.ctx.bind) end)
     RunService:BindToRenderStep(KID.ctx.bind, Enum.RenderPriority.Last.Value + 1, function()
         -- v0.11.1: cleared every frame and only re-set below, so the redirect can
@@ -14395,12 +13409,7 @@ local Combat = {
         Combat.Aim._rageLock = nil
 
         local plr, part
-        -- v0.0.97 true sticky: hold the locked player across FOV / off-screen, only
-        -- drop when the player dies / respawns / leaves. The aim math (lookAt /
-        -- aimCFrame) handles a target behind the camera by rotating back toward it,
-        -- so the locked victim is chased off-screen too: not replaced the moment
-        -- they leave the FOV circle. Falls through to getBestTarget for a fresh lock
-        -- only when there's no valid held target.
+        -- v0.0.97 true sticky: hold the locked player across FOV / off-screen, only drop when the player dies / respawns / leaves. The aim math (lookAt / aimCFrame) handles a target behind the camera by rotating back toward it, so the locked victim is chased off-screen too: not replaced the moment they leave the FOV circle. Falls through to getBestTarget for a fresh lock only when there's no valid held target.
         if Combat.Aim.Sticky and Combat.Aim._target then
             local t = Combat.Aim._target
             local char = t.Character
@@ -14473,12 +13482,7 @@ local Combat = {
             end
         end
 
-        -- sensitivity (base pull) + optional per-axis smoothness (higher = slower)
-        -- v0.0.86 sensitivity curve reshape. Was linear 0.01..1: 0.08 was already
-        -- fast because 8% per frame converges to target in a few frames. Now sens^1.5
-        -- pushes the low end down without touching the max: 1.0 -> 1.0 (perfect lock),
-        -- 0.5 -> 0.354 (moderate), 0.08 -> 0.023 (smooth pull), 0.01 -> 0.001 (glacial).
-        -- Endpoints preserved so users' existing feel at max/near-max is unchanged.
+        -- sensitivity (base pull) + optional per-axis smoothness (higher = slower) v0.0.86 sensitivity curve reshape. Was linear 0.01..1: 0.08 was already fast because 8% per frame converges to target in a few frames. Now sens^1.5 pushes the low end down without touching the max: 1.0 -> 1.0 (perfect lock), 0.5 -> 0.354 (moderate), 0.08 -> 0.023 (smooth pull), 0.01 -> 0.001 (glacial). Endpoints preserved so users' existing feel at max/near-max is unchanged.
         local rawSens = math.clamp(Combat.Aim.Sensitivity, 0.01, 1)
         local sens = rawSens * math.sqrt(rawSens)   -- sens^1.5
         local aX, aY = sens, sens
@@ -14488,28 +13492,12 @@ local Combat = {
         end
 
         if Combat.Aim.PerfectLock then
-            -- v0.27.0: TRUE snap. Publish the redirect, then aim exactly this frame:
-            -- no sensitivity/smoothing/euler.
-            -- v0.58.4: when AimType is Mouse (or Third Person), drive the REAL mouse
-            -- onto the target's exact screen point instead of writing cam.CFrame.
-            -- Games like Phantom Forces aim off the mouse and run their own camera,
-            -- so a written CFrame is stomped/detected while a mouse move feeds the
-            -- game's own aim pipeline. Camera snap otherwise.
-            -- v0.58.5: the mouse move is a feedback loop through the game's own
-            -- sensitivity, so a raw full-delta snap OVERSHOOTS at high in-game sens
-            -- and oscillates (shake/flicker). Smoothing now damps it: OFF = full
-            -- snap (factor 1), ON = delta * 1/Smooth per axis, so it converges in a
-            -- couple of frames without overshoot. Sensitivity stays ignored (perfect).
+            -- v0.27.0: TRUE snap. Publish the redirect, then aim exactly this frame: no sensitivity/smoothing/euler. v0.58.4: when AimType is Mouse (or Third Person), drive the REAL mouse onto the target's exact screen point instead of writing cam.CFrame. Games like Phantom Forces aim off the mouse and run their own camera, so a written CFrame is stomped/detected while a mouse move feeds the game's own aim pipeline. Camera snap otherwise. v0.58.5: the mouse move is a feedback loop through the game's own sensitivity, so a raw full-delta snap OVERSHOOTS at high in-game sens and oscillates (shake/flicker). Smoothing now damps it: OFF = full snap (factor 1), ON = delta * 1/Smooth per axis, so it converges in a couple of frames without overshoot. Sensitivity stays ignored (perfect).
             plPos, plPart = tpos, part
             -- published for game-specific aim hooks. Silent aim keeps priority, so it
             -- stays nil while silent is on, and with the aimbot off this never runs.
             if not Combat.Silent.Enabled then Shared._plAim = tpos end
-            -- v0.93.15: Aim Type no longer applies here (the dropdown already said so); a
-            -- saved Mouse config kept the damped mouse path. Only Third Person moves the cursor.
-            -- v0.94.0: in rivals, Perfect Lock owns the native view angle instead of
-            -- writing the camera. The server reads the angle we replicate, so the shot
-            -- lands and the viewmodel cannot desync from a camera we never moved. This
-            -- is what replaces the two-actuator camera snap in that game.
+            -- v0.93.15: Aim Type no longer applies here (the dropdown already said so); a saved Mouse config kept the damped mouse path. Only Third Person moves the cursor. v0.94.0: in rivals, Perfect Lock owns the native view angle instead of writing the camera. The server reads the angle we replicate, so the shot lands and the viewmodel cannot desync from a camera we never moved. This is what replaces the two-actuator camera snap in that game.
             local RVN = Shared.RV
             if RVN and RVN.ok and RVN.armViewAngles and RVN.armViewAngles() then
                 local pa, ya = RVN.anglesTo(RVN.serverHead() or cam.CFrame.Position, tpos)
@@ -14534,12 +13522,7 @@ local Combat = {
             return
         end
         if Combat.Aim.ThirdPerson then
-            -- v0.0.36.1: drive the REAL mouse onto the target's screen point. Measured
-            -- live: WorldToViewportPoint INCLUDES the 58px GUI inset but PlayerMouse.X/Y
-            -- does NOT: mixing them aimed a constant ~58px low (whole-body error at
-            -- range). GetMouseLocation() is inset-included, matching WorldToViewportPoint,
-            -- so the delta is 0 exactly on-target. Each frame nudges the cursor a fraction
-            -- (aX/aY) and converges. Works free-cursor AND shift-lock.
+            -- v0.0.36.1: drive the REAL mouse onto the target's screen point. Measured live: WorldToViewportPoint INCLUDES the 58px GUI inset but PlayerMouse.X/Y does NOT: mixing them aimed a constant ~58px low (whole-body error at range). GetMouseLocation() is inset-included, matching WorldToViewportPoint, so the delta is 0 exactly on-target. Each frame nudges the cursor a fraction (aX/aY) and converges. Works free-cursor AND shift-lock.
             local sp = cam:WorldToViewportPoint(tpos)
             if sp.Z > 0 and mousemoverel then
                 local ml = UserInputService:GetMouseLocation()
@@ -14556,11 +13539,7 @@ local Combat = {
         end
     end)
 
-    -- custom multi-point gradient: Colors/Alphas map LEFT-TO-RIGHT (swatch 1..n).
-    -- STATIC: plain linear ramp c1..cn evenly spaced across 0..1.
-    -- MOVING: seamless cyclic scroll: palette is a ring (cn wraps to c1), sampled
-    -- at fixed screen positions offset by a phase. pos 0 + pos 1 sample the same
-    -- ring point, so no seam and no snap (fixes the "bounce" + stretch).
+    -- custom multi-point gradient: Colors/Alphas map LEFT-TO-RIGHT (swatch 1..n). STATIC: plain linear ramp c1..cn evenly spaced across 0..1. MOVING: seamless cyclic scroll: palette is a ring (cn wraps to c1), sampled at fixed screen positions offset by a phase. pos 0 + pos 1 sample the same ring point, so no seam and no snap (fixes the "bounce" + stretch).
     local function ringSample(t, get, n)
         t = t % 1
         local seg = t * n
@@ -14603,10 +13582,7 @@ local Combat = {
         return NumberSequence.new(kps)
     end
 
-    -- draw one FOV circle from its config. Both aimbot + silent circles use this.
-    -- v0.4.0: HideVisual hides everything the ring draws (circle, stroke, dots,
-    -- fill, gradient) while leaving cfg.Enabled + cfg.Size intact for the
-    -- targeting gate in getBestTarget. Effectively "invisible FOV".
+    -- draw one FOV circle from its config. Both aimbot + silent circles use this. v0.4.0: HideVisual hides everything the ring draws (circle, stroke, dots, fill, gradient) while leaving cfg.Enabled + cfg.Size intact for the targeting gate in getBestTarget. Effectively "invisible FOV".
     local function drawFov(h, cfg)
         if (not cfg.Enabled) or cfg.HideVisual then
             h.circle.Visible = false
@@ -14686,10 +13662,7 @@ local Combat = {
         end
     end
 
-    -- snapline: v0.0.36.1: origin follows the mouse cursor. Uses GetMouseLocation()
-    -- (inset-included, like WorldToViewportPoint + the IgnoreGuiInset overlay) so the
-    -- line anchors exactly ON the cursor. The old PlayerMouse.X/Y source excluded the
-    -- 58px inset, which floated the origin ~58px above the cursor.
+    -- snapline: v0.0.36.1: origin follows the mouse cursor. Uses GetMouseLocation() (inset-included, like WorldToViewportPoint + the IgnoreGuiInset overlay) so the line anchors exactly ON the cursor. The old PlayerMouse.X/Y source excluded the 58px inset, which floated the origin ~58px above the cursor.
     local function drawSnaplines()
         local cfg, ctx, part
         if Combat.Aim.Snaplines then
@@ -14726,11 +13699,7 @@ local Combat = {
         applyLineGradient(snapLine, ESP.Config.Gradient)
     end
 
-    -- v0.5.0: advance the FOV Follow-target lerp once per frame per cfg. Reads the
-    -- "current target" for the cfg's owner (aim uses _rageLock or _target; silent
-    -- uses the silentTarget part). Falls back to the default origin (Center/Mouse)
-    -- when there's no target. Called BEFORE drawFov so this frame's fovCenter reads
-    -- the freshly-advanced cache.
+    -- v0.5.0: advance the FOV Follow-target lerp once per frame per cfg. Reads the "current target" for the cfg's owner (aim uses _rageLock or _target; silent uses the silentTarget part). Falls back to the default origin (Center/Mouse) when there's no target. Called BEFORE drawFov so this frame's fovCenter reads the freshly-advanced cache.
     local function stepFovFollow(cfg)
         if not (cfg and cfg.Follow and cfg.Follow.Enabled) then return end
         local vp = viewport()
@@ -14776,12 +13745,7 @@ local Combat = {
         drawSnaplines()
     end)
 
-    -- triggerbot (v0.0.36 rewrite). The old version fired on screen-space proximity
-    -- to the crosshair (5px): pixel-tight and it never actually checked the crosshair
-    -- was ON an enemy (a wall in the way still counted). Now it raycasts from the camera
-    -- THROUGH the crosshair: it only fires if that ray's first hit is a live enemy
-    -- character (team / friend checks applied, occlusion handled for free since the ray
-    -- stops at the first wall). HitboxMul widens the sample into a small ring.
+    -- triggerbot (v0.0.36 rewrite). The old version fired on screen-space proximity to the crosshair (5px): pixel-tight and it never actually checked the crosshair was ON an enemy (a wall in the way still counted). Now it raycasts from the camera THROUGH the crosshair: it only fires if that ray's first hit is a live enemy character (team / friend checks applied, occlusion handled for free since the ray stops at the first wall). HitboxMul widens the sample into a small ring.
     local trigParams = RaycastParams.new()
     trigParams.FilterType = Enum.RaycastFilterType.Exclude
     -- v0.96.10: Ignore Katana gate. Reads the 10Hz wield set, never a live walk.
@@ -14833,11 +13797,7 @@ local Combat = {
         end
         return nil
     end
-    -- v0.0.78: through-walls crosshair check. Iterates players, projects their key
-    -- parts (Head/Torso/HRP variants for R6+R15) to screen space via WorldToViewportPoint,
-    -- fires if any lands within HitboxMul*5 pixels of the crosshair: NO occlusion
-    -- raycast, so walls between camera and enemy don't block. This is the "trigger
-    -- whenever someone goes in the crosshair even through a wall" mode Jack asked for.
+    -- v0.0.78: through-walls crosshair check. Iterates players, projects their key parts (Head/Torso/HRP variants for R6+R15) to screen space via WorldToViewportPoint, fires if any lands within HitboxMul*5 pixels of the crosshair: NO occlusion raycast, so walls between camera and enemy don't block. This is the "trigger whenever someone goes in the crosshair even through a wall" mode Jack asked for.
     local TRIG_PARTS = { "Head", "UpperTorso", "Torso", "HumanoidRootPart", "LowerTorso" }
     local function crosshairEnemyNoOcclusion()
         local cam = Workspace.CurrentCamera
@@ -14875,16 +13835,7 @@ local Combat = {
         end
         return nil
     end
-    -- v0.0.86: silent-link now respects Visible Check. Was firing regardless (v0.0.78)
-    -- so with Visible Check ON + Silent Aim armed, trigger fired even when the silent
-    -- target was behind a wall: broke the "visible only" expectation. Now Visible
-    -- Check gates BOTH the crosshair path AND the silent-link path.
-    --   Visible Check ON  -> only fires if target has line-of-sight (raycast from
-    --                        camera to silent target passes; crosshair enemy raycast passes)
-    --   Visible Check OFF -> through-walls trigger (silent target OR nearest enemy in
-    --                        screen-space crosshair area)
-    -- silentHasLOS = camera-to-target raycast that ignores our character. If no wall
-    -- between camera and target, it's visible.
+    -- v0.0.86: silent-link now respects Visible Check. Was firing regardless (v0.0.78) so with Visible Check ON + Silent Aim armed, trigger fired even when the silent target was behind a wall: broke the "visible only" expectation. Now Visible Check gates BOTH the crosshair path AND the silent-link path. Visible Check ON -> only fires if target has line-of-sight (raycast from camera to silent target passes; crosshair enemy raycast passes) Visible Check OFF -> through-walls trigger (silent target OR nearest enemy in screen-space crosshair area) silentHasLOS = camera-to-target raycast that ignores our character. If no wall between camera and target, it's visible.
     local trigLOSParams = RaycastParams.new()
     trigLOSParams.FilterType = Enum.RaycastFilterType.Exclude
     local function silentHasLOS()
@@ -14950,16 +13901,7 @@ local Combat = {
         end)
     end)
 
-    -- v0.0.88 Hit/Kill sound engine. Universal per-player Humanoid.Health drop
-    -- watcher; attribution via the screen-space mouse-target lock (LMB-held
-    -- nearest-to-cursor sampling, kept fresh every heartbeat). Cooldowns per
-    -- type; suppressed while the menu is open. Presets are <exec>/Koffee/sounds/
-    -- mp3 names (getcustomasset per play; CustomId > 0 overrides with a
-    -- rbxassetid://). Sound silently no-ops on executors without the API.
-    -- v0.10.0: one list, two packs. The koffee-assets mp3s came first; everything
-    -- from "bonk" down is the Takurin fx/ pack (ogg). Both prefetch in the loader
-    -- manifest and resolveSoundId probes either extension, so the split is invisible
-    -- from the dropdown. Was duplicated as SND_PRESETS_LIST in the tab builder.
+    -- v0.0.88 Hit/Kill sound engine. Universal per-player Humanoid.Health drop watcher; attribution via the screen-space mouse-target lock (LMB-held nearest-to-cursor sampling, kept fresh every heartbeat). Cooldowns per type; suppressed while the menu is open. Presets are <exec>/Koffee/sounds/ mp3 names (getcustomasset per play; CustomId > 0 overrides with a rbxassetid://). Sound silently no-ops on executors without the API. v0.10.0: one list, two packs. The koffee-assets mp3s came first; everything from "bonk" down is the Takurin fx/ pack (ogg). Both prefetch in the loader manifest and resolveSoundId probes either extension, so the split is invisible from the dropdown. Was duplicated as SND_PRESETS_LIST in the tab builder.
     local SND_PRESETS = {
         "12", "agpa2", "basshit", "bell", "blizzard", "bubble", "chockpro",
         "cod", "copperbell", "crowbar", "headshot", "hit", "knob",
@@ -15011,11 +13953,7 @@ local Combat = {
         if (now - lastRef) * 1000 < cfg.Cooldown then return lastRef end
         local id = resolveSoundId(cfg)
         if not id then return lastRef end
-        -- v0.0.91 REAL Overlap. v0.0.89's `:Play()` on the same Sound didn't
-        -- overlap: Roblox restarts the sound from TimePosition instead of layering.
-        -- Overlap ON now clones the Sound per play (parallel playback stacks),
-        -- Ended:Once cleans the clone up. Overlap OFF stops+replays the shared
-        -- instance (single-track, no layering).
+        -- v0.0.91 REAL Overlap. v0.0.89's `:Play()` on the same Sound didn't overlap: Roblox restarts the sound from TimePosition instead of layering. Overlap ON now clones the Sound per play (parallel playback stacks), Ended:Once cleans the clone up. Overlap OFF stops+replays the shared instance (single-track, no layering).
         if Combat.HitSounds.Overlap then
             local clone = snd:Clone()
             clone.SoundId       = id
@@ -15035,20 +13973,9 @@ local Combat = {
         end
         return now
     end
-    -- mouse-target tracker: per-Heartbeat sweep of all enemies, pick the one whose
-    -- screen point is closest to the mouse cursor within MouseRadius pixels.
-    -- Only runs while LMB is held (accurate attribution for both single-shot AND
-    -- auto weapons: per-shot in bursts each contributes its own held-LMB frame).
+    -- mouse-target tracker: per-Heartbeat sweep of all enemies, pick the one whose screen point is closest to the mouse cursor within MouseRadius pixels. Only runs while LMB is held (accurate attribution for both single-shot AND auto weapons: per-shot in bursts each contributes its own held-LMB frame).
     SR.mouseTgt = nil
-    -- v0.0.92 mouse-target lock. Replaces single SR.mouseTgt with a SET of recently-
-    -- aimed-at enemies (SR.recentTargets[char] = timestamp). Any Health drop on a
-    -- char in the set within AttrWindow seconds counts as YOUR hit. Fixes sniper
-    -- case: fast-tap LMB, damage lands 200ms later after `lmbDown` already flipped
-    -- back to false. Also handles multiple in-flight shots in FFA (each captured
-    -- target ages independently).
-    -- Sampling: `sampleMouseEnemy()` finds closest enemy to cursor in front of camera
-    -- (no radius filter: v0.0.91). Called on Heartbeat while LMB held (auto-fire)
-    -- + on LMB press edge (guaranteed sample at press moment even for sub-frame taps).
+    -- v0.0.92 mouse-target lock. Replaces single SR.mouseTgt with a SET of recently- aimed-at enemies (SR.recentTargets[char] = timestamp). Any Health drop on a char in the set within AttrWindow seconds counts as YOUR hit. Fixes sniper case: fast-tap LMB, damage lands 200ms later after `lmbDown` already flipped back to false. Also handles multiple in-flight shots in FFA (each captured target ages independently). Sampling: `sampleMouseEnemy()` finds closest enemy to cursor in front of camera (no radius filter: v0.0.91). Called on Heartbeat while LMB held (auto-fire) + on LMB press edge (guaranteed sample at press moment even for sub-frame taps).
     SR.recentTargets = {}
     local function sampleMouseEnemy()
         local cam = Workspace.CurrentCamera
@@ -15111,15 +14038,7 @@ local Combat = {
             if now - at > window then SR.recentTargets[c] = nil end
         end
     end
-    -- v0.0.93 MULTI-SOURCE HP WATCHER + damage-time buffer for pre-click attribution.
-    -- Some games don't use standard Humanoid.Health for their real HP system:
-    -- they store it in a NumberValue child ("Health"/"HP"), a character/humanoid
-    -- attribute, or both. We scan for all known HP sources on character setup and
-    -- watch each. ANY decrement is a hit event, dedup'd per-char (50ms cooldown so
-    -- one damage tick that ripples through multiple sources fires ONE sound).
-    -- SR.recentDamage[char] = last-drop timestamp. Used by the LMB press-edge
-    -- handler to see if the target took damage in the last BeforeClick ms:
-    -- bypasses the "you clicked but Koffee's input registered late" delay.
+    -- v0.0.93 MULTI-SOURCE HP WATCHER + damage-time buffer for pre-click attribution. Some games don't use standard Humanoid.Health for their real HP system: they store it in a NumberValue child ("Health"/"HP"), a character/humanoid attribute, or both. We scan for all known HP sources on character setup and watch each. ANY decrement is a hit event, dedup'd per-char (50ms cooldown so one damage tick that ripples through multiple sources fires ONE sound). SR.recentDamage[char] = last-drop timestamp. Used by the LMB press-edge handler to see if the target took damage in the last BeforeClick ms: bypasses the "you clicked but Koffee's input registered late" delay.
     SR.recentDamage = {}
     local plrHP = {}
     local HP_NUMBERVALUE_NAMES = { "Health", "HP", "Hp", "hp", "CurrentHealth", "health" }
@@ -15324,11 +14243,7 @@ local Combat = {
     end)
     RunService.Heartbeat:Connect(updateMouseTarget)
 
-    -- silent aim: keep the redirect target FRESH every frame while active. v0.0.35:
-    -- the RequireLMB check is NO LONGER here: silentPos is computed continuously
-    -- (whenever enabled + armed-by-key + a target is acquirable) so it's already
-    -- set the instant a weapon reads mouse.Hit. The LMB gate is applied at redirect
-    -- time inside the hook (isArmed), which kills the one-frame "RequireLMB misses".
+    -- silent aim: keep the redirect target FRESH every frame while active. v0.0.35: the RequireLMB check is NO LONGER here: silentPos is computed continuously (whenever enabled + armed-by-key + a target is acquirable) so it's already set the instant a weapon reads mouse.Hit. The LMB gate is applied at redirect time inside the hook (isArmed), which kills the one-frame "RequireLMB misses".
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         -- v0.0.36: authoritative LMB backfill: if InputBegan's edge was ever missed
@@ -15356,11 +14271,7 @@ local Combat = {
         end
         local maxR = Combat.Silent.FOV.Enabled and Combat.Silent.FOV.Size or math.huge
         local plr, part
-        -- v0.3.7: Silent Sticky (parity with aimbot). Hold the locked player
-        -- across FOV/off-screen/occlusion misses; only drop when they die,
-        -- respawn, or leave Distance. Fixes the External-method flake where
-        -- brief picker nils blanked silentPos and the 30Hz /config push sent
-        -- has_target=false, disarming the helper mid-fire.
+        -- v0.3.7: Silent Sticky (parity with aimbot). Hold the locked player across FOV/off-screen/occlusion misses; only drop when they die, respawn, or leave Distance. Fixes the External-method flake where brief picker nils blanked silentPos and the 30Hz /config push sent has_target=false, disarming the helper mid-fire.
         if Combat.Silent.Sticky and Combat.Silent._target then
             local t = Combat.Silent._target
             local char = t.Character
@@ -15385,10 +14296,7 @@ local Combat = {
             if Combat.Silent._bloomPlr ~= plr then
                 Combat.Silent._bloomPlr, Combat.Silent._lockAt = plr, os.clock()
             end
-            -- v0.50.0 Hit Chance. A failed roll fires clean this frame: clear
-            -- the redirect with no grace window, so the shot truly misses.
-            -- v0.51.1 Force Miss: same failed roll, but the lock holds and the
-            -- redirect goes wide instead, so every method genuinely misses.
+            -- v0.50.0 Hit Chance. A failed roll fires clean this frame: clear the redirect with no grace window, so the shot truly misses. v0.51.1 Force Miss: same failed roll, but the lock holds and the redirect goes wide instead, so every method genuinely misses.
             local L = Combat.Silent.Legit
             local missed = false
             local hc = L.HitChance or 100
@@ -15417,12 +14325,7 @@ local Combat = {
                     (math.random() * 2 - 1) * sj,
                     (math.random() * 2 - 1) * sj)
             end
-            -- v0.51.0 fake spread: lateral disc around the point, uniform area,
-            -- so bursts walk like real spray instead of stacking one hole.
-            -- v0.79.2: Degrees mode reinterprets the radius as angular error
-            -- (studs = tan(rad) * distance), so far targets spread wide and
-            -- close ones stay tight like real aim. Bloom multiplies the radius
-            -- with lock age (recoil fatigue), ramping to full over 5s.
+            -- v0.51.0 fake spread: lateral disc around the point, uniform area, so bursts walk like real spray instead of stacking one hole. v0.79.2: Degrees mode reinterprets the radius as angular error (studs = tan(rad) * distance), so far targets spread wide and close ones stay tight like real aim. Bloom multiplies the radius with lock age (recoil fatigue), ramping to full over 5s.
             local spread = Combat.Silent.Legit.Spread or 0
             local bloom = Combat.Silent.Legit.Bloom or 0
             if bloom > 0 and spread > 0 then
@@ -15457,11 +14360,7 @@ local Combat = {
                 local sp = cam:WorldToViewportPoint(silentPos)
                 SR.screen = Vector2.new(sp.X, sp.Y)
             end
-            -- v0.0.64/65: cache the character + a SET of every part/attachment whose position
-            -- reads Pos Spoof should fake (all character descendants incl. the equipped tool's
-            -- muzzle parts + attachments: not just HRP, so guns that build their origin from
-            -- the gun/muzzle land too). Built here (namecall-safe) so the hooks only do a table
-            -- lookup, never a namecall.
+            -- v0.0.64/65: cache the character + a SET of every part/attachment whose position reads Pos Spoof should fake (all character descendants incl. the equipped tool's muzzle parts + attachments: not just HRP, so guns that build their origin from the gun/muzzle land too). Built here (namecall-safe) so the hooks only do a table lookup, never a namecall.
             local ch = LocalPlayer.Character
             SR.char = ch
             -- v0.1.6: own root position cached namecall-safe (outbound arg-rewrite origin)
@@ -15490,12 +14389,7 @@ local Combat = {
             end
             Combat.Silent._lastGoodAt = os.clock()
         else
-            -- v0.3.7: grace window. Keep the last known silentPos alive for
-            -- ~150ms across brief picker nils (target one frame off-screen,
-            -- occlusion flicker, respawn race). Without this, the 30Hz push
-            -- to KoffeeHelper sends has_target=false the instant the picker
-            -- burps, and the helper disarms mid-fire. Grace is short so a
-            -- truly-gone target still releases quickly.
+            -- v0.3.7: grace window. Keep the last known silentPos alive for ~150ms across brief picker nils (target one frame off-screen, occlusion flicker, respawn race). Without this, the 30Hz push to KoffeeHelper sends has_target=false the instant the picker burps, and the helper disarms mid-fire. Grace is short so a truly-gone target still releases quickly.
             local age = Combat.Silent._lastGoodAt and (os.clock() - Combat.Silent._lastGoodAt) or math.huge
             if age > 0.15 then
                 silentTarget = nil; silentPos = nil
@@ -15521,10 +14415,7 @@ local Combat = {
             -- on the next Heartbeat: catches sub-frame LMB taps (fast snipers)
             -- where the button's released before another Heartbeat can sample.
             if markMouseTarget then pcall(markMouseTarget) end
-            -- v0.0.93 PRE-CLICK check: if the current mouse target has dropped
-            -- Health in the last BeforeClick ms (bypasses the "your click
-            -- registered after the game's own damage tick" delay), fire the
-            -- sound on THIS press even though the drop already happened.
+            -- v0.0.93 PRE-CLICK check: if the current mouse target has dropped Health in the last BeforeClick ms (bypasses the "your click registered after the game's own damage tick" delay), fire the sound on THIS press even though the drop already happened.
             if sampleMouseEnemy and playSound then
                 local char = sampleMouseEnemy()
                 if char and SR.recentDamage and SR.recentDamage[char] then
@@ -15548,12 +14439,7 @@ local Combat = {
                 pendingActivation.cfg.ActivationKey = nil
                 pendingActivation.refresh(); pendingActivation = nil; return
             end
-            -- v0.27.0: bind mouse buttons even over the koffee UI. The pill is armed
-            -- ("...") so the next press is the intended bind, and the arming click's
-            -- edge already fired. (gpe-gating this read as "can't bind mouse buttons".)
-            -- v0.0.36: accept ANY key + ANY button-like input (mouse 1/2/3 and
-            -- whatever else the runtime surfaces through InputBegan, e.g. XButton1/2
-            -- on executors that deliver them). Only movement/wheel/focus are ignored.
+            -- v0.27.0: bind mouse buttons even over the koffee UI. The pill is armed ("...") so the next press is the intended bind, and the arming click's edge already fired. (gpe-gating this read as "can't bind mouse buttons".) v0.0.36: accept ANY key + ANY button-like input (mouse 1/2/3 and whatever else the runtime surfaces through InputBegan, e.g. XButton1/2 on executors that deliver them). Only movement/wheel/focus are ignored.
             local bind
             if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
                 bind = input.KeyCode
@@ -15588,10 +14474,7 @@ local Combat = {
         end
         syncActPills()
     end)
-    -- v0.0.69: a SECOND click signal off the PlayerMouse. It fires in a different order than
-    -- UserInputService.InputBegan, so on games where the weapon's InputBegan runs before ours
-    -- this may set lmbDown earlier (helps single-shot pistols/snipers where the game processes
-    -- the click first). Not a full fix: true pre-arming needs the external program.
+    -- v0.0.69: a SECOND click signal off the PlayerMouse. It fires in a different order than UserInputService.InputBegan, so on games where the weapon's InputBegan runs before ours this may set lmbDown earlier (helps single-shot pistols/snipers where the game processes the click first). Not a full fix: true pre-arming needs the external program.
     pcall(function()
         local m = LocalPlayer:GetMouse()
         m.Button1Down:Connect(function() lmbDown = true; lmbClickAt = os.clock() end)
@@ -15612,10 +14495,7 @@ local Combat = {
         syncActPills()
     end)
 
-    -- v0.0.37: VIRTUAL XBUTTON DRIVER. Roblox never fires InputBegan for mouse 4/5,
-    -- so binds set to "XButton1"/"XButton2" are driven here off the Koffee Helper's
-    -- polled state instead. Handles rebind capture (the helper sees the press Roblox
-    -- can't) + hold/toggle activation for aim / silent / trigger.
+    -- v0.0.37: VIRTUAL XBUTTON DRIVER. Roblox never fires InputBegan for mouse 4/5, so binds set to "XButton1"/"XButton2" are driven here off the Koffee Helper's polled state instead. Handles rebind capture (the helper sees the press Roblox can't) + hold/toggle activation for aim / silent / trigger.
     local pXB = { false, false }   -- last two locals this frame may hold
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
@@ -15680,23 +14560,7 @@ local Combat = {
                 print("[koffee][trig] DISABLE @ " .. tostring(os.clock()) .. "  stack=" .. tostring(debug.traceback and debug.traceback("", 2) or "?"))
             end
         end)
-    -- v0.3.0 EXTERNAL METHOD BRIDGE. koffee.lua speaks to KoffeeHelper.exe
-    -- (native C++ helper, source at helper/native/) over localhost HTTP.
-    -- Under Silent Aim's "External" method, all Lua-side spoof paths short-
-    -- circuit (see resolveIndex / resolveNamecall heads) and the helper does
-    -- the actual work via a raycast inline hook inside the Roblox process.
-    --
-    -- Wire contract:
-    --   * fixed local port 27374 (mirrored in helper/native/src/main.cpp).
-    --   * dev key from Koffee.md's Round-1 auth section, sent as
-    --     X-Koffee-Key on POST /config + POST /clear.
-    --   * every ~2s while External is the active method AND Silent.Enabled,
-    --     push the current silent config to /config as a keepalive. The
-    --     helper auto-disarms if the keepalive stops arriving (its own 5s
-    --     TTL: see aim/silentaim.cpp kKeepaliveMax).
-    --   * on External -> non-External transition (or Silent disable), POST
-    --     /clear so the helper drops the target immediately instead of
-    --     waiting out its keepalive TTL.
+    -- v0.3.0 EXTERNAL METHOD BRIDGE. koffee.lua speaks to KoffeeHelper.exe (native C++ helper, source at helper/native/) over localhost HTTP. Under Silent Aim's "External" method, all Lua-side spoof paths short- circuit (see resolveIndex / resolveNamecall heads) and the helper does the actual work via a raycast inline hook inside the Roblox process. Wire contract: * fixed local port 27374 (mirrored in helper/native/src/main.cpp). * dev key from Koffee.md's Round-1 auth section, sent as X-Koffee-Key on POST /config + POST /clear. * every ~2s while External is the active method AND Silent.Enabled, push the current silent config to /config as a keepalive. The helper auto-disarms if the keepalive stops arriving (its own 5s TTL: see aim/silentaim.cpp kKeepaliveMax). * on External -> non-External transition (or Silent disable), POST /clear so the helper drops the target immediately instead of waiting out its keepalive TTL.
     Koffee.External = (function()
         local M = {}
         -- v0.22.0: host/port/key moved onto the shared Helper table.
@@ -15727,23 +14591,7 @@ local Combat = {
             return ok == true
         end
 
-        -- Build the JSON body from the current Combat.Silent state. Kept in
-        -- lock-step with helper/native/src/http.cpp `parse_config` so adding
-        -- a field is a one-side change per side.
-        --
-        -- v0.3.4:
-        --   * `target` (nullable {x,y,z}): koffee.lua's own picker output.
-        --     When present the helper uses it verbatim instead of running
-        --     the native picker. Ships the same target the Lua-side hooks
-        --     would rewrite to under the Raycast / Forced-MB methods,
-        --     which is a much smarter pick than the helper's naive
-        --     3D-distance-from-camera fallback.
-        --   * `engaged` (bool): true only when the user is actively
-        --     firing (silent enabled + activation-key gate + require-LMB
-        --     gate). Helper only arms the thunk when this is true, so
-        --     unrelated raycasts (IK, occlusion, footsteps) pass through
-        --     unmodified. Fixes wallbang looking flaky on games that
-        --     raycast heavily outside of shot windows.
+        -- Build the JSON body from the current Combat.Silent state. Kept in lock-step with helper/native/src/http.cpp `parse_config` so adding a field is a one-side change per side. v0.3.4: * `target` (nullable {x,y,z}): koffee.lua's own picker output. When present the helper uses it verbatim instead of running the native picker. Ships the same target the Lua-side hooks would rewrite to under the Raycast / Forced-MB methods, which is a much smarter pick than the helper's naive 3D-distance-from-camera fallback. * `engaged` (bool): true only when the user is actively firing (silent enabled + activation-key gate + require-LMB gate). Helper only arms the thunk when this is true, so unrelated raycasts (IK, occlusion, footsteps) pass through unmodified. Fixes wallbang looking flaky on games that raycast heavily outside of shot windows.
         local function buildConfigBody()
             local s = Combat.Silent
             local HttpService = game:GetService("HttpService")
@@ -15761,13 +14609,7 @@ local Combat = {
                 },
             }
 
-            -- v0.3.6: dropped the RequireLMB gate entirely. External
-            -- method is "always silent aim while target locked" now:
-            -- matches semun's model, avoids the timing race where the
-            -- fire raycast happens before the LMB-down flag has round-
-            -- tripped through /config. RequireLMB only affects the
-            -- Lua-side methods (Raycast / Forced MB / Second-Camera);
-            -- under External the user's RequireLMB setting is ignored.
+            -- v0.3.6: dropped the RequireLMB gate entirely. External method is "always silent aim while target locked" now: matches semun's model, avoids the timing race where the fire raycast happens before the LMB-down flag has round- tripped through /config. RequireLMB only affects the Lua-side methods (Raycast / Forced MB / Second-Camera); under External the user's RequireLMB setting is ignored.
             local keyOk = (not s.ActivationKey) or (silentHeld == true)
             body.silent.engaged = (s.Enabled == true) and keyOk
 
@@ -15791,16 +14633,7 @@ local Combat = {
 
         function M.clear() call("POST", "/clear", "") end
 
-        -- Keepalive + target push loop. Fires while (Silent.Enabled AND
-        -- Method == External). 30Hz tick keeps the target ~1.7 studs fresh
-        -- at sprint speed. Executor request() bypasses HttpService rate
-        -- limits so the throughput is fine. Also probes /health on the
-        -- enable transition + POST /clear on the disable transition.
-        --
-        -- v0.3.6: reverted v0.3.5's Heartbeat-based push + in-flight
-        -- guard: simpler is better while we chase the flake, and the
-        -- LMB gate removal makes stale-target windows less painful
-        -- (always-on aim doesn't need per-frame LMB freshness).
+        -- Keepalive + target push loop. Fires while (Silent.Enabled AND Method == External). 30Hz tick keeps the target ~1.7 studs fresh at sprint speed. Executor request() bypasses HttpService rate limits so the throughput is fine. Also probes /health on the enable transition + POST /clear on the disable transition. v0.3.6: reverted v0.3.5's Heartbeat-based push + in-flight guard: simpler is better while we chase the flake, and the LMB gate removal makes stale-target windows less painful (always-on aim doesn't need per-frame LMB freshness).
         local warned = false
         local wasActive = false
         task.spawn(function()
@@ -15915,10 +14748,7 @@ local Combat = {
             syncFovModule()   -- keep the single "FOV" arraylist marker + x2 detail in sync
         end)
         attachFovSwatches(enRow.row, F)
-        -- right-click the Fill row: Remove Outline / Custom Gradient / Spin / Moving.
-        -- Fill state is preserved across Style switches: Dots just suppresses the
-        -- fill visually (drawFov gates on `not dotsMode`), so flipping back to Smooth
-        -- restores it without a re-toggle.
+        -- right-click the Fill row: Remove Outline / Custom Gradient / Spin / Moving. Fill state is preserved across Style switches: Dots just suppresses the fill visually (drawFov gates on `not dotsMode`), so flipping back to Smooth restores it without a re-toggle.
         local fillRow = configCheckbox(parent, "Filled", F.Filled, function(v) F.Filled = v end)
         rightClickSettings(fillRow.row, "Fill", function(api)
             -- v0.4.0: kill the visual entirely while keeping FOV as a targeting gate.
@@ -16230,12 +15060,7 @@ local Combat = {
                 function(v) Combat.RivalsGun.FireDelay = v end)
             keybindPill(moduleCheckbox(miscCard, "No Spread", "rv_nospread").row, "rv_nospread", nil, "No Spread")
         end
-        -- v0.94.0: RIVALS native combat. Ragebot and backstab own the game's own
-        -- view angle replication instead of writing the camera, so the viewmodel
-        -- can never desync from the lock. Perfect Lock needs no row: the real
-        -- Aimbot Perfect Lock drives the native angle in rivals. Silent aim runs
-        -- the native redirect as Method Native. Desync moved to Character.
-        -- v0.96.0: flickbot, freeze, tracers, sway and hitsound rows removed.
+        -- v0.94.0: RIVALS native combat. Ragebot and backstab own the game's own view angle replication instead of writing the camera, so the viewmodel can never desync from the lock. Perfect Lock needs no row: the real Aimbot Perfect Lock drives the native angle in rivals. Silent aim runs the native redirect as Method Native. Desync moved to Character. v0.96.0: flickbot, freeze, tracers, sway and hitsound rows removed.
         if Koffee._isRivals then
             local RVC = Koffee.Rivals
             dropdown(miscCard, "Lock Part", { "Head", "Torso", "Root" }, RVC.LockPart,
@@ -16288,11 +15113,7 @@ local Combat = {
         slider(miscCard, "Hitbox Size", 1, 30, Combat.Gun.HitboxSize or 10, 0,
             function(v) Combat.Gun.HitboxSize = v end)
 
-        -- v0.0.88 Sounds panel. Hit + Kill each have Enabled, Preset dropdown,
-        -- Custom Sound Id (0 = use preset), Volume, Pitch, Cooldown. Also a
-        -- shared Mouse Radius slider that tunes the mouse-target lock threshold.
-        -- v0.0.89: preset list = filenames from <exec>/Koffee/sounds/*.mp3.
-        -- Loader ships these files (or user copies once). See getcustomasset resolver.
+        -- v0.0.88 Sounds panel. Hit + Kill each have Enabled, Preset dropdown, Custom Sound Id (0 = use preset), Volume, Pitch, Cooldown. Also a shared Mouse Radius slider that tunes the mouse-target lock threshold. v0.0.89: preset list = filenames from <exec>/Koffee/sounds/*.mp3. Loader ships these files (or user copies once). See getcustomasset resolver.
         local SND_PRESETS_LIST = SND_PRESETS   -- v0.10.0: single source, see above
         -- v0.94.0: the rivals rows make Misc long, so Sounds moves to the right
         -- column in that game instead of stacking under it. v0.95.0: the bottom
@@ -16324,21 +15145,12 @@ local Combat = {
         slider(soundCard, "Attr Window (s)", 0.5, 5, Combat.HitSounds.AttrWindow, 2, function(v) Combat.HitSounds.AttrWindow = v end)
         slider(soundCard, "Before Click (ms)", 1, 500, Combat.HitSounds.BeforeClick, 0, function(v) Combat.HitSounds.BeforeClick = math.floor(v) end)
 
-        -- v0.7.0 hit / kill VISUAL effects. Same attribution as the sounds.
-        -- Both rows sit inside the Sounds card (kept together in the UI even
-        -- though they draw pixels, not audio). Right-click each for the deep
-        -- knobs (color, scale, duration, attach part).
-        -- v0.9.0: 3D presets (was four flavours of the same expanding circle).
-        -- v0.10.0: textured art + four more. Old configs naming Ring / Flash fall
-        -- through to Impact.
+        -- v0.7.0 hit / kill VISUAL effects. Same attribution as the sounds. Both rows sit inside the Sounds card (kept together in the UI even though they draw pixels, not audio). Right-click each for the deep knobs (color, scale, duration, attach part). v0.9.0: 3D presets (was four flavours of the same expanding circle). v0.10.0: textured art + four more. Old configs naming Ring / Flash fall through to Impact.
         local HFX_PRESETS = { "Impact", "Sparks", "Blood", "Shockwave", "Nova", "Ember",
             "Snowburst", "Confetti", "Glass", "Starfall",
             "Rune", "Crystal", "Hearts", "Soul", "Shatter", "Lightning", "Pillar", "Coil", "Shapes" }   -- v0.85.0 layered
         local HFX_ATTACH  = { "Head", "HRP", "Torso" }
-        -- v0.7.1 fix: attachSingleSwatch is a chunk-local declared BELOW the
-        -- Combat IIFE (line ~10272) so the upvalue captured here is nil at
-        -- addTab call time. Combat IIFE ships its own equivalent `attachSwatch`
-        -- local (line ~9572) with the same colorSwatch-in-a-wrap shape.
+        -- v0.7.1 fix: attachSingleSwatch is a chunk-local declared BELOW the Combat IIFE (line ~10272) so the upvalue captured here is nil at addTab call time. Combat IIFE ships its own equivalent `attachSwatch` local (line ~9572) with the same colorSwatch-in-a-wrap shape.
         local heHitRow = configCheckbox(soundCard, "Hit Effect", Combat.HitEffects.Hit.Enabled,
             function(v) Combat.HitEffects.Hit.Enabled = v end)
         attachSwatch(heHitRow.row, Combat.HitEffects.Hit.Color,
@@ -16397,10 +15209,7 @@ local Combat = {
         -- rewrite), Forced Camera (shifts the camera read = everything), Second-Camera
         -- (shifts the outbound ray origin = write scripts only).
         configCheckbox(R["Silent Aim"], "Wallbang", Combat.Silent.Wallbang, function(v) Combat.Silent.Wallbang = v end)
-        -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on):
-        -- spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper
-        -- are never touched. Spoof Scope is the caller-identification strategy (both
-        -- exclude the PlayerModule camera); Caller-Class is the plain fallback.
+        -- v0.0.45: Forced Magic-Bullet is universal by default (fire-read always on): spoofs mouse.Hit + Camera.CFrame + camera-rays, scoped so the real view/Popper are never touched. Spoof Scope is the caller-identification strategy (both exclude the PlayerModule camera); Caller-Class is the plain fallback.
         dropdown(R["Silent Aim"], "Spoof Scope", { "Auto (Learn)", "Caller-Class" }, Combat.Silent.SpoofScope, function(v) Combat.Silent.SpoofScope = v end)
         silentSnapCtrl = configCheckbox(R["Silent Aim"], "Snaplines", Combat.Silent.Snaplines, function(v)
             Combat.Silent.Snaplines = v
@@ -16462,10 +15271,7 @@ local Combat = {
         slider(trigCard, "Reaction (ms)", 0, 500, Combat.Trigger.Reaction, 0, function(v) Combat.Trigger.Reaction = v end)
         slider(trigCard, "Reaction Spread (ms)", 0, 500, Combat.Trigger.Spread, 0, function(v) Combat.Trigger.Spread = v end)
         slider(trigCard, "Hit Chance (%)", 1, 100, Combat.Trigger.HitChance, 0, function(v) Combat.Trigger.HitChance = v end)
-        -- v0.95.0: Sounds is built before the right column exists, so in rivals
-        -- it was parented first and sat on top. Re-parenting moves it to the end.
-        -- v0.96.0: same-parent re-parenting never reordered, so the card also
-        -- takes an explicit LayoutOrder. Two guards, one mechanism each.
+        -- v0.95.0: Sounds is built before the right column exists, so in rivals it was parented first and sat on top. Re-parenting moves it to the end. v0.96.0: same-parent re-parenting never reordered, so the card also takes an explicit LayoutOrder. Two guards, one mechanism each.
         if Koffee._isRivals then
             soundCard.LayoutOrder = 50
             soundCard.Parent = rightCol
@@ -16540,11 +15346,7 @@ end)();
     end)
 end)();
 
--- v0.77.0 GUN CATALOG (universal): name-matched weapon stat enforcement.
--- Covers both Arsenal-style tuning folders (ReplicatedStorage, 12s cached
--- scan) and tool-held values (character + backpack sweep, ChildAdded for
--- respawns and mid-fight pickups). Originals snapshot per value, restore on
--- toggle-off. Instant Equip also forces ready-state flags both ways.
+-- v0.77.0 GUN CATALOG (universal): name-matched weapon stat enforcement. Covers both Arsenal-style tuning folders (ReplicatedStorage, 12s cached scan) and tool-held values (character + backpack sweep, ChildAdded for respawns and mid-fight pickups). Originals snapshot per value, restore on toggle-off. Instant Equip also forces ready-state flags both ways.
 (function()
     local G = Shared.Combat.Gun
     local RS = game:GetService("ReplicatedStorage")
@@ -16621,12 +15423,7 @@ end)();
             if d:IsA("NumberValue") or d:IsA("BoolValue") then route(d) end
         end
     end
-    -- v0.81.0 GC TABLE HUNTER: tuning that lives in Lua tables (required
-    -- config modules, upvalue tables) instead of Values. getgc scans for
-    -- tables holding 2+ catalog keys, then pins the fields in place. rawget
-    -- reads never invent keys; restores run per-key on toggle-off and as a
-    -- full flush when everything disarms. Case-insensitive: module keys are
-    -- usually PascalCase, Value names are not.
+    -- v0.81.0 GC TABLE HUNTER: tuning that lives in Lua tables (required config modules, upvalue tables) instead of Values. getgc scans for tables holding 2+ catalog keys, then pins the fields in place. rawget reads never invent keys; restores run per-key on toggle-off and as a full flush when everything disarms. Case-insensitive: module keys are usually PascalCase, Value names are not.
     local TNUM, TAUTO = {}, {}
     for mod, set in pairs(NUM) do
         for nm in pairs(set) do TNUM[string.lower(nm)] = mod end
@@ -16710,10 +15507,7 @@ end)();
             end
         end
     end
-    -- v0.82.0 FULL RESULTS: Mods-tab picker over the whole game.
-    -- v0.82.3: NO name filter. The catalog is for the auto-engine; the picker
-    -- lists every parent holding tunables (any Number/Int/Bool Value, or any
-    -- attributes on a Model/Tool/Folder), sorted by count. Capped, cached.
+    -- v0.82.0 FULL RESULTS: Mods-tab picker over the whole game. v0.82.3: NO name filter. The catalog is for the auto-engine; the picker lists every parent holding tunables (any Number/Int/Bool Value, or any attributes on a Model/Tool/Folder), sorted by count. Capped, cached.
     Shared.GunMods = Shared.GunMods or {}
     do
         local gsCache, gsAt = nil, 0
@@ -16762,10 +15556,7 @@ end)();
             return out
         end
     end
-    -- v0.81.2 AUTO RE-EQUIP: games that read tuning once at equip run on
-    -- stale cache after we pin. On every armed-signature change, cycle the
-    -- equipped tool backpack->character over two heartbeats so the game
-    -- re-reads the forced values. No user re-equip needed.
+    -- v0.81.2 AUTO RE-EQUIP: games that read tuning once at equip run on stale cache after we pin. On every armed-signature change, cycle the equipped tool backpack->character over two heartbeats so the game re-reads the forced values. No user re-equip needed.
     local prevSig, reeq, reeqPhase, reeqCool = "", nil, 0, 0
     local function sig()
         return (G.RapidFire and "R" or "") .. (G.FastReload and "F" or "")
@@ -17180,11 +15971,7 @@ end)();
     end)
 end)();
 
--- v0.77.0 HITBOX EXPANDER (universal): grows enemy hit parts to HitboxSize
--- studs, invisible and non-colliding, for client-hitreg games. Team-gated
--- through aimAllowed (lock-gated too), dead-gated on Humanoid. 4Hz passes
--- with cached refs, never a per-frame FindFirstChild sweep. Tradeoff: grown
--- heads read headless on your screen while it runs. Restores on off/respawn.
+-- v0.77.0 HITBOX EXPANDER (universal): grows enemy hit parts to HitboxSize studs, invisible and non-colliding, for client-hitreg games. Team-gated through aimAllowed (lock-gated too), dead-gated on Humanoid. 4Hz passes with cached refs, never a per-frame FindFirstChild sweep. Tradeoff: grown heads read headless on your screen while it runs. Restores on off/respawn.
 (function()
     local G = Shared.Combat.Gun
     local Players = game:GetService("Players")
@@ -17304,14 +16091,7 @@ local function attachSingleSwatch(row, initialColor, onChange)
     return colorSwatch(wrap, initialColor, 14, { onChange = onChange })
 end
 
--- v0.5.0: CROSSHAIR + HIT NUMBERS render layer. Container Frame parents both
--- surfaces; lives directly under `screen` at ZIndex 14 (above ESP/dim but well
--- below the Koffee window at ZIndex 30+). Everything is GUI-based so kernel-
--- driver runtimes render it under our own UI, unlike Drawing.new.
--- v0.5.1: WRAPPED IN IIFE (was a do-block). Luau's 200-local ceiling is
--- per FUNCTION; a do-block shares the chunk's register pool and this block
--- pushed the chunk over the limit at STYLE_ARMS. IIFE = own budget, same
--- trick Combat uses. Nothing inside changed.
+-- v0.5.0: CROSSHAIR + HIT NUMBERS render layer. Container Frame parents both surfaces; lives directly under `screen` at ZIndex 14 (above ESP/dim but well below the Koffee window at ZIndex 30+). Everything is GUI-based so kernel- driver runtimes render it under our own UI, unlike Drawing.new. v0.5.1: WRAPPED IN IIFE (was a do-block). Luau's 200-local ceiling is per FUNCTION; a do-block shares the chunk's register pool and this block pushed the chunk over the limit at STYLE_ARMS. IIFE = own budget, same trick Combat uses. Nothing inside changed.
 ;(function()
     -- Workspace / RunService already at chunk scope (see line ~923); reusing them
     -- here saves two of the IIFE's local registers.
@@ -17323,11 +16103,7 @@ end
         Parent = screen,
     })
 
-    -- :: crosshair ::
-    -- v0.11.2 DOUBLE CROSSHAIRS. Everything below is built per-INSTANCE now. With
-    -- Double off there is one crosshair (config table `Crosshair`, "A"); with it on
-    -- A follows the aimbot's FOV rules and a second crosshair `Crosshair.S` follows
-    -- Silent Aim's. Same renderer, two frame sets, two config tables.
+    -- :: crosshair :: v0.11.2 DOUBLE CROSSHAIRS. Everything below is built per-INSTANCE now. With Double off there is one crosshair (config table `Crosshair`, "A"); with it on A follows the aimbot's FOV rules and a second crosshair `Crosshair.S` follows Silent Aim's. Same renderer, two frame sets, two config tables.
     local ARM_SEG_MAX = 96
     local ARMS = 6            -- most any style needs (the hexagram's six edges)
 
@@ -17340,14 +16116,7 @@ end
         }, { new("UICorner", { CornerRadius = UDim.new(0, 0) }) })
     end
 
-    -- Build one complete crosshair. The CanvasGroup wrap lets Opacity drive the whole
-    -- thing at once; KGrad piggybacks the shared ESP gradient master.
-    --
-    -- v0.9.0 OUTLINE MODEL, unchanged: v0.8 put a Border UIStroke on every segment,
-    -- and a stroke traces all FOUR sides of its box, so an arm came out looking like
-    -- a ladder. The outline is its own geometry: a second segment chain, each piece
-    -- othick wider/longer than its fill twin, under a lower-ZIndex root. Two ROOTS
-    -- rather than per-arm layers because Sibling ZIndex breaks ties by ancestry.
+    -- Build one complete crosshair. The CanvasGroup wrap lets Opacity drive the whole thing at once; KGrad piggybacks the shared ESP gradient master. v0.9.0 OUTLINE MODEL, unchanged: v0.8 put a Border UIStroke on every segment, and a stroke traces all FOUR sides of its box, so an arm came out looking like a ladder. The outline is its own geometry: a second segment chain, each piece othick wider/longer than its fill twin, under a lower-ZIndex root. Two ROOTS rather than per-arm layers because Sibling ZIndex breaks ties by ancestry.
     local function mkXH(name)
         local canvas = new("CanvasGroup", {
             Name = "XHair" .. name, AnchorPoint = Vector2.new(0.5, 0.5),
@@ -17402,10 +16171,7 @@ end
         end
     end
 
-    -- v0.9.0: segment count follows the geometry instead of sitting at 14. Straight
-    -- arms get ONE segment. Curved arms: neighbouring segments sit sweep/n apart, so
-    -- on the outside of a bend they gap by ~(thickness/2)*(sweep/n): which is why
-    -- more Thickness meant less smooth. Budget that notch at ~0.5px and solve for n.
+    -- v0.9.0: segment count follows the geometry instead of sitting at 14. Straight arms get ONE segment. Curved arms: neighbouring segments sit sweep/n apart, so on the outside of a bend they gap by ~(thickness/2)*(sweep/n): which is why more Thickness meant less smooth. Budget that notch at ~0.5px and solve for n.
     local function segmentsFor(thickness, curvierDeg)
         local sweep = math.rad(math.abs(curvierDeg or 0))
         if sweep <= 0 then return 1 end
@@ -17423,11 +16189,7 @@ end
         return a:Lerp(b, math.clamp(f, 0, 1))
     end
 
-    -- v0.11.2: paint one arm from an EXPLICIT start point and heading, rather than
-    -- always radiating from the centre. That is what lets a style be an arbitrary set
-    -- of line segments: the hexagram is six chords between ring vertices, not six
-    -- spokes. P carries the style params so the signature stays readable.
-    -- curveDeg goes on the segment's rotation, never the walk heading.
+    -- v0.11.2: paint one arm from an EXPLICIT start point and heading, rather than always radiating from the centre. That is what lets a style be an arbitrary set of line segments: the hexagram is six chords between ring vertices, not six spokes. P carries the style params so the signature stays readable. curveDeg goes on the segment's rotation, never the walk heading.
     local function paintArm(a, x0, y0, theta0, length, dist0, P)
         growArm(a, P.segN)
         local segLen = length / P.segN
@@ -17490,12 +16252,7 @@ end
         end
     end
 
-    -- v0.11.2 STYLE TABLE.
-    --   spokes: degrees, measured CW from up; each is an arm radiating outward.
-    --   chords: {from, to} vertex angles on a ring of radius Gap+Length; the arm
-    --               runs BETWEEN them. Used for closed shapes.
-    --   gap0: force Gap to 0 (Plus).
-    --   dot / outer / outerRot: the non-arm pieces.
+    -- v0.11.2 STYLE TABLE. spokes: degrees, measured CW from up; each is an arm radiating outward. chords: {from, to} vertex angles on a ring of radius Gap+Length; the arm runs BETWEEN them. Used for closed shapes. gap0: force Gap to 0 (Plus). dot / outer / outerRot: the non-arm pieces.
     local STYLES = {
         Cross       = { spokes = { 0, 90, 180, 270 } },
         Plus        = { spokes = { 0, 90, 180, 270 }, gap0 = true },
@@ -17517,10 +16274,7 @@ end
     Shared._xhStyles = { "Cross", "Plus", "T-Cross", "X", "Chevron", "Arrow",
                          "Triangle", "Diamond", "Star", "Dot", "Circle", "Square" }
 
-    -- v0.9.0: Follow Target used to read Combat.Aim._target only, which exists solely
-    -- while the aimbot is enabled AND held: so it did nothing for anyone not running
-    -- one. Own search now, gated by `which`'s FOV rules. Throttled to 20Hz: it walks
-    -- every player and raycasts, and the lerp smooths between picks anyway.
+    -- v0.9.0: Follow Target used to read Combat.Aim._target only, which exists solely while the aimbot is enabled AND held: so it did nothing for anyone not running one. Own search now, gated by `which`'s FOV rules. Throttled to 20Hz: it walks every player and raycasts, and the lerp smooths between picks anyway.
     local function followPart(cfg, which)
         local partName = cfg.Follow.Part or "HumanoidRootPart"
         local function partOf(plr)
@@ -17755,10 +16509,7 @@ end
 
     local XA, XS = mkXH("A"), mkXH("S")
 
-    -- v0.11.2 SYNC. The buttons set Crosshair._sync; consumed here so the copy lands
-    -- between frames rather than mid-render. Matches TOTAL angle (static Rotation +
-    -- live spin), because two crosshairs at different Rotation offsets are not "in
-    -- the same rotation" even when their spin accumulators agree.
+    -- v0.11.2 SYNC. The buttons set Crosshair._sync; consumed here so the copy lands between frames rather than mid-render. Matches TOTAL angle (static Rotation + live spin), because two crosshairs at different Rotation offsets are not "in the same rotation" even when their spin accumulators agree.
     local function drawCrosshair(dt)
         local sync = Crosshair._sync
         if sync then
@@ -17834,10 +16585,7 @@ end
             e.total  = 0
             e.startAt = now
             e.y0     = 0
-            -- v0.10.1: RESET isKill. Labels come from a pool and nothing cleared
-            -- this on reuse, so the first kill of the round permanently poisoned
-            -- that slot: every later hit it was recycled for rendered "KILL" on a
-            -- target standing there at full health.
+            -- v0.10.1: RESET isKill. Labels come from a pool and nothing cleared this on reuse, so the first kill of the round permanently poisoned that slot: every later hit it was recycled for rendered "KILL" on a target standing there at full health.
             e.isKill = false
             e.crit = nil
             e._alive = true
@@ -17871,10 +16619,7 @@ end
                 and hitCfg.CritColor
                 or hitCfg.Color)
         e.lbl.TextColor3 = col
-        -- v0.9.0: per-feature font. Resolved OFF this thread: loadFeiFont can
-        -- download and this runs inside the damage handler, which must never block.
-        -- Falls back to Bold for the frame or two before the face lands (usually
-        -- zero, since the preloader already cached every catalog font).
+        -- v0.9.0: per-feature font. Resolved OFF this thread: loadFeiFont can download and this runs inside the damage handler, which must never block. Falls back to Bold for the frame or two before the face lands (usually zero, since the preloader already cached every catalog font).
         local fname = hitCfg.Font or "None"
         if mc and fname == "None" then fname = "Minecraft Regular" end
         if fname ~= hitNumFontName then
@@ -18254,10 +16999,7 @@ end)() end
         return { dim = dim, box = box, close = close }
     end
 
-    -- :: instance picker ::
-    -- Modal explorer. Roots list = common containers people target. Lazy
-    -- expansion; filtered to physical instances + containers with physical
-    -- descendants. Color-coded 8px square icon next to each row.
+    -- :: instance picker :: Modal explorer. Roots list = common containers people target. Lazy expansion; filtered to physical instances + containers with physical descendants. Color-coded 8px square icon next to each row.
     local function openInstancePicker(onSelect, opts)
         opts = opts or {}
         -- v0.31.0: anyInstance mode shows and lets you pick NON-physical instances
@@ -18323,14 +17065,7 @@ end)() end
             row.BackgroundColor3 = Theme.Palette.Accent
         end
 
-        -- v0.9.0 TREE RESTRUCTURE. Each entry is now a WRAPPER holding its own row
-        -- plus its own children container, instead of the row and the children being
-        -- flat siblings ordered by LayoutOrder. The old shape was the "expanding a
-        -- folder drops its contents at the bottom of the list" bug: no row was ever
-        -- assigned a LayoutOrder, so every sibling sat at 0 while the child container
-        -- was created at 0 + 1: which sorted it after every row in the list rather
-        -- than under its own parent. Nesting makes the ordering structural: children
-        -- physically live inside the parent entry, so they cannot land anywhere else.
+        -- v0.9.0 TREE RESTRUCTURE. Each entry is now a WRAPPER holding its own row plus its own children container, instead of the row and the children being flat siblings ordered by LayoutOrder. The old shape was the "expanding a folder drops its contents at the bottom of the list" bug: no row was ever assigned a LayoutOrder, so every sibling sat at 0 while the child container was created at 0 + 1: which sorted it after every row in the list rather than under its own parent. Nesting makes the ordering structural: children physically live inside the parent entry, so they cannot land anywhere else.
         buildRow = function(inst, depth, parentContainer)
             -- v0.31.0: in anyInstance mode any node with children can expand (remotes
             -- often nest under plain non-Folder containers).
@@ -18497,11 +17232,7 @@ end)() end
             return true
         end
 
-        -- footer buttons
-        -- v0.9.0 CLICK PART. Hides the whole suite, raycasts through the cursor so
-        -- you can point at the thing in-game, then restores and reveals whatever you
-        -- clicked in this same tree. A raycast (not Mouse.Target) because the click
-        -- sink below is a GUI element, and Mouse.Target goes nil under GUI.
+        -- footer buttons v0.9.0 CLICK PART. Hides the whole suite, raycasts through the cursor so you can point at the thing in-game, then restores and reveals whatever you clicked in this same tree. A raycast (not Mouse.Target) because the click sink below is a GUI element, and Mouse.Target goes nil under GUI.
         local clickPart = new("TextButton", {
             Text = "Click Part", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
             AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
@@ -18515,10 +17246,7 @@ end)() end
             if not cam then return end
             screen.Enabled = false
             popupScreen.Enabled = false
-            -- v0.10.0: hiding the ScreenGuis doesn't touch the BlurEffect or the
-            -- dim: they live on the camera and on `screen` respectively, driven by
-            -- the window-open state. Picking a part through a blurred, dimmed world
-            -- is useless, so drop the whole background treatment for the duration.
+            -- v0.10.0: hiding the ScreenGuis doesn't touch the BlurEffect or the dim: they live on the camera and on `screen` respectively, driven by the window-open state. Picking a part through a blurred, dimmed world is useless, so drop the whole background treatment for the duration.
             setBackgroundActive(false)
             local hud = KID.track(new("ScreenGui", {
                 Name = KID.name("worldpick"), ResetOnSpawn = false, IgnoreGuiInset = true,
@@ -18526,11 +17254,7 @@ end)() end
                 DisplayOrder = popupScreen.DisplayOrder + 1, Parent = guiParent(),
             }))
             protectGuiSafe(hud)
-            -- v0.10.0: NO full-screen sink button. A GuiButton covering the screen
-            -- swallows right-click too, which kills the camera drag: you could not
-            -- turn around to find the thing you wanted to click. ContextActionService
-            -- sinks MouseButton1 ONLY, at high priority, so the selecting click never
-            -- reaches the game while RMB camera control stays completely untouched.
+            -- v0.10.0: NO full-screen sink button. A GuiButton covering the screen swallows right-click too, which kills the camera drag: you could not turn around to find the thing you wanted to click. ContextActionService sinks MouseButton1 ONLY, at high priority, so the selecting click never reaches the game while RMB camera control stays completely untouched.
             local hint = new("TextLabel", {
                 Text = "Left click to select. Right click drag to look. Esc to cancel.",
                 FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
@@ -18569,11 +17293,7 @@ end)() end
                 if c:IsA("BasePart") then table.insert(baseIgnore, c) end
             end
             rp.FilterDescendantsInstances = baseIgnore
-            -- v0.12.2: your own character is pickable now. Excluding it wholesale
-            -- also excluded any equipped Tool (tools parent under the character), so
-            -- your own weapon could never be selected. First person still sits the
-            -- camera inside your head, so only YOUR parts hugging the lens are
-            -- skipped and the ray carries on past them.
+            -- v0.12.2: your own character is pickable now. Excluding it wholesale also excluded any equipped Tool (tools parent under the character), so your own weapon could never be selected. First person still sits the camera inside your head, so only YOUR parts hugging the lens are skipped and the ray carries on past them.
             local function pickRay(origin, dir)
                 rp.FilterDescendantsInstances = baseIgnore
                 local myChar = LocalPlayer.Character
@@ -18595,11 +17315,7 @@ end)() end
                 local ray = cam:ViewportPointToRay(mp.X, mp.Y)
                 local hit = pickRay(ray.Origin, ray.Direction * 5000)
                 hover = hit and hit.Instance or nil
-                -- v0.12.3: no modifier. Tool handles and viewmodel parts are routinely
-                -- CanQuery=false, so no raycast can ever reach them. Your own parts get
-                -- a screen-space pass instead, and win only when they're both near the
-                -- cursor AND in front of whatever the ray found: so pointing past
-                -- yourself at the world still resolves to the world.
+                -- v0.12.3: no modifier. Tool handles and viewmodel parts are routinely CanQuery=false, so no raycast can ever reach them. Your own parts get a screen-space pass instead, and win only when they're both near the cursor AND in front of whatever the ray found: so pointing past yourself at the world still resolves to the world.
                 local myChar = LocalPlayer.Character
                 if myChar and not (hover and hover:IsDescendantOf(myChar)) then
                     local best, bestD = nil, 34
@@ -18672,10 +17388,7 @@ end)() end
     Shared.openModal = openModal
     Shared.openInstancePicker = openInstancePicker
 
-    -- :: text popup ::
-    -- Compact TextBox modal (used by rename + anti-animation asset input).
-    -- v0.21.2: `tall` makes it a multi-line box big enough to paste a whole graph
-    -- into, for executors with no clipboard API.
+    -- :: text popup :: Compact TextBox modal (used by rename + anti-animation asset input). v0.21.2: `tall` makes it a multi-line box big enough to paste a whole graph into, for executors with no clipboard API.
     local function openTextPopup(title, initial, placeholder, onSubmit, tall)
         local m = openModal(tall and 520 or 340, tall and 340 or 156)
         new("TextLabel", {
@@ -18789,10 +17502,7 @@ end)() end
             local ok, m = pcall(function() return Enum.Material[st.Material] end)
             matEnum = (ok and m) or nil
         end
-        -- v0.10.0: TOOLS drive Grip, not part CFrames. Anchoring a welded Handle
-        -- pins it in world space and you walk away from your own weapon; Grip is the
-        -- CFrame that actually positions a tool in the hand, so offsetting it moves
-        -- the weapon with you and reverts cleanly. Material still applies per-part.
+        -- v0.10.0: TOOLS drive Grip, not part CFrames. Anchoring a welded Handle pins it in world space and you walk away from your own weapon; Grip is the CFrame that actually positions a tool in the hand, so offsetting it moves the weapon with you and reverts cleanly. Material still applies per-part.
         if rule._target:IsA("Tool") then
             rule._gripSnap = rule._gripSnap or rule._target.Grip
             rule._target.Grip = rule._gripSnap * offCF
@@ -18824,10 +17534,7 @@ end)() end
         rule._snap = nil
     end
 
-    -- :: AntiAnimation apply ::
-    -- One-shot LocalPlayer.Character hook that watches all AnimationTracks and
-    -- stops any whose Animation.AnimationId matches a blocked id from any active
-    -- AntiAnimation rule. Handles respawn.
+    -- :: AntiAnimation apply :: One-shot LocalPlayer.Character hook that watches all AnimationTracks and stops any whose Animation.AnimationId matches a blocked id from any active AntiAnimation rule. Handles respawn.
     local antiState = { hooked = false, conns = {} }
     local function blockedIds()
         local ids = {}
@@ -18933,11 +17640,7 @@ end)() end
         end
     end
 
-    -- :: Object Offset settings popup ::
-    -- Reused for BOTH "creating a new rule" (rule is a temp table) AND future
-    -- "editing an existing rule". Live preview: temp rule is added to
-    -- WorldRules.List while the popup is open so the render loop drives it;
-    -- Cancel removes it, Submit keeps it.
+    -- :: Object Offset settings popup :: Reused for BOTH "creating a new rule" (rule is a temp table) AND future "editing an existing rule". Live preview: temp rule is added to WorldRules.List while the popup is open so the render loop drives it; Cancel removes it, Submit keeps it.
     local function openObjectOffsetPopup(targetInst, targetPath, existingRule)
         local m = openModal(360, 480)
         local temp = existingRule or {
@@ -19032,11 +17735,7 @@ end)() end
         })
         local pick = nil
         local buttons = {}
-        -- v0.9.0: these were ONE unwrapped single-line label: "Object Offset:
-        -- material + position + rotation + spin on a target instance." on a 328px
-        -- button with TextWrapped off and nothing clipping it, so the description ran
-        -- straight out past the edge of the popup. Split into a title line and a
-        -- wrapped description, with the button tall enough to hold both.
+        -- v0.9.0: these were ONE unwrapped single-line label: "Object Offset: material + position + rotation + spin on a target instance." on a 328px button with TextWrapped off and nothing clipping it, so the description ran straight out past the edge of the popup. Split into a title line and a wrapped description, with the button tall enough to hold both.
         for i, rt in ipairs(RULE_TYPES) do
             local b = new("TextButton", {
                 Text = "", AutoButtonColor = false,
@@ -19108,11 +17807,7 @@ end)() end
     end
     Shared.openRuleTypePicker = openRuleTypePicker
 
-    -- :: rehydrate rules on config load ::
-    -- Configs restore WorldRules.List with just plain data (targetPath strings,
-    -- settings). Underscore fields (_target, _snap, _spinAcc) start nil and
-    -- resolve/get populated on the first render tick. AntiAnim engine kicks in
-    -- automatically once startAntiAnimEngine sees an active rule.
+    -- :: rehydrate rules on config load :: Configs restore WorldRules.List with just plain data (targetPath strings, settings). Underscore fields (_target, _snap, _spinAcc) start nil and resolve/get populated on the first render tick. AntiAnim engine kicks in automatically once startAntiAnimEngine sees an active rule.
     task.spawn(function()
         task.wait(0.5)
         for _, r in ipairs(WorldRules.List) do
@@ -19128,18 +17823,7 @@ end)()
     -- v0.9.0: the full-screen `layer` Frame this IIFE used to own is gone: nothing
     -- in here draws into the GUI any more.
 
-    -- :: 3D weather ::
-    -- v0.9.0 REBUILD. v0.7 drew snow and rain as flat Frames in this ScreenGui:
-    -- confetti pasted over the picture: no depth, no parallax, drawn through walls,
-    -- and a few hundred Frames was already the ceiling. Weather is world-space
-    -- ParticleEmitters now: they depth-sort against geometry, shrink with distance,
-    -- and batch, so density went up ~10x for less cost.
-    --
-    -- Hosts are invisible anchored Parts parented to CurrentCamera, NOT Workspace:
-    -- camera children render normally, never replicate, and sit outside the tree
-    -- passive ACs walk (same reasoning as the v0.3.8 BlurEffect move). An emitter on
-    -- a BasePart emits from anywhere in its volume, so a slab held above the camera
-    -- IS the spawn box.
+    -- :: 3D weather :: v0.9.0 REBUILD. v0.7 drew snow and rain as flat Frames in this ScreenGui: confetti pasted over the picture: no depth, no parallax, drawn through walls, and a few hundred Frames was already the ceiling. Weather is world-space ParticleEmitters now: they depth-sort against geometry, shrink with distance, and batch, so density went up ~10x for less cost. Hosts are invisible anchored Parts parented to CurrentCamera, NOT Workspace: camera children render normally, never replicate, and sit outside the tree passive ACs walk (same reasoning as the v0.3.8 BlurEffect move). An emitter on a BasePart emits from anywhere in its volume, so a slab held above the camera IS the spawn box.
     local hosts, emitters, sigs = {}, {}, {}
     local function hostFor(key, size)
         local cam = Workspace.CurrentCamera
@@ -19209,10 +17893,7 @@ end)()
         NumberSequenceKeypoint.new(1, 1),
     })
 
-    -- v0.10.0: particle art shipped by the loader (Koffee/fx/*.png). Untextured
-    -- emitters draw hard white squares, which is most of why v0.9's effects read as
-    -- cheap. getcustomasset hands out per-session ids, so resolve once and cache;
-    -- "" falls back to the engine default on executors with no file API.
+    -- v0.10.0: particle art shipped by the loader (Koffee/fx/*.png). Untextured emitters draw hard white squares, which is most of why v0.9's effects read as cheap. getcustomasset hands out per-session ids, so resolve once and cache; "" falls back to the engine default on executors with no file API.
     local texCache = {}
     local function tex(name)
         if texCache[name] ~= nil then return texCache[name] end
@@ -19225,19 +17906,7 @@ end)()
         return id
     end
 
-    -- v0.10.0: weather LANDS. Lifetimes used to be a flat guess, so flakes sank
-    -- through the floor and kept going. One downward ray from the camera gives the
-    -- real drop to the ground; sizing lifetime to it means particles die exactly
-    -- where the floor is. Throttled: it is a single ray, but the answer only
-    -- changes as you move, and excluding `cam` also excludes our own FX host slabs.
-    -- Measured from the CAMERA, not from each effect's slab: all three effects share
-    -- this cache, and taking the reading from whichever ran first that tick would
-    -- silently apply one slab's height to the others. Callers add their own slab
-    -- offset. Quantized to 10 studs so walking around doesn't re-push every emitter
-    -- property several times a second for a change nobody can see.
-    -- v0.12.3: Reach widens the emitter slab's footprint (height is untouched:
-    -- that's the spawn ceiling, driven by the *_UP constants). Quantized to 5 studs
-    -- so dragging the slider doesn't rewrite Part.Size on every frame.
+    -- v0.10.0: weather LANDS. Lifetimes used to be a flat guess, so flakes sank through the floor and kept going. One downward ray from the camera gives the real drop to the ground; sizing lifetime to it means particles die exactly where the floor is. Throttled: it is a single ray, but the answer only changes as you move, and excluding `cam` also excludes our own FX host slabs. Measured from the CAMERA, not from each effect's slab: all three effects share this cache, and taking the reading from whichever ran first that tick would silently apply one slab's height to the others. Callers add their own slab offset. Quantized to 10 studs so walking around doesn't re-push every emitter property several times a second for a change nobody can see. v0.12.3: Reach widens the emitter slab's footprint (height is untouched: that's the spawn ceiling, driven by the *_UP constants). Quantized to 5 studs so dragging the slider doesn't rewrite Part.Size on every frame.
     local function reachOf(cfg)
         local r = math.clamp(cfg.Reach or 1, 0.25, 6)
         return math.floor(r * 20 + 0.5) / 20
@@ -19263,14 +17932,7 @@ end)()
         return groundDrop
     end
 
-    -- v0.10.0 SNOW, rebuilt to match the menu-background snow.
-    -- The UI version is what everyone actually likes: soft radial flakes drifting
-    -- straight down with a small side-to-side wobble. v0.9 instead pushed a constant
-    -- lateral Acceleration, so the whole field slid sideways like a blizzard.
-    -- Wind defaults to 0 now; the wobble comes from Sway (an emission spread) plus
-    -- high Drag, which bleeds the sideways velocity off and leaves a vertical fall.
-    -- Lifetime is sized to the real ground distance, so flakes land instead of
-    -- sinking through the floor.
+    -- v0.10.0 SNOW, rebuilt to match the menu-background snow. The UI version is what everyone actually likes: soft radial flakes drifting straight down with a small side-to-side wobble. v0.9 instead pushed a constant lateral Acceleration, so the whole field slid sideways like a blizzard. Wind defaults to 0 now; the wobble comes from Sway (an emission spread) plus high Drag, which bleeds the sideways velocity off and leaves a vertical fall. Lifetime is sized to the real ground distance, so flakes land instead of sinking through the floor.
     local SNOW_SLAB = Vector3.new(280, 6, 280)
     local SNOW_UP = 48
     local function stepSnow()
@@ -19294,10 +17956,7 @@ end)()
         -- the quicker ones overshoot slightly and are hidden under it.
         em.Lifetime = NumberRange.new((drop + SNOW_UP) / (fall * 0.8),
                                       (drop + SNOW_UP) / (fall * 0.8) * 1.1)
-        -- v0.12.3: gravity must be Drag * fall, or Drag bleeds the launch speed off
-        -- and terminal velocity lands at 0.25 studs/s: flakes fell ~4 studs and then
-        -- hung in the air. Matching it makes `fall` the true steady descent rate, which
-        -- is also the speed the lifetime above assumes.
+        -- v0.12.3: gravity must be Drag * fall, or Drag bleeds the launch speed off and terminal velocity lands at 0.25 studs/s: flakes fell ~4 studs and then hung in the air. Matching it makes `fall` the true steady descent rate, which is also the speed the lifetime above assumes.
         em.Acceleration = Vector3.new(cfg.Wind, -(fall * DRAG), cfg.Wind * 0.6)
         em.Drag = DRAG                             -- kills sideways drift, keeps the fall
         em.Size = NumberSequence.new(cfg.Size)
@@ -19345,10 +18004,7 @@ end)()
         pcall(function() em.Squash = NumberSequence.new(cfg.Streak * 0.35) end)
     end
 
-    -- v0.10.0 SAKURA, given an actual design. Real notched petal art instead of a
-    -- tinted blob, a two-tone ramp (pale edge into deeper pink) so a drift reads as
-    -- many petals rather than one pink cloud, hard tumble on RotSpeed, and the same
-    -- land-on-the-ground lifetime as snow. Sway replaces the constant sideways push.
+    -- v0.10.0 SAKURA, given an actual design. Real notched petal art instead of a tinted blob, a two-tone ramp (pale edge into deeper pink) so a drift reads as many petals rather than one pink cloud, hard tumble on RotSpeed, and the same land-on-the-ground lifetime as snow. Sway replaces the constant sideways push.
     local SAKURA_SLAB = Vector3.new(240, 6, 240)
     local SAKURA_UP = 42
     local function stepSakura()
@@ -19454,10 +18110,7 @@ end)()
         pcall(function() em.Squash = NumberSequence.new(0) end)
     end
 
-    -- v0.90.0 STARS: slow falling shapes that twinkle and spin, landing like snow.
-    -- Mixed spreads the density over one emitter per shape (an emitter holds one texture).
-    -- a tall slab (spawning from above your head down past your feet) so the air is
-    -- full of stars right away instead of waiting on them to fall from the ceiling
+    -- v0.90.0 STARS: slow falling shapes that twinkle and spin, landing like snow. Mixed spreads the density over one emitter per shape (an emitter holds one texture). a tall slab (spawning from above your head down past your feet) so the air is full of stars right away instead of waiting on them to fall from the ceiling
     local STAR_SLAB = Vector3.new(200, 60, 200)
     local STAR_UP = 20
     local STAR_TEX = { "fx_star_round", "fx_snowflake", "fx_cloud", "fx_heart", "fx_moon" }
@@ -19506,22 +18159,7 @@ end)()
         end
     end
 
-    -- :: hit effects ::
-    -- v0.9.0 REBUILD. Two things were wrong with v0.7 beyond it being flat. It drew
-    -- into the ScreenGui, so an effect on someone behind a wall painted over the
-    -- wall: there was no depth to test against, which looks wrong and gives you
-    -- away. And the four presets were one circle Frame with different growth curves:
-    -- Ring and Shockwave were a single outline apart, which is why they read as
-    -- duplicates.
-    --
-    -- Six presets now, each a genuinely different emission shape, all world-space so
-    -- they occlude properly:
-    --   Impact     tight forward cone of hard shards, over in a blink
-    --   Sparks     spherical spray of stretched streaks that fall and drag out
-    --   Blood      heavy droplets under strong gravity + a slow dark puff
-    --   Shockwave  flat expanding ring (Cylinder surface emission)
-    --   Nova       slow wide sphere shell, bright and soft
-    --   Ember      a few big glowing motes drifting upward
+    -- :: hit effects :: v0.9.0 REBUILD. Two things were wrong with v0.7 beyond it being flat. It drew into the ScreenGui, so an effect on someone behind a wall painted over the wall: there was no depth to test against, which looks wrong and gives you away. And the four presets were one circle Frame with different growth curves: Ring and Shockwave were a single outline apart, which is why they read as duplicates. Six presets now, each a genuinely different emission shape, all world-space so they occlude properly: Impact tight forward cone of hard shards, over in a blink Sparks spherical spray of stretched streaks that fall and drag out Blood heavy droplets under strong gravity + a slow dark puff Shockwave flat expanding ring (Cylinder surface emission) Nova slow wide sphere shell, bright and soft Ember a few big glowing motes drifting upward
     local hitFxPool = {}
     local function newHitFx()
         local h = Instance.new("Part")
@@ -21029,12 +19667,7 @@ end
         end
     end
     registerModule("selffx_smear", "Motion Smear", function() end, function() if SUB.dropAll then SUB.dropAll("smear") end end)
-    -- v0.89.0 GLASS trail: clear glass along your path that only reflects. A pane is
-    -- an exact planar mirror: the nearby world (and you, clothes and all) is mirrored
-    -- across it, and a camera at your eye looks straight into the plane with its
-    -- frustum centred on the foot of the perpendicular, so neighbours line up into
-    -- one reflection. Straight stretches grow a single pane; a new one only starts
-    -- where the path bends, at the old one's end. Height is fixed (measured standing).
+    -- v0.89.0 GLASS trail: clear glass along your path that only reflects. A pane is an exact planar mirror: the nearby world (and you, clothes and all) is mirrored across it, and a camera at your eye looks straight into the plane with its frustum centred on the foot of the perpendicular, so neighbours line up into one reflection. Straight stretches grow a single pane; a new one only starts where the path bends, at the old one's end. Height is fixed (measured standing).
     local glass = (function()
         -- one mirror plane per trail (set by its first pane, facing your camera); every
         -- pane is a window into that one mirrored world, so bends never break it up
@@ -23634,10 +22267,7 @@ addTab("Visuals", function(root)
     local leftCol  = column(1)
     local rightCol = column(2)
 
-    -- v0.5.0: leftCol wraps a subTabs card so ESP and Crosshair are peer surfaces.
-    -- All existing left panels (ESP / Box / Name) parent to the ESP sub-tab so
-    -- their visual density and headers stay intact; only the pill bar changes.
-    -- Crosshair sub-tab is new (built at the end of this tab).
+    -- v0.5.0: leftCol wraps a subTabs card so ESP and Crosshair are peer surfaces. All existing left panels (ESP / Box / Name) parent to the ESP sub-tab so their visual density and headers stay intact; only the pill bar changes. Crosshair sub-tab is new (built at the end of this tab).
     local leftCard = panel(leftCol)
     local Lsub = Shared.subTabs and Shared.subTabs(leftCard, { "ESP", "Crosshair", "Effects", "Screen" })
         or { ESP = leftCol, Crosshair = leftCol, Effects = leftCol, Screen = leftCol }
@@ -23998,10 +22628,7 @@ addTab("Visuals", function(root)
     end)
     dropdown(namePanel, "Type", { "Name", "Display Name" }, ESP.Names.Type, function(v) ESP.Names.Type = v end)
 
-    -- :: Indicators ::
-    -- Single panel (toggles live together in the UI); each is its own entry in
-    -- the arraylist though (see GetDetail). Right-click Skeleton / Head Dot /
-    -- Distance for per-feature settings popups.
+    -- :: Indicators :: Single panel (toggles live together in the UI); each is its own entry in the arraylist though (see GetDetail). Right-click Skeleton / Head Dot / Distance for per-feature settings popups.
     local indPanel = panel(rightCol, "Indicators")
     local distRow = configCheckbox(indPanel, "Distance", ESP.Indicators.Distance.Enabled, function(v) ESP.Indicators.Distance.Enabled = v end)
     attachSingleSwatch(distRow.row, ESP.Indicators.Distance.Color, function(c) ESP.Indicators.Distance.Color = c end)
@@ -24159,13 +22786,7 @@ addTab("Visuals", function(root)
     dropdown(tracerPanel, "Origin", { "Mouse", "Bottom", "Middle", "Top" }, ESP.Tracer.Origin, function(v) ESP.Tracer.Origin = v end)
     dropdown(tracerPanel, "Location", { "Below", "Middle", "Above" }, ESP.Tracer.Location, function(v) ESP.Tracer.Location = v end)
 
-    -- :: Bullet Tracers ::
-    -- v0.17.0. Separate from the ESP tracer above: that one is a snap-line to a
-    -- player, this one draws where somebody's shot actually went. The panel title
-    -- carries the detector state (scanning / watching n / locked on <remote>) so a
-    -- game whose shots we can't read is obvious instead of silent.
-    -- :: Chams :: v0.88.0. Colours, team check, friends and distance follow the ESP
-    -- settings (the NPC ESP bundle for NPCs) unless Custom Colors is on.
+    -- :: Bullet Tracers :: v0.17.0. Separate from the ESP tracer above: that one is a snap-line to a player, this one draws where somebody's shot actually went. The panel title carries the detector state (scanning / watching n / locked on <remote>) so a game whose shots we can't read is obvious instead of silent. :: Chams :: v0.88.0. Colours, team check, friends and distance follow the ESP settings (the NPC ESP bundle for NPCs) unless Custom Colors is on.
     ;(function()
         local CH = Koffee.Chams
         local cp = panel(rightCol, "Chams")
@@ -24211,10 +22832,7 @@ addTab("Visuals", function(root)
         popup:action("Relearn Source", function()
             if Shared._bulletRelearn then Shared._bulletRelearn() end
         end)
-        -- v0.19.1: learning pins the first remote that looks like a gun, and a
-        -- movement or aim-sync remote can look exactly like one. Blacklisting kicks
-        -- that pin out permanently and relearns so the next candidate gets a go.
-        -- v0.19.3: one button per pin, because inbound and outbound pin separately.
+        -- v0.19.1: learning pins the first remote that looks like a gun, and a movement or aim-sync remote can look exactly like one. Blacklisting kicks that pin out permanently and relearns so the next candidate gets a go. v0.19.3: one button per pin, because inbound and outbound pin separately.
         local pins = (Shared._bulletPins and Shared._bulletPins()) or {}
         if #pins == 0 then
             new("TextLabel", {
@@ -24285,12 +22903,7 @@ addTab("Visuals", function(root)
     slider(btPanel, "Duration", 0.1, 3, Koffee.Bullets.Duration, 2, function(v) Koffee.Bullets.Duration = v end)
     slider(btPanel, "Max Distance", 1, 6000, Koffee.Bullets.MaxDistance, 0, function(v) Koffee.Bullets.MaxDistance = v end)
 
-    -- :: Crosshair ::
-    -- v0.11.2: one builder used twice. "Double Crosshairs" (card A only) retitles A
-    -- to "Crosshair (A)" and reveals card S. A follows the AIMBOT's FOV rules, S
-    -- follows Silent Aim's: and with that FOV switched off there is no radius gate
-    -- at all. Each card ends in a Sync button that moves THAT card's rotation to
-    -- match the other, for when spin has drifted them apart.
+    -- :: Crosshair :: v0.11.2: one builder used twice. "Double Crosshairs" (card A only) retitles A to "Crosshair (A)" and reveals card S. A follows the AIMBOT's FOV rules, S follows Silent Aim's: and with that FOV switched off there is no radius gate at all. Each card ends in a Sync button that moves THAT card's rotation to match the other, for when spin has drifted them apart.
     local xhCardS
     local function buildXH(parent, cfg, title, tag)
         local card = panel(parent, title)
@@ -24503,11 +23116,7 @@ addTab("World", function(root)
     moduleCheckbox(fx, "Disable Clouds", "noclouds")
     moduleCheckbox(fx, "Low Graphics",   "lowgfx")
 
-    -- v0.7.0 WORLD FX: always-on client-side weather (independent of the koffee
-    -- menu state, unlike the loader snow). v0.9.0: 3D ParticleEmitters in world
-    -- space, so Density is particles/second and Size / Wind are studs. Vignette and
-    -- Fog Tint removed. Right-click each row for the deep knobs.
-    -- v0.85.0 Post FX: bloom, depth of field (real blur), sun rays on the camera.
+    -- v0.7.0 WORLD FX: always-on client-side weather (independent of the koffee menu state, unlike the loader snow). v0.9.0: 3D ParticleEmitters in world space, so Density is particles/second and Size / Wind are studs. Vignette and Fog Tint removed. Right-click each row for the deep knobs. v0.85.0 Post FX: bloom, depth of field (real blur), sun rays on the camera.
     ;(function()
         local P = World.Post
         local post = panel(W.Effects, "Post FX")
@@ -24689,13 +23298,7 @@ addTab("World", function(root)
     })
 
     local function refreshRules()
-        -- v0.8.2: was `ch:IsA("Frame") and ch ~= emptyLabel`. Correct today purely
-        -- by accident of class hierarchy: TextLabel does NOT inherit from Frame,
-        -- so the reference check never actually did anything, and the moment
-        -- emptyLabel became a Frame (an icon, a styled empty card) every refresh
-        -- would have destroyed it and left the empty state permanently blank.
-        -- Keep by REFERENCE, and spare UIComponents (the UIListLayout) by class,
-        -- so the sweep is honest about what it is protecting and why.
+        -- v0.8.2: was `ch:IsA("Frame") and ch ~= emptyLabel`. Correct today purely by accident of class hierarchy: TextLabel does NOT inherit from Frame, so the reference check never actually did anything, and the moment emptyLabel became a Frame (an icon, a styled empty card) every refresh would have destroyed it and left the empty state permanently blank. Keep by REFERENCE, and spare UIComponents (the UIListLayout) by class, so the sweep is honest about what it is protecting and why.
         for _, ch in ipairs(rulesList:GetChildren()) do
             if ch ~= emptyLabel and not ch:IsA("UIComponent") then ch:Destroy() end
         end
@@ -24744,10 +23347,7 @@ addTab("World", function(root)
     Shared._rulesListRefresh = refreshRules
     refreshRules()
 
-    -- v0.71.0: Freecam. Detached camera that never touches the character, so
-    -- silent aim + triggerbot keep working from wherever you park it (they read
-    -- the weapon and the view, not the body). Camera aimbot fights it instead:
-    -- both write the camera, freecam wins the frame. Pair accordingly.
+    -- v0.71.0: Freecam. Detached camera that never touches the character, so silent aim + triggerbot keep working from wherever you park it (they read the weapon and the view, not the body). Camera aimbot fights it instead: both write the camera, freecam wins the frame. Pair accordingly.
     local camCard = panel(W.Camera, "Freecam")
     new("TextLabel", {
         Text = "Hold Right Click to look, WASD + Space / Ctrl to move, Shift for speed, wheel dollies. Menu open keeps mouse + wheel for the UI.",
@@ -25052,14 +23652,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
         for _, p in ipairs(partsOf(vm)) do if not armish(p.Name) then parts[#parts + 1] = p end end
         return held("Viewmodel", vm, parts)
     end
-    -- v0.99.51 RIVALS: the viewmodel is workspace.ViewModels.FirstPerson["<you> - <weapon> - <skin>"],
-    -- not under the camera. LeftArm / RightArm are mesh parts with a shirt decal; the gun
-    -- is ItemVisual (Body, Magazine, Bolt... models Motor6D'd to the viewmodel root) and
-    -- Body.PrimaryPart is the gun's frame. The generic path grabbed the whole FirstPerson
-    -- folder: arms hidden, skin riding an arm, one skin shared by every weapon.
-    -- v0.99.60: in third person RIVALS drops the FirstPerson model and builds
-    -- ViewModels["<you> - <weapon> - <skin>"] instead (same layout, invisible arms,
-    -- anchored root posed at your hands). Returns the model and whether it's third person.
+    -- v0.99.51 RIVALS: the viewmodel is workspace.ViewModels.FirstPerson["<you> - <weapon> - <skin>"], not under the camera. LeftArm / RightArm are mesh parts with a shirt decal; the gun is ItemVisual (Body, Magazine, Bolt... models Motor6D'd to the viewmodel root) and Body.PrimaryPart is the gun's frame. The generic path grabbed the whole FirstPerson folder: arms hidden, skin riding an arm, one skin shared by every weapon. v0.99.60: in third person RIVALS drops the FirstPerson model and builds ViewModels["<you> - <weapon> - <skin>"] instead (same layout, invisible arms, anchored root posed at your hands). Returns the model and whether it's third person.
     local function rivalsVM()
         local vms = Workspace:FindFirstChild("ViewModels")
         if not vms then return nil end
@@ -25096,10 +23689,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
         local body = iv:FindFirstChild("Body")
         local bp = body and body:IsA("Model") and body.PrimaryPart
         if h and bp then h.root = bp end
-        -- v0.99.61 animated pieces: every ItemVisual child model is one piece, its
-        -- PrimaryPart driven by a Motor6D from the viewmodel root (Body, Magazine, Bolt,
-        -- ReloadMagazine, StringCurve, Arrow...). rest = where the piece sits on Body with
-        -- no animation, from the motors' C0 / C1, so it never depends on the current pose.
+        -- v0.99.61 animated pieces: every ItemVisual child model is one piece, its PrimaryPart driven by a Motor6D from the viewmodel root (Body, Magazine, Bolt, ReloadMagazine, StringCurve, Arrow...). rest = where the piece sits on Body with no animation, from the motors' C0 / C1, so it never depends on the current pose.
         if h then
             local motors = {}
             for _, d in ipairs(vm:GetDescendants()) do
@@ -26087,12 +24677,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
         return h and IS.Skins[h.sig], h
     end
     fxRestoreRef = fxRestore
-    -- v0.99.62 :: viewmodel animation edits :: the client can read an animation
-    -- (KeyframeSequenceProvider) but can't register an edited one outside Studio, so
-    -- Koffee drives the joints itself: while RIVALS plays the original track, each
-    -- edited joint's Motor6D.Transform becomes the original pose at the track's own
-    -- time, times your offset. Same clock, so the length never changes. Edits live on
-    -- the skin (skin.anims[key] = { id, blend, k = { [joint] = { { time, {12} }, ... } } }).
+    -- v0.99.62 :: viewmodel animation edits :: the client can read an animation (KeyframeSequenceProvider) but can't register an edited one outside Studio, so Koffee drives the joints itself: while RIVALS plays the original track, each edited joint's Motor6D.Transform becomes the original pose at the track's own time, times your offset. Same clock, so the length never changes. Edits live on the skin (skin.anims[key] = { id, blend, k = { [joint] = { { time, {12} }, ... } } }).
     local AN = { base = {}, loading = {} }
     local TweenSvc = game:GetService("TweenService")
     function AN.load(id)
@@ -29706,10 +28291,7 @@ end)()
     IS._editor = ED
 end)()
 
--- v0.90.0 MORPH: become someone else, locally. Their avatar is generated on YOUR rig
--- type with CreateHumanoidModelFromDescription (client-safe; ApplyDescription is
--- server-only), then moved onto your real character: body parts and scale (so your
--- physics size really changes), accessories, clothing, colours, face, animations.
+-- v0.90.0 MORPH: become someone else, locally. Their avatar is generated on YOUR rig type with CreateHumanoidModelFromDescription (client-safe; ApplyDescription is server-only), then moved onto your real character: body parts and scale (so your physics size really changes), accessories, clothing, colours, face, animations.
 Koffee.Morph = { Target = "", Source = "Avatar", Body = true, Accessories = true, Clothing = true, Face = true,
     Animations = true, Emotes = true, KeepOnRespawn = true }
 registerConfig("morph", Koffee.Morph)
@@ -29775,10 +28357,7 @@ registerConfig("morph", Koffee.Morph)
         return model, desc
     end
 
-    -- :: emotes :: the emote wheel reads the Humanoid's HumanoidDescription, which a
-    -- LocalScript may edit (Roblox documents setting emotes this way), so their list
-    -- and equipped slots are copied onto ours. Played emotes replicate like any
-    -- animation your client runs.
+    -- :: emotes :: the emote wheel reads the Humanoid's HumanoidDescription, which a LocalScript may edit (Roblox documents setting emotes this way), so their list and equipped slots are copied onto ours. Played emotes replicate like any animation your client runs.
     local function readEmotes(desc)
         if not desc then return nil end
         local ok, list = pcall(function() return desc:GetEmotes() end)
@@ -30188,34 +28767,14 @@ end)
 -- v0.0.96: options state (arraylist preferences) rides the config system too.
 registerConfig("options", KoffeeOptions)
 
--- v0.11.0 CUSTOM UI COLORS. Widgets bake Theme.Palette values straight into
--- BackgroundColor3 / TextColor3 / UIStroke.Color at construction, across hundreds of
--- call sites. Tagging every one with its palette role would be a far larger and more
--- fragile change than this: instead, remember the palette currently ON SCREEN and,
--- when a role changes, sweep the two ScreenGuis swapping that exact colour for the
--- new one. The stock palette values are distinct enough for the match to be
--- unambiguous, and re-pointing Theme.Palette keeps anything built later in step.
---
--- State-driven rather than fired from the swatch callback, so a loaded config
--- repaints too. Throttled because the colour picker fires continuously while you
--- drag it, and a full GetDescendants sweep per frame would visibly stutter.
+-- v0.11.0 CUSTOM UI COLORS. Widgets bake Theme.Palette values straight into BackgroundColor3 / TextColor3 / UIStroke.Color at construction, across hundreds of call sites. Tagging every one with its palette role would be a far larger and more fragile change than this: instead, remember the palette currently ON SCREEN and, when a role changes, sweep the two ScreenGuis swapping that exact colour for the new one. The stock palette values are distinct enough for the match to be unambiguous, and re-pointing Theme.Palette keeps anything built later in step. State-driven rather than fired from the swatch callback, so a loaded config repaints too. Throttled because the colour picker fires continuously while you drag it, and a full GetDescendants sweep per frame would visibly stutter.
 ;(function()
     local ROLES = { "Accent", "Background", "Panel", "PanelElevated", "Border",
                     "Text", "TextMuted" }
     local live, stock, lastAt = {}, {}, 0
     for _, r in ipairs(ROLES) do live[r] = Theme.Palette[r]; stock[r] = Theme.Palette[r] end
 
-    -- v0.12.1: repaint by ROLE TAG (stamped in new()), not by value. Value matching
-    -- collided as soon as two roles shared a colour: set Panel to white and every
-    -- near-white label was claimed by Panel, so Text could never repaint again.
-    -- Untagged instances (colour assigned after construction) get matched by value
-    -- ONCE and tagged, so they're exact from then on.
-    -- KUserColor marks instances whose colour is the user's DATA (swatch previews,
-    -- picker chips), not chrome: repainting those desynced preview from value.
-    -- v0.90.0: untagged instances are adopted only by a STOCK palette value. Matching
-    -- the live (user) value let a picker drag through black claim the menu dim, snow
-    -- and shadows as Accent. Tagged ones follow the role their colour is showing now
-    -- (active tab = Text, idle = TextMuted), and a non-palette colour is left alone.
+    -- v0.12.1: repaint by ROLE TAG (stamped in new()), not by value. Value matching collided as soon as two roles shared a colour: set Panel to white and every near-white label was claimed by Panel, so Text could never repaint again. Untagged instances (colour assigned after construction) get matched by value ONCE and tagged, so they're exact from then on. KUserColor marks instances whose colour is the user's DATA (swatch previews, picker chips), not chrome: repainting those desynced preview from value. v0.90.0: untagged instances are adopted only by a STOCK palette value. Matching the live (user) value let a picker drag through black claim the menu dim, snow and shadows as Accent. Tagged ones follow the role their colour is showing now (active tab = Text, idle = TextMuted), and a non-palette colour is left alone.
     local function paint(d, prop)
         local cur = d[prop]
         local tag = d:GetAttribute("KR" .. prop)
@@ -30333,11 +28892,7 @@ addTab("Options", function(root)
         KoffeeOptions.MenuBlockInput = v
         setBackgroundActive(bgActive)
     end)
-    -- v0.48.0: animation settings. Master + speed + one flag per surface, all
-    -- read live so they take effect instantly, all nil-means-on so old configs
-    -- animate exactly as before. Persisted through registerConfig("options").
-    -- v0.99.45: Koffee Team lives in its own file (Koffee/team.json), not in configs,
-    -- so turning it off stays off whatever config gets loaded
+    -- v0.48.0: animation settings. Master + speed + one flag per surface, all read live so they take effect instantly, all nil-means-on so old configs animate exactly as before. Persisted through registerConfig("options"). v0.99.45: Koffee Team lives in its own file (Koffee/team.json), not in configs, so turning it off stays off whatever config gets loaded
     ;(function()
         local HS = game:GetService("HttpService")
         local TP = { On = true, Notify = true }
@@ -30524,16 +29079,7 @@ addTab("Options", function(root)
         end)
     end)
 
-    -- v0.0.97 CUSTOM FONT: applies a user-chosen font to everything that isn't
-    -- the main Koffee window (arraylist, ESP name / distance / health text, HUD
-    -- stats, etc.). The dropdown lists the fonts hosted on koffee-assets (see
-    -- FONTS_CATALOG); right-click the row to tune the global text size used while
-    -- the custom font is on: so the pixel fonts don't render too big / small.
-    -- Default off + "None": feature interface looks exactly like before.
-    -- v0.4.0: expanded font catalog. "None" reverts to Theme.Fonts. The rest split
-    -- into: external assets (downloaded via koffee-assets) + roblox stock families
-    -- (zero-cost, resolved via rbxasset://fonts/families/*.json inside loadFeiFont).
-    -- v0.9.0: shared catalog list (see Theme.FontNames) instead of a second literal.
+    -- v0.0.97 CUSTOM FONT: applies a user-chosen font to everything that isn't the main Koffee window (arraylist, ESP name / distance / health text, HUD stats, etc.). The dropdown lists the fonts hosted on koffee-assets (see FONTS_CATALOG); right-click the row to tune the global text size used while the custom font is on: so the pixel fonts don't render too big / small. Default off + "None": feature interface looks exactly like before. v0.4.0: expanded font catalog. "None" reverts to Theme.Fonts. The rest split into: external assets (downloaded via koffee-assets) + roblox stock families (zero-cost, resolved via rbxasset://fonts/families/*.json inside loadFeiFont). v0.9.0: shared catalog list (see Theme.FontNames) instead of a second literal.
     local fontOptions = Theme.FontNames
     -- user-dropped fonts land in the workspace as koffee_<name>.otf; surface any
     -- extra cached entries the catalog doesn't know so they're selectable too.
@@ -30614,11 +29160,7 @@ addTab("Options", function(root)
             function(v) Shared.IgnoreFriendsScope = ({ ["Combat Only"] = "Combat", ["Visuals Only"] = "Visuals" })[v] or "Everything" end)
     end)
 
-    -- v0.0.95 UNLOAD KOFFEE. Confirm popup then a clean tear-down: disables
-    -- every module (their OnDisable fires so state restores), destroys the UI
-    -- + toast + hud + background (blur/dim/snow), destroys sound instances,
-    -- restores camera + mouse, unbinds our RenderStep binds, and flips a
-    -- global unloaded flag so any residual loops early-return.
+    -- v0.0.95 UNLOAD KOFFEE. Confirm popup then a clean tear-down: disables every module (their OnDisable fires so state restores), destroys the UI + toast + hud + background (blur/dim/snow), destroys sound instances, restores camera + mouse, unbinds our RenderStep binds, and flips a global unloaded flag so any residual loops early-return.
     local function unloadKoffee()
         Koffee.Sfx.play("unload")
         Koffee.Sfx.mute(5)
@@ -30626,10 +29168,7 @@ addTab("Options", function(root)
         for id, m in pairs(Modules) do
             if m.Enabled then pcall(toggleModule, id) end
         end
-        -- 2. explicit combat state reset (silent hook stays installed for the
-        -- session: can't un-hookmetamethod: but its body early-returns on
-        -- Combat.Silent.Enabled = false, so it becomes a no-op).
-        -- v0.1.0: Combat lives in its own IIFE; reach it via the Shared export.
+        -- 2. explicit combat state reset (silent hook stays installed for the session: can't un-hookmetamethod: but its body early-returns on Combat.Silent.Enabled = false, so it becomes a no-op). v0.1.0: Combat lives in its own IIFE; reach it via the Shared export.
         local combat = Shared.Combat
         if combat then
             combat.Silent.Enabled  = false
@@ -30738,11 +29277,7 @@ addTab("Options", function(root)
     unloadBtn.MouseButton1Click:Connect(showUnloadConfirm)
 end)
 
--- CONFIGS TAB (v0.0.34): save / load / delete / auto-load per game
--- CUSTOM FEATURES (v0.14.0). User-wired node graph: blocks read game state,
--- transform it, draw it. Read-only and depth-capped, so a bad graph is a visual
--- bug, never a crash. Evaluation carries a context so a subgraph under For Each
--- Player runs once per player with its own cached values and its own GUI copies.
+-- CONFIGS TAB (v0.0.34): save / load / delete / auto-load per game CUSTOM FEATURES (v0.14.0). User-wired node graph: blocks read game state, transform it, draw it. Read-only and depth-capped, so a bad graph is a visual bug, never a crash. Evaluation carries a context so a subgraph under For Each Player runs once per player with its own cached values and its own GUI copies.
 Koffee.Custom = { Enabled = true, Scale = "1x", Nodes = {} }
 registerConfig("custom", Koffee.Custom)
 ;(function()
@@ -30774,10 +29309,7 @@ registerConfig("custom", Koffee.Custom)
         }, { new("UIScale", { Scale = 1 }) })
         return layer
     end
-    -- v0.22.0: id -> node index. This was a linear scan of CF.Nodes, hit once per
-    -- wire per node per context per frame: six figures of table steps on a
-    -- 40-node graph under For Each Player. Miss falls back to a reindex so a
-    -- freshly added or deleted node can never read stale.
+    -- v0.22.0: id -> node index. This was a linear scan of CF.Nodes, hit once per wire per node per context per frame: six figures of table steps on a 40-node graph under For Each Player. Miss falls back to a reindex so a freshly added or deleted node can never read stale.
     local NIDX = {}
     local function reindex()
         table.clear(NIDX)
@@ -31372,10 +29904,7 @@ registerConfig("custom", Koffee.Custom)
             if not plr then return { text = "", number = 0, bool = false } end
             local ch = plr.Character
             local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-            -- v0.40.0: humanoid state. Grounded reads FloorMaterial (Air =
-            -- airborne); State names the GetState enum.
-            -- v0.43.2: state leads FloorMaterial. Jumping/Freefall flip the
-            -- frame you press jump; FloorMaterial lags panels behind takeoff.
+            -- v0.40.0: humanoid state. Grounded reads FloorMaterial (Air = airborne); State names the GetState enum. v0.43.2: state leads FloorMaterial. Jumping/Freefall flip the frame you press jump; FloorMaterial lags panels behind takeoff.
             local grounded = false
             if hum then
                 local ok, st = pcall(function() return hum:GetState() end)
@@ -32262,12 +30791,7 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
-    -- :: 3D ::
-    -- Screen-space blocks draw a flat overlay: it never tilts, never sits behind
-    -- anything, and a ring can only ever be an ellipse pretending. These build real
-    -- Parts instead. Parented to the Camera, so they never replicate and sit outside
-    -- the tree a passive AC walks. The trade is honest: real geometry is occluded by
-    -- real geometry, which the overlay blocks never were.
+    -- :: 3D :: Screen-space blocks draw a flat overlay: it never tilts, never sits behind anything, and a ring can only ever be an ellipse pretending. These build real Parts instead. Parented to the Camera, so they never replicate and sit outside the tree a passive AC walks. The trade is honest: real geometry is occluded by real geometry, which the overlay blocks never were.
     local function part3(parent)
         local p = Instance.new("Part")
         p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch = true, false, false, false
@@ -32291,13 +30815,7 @@ registerConfig("custom", Koffee.Custom)
         return f
     end
 
-    -- THROUGH WALLS. A BasePart has no way to skip the depth test, and adornment
-    -- AlwaysOnTop is a long-standing engine bug (it still gets partially occluded),
-    -- so the only reliable route is a Highlight in AlwaysOnTop DepthMode drawing the
-    -- model's silhouette over everything.
-    -- The catch: Roblox renders at most 31 Highlights ENGINE-WIDE and silently drops
-    -- ALL of them past that, chams included. So this keeps a hard budget well under
-    -- the cap and degrades to plain occluded geometry instead of taking the last slot.
+    -- THROUGH WALLS. A BasePart has no way to skip the depth test, and adornment AlwaysOnTop is a long-standing engine bug (it still gets partially occluded), so the only reliable route is a Highlight in AlwaysOnTop DepthMode drawing the model's silhouette over everything. The catch: Roblox renders at most 31 Highlights ENGINE-WIDE and silently drops ALL of them past that, chams included. So this keeps a hard budget well under the cap and degrades to plain occluded geometry instead of taking the last slot.
     local HL_MAX = 12
     local hls = setmetatable({}, { __mode = "k" })
     local function through3(f, want, col, tr)
@@ -33076,10 +31594,7 @@ registerConfig("custom", Koffee.Custom)
         end,
     }
 
-    -- v0.65.0: mark a player Exclude/Prioritize for the whole targeting system
-    -- (aim / silent / trigger / ESP). This is the TOP tier of the resolver, so it
-    -- overrides the player-list Status. Wire it off For Each Player + a condition
-    -- to, e.g., prioritize everyone under 30% health or exclude a whole team.
+    -- v0.65.0: mark a player Exclude/Prioritize for the whole targeting system (aim / silent / trigger / ESP). This is the TOP tier of the resolver, so it overrides the player-list Status. Wire it off For Each Player + a condition to, e.g., prioritize everyone under 30% health or exclude a whole team.
     KINDS["Target Status"] = {
         blurb = "Marks a player Exclude or Prioritize for aim + ESP (beats the player list)",
         sink = true,
@@ -33443,10 +31958,7 @@ registerConfig("custom", Koffee.Custom)
         return made
     end
 
-    -- :: design mode ::
-    -- v0.25.0: direct manipulation of the live output. Click a drawn widget,
-    -- then drag to move, pull a handle to resize, or use the arc to rotate.
-    -- Writes back into node.opts, so gizmo and sliders are two views of one value.
+    -- :: design mode :: v0.25.0: direct manipulation of the live output. Click a drawn widget, then drag to move, pull a handle to resize, or use the arc to rotate. Writes back into node.opts, so gizmo and sliders are two views of one value.
     local DM = { on = false, sel = nil, key = nil, drag = nil }
 
     -- what a resize handle edits, per block kind. Kinds absent here move and
@@ -33504,10 +32016,7 @@ registerConfig("custom", Koffee.Custom)
                                 PaddingRight = UDim.new(0, 10) }) })
     end
 
-    -- v0.26.1: a full-screen frame at Position 0,0 does NOT report AbsolutePosition
-    -- (0,0) here: IgnoreGuiInset drift, same trap popupOffsetFor works around.
-    -- Everything below works in LAYER-LOCAL pixels, which is also GetMouseLocation's
-    -- space, so hit tests and gizmo placement agree. This was the "clicks miss" bug.
+    -- v0.26.1: a full-screen frame at Position 0,0 does NOT report AbsolutePosition (0,0) here: IgnoreGuiInset drift, same trap popupOffsetFor works around. Everything below works in LAYER-LOCAL pixels, which is also GetMouseLocation's space, so hit tests and gizmo placement agree. This was the "clicks miss" bug.
     local function dmOrigin()
         local f = dmGui or layer
         return f and f.AbsolutePosition or Vector2.new(0, 0)
@@ -35365,10 +33874,7 @@ addTab("Configs", function(root)
         if refreshAuto then refreshAuto() end
     end
 
-    -- :: cloud configs card (v0.29.0) ::
-    -- Share/sync configs through the cloud. Operates on the SELECTED config above.
-    -- Upload creates (you become owner) or overwrites (owner only); download pulls
-    -- any 8-char id into a local config; delete/rename hit the cloud (owner only).
+    -- :: cloud configs card (v0.29.0) :: Share/sync configs through the cloud. Operates on the SELECTED config above. Upload creates (you become owner) or overwrites (owner only); download pulls any 8-char id into a local config; delete/rename hit the cloud (owner only).
     local cloudCard = panel(root, "Cloud Configs")
     local cloudStatus = new("TextLabel", {
             Text = "Select a config above, then upload, or paste an ID to download",
@@ -35500,10 +34006,7 @@ addTab("Configs", function(root)
         rnBtn.Visible     = has and owner and meta ~= nil
     end
 
-    -- :: auto-load rules card (v0.56.0) ::
-    -- Pin a config to load on join. ONE global rule loads in every game; per-game
-    -- rules load only in their own game and beat the global there. Each rule has
-    -- its own on/off switch. Operates on the SELECTED config above.
+    -- :: auto-load rules card (v0.56.0) :: Pin a config to load on join. ONE global rule loads in every game; per-game rules load only in their own game and beat the global there. Each rule has its own on/off switch. Operates on the SELECTED config above.
     local autoCard = panel(root, "Auto-Load")
     new("TextLabel", {
         Text = "Pin a config to load on join. A per-game rule beats the global one in its game.",
@@ -35625,12 +34128,7 @@ Shared.NPC = NPC
 -- method/parentPath/folderId/moduleId + folder name/settings save. Lists REPLACE on load.
 registerConfig("npc", NPC)
 function NPC.reconcile(savedModules)
-    -- after a config load: hand every loaded entry a fresh session-unique module
-    -- id, so two configs never share one npc_* row for different NPCs (rapid A/B
-    -- swaps with overlapping counters used to collide). Saved on/off rides along
-    -- via the passed modules snapshot, keyed by each entry's OLD module id.
-    -- v0.67.0: ids are npc_g<load gen>_<entry id>. Stale npc_* modules are first
-    -- disabled, then dropped from the registry so ghosts never pile up.
+    -- after a config load: hand every loaded entry a fresh session-unique module id, so two configs never share one npc_* row for different NPCs (rapid A/B swaps with overlapping counters used to collide). Saved on/off rides along via the passed modules snapshot, keyed by each entry's OLD module id. v0.67.0: ids are npc_g<load gen>_<entry id>. Stale npc_* modules are first disabled, then dropped from the registry so ghosts never pile up.
     NPC._gen = (NPC._gen or 0) + 1
     local gen = NPC._gen
     local present, drop = {}, {}
@@ -35669,13 +34167,7 @@ local function newFolderSettings()
 end
 local DEFAULTS = newFolderSettings()
 
--- :: re-acquire ::
--- v0.57.0: learning captures a name-INDEPENDENT structural fingerprint so a rig
--- can be re-found after it is renamed / re-added, even when a game randomizes the
--- names of Workspace's children on a timer (directory obfuscation). The signature
--- never contains a name: it is the instance's class, its children's class counts,
--- a Humanoid flag, and (for bare parts) a rounded size. Enrichment lowers the
--- false-match rate of a deep scan without leaning on any name.
+-- :: re-acquire :: v0.57.0: learning captures a name-INDEPENDENT structural fingerprint so a rig can be re-found after it is renamed / re-added, even when a game randomizes the names of Workspace's children on a timer (directory obfuscation). The signature never contains a name: it is the instance's class, its children's class counts, a Humanoid flag, and (for bare parts) a rounded size. Enrichment lowers the false-match rate of a deep scan without leaning on any name.
 local function signature(inst)
     if not inst then return "" end
     local counts = {}
@@ -35747,10 +34239,7 @@ local function settingsFor(entry)
     return (f and f.settings) or DEFAULTS
 end
 
--- method-aware instance resolution. Live pointer first (free); then the entry's
--- chosen method; then a name-independent signature deep scan as a universal safety
--- net so even a Path entry recovers under obfuscation. Throttled when nothing is
--- found so a genuinely-gone entry does not deep-scan every frame.
+-- method-aware instance resolution. Live pointer first (free); then the entry's chosen method; then a name-independent signature deep scan as a universal safety net so even a Path entry recovers under obfuscation. Throttled when nothing is found so a genuinely-gone entry does not deep-scan every frame.
 local function resolveInstance(entry)
     local inst = entry._inst
     if inst and inst.Parent then return inst end
@@ -35796,11 +34285,7 @@ local function resolveEntry(entry)
     return { inst }
 end
 
--- :: exclusions + username auto-scan (v0.57.0) ::
--- Global filter lists feed the per-folder Username scan: an instance is skipped if
--- it is in the session selection set, its name contains an excluded name, or its
--- fingerprint matches a learned exclusion. Names + learned sigs persist; the
--- selection set is session-only.
+-- :: exclusions + username auto-scan (v0.57.0) :: Global filter lists feed the per-folder Username scan: an instance is skipped if it is in the session selection set, its name contains an excluded name, or its fingerprint matches a learned exclusion. Names + learned sigs persist; the selection set is session-only.
 local function isExcludedInst(inst)
     if NPC._excludeSel[inst] then return true end
     local lname = inst.Name:lower()
@@ -35868,13 +34353,7 @@ local function allHumanoids()
 end
 NPC.allHumanoids = allHumanoids
 
--- v0.90.0 AUTO-ADD RULES: a folder's rules pull matching workspace instances in on
--- their own. A rule matches by name (contains / is / starts with / ends with /
--- pattern), optionally only inside an ancestor whose name contains `inside`, and
--- takes the match itself, its children, or Auto (models / parts are NPCs, anything
--- else hands over its children). Stored on NPC (not locals) for the register budget.
--- a label-less dropdown still reserves its label row above the button; flatten it
--- so it sits in a single 26px row beside a text box
+-- v0.90.0 AUTO-ADD RULES: a folder's rules pull matching workspace instances in on their own. A rule matches by name (contains / is / starts with / ends with / pattern), optionally only inside an ancestor whose name contains `inside`, and takes the match itself, its children, or Auto (models / parts are NPCs, anything else hands over its children). Stored on NPC (not locals) for the register budget. a label-less dropdown still reserves its label row above the button; flatten it so it sits in a single 26px row beside a text box
 function NPC._flatDD(d)
     for _, c in ipairs(d.frame:GetChildren()) do
         if c:IsA("TextLabel") then c.Visible = false
@@ -36076,11 +34555,7 @@ local function boundsOf(inst)
     if inst:IsA("BasePart") then return inst.CFrame, inst.Size end
     return CFrame.new(), Vector3.new(4, 4, 4)
 end
--- v0.56.0: clone into a viewport, anchor everything so nothing droops, and frame
--- the camera off the CLONE's own bounds (the source can sit anywhere in the world).
--- Returns vp plus an `orbit` controller { look, setDist } when interactive; opts:
---   size/round/z/order  : layout    top : bias framing to the upper body (pfp)
---   spin                : auto-rotate    interactive : expose orbit + no auto-spin
+-- v0.56.0: clone into a viewport, anchor everything so nothing droops, and frame the camera off the CLONE's own bounds (the source can sit anywhere in the world). Returns vp plus an `orbit` controller { look, setDist } when interactive; opts: size/round/z/order : layout top : bias framing to the upper body (pfp) spin : auto-rotate interactive : expose orbit + no auto-spin
 local function fillViewport(vp, model, opts)
     local cam = new("Camera", { Parent = vp })
     vp.CurrentCamera = cam
@@ -36254,10 +34729,7 @@ local function toggleView(inst)
 end
 NPC.viewTick = function() if viewing and not viewing.Parent then unview() end end
 
--- v0.56.0: interactive preview window. v0.84.0: drags follow the global mouse so
--- fast moves never drop, wheel zoom works (MouseWheel arrives on InputChanged, it
--- never fired from InputBegan), spawn is inset-correct, and the title bar gained
--- Teleport + View. One window per instance: re-opening moves it to the cursor.
+-- v0.56.0: interactive preview window. v0.84.0: drags follow the global mouse so fast moves never drop, wheel zoom works (MouseWheel arrives on InputChanged, it never fired from InputBegan), spawn is inset-correct, and the title bar gained Teleport + View. One window per instance: re-opening moves it to the cursor.
 local previews = {}
 -- v0.99.63: the Item Models explorer (defined earlier in the file) borrows these
 Shared.fillViewport, Shared.previewable, Shared.instIcon = fillViewport, previewable, instIcon
@@ -36572,10 +35044,7 @@ local function learnedEntry(inst, kind)
     return nil
 end
 
--- :: mouse select (v0.84.0) ::
--- Arm it in the Picker, close the menu, click anything in the world: it becomes
--- the Picker selection (tree revealed on reopen) with an accent outline. State is
--- chunk-level so a config rebuild of the tab keeps the selection. Session-only.
+-- :: mouse select (v0.84.0) :: Arm it in the Picker, close the menu, click anything in the world: it becomes the Picker selection (tree revealed on reopen) with an accent outline. State is chunk-level so a config rebuild of the tab keeps the selection. Session-only.
 local PICK = { On = false, Level = "Smart", Outline = true, sel = nil, hover = nil, bound = false }
 NPC._pick = PICK
 local CAS = game:GetService("ContextActionService")
@@ -36662,10 +35131,7 @@ end
 local function clipName(s) return #s > 40 and (s:sub(1, 38) .. "..") or s end
 local function richEsc(s) return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")) end
 
--- :: PICKER sub-tab :: search + an inline instance browser (left), selection +
--- actions + Mouse Select (right). The tree only expands on the arrow, not on select.
--- v0.84.0: right-click now forwards from every button covering a row. The row
--- frame's own InputBegan never saw it: the name button sat on top and sank it.
+-- :: PICKER sub-tab :: search + an inline instance browser (left), selection + actions + Mouse Select (right). The tree only expands on the arrow, not on select. v0.84.0: right-click now forwards from every button covering a row. The row frame's own InputBegan never saw it: the name button sat on top and sank it.
 local function buildPicker(host, onChange)
     local cols = new("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = host,
@@ -37398,15 +35864,7 @@ end)()
 -- v0.45.2: Teams is now Extra. NPC now has a real builder (v0.52.0); the IIFE
 -- above owns the subsystem and publishes Shared.NPC.buildTab.
 addTab("NPC", function(root) Shared.NPC.buildTab(root) end)
--- v0.46.0: Extra grows its first sub-tab, Mods: the universal stat mod
--- from gun research. Pick a source (held tool / any instance), tick values,
--- pin them held or set-once. Session-only, unpin to restore.
--- v0.60.0: ANTICHEATS. Two features that fight rubberbanding (an AC teleporting you
--- back to where you were). Own IIFE for its register budget; publishes
--- Shared.Anticheat for the Extra tab. Both detect a "backward snap": a jump this
--- frame too big to be movement (>= SnapThreshold) that lands on a spot you were at
--- >0.15s ago (within MatchRadius). Normal teleports (spawns, seats) go somewhere
--- NEW, so they never match the history and are ignored.
+-- v0.46.0: Extra grows its first sub-tab, Mods: the universal stat mod from gun research. Pick a source (held tool / any instance), tick values, pin them held or set-once. Session-only, unpin to restore. v0.60.0: ANTICHEATS. Two features that fight rubberbanding (an AC teleporting you back to where you were). Own IIFE for its register budget; publishes Shared.Anticheat for the Extra tab. Both detect a "backward snap": a jump this frame too big to be movement (>= SnapThreshold) that lands on a spot you were at >0.15s ago (within MatchRadius). Normal teleports (spawns, seats) go somewhere NEW, so they never match the history and are ignored.
 ;(function()
 local AC = { SnapThreshold = 16, MatchRadius = 7, Window = 0.5 }
 registerConfig("anticheat", AC)
@@ -37449,11 +35907,7 @@ local function matchesHistory(cur, now)
     end
     return false
 end
--- shared responder: while a brute fight is live keep slamming; otherwise detect a
--- backward snap and slam back to the pre-snap CFrame. Returns true if it acted.
--- v0.60.1: a jump only counts as a TELEPORT if position moved further than the
--- player's own velocity could carry it (excess = displacement - vel*dt). Plain high
--- velocity (speed) explains its own displacement, so it never reads as a teleport.
+-- shared responder: while a brute fight is live keep slamming; otherwise detect a backward snap and slam back to the pre-snap CFrame. Returns true if it acted. v0.60.1: a jump only counts as a TELEPORT if position moved further than the player's own velocity could carry it (excess = displacement - vel*dt). Plain high velocity (speed) explains its own displacement, so it never reads as a teleport.
 local function respond(r, now, brute)
     if brute and now < fightUntil and fightCF then
         slamTo(r, fightCF)
@@ -37473,10 +35927,7 @@ local function respond(r, now, brute)
     lastPos, lastCF, lastVel, lastT = back.Position, back, Vector3.zero, now
     return true
 end
--- Heartbeat owns history + drives the brute response (fast, physics-timed).
--- v0.60.1: last-good refs update every frame (cheap assignments), but the history
--- ring is only appended ~25x/s -- enough to know "were you here a moment ago",
--- without a table churn every frame.
+-- Heartbeat owns history + drives the brute response (fast, physics-timed). v0.60.1: last-good refs update every frame (cheap assignments), but the history ring is only appended ~25x/s -- enough to know "were you here a moment ago", without a table churn every frame.
 local function hbTick()
     local r = hrp(); if not r then reset(); return end
     local now = os.clock()
@@ -37542,11 +35993,7 @@ function AC.buildPanel(host)
     local sldSnap = slider(host, "Snap Threshold (studs)", 4, 60, AC.SnapThreshold, 0, function(v) AC.SnapThreshold = v end)
     local sldRadius = slider(host, "Match Radius (studs)", 1, 75, AC.MatchRadius, 0, function(v) AC.MatchRadius = v end)
     local sldWindow = slider(host, "Fight Window (s)", 0.1, 2, AC.Window, 1, function(v) AC.Window = v end)
-    -- v0.60.2 fix: the Extra tab is built once and is NOT in rebuildConfigTabs'
-    -- list, but rebuildConfigTabs wipes EVERY module's Watchers globally. That
-    -- orphaned these checkboxes (a config load, e.g. an auto-load, cleared their
-    -- watcher, so toggling the module updated the arraylist but never the box).
-    -- Re-subscribe + resync to the live module state whenever the config rebuilds.
+    -- v0.60.2 fix: the Extra tab is built once and is NOT in rebuildConfigTabs' list, but rebuildConfigTabs wipes EVERY module's Watchers globally. That orphaned these checkboxes (a config load, e.g. an auto-load, cleared their watcher, so toggling the module updated the arraylist but never the box). Re-subscribe + resync to the live module state whenever the config rebuilds.
     Shared._acResync = function()
         for _, pr in ipairs({ { cbBrute, "bruteforce_rb" }, { cbAnti, "anti_rb" } }) do
             local ctrl, id = pr[1], pr[2]
@@ -37688,12 +36135,7 @@ local function drawWeapon()
         end
     end
 end
--- v0.69.2: the sphere is anchored where the key first went active and stays
--- there. Every shot picks a fresh random point on its SHELL around the anchor
--- (never a step from where you stand, which ratchets upward). Radius is
--- BlinkDist in every direction: height, width, and length alike.
--- v0.84.0: declared before fireBlink. Declared below it, this read resolved to
--- nil globals, so every shot re-centred on you and the v0.69.2 anchor never held.
+-- v0.69.2: the sphere is anchored where the key first went active and stays there. Every shot picks a fresh random point on its SHELL around the anchor (never a step from where you stand, which ratchets upward). Radius is BlinkDist in every direction: height, width, and length alike. v0.84.0: declared before fireBlink. Declared below it, this read resolved to nil globals, so every shot re-centred on you and the v0.69.2 anchor never held.
 local anchorCF, anchorChar = nil, nil
 local function fireBlink()
     local r = myRoot()
@@ -37918,10 +36360,7 @@ local function ballPoint(center, R)
     local rad = R * (rng:NextNumber(0, 1) ^ (1 / 3))
     return center + Vector3.new(rr * math.cos(a), z, rr * math.sin(a)) * rad
 end
--- inside-ball landing with shell-grade void safety, but spam favors motion over
--- caution: every failed check used to return one fixed Up fallback, parking
--- the user in a single spot that read as "locked". Two ground chances, then
--- the raw (clamped) point goes anyway. Falling beats standing still here.
+-- inside-ball landing with shell-grade void safety, but spam favors motion over caution: every failed check used to return one fixed Up fallback, parking the user in a single spot that read as "locked". Two ground chances, then the raw (clamped) point goes anyway. Falling beats standing still here.
 local function safeBall(center, R)
     local floor = killY() + 100
     for _ = 1, 2 do
@@ -37947,10 +36386,7 @@ local function primeAim(plr)
     local cam = Workspace.CurrentCamera
     if part and cam then pcall(function() cam.CFrame = CFrame.new(cam.CFrame.Position, part.Position) end) end
 end
--- boomerang anchor: where you stood when the key first went active. Release
--- (or unlatch, or disarm) snaps you back to it. Cleared on respawn so death
--- never slingshots a fresh body back into the fight that killed it. Spam TP
--- keeps its own anchor pair under the same Return toggle.
+-- boomerang anchor: where you stood when the key first went active. Release (or unlatch, or disarm) snaps you back to it. Cleared on respawn so death never slingshots a fresh body back into the fight that killed it. Spam TP keeps its own anchor pair under the same Return toggle.
 local wasBlinkActive = false
 local spamAnchorCF, spamAnchorChar, wasSpamActive = nil, nil, false
 local lastDrawLock = false
@@ -38099,20 +36535,12 @@ RunService.Heartbeat:Connect(function()
         end
         wasSpamActive = on
     end
-    -- v0.96.5: Spam TP Desync ride. Same no-flash contract as the rivals desync:
-    -- the root is written every Heartbeat and handed back at RenderStep 101, so
-    -- the client never draws a frame at the spam spot while replication samples
-    -- it there. Own bind name so it never collides with the rivals desync.
+    -- v0.96.5: Spam TP Desync ride. Same no-flash contract as the rivals desync: the root is written every Heartbeat and handed back at RenderStep 101, so the client never draws a frame at the spam spot while replication samples it there. Own bind name so it never collides with the rivals desync.
     do
         local s = Modules.hvh_spam
         local dest = s and s._dsDest
         local live = s and s.Enabled and keyActive(SpamK) and HV.SpamMethod == "Desync" and dest ~= nil
-        -- v0.96.9: publish the held spot for the aim pipeline. Without this the
-        -- native features measured from the real body while the server saw the
-        -- spam spot, so every shot missed.
-        -- v0.98.1: re-aim at the target every frame (it moves between spam picks),
-        -- and in rivals point the replicated view angle at it on the lowest slot,
-        -- since backstabs read that angle, not the body. Aim / rage still win.
+        -- v0.96.9: publish the held spot for the aim pipeline. Without this the native features measured from the real body while the server saw the spam spot, so every shot missed. v0.98.1: re-aim at the target every frame (it moves between spam picks), and in rivals point the replicated view angle at it on the lowest slot, since backstabs read that angle, not the body. Aim / rage still win.
         local tgt = s and s._dsTarget
         if live and tgt and tgt.Parent then
             local flat = Vector3.new(tgt.Position.X, dest.Position.Y, tgt.Position.Z)
@@ -38181,12 +36609,7 @@ registerModule("hvh_blink", "Blink", function() end,
     function() BlinkK.held, BlinkK.latch = false, false; syncKeyPill(BlinkK, true) end)
 registerModule("hvh_spam", "Spam TP", function() end,
     function() SpamK.held, SpamK.latch = false, false; syncKeyPill(SpamK, true) end)
--- v0.74.0: ported desync cadence. Every Heartbeat: micro-rotate the root
--- (marks it dirty so it replicates without moving), write a huge fresh random
--- velocity, hold it through the render step, then restore the saved one. Other
--- clients extrapolate the lie and render you wrong; you keep your velocity, so
--- walking, jumps, and fly all feel normal. No pinning, no state changes: one
--- toggle. Own connection (the render Wait must not stall the shared tick).
+-- v0.74.0: ported desync cadence. Every Heartbeat: micro-rotate the root (marks it dirty so it replicates without moving), write a huge fresh random velocity, hold it through the render step, then restore the saved one. Other clients extrapolate the lie and render you wrong; you keep your velocity, so walking, jumps, and fly all feel normal. No pinning, no state changes: one toggle. Own connection (the render Wait must not stall the shared tick).
 local veloConn = nil
 local function startVelo()
     if veloConn then return end
@@ -38212,11 +36635,7 @@ local function stopVelo()
     local r = myRoot()
     if r then pcall(function() r.AssemblyLinearVelocity = Vector3.zero end) end
 end
--- v0.74.1: ported anti-script shell, source-faithful and unconditional like the
--- original (runs whether desync is on or not). On spawn, drops character Scripts
--- outside Health/Sound that carry a LocalScript; matching Scripts added later
--- get their LocalScript fired once after a beat. pcall-wrapped so a strange rig
--- can never break load. Skipped the toggle print: print policy still stands.
+-- v0.74.1: ported anti-script shell, source-faithful and unconditional like the original (runs whether desync is on or not). On spawn, drops character Scripts outside Health/Sound that carry a LocalScript; matching Scripts added later get their LocalScript fired once after a beat. pcall-wrapped so a strange rig can never break load. Skipped the toggle print: print policy still stands.
 local function clearUnwantedScripts(character)
     for _, v in pairs(character:GetChildren()) do
         if v:IsA("Script") and v.Name ~= "Health" and v.Name ~= "Sound" and v:FindFirstChild("LocalScript") then
@@ -38224,10 +36643,7 @@ local function clearUnwantedScripts(character)
         end
     end
 end
--- v0.74.1: ported anti-script shell, source-faithful. v0.74.2: gated on the
--- velo toggle. Unconditional firing blind-fired game remotes on every spawn,
--- which is the prime suspect for weird-feeling joins. Same mechanism, armed
--- only while you actually want desync running.
+-- v0.74.1: ported anti-script shell, source-faithful. v0.74.2: gated on the velo toggle. Unconditional firing blind-fired game remotes on every spawn, which is the prime suspect for weird-feeling joins. Same mechanism, armed only while you actually want desync running.
 local function shellOn()
     local vm = Modules.hvh_velo
     return vm and vm.Enabled
@@ -38281,11 +36697,7 @@ function HV.buildPanel(host)
     -- v0.94.0: minimum is 1, his call. 1 stud is effectively standing inside them.
     local sldSpamDist = slider(host, "Spam Radius", 1, 10000, HV.SpamDist or 300, 0, function(v) HV.SpamDist = v end)
     local sldSpamRate = slider(host, "Spam Interval (s)", 0, 0.6, HV.SpamRate or 0.25, 2, function(v) HV.SpamRate = v end)
-    -- v0.68.9: exact entry, not a drag slider. Past 1M one slider pixel is
-    -- thousands of studs, so small and huge jumps cannot share a control.
-    -- Typing keeps both 500 and 8000000 settable. Clamped 10 to 10000000:
-    -- float32 holds ~0.1 studs at 1M and ~1 stud at 10M (past that the rig
-    -- itself degrades, verified by our own 253M probe reading ~16 studs off).
+    -- v0.68.9: exact entry, not a drag slider. Past 1M one slider pixel is thousands of studs, so small and huge jumps cannot share a control. Typing keeps both 500 and 8000000 settable. Clamped 10 to 10000000: float32 holds ~0.1 studs at 1M and ~1 stud at 10M (past that the rig itself degrades, verified by our own 253M probe reading ~16 studs off).
     local distRow = new("Frame", {
         Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, ZIndex = 34, Parent = host,
     })
@@ -38431,10 +36843,7 @@ function HV.buildPanel(host)
 end
 end)()
 
--- v0.70.0: suspect scanner. Watches every living rig for teleport jumps and
--- sustained inhuman velocity, one cheap roster sweep per 0.25s (positions +
--- velocity only, no raycasts, respawns re-baseline silently). Flags publish on
--- Shared.Suspects for the player list; stale flags expire after 90 seconds.
+-- v0.70.0: suspect scanner. Watches every living rig for teleport jumps and sustained inhuman velocity, one cheap roster sweep per 0.25s (positions + velocity only, no raycasts, respawns re-baseline silently). Flags publish on Shared.Suspects for the player list; stale flags expire after 90 seconds.
 ;(function()
 local SUS = {}
 Shared.Suspects = SUS
@@ -38491,10 +36900,7 @@ RunService.Heartbeat:Connect(function()
 end)
 end)()
 
--- v0.99.1 RIVALS AUTOMATION (Harion). Auto Queue joins the picked queue once per
--- lobby visit (never on a match server, never mid round, retry at most every
--- 60s). Auto Ban votes once per voting window, only while voting is open, after
--- its delays. Staff Detector reads group roles of everyone in the server.
+-- v0.99.1 RIVALS AUTOMATION (Harion). Auto Queue joins the picked queue once per lobby visit (never on a match server, never mid round, retry at most every 60s). Auto Ban votes once per voting window, only while voting is open, after its delays. Staff Detector reads group roles of everyone in the server.
 Shared.RivalsAuto = nil
 if Koffee._isRivals then (function()
     local A = Koffee.Rivals.Auto
@@ -38828,10 +37234,7 @@ addTab("Extra", function(epanel)
     local host = (R and R["Mods"]) or card
     if R and R["Anticheats"] and Shared.Anticheat then Shared.Anticheat.buildPanel(R["Anticheats"]) end
     if R and R["Hvh"] and Shared.Hvh then Shared.Hvh.buildPanel(R["Hvh"]) end
-    -- pins live across rescans, keyed so a rebuild re-attaches, not dupes.
-    -- { on, want, orig, kind } / kind = number|bool|string.
-    -- v0.75.0: pins persist. ModSave mirrors {id, on, want, kind} (never orig,
-    -- conns, or instances) at every mutation; reconcile re-seeds from it load.
+    -- pins live across rescans, keyed so a rebuild re-attaches, not dupes. { on, want, orig, kind } / kind = number|bool|string. v0.75.0: pins persist. ModSave mirrors {id, on, want, kind} (never orig, conns, or instances) at every mutation; reconcile re-seeds from it load.
     local ModSave = { Pins = {} }
     registerConfig("modpins", ModSave)
     local pins = {}
@@ -39236,10 +37639,7 @@ addTab("Extra", function(epanel)
         if #common > 0 then sectionLbl(listBox, "common") emit(common) end
         if #rest > 0 then sectionLbl(listBox, "everything else") emit(rest) end
     end
-    -- v0.82.0: Full Game results picker. Sweeps the whole game (minus UI) for
-    -- catalog-named values, groups hits by parent, and offers the parents in
-    -- a dropdown. Picking one loads its rows like a manual pick. Values only:
-    -- attributes stay manual-pick. Auto-picks the first hit so rows show now.
+    -- v0.82.0: Full Game results picker. Sweeps the whole game (minus UI) for catalog-named values, groups hits by parent, and offers the parents in a dropdown. Picking one loads its rows like a manual pick. Values only: attributes stay manual-pick. Auto-picks the first hit so rows show now.
     gameSweep = function()
         srcLabel.Text = "Scanning game..."
         task.spawn(function()
@@ -39515,10 +37915,7 @@ addTab("Extra", function(epanel)
     end
 end)
 
--- select first tab AFTER layout AND positioning have settled.
--- v0.0.5 only checked AbsoluteSize: but AbsolutePosition can still be zero
--- for a frame or two after that, which put the pill at (0,0) on first launch.
--- also, the tabBar AbsolutePosition signal above will re-snap once it moves.
+-- select first tab AFTER layout AND positioning have settled. v0.0.5 only checked AbsoluteSize: but AbsolutePosition can still be zero for a frame or two after that, which put the pill at (0,0) on first launch. also, the tabBar AbsolutePosition signal above will re-snap once it moves.
 task.spawn(function()
     local btn = tabs.Visuals.Button
     for _ = 1, 240 do
@@ -39536,24 +37933,14 @@ end)
 -- v0.0.97: the bottom-right session toast was removed entirely (the user
 -- asked to drop the widget, not just the headline label). nothing replaces it.
 
--- WINDOW TOGGLE + BACKGROUND SYNC
--- Delete key toggles. Everything (window + snow + dim + blur) fades
--- with the same linear timing so they leave together, cleanly.
--- IIFE: own register budget. The main chunk rides Luau's 200-local ceiling
--- (same pattern as the Combat IIFE further up).
+-- WINDOW TOGGLE + BACKGROUND SYNC Delete key toggles. Everything (window + snow + dim + blur) fades with the same linear timing so they leave together, cleanly. IIFE: own register budget. The main chunk rides Luau's 200-local ceiling (same pattern as the Combat IIFE further up).
 ;(function()
 local windowOpen = true
 
 -- v0.0.95: track pre-open mouse state so we can restore what the game (or 3rd
 -- Person, or shift-lock, etc.) was doing after the user closes the menu.
 local _preMenuMouseBehavior, _preMenuMouseIcon, _preMenuCamMode = nil, nil, nil
--- v0.18.3: setting MouseBehavior once loses in first person. The PlayerModule's
--- camera re-locks it EVERY frame during camera update, so the fix is to re-assert
--- after it: RenderPriority.Last (2000) runs after Camera (200), where 3rd Person
--- and the aimbot bind.
--- v0.90.0: unique per load (a dying run's unbind by name would hit the new one),
--- stands down while right-click is held (the camera locks the mouse to turn, and
--- freeing it every frame left one frame of turning per click), and stops once dead.
+-- v0.18.3: setting MouseBehavior once loses in first person. The PlayerModule's camera re-locks it EVERY frame during camera update, so the fix is to re-assert after it: RenderPriority.Last (2000) runs after Camera (200), where 3rd Person and the aimbot bind. v0.90.0: unique per load (a dying run's unbind by name would hit the new one), stands down while right-click is held (the camera locks the mouse to turn, and freeing it every frame left one frame of turning per click), and stops once dead.
 local MFREE = KID.name("mfree") .. math.random(1, 1e9)
 local function holdMouseFree(on)
     pcall(function() RunService:UnbindFromRenderStep(MFREE) end)
@@ -39660,10 +38047,7 @@ _preMenuMouseBehavior = UserInputService.MouseBehavior
 _preMenuMouseIcon = UserInputService.MouseIconEnabled
 holdMouseFree(true)
 
--- v0.62.0 multi-window framework (Matcha-style): a window-switcher bar + the
--- window-manager plumbing (registry / z-order / drag / persistence) every future
--- panel plugs into. One IIFE for its own O0 register budget; all state is published
--- on Koffee.Windows / Shared.Windows.
+-- v0.62.0 multi-window framework (Matcha-style): a window-switcher bar + the window-manager plumbing (registry / z-order / drag / persistence) every future panel plugs into. One IIFE for its own O0 register budget; all state is published on Koffee.Windows / Shared.Windows.
 ;(function()
     local Palette = Theme.Palette
     local WM = {}
@@ -39692,11 +38076,7 @@ holdMouseFree(true)
     WM.persist = { open = {}, pos = {} }
     registerConfig("windows", WM.persist)
 
-    -- registry. `defs` is the ordered master list; the bar renders defs where
-    -- bar==true. kind "primary" = only visible while the main UI is open;
-    -- "secondary" = a free HUD widget. canFloat = may live outside the main UI.
-    -- dead = the greyed placeholder slot (no interaction). locked = can't close
-    -- (details). No `build` field yet -> nothing spawns this phase.
+    -- registry. `defs` is the ordered master list; the bar renders defs where bar==true. kind "primary" = only visible while the main UI is open; "secondary" = a free HUD widget. canFloat = may live outside the main UI. dead = the greyed placeholder slot (no interaction). locked = can't close (details). No `build` field yet -> nothing spawns this phase.
     WM.defs = {}
     WM.byId = {}
     local function def(d) WM.defs[#WM.defs + 1] = d; WM.byId[d.id] = d end
@@ -39709,10 +38089,7 @@ holdMouseFree(true)
     def{ id = "info",     icon = "info",        label = "Details",        kind = "secondary", canFloat = true,  bar = true, default = true }
     def{ id = "media",    icon = "music",       label = "Media",          kind = "secondary", canFloat = true,  bar = true }
     def{ id = "keybinds", icon = "keyboard",    label = "Hotkeys",        kind = "secondary", canFloat = true,  bar = true }
-    -- array list is a window but not a bar slot (its own draggable overlay added
-    -- later); registered here so the framework knows it.
-    -- v0.93.0: rivals only cosmetic picker, so the dock gains a slot just in that game
-    -- v0.93.18: detection gated, not place id. Any place with the AC gets the slot.
+    -- array list is a window but not a bar slot (its own draggable overlay added later); registered here so the framework knows it. v0.93.0: rivals only cosmetic picker, so the dock gains a slot just in that game v0.93.18: detection gated, not place id. Any place with the AC gets the slot.
     if Koffee._isRivals then
         def{ id = "skins", icon = "package", label = "Skins", kind = "secondary", canFloat = true, bar = true }
     end
@@ -39786,10 +38163,7 @@ holdMouseFree(true)
         end)
     end
 
-    -- ---- window bodies: frames the bar slots show / hide ----
-    -- A window registers its root via attachBody; the framework owns visibility:
-    -- shown = slot on AND (secondary, or the main UI is open). Primary windows
-    -- vanish with the main UI; secondary ones stay as free HUD overlays.
+    -- ---- window bodies: frames the bar slots show / hide ---- A window registers its root via attachBody; the framework owns visibility: shown = slot on AND (secondary, or the main UI is open). Primary windows vanish with the main UI; secondary ones stay as free HUD overlays.
     WM.bodies = {}
     function WM.shouldShow(id)
         local d = WM.byId[id]
@@ -39820,12 +38194,7 @@ holdMouseFree(true)
         WM.applyBodyVis(id)
     end
 
-    -- the switcher bar (dock)
-    -- A macOS / Windows-11-taskbar dock: the icon nearest the cursor lifts +
-    -- scales, and its neighbours react by proximity, so sweeping (or just resting
-    -- BETWEEN two icons) ripples a smooth wave instead of lighting one logo. The
-    -- pill stays compact and only grows downward to reveal the on-dots when a
-    -- window is actually open. Effect over strength: everything is subtle.
+    -- the switcher bar (dock) A macOS / Windows-11-taskbar dock: the icon nearest the cursor lifts + scales, and its neighbours react by proximity, so sweeping (or just resting BETWEEN two icons) ripples a smooth wave instead of lighting one logo. The pill stays compact and only grows downward to reveal the on-dots when a window is actually open. Effect over strength: everything is subtle.
     local RunService = game:GetService("RunService")
     local UIS = game:GetService("UserInputService")
 
@@ -40038,10 +38407,7 @@ holdMouseFree(true)
     WM.playIntro()
 end)()
 
--- v0.62.0 player list window: a primary window plugged into the framework. Grid of
--- everyone's pfp + names on the left, a detail panel on the right. Status
--- (None/Exclude/Prioritize) drives the targeting resolver. Own IIFE for its own O0
--- register budget; state on Shared.PlayerList.
+-- v0.62.0 player list window: a primary window plugged into the framework. Grid of everyone's pfp + names on the left, a detail panel on the right. Status (None/Exclude/Prioritize) drives the targeting resolver. Own IIFE for its own O0 register budget; state on Shared.PlayerList.
 ;(function()
     local WM = Koffee.Windows
     if not WM then return end
@@ -40294,17 +38660,10 @@ end)()
     local curPlr = nil
     local flinging = false
     local updateDetail, selectPlayer, rebuildGrid
-    -- Target Lock (moved out of Combat): Armed checkbox + keybind pill. Arms
-    -- Shared.TargetLock; the key toggles it; while engaged it locks onto the
-    -- Prioritize set (set each player's Status above).
-    -- v0.67.0: real module checkbox, so a config load re-syncs it through the
-    -- watcher like every tab toggle. Pill ref + resync below cover the keybind.
+    -- Target Lock (moved out of Combat): Armed checkbox + keybind pill. Arms Shared.TargetLock; the key toggles it; while engaged it locks onto the Prioritize set (set each player's Status above). v0.67.0: real module checkbox, so a config load re-syncs it through the watcher like every tab toggle. Pill ref + resync below cover the keybind.
     local tlArmed = moduleCheckbox(tlWrap, "Target Lock", "targetlock")
     local tlPill = keybindPill(tlArmed.row, "targetlock", nil, "Target Lock")
-    -- v0.67.0: the player list is never rebuilt, so a config load would leave
-    -- this row stale. Re-applied from rebuildConfigTabs like the Extra resync.
-    -- v0.70.3 fix: the wipe kills EVERY watcher, so re-subscribe here (the Extra
-    -- pattern) or the box freezes after the first config load. That was the bug.
+    -- v0.67.0: the player list is never rebuilt, so a config load would leave this row stale. Re-applied from rebuildConfigTabs like the Extra resync. v0.70.3 fix: the wipe kills EVERY watcher, so re-subscribe here (the Extra pattern) or the box freezes after the first config load. That was the bug.
     local tkRow, tkPill
     Shared._targetlockResync = function()
         local m = Modules.targetlock
@@ -40799,12 +39158,7 @@ end)()
     })
 end)()
 
--- v0.66.0 ESP preview window (id "esp", the 2nd bar button after the pen): a
--- floating primary window with a real R6 rig in a ViewportFrame and the live ESP
--- box/name/distance/etc drawn on it, so the ESP styling can be eyeballed without
--- another player. No logo in the header; its last segment shows the rig render mode.
--- A settings button flips render type (2D static / 3D spin) and rig size. Own IIFE
--- for its own O0 register budget.
+-- v0.66.0 ESP preview window (id "esp", the 2nd bar button after the pen): a floating primary window with a real R6 rig in a ViewportFrame and the live ESP box/name/distance/etc drawn on it, so the ESP styling can be eyeballed without another player. No logo in the header; its last segment shows the rig render mode. A settings button flips render type (2D static / 3D spin) and rig size. Own IIFE for its own O0 register budget.
 ;(function()
     local WM = Koffee.Windows
     if not WM then return end
@@ -40821,10 +39175,7 @@ end)()
     -- window root
     local W, H = 300, 372
     local SCALE = 1.15
-    -- v0.66.0: MUST be a plain Frame, NOT a CanvasGroup. A CanvasGroup flattens its
-    -- children into a texture and a ViewportFrame's 3D pass does not compose into it,
-    -- so the rig would render blank. Plain Frame + Active=false still clicks through
-    -- empty areas; the open/close uses a scale-pop instead of a group fade.
+    -- v0.66.0: MUST be a plain Frame, NOT a CanvasGroup. A CanvasGroup flattens its children into a texture and a ViewportFrame's 3D pass does not compose into it, so the rig would render blank. Plain Frame + Active=false still clicks through empty areas; the open/close uses a scale-pop instead of a group fade.
     local root = new("Frame", {
         Name = KID.name("espprev"), Active = false,   -- empty areas click through
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, -360, 0.5, 0),
@@ -41211,10 +39562,7 @@ end)()
 -- v0.90.0: Hotkeys window design, switched by right-clicking the window
 Koffee.KeybindsUI = { Design = "Pills" }
 registerConfig("keybinds_ui", Koffee.KeybindsUI)
--- v0.66.0 keybinds window (the "Hotkeys" HUD): a floating secondary HUD, a stack of
--- very-rounded pills each showing a [key cap] + the action it fires, driven live off
--- the keybind registry (Koffee._keybinds) and the live Keybinds table. A held key
--- glows green. Own IIFE for its own O0 register budget.
+-- v0.66.0 keybinds window (the "Hotkeys" HUD): a floating secondary HUD, a stack of very-rounded pills each showing a [key cap] + the action it fires, driven live off the keybind registry (Koffee._keybinds) and the live Keybinds table. A held key glows green. Own IIFE for its own O0 register budget.
 ;(function()
     local WM = Koffee.Windows
     if not WM then return end
@@ -42128,13 +40476,7 @@ registerConfig("media", Koffee.Media)
     WM.attachBody("media", root, { onShow = animShow, onHide = animHide })
 end)()
 
--- v0.72.0 TOASTS. Bottom-right stack, max 3 visible, overflow queues. Each card
--- carries an accent edge, a Lucide icon, a ProximaSoft Bold title + muted
--- message. Cards are translucent (light, the game shows through) with a
--- hairline stroke. Entrance is fade + pop, exit is fade; hover pauses the
--- timer, click dismisses. Identical toasts coalesce, never stack.
--- Own IIFE for its register budget. Front door: Koffee.notify(title, msg, opts)
--- with opts.severity ("info" | "success" | "error") and opts.duration (seconds).
+-- v0.72.0 TOASTS. Bottom-right stack, max 3 visible, overflow queues. Each card carries an accent edge, a Lucide icon, a ProximaSoft Bold title + muted message. Cards are translucent (light, the game shows through) with a hairline stroke. Entrance is fade + pop, exit is fade; hover pauses the timer, click dismisses. Identical toasts coalesce, never stack. Own IIFE for its register budget. Front door: Koffee.notify(title, msg, opts) with opts.severity ("info" | "success" | "error") and opts.duration (seconds).
 ;(function()
 local MAXVIS = 3
 local SEV = {
@@ -42279,12 +40621,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
             pendingRebind = nil
             return
         end
-        -- v0.27.0: bind mouse buttons even when the click lands on the koffee UI.
-        -- Rebind is armed ("...") so the next press is intentional, and the arming
-        -- click's own edge already fired. (gpe-gating forced a game-world click.)
-        -- v0.0.94: pressing JUST a modifier alone (Shift/Ctrl/Alt without another key)
-        -- doesn't complete the rebind: user needs to press the actual key while
-        -- holding the modifier. Otherwise the modifier itself gets bound as the key.
+        -- v0.27.0: bind mouse buttons even when the click lands on the koffee UI. Rebind is armed ("...") so the next press is intentional, and the arming click's own edge already fired. (gpe-gating forced a game-world click.) v0.0.94: pressing JUST a modifier alone (Shift/Ctrl/Alt without another key) doesn't complete the rebind: user needs to press the actual key while holding the modifier. Otherwise the modifier itself gets bound as the key.
         if it == Enum.UserInputType.Keyboard then
             local kc = input.KeyCode
             if kc == Enum.KeyCode.LeftShift  or kc == Enum.KeyCode.RightShift
@@ -42557,10 +40894,7 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoNative) then pcall(fu
         return false
     end
 
-    -- :: katana reflect ::
-    -- A deflecting katana (right-click) reflects shots. Swept at 10Hz into a set, because the only
-    -- source is a walk of FighterController.Objects and the callers are per candidate
-    -- per frame: doing it inline would be O(n^2) every frame.
+    -- :: katana reflect :: A deflecting katana (right-click) reflects shots. Swept at 10Hz into a set, because the only source is a walk of FighterController.Objects and the callers are per candidate per frame: doing it inline would be O(n^2) every frame.
     RV.deflecting = {}
     RV.katanaOut = {}
     local function deflectOf(o)
@@ -42636,11 +40970,7 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoNative) then pcall(fu
         return math.deg(p), math.deg(y)
     end
 
-    -- :: VIEW ANGLE DRIVER ::
-    -- The server's whole idea of where you are looking is those two bytes, resent at
-    -- most 10Hz and deduplicated. Owning them IS the native perfect lock: the camera
-    -- never moves, so the viewmodel can never desync from it.
-    -- Slot table, highest slot wins, so silent / aim / rage / backstab never fight.
+    -- :: VIEW ANGLE DRIVER :: The server's whole idea of where you are looking is those two bytes, resent at most 10Hz and deduplicated. Owning them IS the native perfect lock: the camera never moves, so the viewmodel can never desync from it. Slot table, highest slot wins, so silent / aim / rage / backstab never fight.
     local G = getgenv and getgenv()
     local VA = (G and G["\6_rt_va_ctx"]) or { slots = {}, win = nil }
     if G then G["\6_rt_va_ctx"] = VA end
@@ -42874,10 +41204,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         return ally
     end
     function RV.serverHead()
-        -- what the server believes we are shooting from: the desync spot when
-        -- one is live. Every range and facing check measures from here.
-        -- v0.96.9: the Spam TP ride publishes its spot too, so native aim stops
-        -- measuring from the real body while spam-desynced.
+        -- what the server believes we are shooting from: the desync spot when one is live. Every range and facing check measures from here. v0.96.9: the Spam TP ride publishes its spot too, so native aim stops measuring from the real body while spam-desynced.
         if RV._dsLast ~= nil then return RV._dsLast.Position end
         if RV._spamDs ~= nil then return RV._spamDs.Position end
         local ch = myChar()
@@ -42887,10 +41214,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if r then return r.Position end
         return nil
     end
-    -- v0.96.12: close orbit origin for rage. Shots originate from a point
-    -- circling the target at melee range instead of one static spot, so angle
-    -- checks see movement. Independent of the desync spot: this is purely where
-    -- the rounds come from.
+    -- v0.96.12: close orbit origin for rage. Shots originate from a point circling the target at melee range instead of one static spot, so angle checks see movement. Independent of the desync spot: this is purely where the rounds come from.
     function RV.rageOrigin(part)
         local tp = part.Position
         local ph = os.clock() * 3.5
@@ -42906,10 +41230,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         return duel ~= nil
     end
 
-    -- :: DESYNC ::
-    -- Write the root in Heartbeat, hand it back from a RenderStep bound at 101. The
-    -- restore lands before anything draws, so no frame is ever rendered out there:
-    -- that is why this does not flash the way a teleport-and-return does.
+    -- :: DESYNC :: Write the root in Heartbeat, hand it back from a RenderStep bound at 101. The restore lands before anything draws, so no frame is ever rendered out there: that is why this does not flash the way a teleport-and-return does.
     local DSBIND = tostring(KID.ctx.bind) .. "rvds"
     local dsPhase = 0
     -- v0.99.21 orbit styles, shared by Desync Orbit and rage Scatter. Offset from the
@@ -43075,10 +41396,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if RV.disarmViewAngles then RV.disarmViewAngles() end
             return
         end
-        -- v0.95.0: rv_lock is gone. The real Aimbot Perfect Lock claims the PL
-        -- slot from its own render bind, and this loop must not wipe it while it
-        -- is the only claimant, so it counts here. The bind clears the slot every
-        -- frame it is disarmed, so counting it never leaves a stale claim.
+        -- v0.95.0: rv_lock is gone. The real Aimbot Perfect Lock claims the PL slot from its own render bind, and this loop must not wipe it while it is the only claimant, so it counts here. The bind clears the slot every frame it is disarmed, so counting it never leaves a stale claim.
         local SA = Shared.Combat and Shared.Combat.Aim
         local plOn = SA and SA.Enabled and SA.PerfectLock
         local anyAngle = plOn or on("rv_rage") or on("rv_backstab")
@@ -43093,10 +41411,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         local origin = RV.serverHead()
         if origin == nil then RV.clearAllAngles(); return end
 
-        -- backstab: copy the enemy's own facing, so the server places you behind them
-        -- by definition. Nothing to do with where you are actually standing.
-        -- slot 10 is the knife judgment: claiming it while firing guns hands the
-        -- server a sideways angle next to our packets. Melee only.
+        -- backstab: copy the enemy's own facing, so the server places you behind them by definition. Nothing to do with where you are actually standing. slot 10 is the knife judgment: claiming it while firing guns hands the server a sideways angle next to our packets. Melee only.
         local bIt = RV.equipped()
         local bMelee = RV.RG ~= nil and RV.RG.isMelee ~= nil and RV.RG.isMelee(bIt)
         if on("rv_backstab") and bIt ~= nil and bMelee then
@@ -43132,12 +41447,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
         RV._rageTarget = tplr
 
-        -- ragebot: own the angle at the highest combat slot and fire UseItem
-        -- directly. v0.96.3: read Kicia's ShootEncoded (message line 27111) for
-        -- real this time. Two things 02 got wrong: raycast shots carry
-        -- outer[char(2)] = true, and fire is paced at the gun's own cooldown with
-        -- a pipeline reload at empty instead of dry-firing.
-        -- v0.96.12: rounds originate at the close orbit, not one static spot.
+        -- ragebot: own the angle at the highest combat slot and fire UseItem directly. v0.96.3: read Kicia's ShootEncoded (message line 27111) for real this time. Two things 02 got wrong: raycast shots carry outer[char(2)] = true, and fire is paced at the gun's own cooldown with a pipeline reload at empty instead of dry-firing. v0.96.12: rounds originate at the close orbit, not one static spot.
         if on("rv_rage") and tpart and R.Rage.Strike and RV.rageStrike then
             RV.rageStrike(tplr, tpart)
         elseif on("rv_rage") and tpart then
@@ -43432,12 +41742,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local B = RG.bounds
             if now - B.at < 0.5 then return end
             B.at = now
-            -- v0.99.17: map Barriers also hold "KillBrick" parts (instant death), the
-            -- reason the Edge hide spot insta-killed on some maps
-            -- v0.99.55 (lobby duel OOB deaths): every volume is kept as a snapshot. With
-            -- streaming on (the lobby streams its map in) a volume that streams out of
-            -- reach is remembered for 10 minutes instead of forgotten; without streaming a
-            -- missing volume is a map swap and is dropped at once.
+            -- v0.99.17: map Barriers also hold "KillBrick" parts (instant death), the reason the Edge hide spot insta-killed on some maps v0.99.55 (lobby duel OOB deaths): every volume is kept as a snapshot. With streaming on (the lobby streams its map in) a volume that streams out of reach is remembered for 10 minutes instead of forgotten; without streaming a missing volume is a map swap and is dropped at once.
             local streaming = false
             pcall(function() streaming = Workspace.StreamingEnabled == true end)
             RG.streaming = streaming
@@ -43472,10 +41777,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
         end
         RG.snaps = {}
-        -- the game's own test (GameplayUtility.IsWithinRotatedShape): Ball and Cylinder
-        -- volumes are round. A box test made round safe zones look bigger than they are,
-        -- so a spot read "safe" where the game read "out of bounds". m widens (or, when
-        -- negative, shrinks) the volume.
+        -- the game's own test (GameplayUtility.IsWithinRotatedShape): Ball and Cylinder volumes are round. A box test made round safe zones look bigger than they are, so a spot read "safe" where the game read "out of bounds". m widens (or, when negative, shrinks) the volume.
         function RG.shapeIn(sn, pos, m)
             local rel = sn.cf:PointToObjectSpace(pos)
             local h = sn.size * 0.5
@@ -43491,10 +41793,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local h = part.Size * 0.5
             return math.abs(rel.X) <= h.X and math.abs(rel.Y) <= h.Y and math.abs(rel.Z) <= h.Z
         end
-        -- seconds we may rest at pos (math.huge = free)
-        -- v0.99.30: one strict check for every teleport. Any OutOfBoundsPart (3 stud
-        -- margin), any KillBrick (4 stud margin: the body reaches past its centre)
-        -- or a tripmine zone is refused outright, never rested in on a timer.
+        -- seconds we may rest at pos (math.huge = free) v0.99.30: one strict check for every teleport. Any OutOfBoundsPart (3 stud margin), any KillBrick (4 stud margin: the body reaches past its centre) or a tripmine zone is refused outright, never rested in on a timer.
         function RG.insideM(part, pos, m)
             local rel = part.CFrame:PointToObjectSpace(pos)
             local h = part.Size * 0.5
@@ -43540,12 +41839,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             return best
         end
-        -- v0.99.59 lobby duels (read live): the arena is workspace.Arena, walled by six
-        -- InstakillOOB volumes, and the hub server kills anyone outside its allowed area
-        -- with a check the client never sees (the lobby carries a DisableOOBBlacklist tag
-        -- the match servers don't). So no void there. A lobby duel = we are in a duel and
-        -- someone in the server is not. The box is the arena's walls (tall volumes only;
-        -- the floor slab runs far past them), cached 2s.
+        -- v0.99.59 lobby duels (read live): the arena is workspace.Arena, walled by six InstakillOOB volumes, and the hub server kills anyone outside its allowed area with a check the client never sees (the lobby carries a DisableOOBBlacklist tag the match servers don't). So no void there. A lobby duel = we are in a duel and someone in the server is not. The box is the arena's walls (tall volumes only; the floor slab runs far past them), cached 2s.
         function RG.lobbyBox()
             local now = os.clock()
             if RG.lbAt and now - RG.lbAt < 2 then return RG.lb end
@@ -43605,11 +41899,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             return best or (mr and mr.Position)
         end
-        -- v1.3.1 anti-voider: a target hiding in the void (under the map, or millions of
-        -- studs out) is chased where it is: a spot a few studs off it, placed and fired in
-        -- the same frame, held just long enough for the server, then back to our hide.
-        -- Returns true when it struck (or is holding the strike), false to let the
-        -- normal cycle run (e.g. our weapon isn't ready yet, so we stay hidden).
+        -- v1.3.1 anti-voider: a target hiding in the void (under the map, or millions of studs out) is chased where it is: a spot a few studs off it, placed and fired in the same frame, held just long enough for the server, then back to our hide. Returns true when it struck (or is holding the strike), false to let the normal cycle run (e.g. our weapon isn't ready yet, so we stay hidden).
         function RG.voidStrike(plr, it, now, live)
             local C = cfg()
             local ch = plr.Character
@@ -44454,11 +42744,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if RG.hide == nil or RG.hideKind ~= kind or (C.VoidSpam and now - RG.hopAt > hop) then
                 RG.hopAt = now
                 RG.hideKind = kind
-                -- v0.99.7: sideways past the map at its own height (message (2)'s void
-                -- spot); straight up got us killed
-                -- v0.99.17: walk outward until the spot is clear of every OOB volume and
-                -- KillBrick (some maps kill instantly until REALLY far). Far parks where
-                -- float32 steps are 2 to 16 studs; Unsafe is the original 100M to 300M.
+                -- v0.99.7: sideways past the map at its own height (message (2)'s void spot); straight up got us killed v0.99.17: walk outward until the spot is clear of every OOB volume and KillBrick (some maps kill instantly until REALLY far). Far parks where float32 steps are 2 to 16 studs; Unsafe is the original 100M to 300M.
                 local rings = { 35e3, 1e5, 3e5, 1e6, 3e6 }
                 if C.HideDist == "Far" then
                     -- v0.99.32: as far as the setting allows (top of each range)
@@ -44523,10 +42809,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             pcall(function() r = tonumber(rawget(it.Info, "AttackReach")) or 6 end)
             return r
         end
-        -- v0.99.38: seconds until the item can attack, read live off the item: the
-        -- game's own _attack_cooldown (tick based, set by every light / heavy / burst
-        -- step) and IsEquipping. RG.meleeNext only covers the frame we sent in, or a
-        -- fallback when the local attack call could not run.
+        -- v0.99.38: seconds until the item can attack, read live off the item: the game's own _attack_cooldown (tick based, set by every light / heavy / burst step) and IsEquipping. RG.meleeNext only covers the frame we sent in, or a fallback when the local attack call could not run.
         function RG.meleeLeft(it)
             local left = (RG.meleeNext or 0) - os.clock()
             pcall(function()
@@ -44771,10 +43054,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return ok
         end
 
-        -- :: OOB guard :: time our server spot spends in lethal volumes; before the
-        -- budget runs out, hand the real (in-bounds) body back for a beat
-        -- v0.99.33: a surface lands on an in-bounds spot no enemy is near, never on the
-        -- home body a teleporter can read and land inside. Picked once per surface.
+        -- :: OOB guard :: time our server spot spends in lethal volumes; before the budget runs out, hand the real (in-bounds) body back for a beat v0.99.33: a surface lands on an in-bounds spot no enemy is near, never on the home body a teleporter can read and land inside. Picked once per surface.
         function RG.surfaceCF(now)
             local mr = myRoot()
             if not mr then return nil end
@@ -44973,10 +43253,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     return
                 end
             end
-            -- v0.99.35 knife backstab: a Knife with Melee Ragebot goes inside them, a hair
-            -- behind, for Lead before the cooldown edge, stabs (left + right click) with
-            -- their own facing, holds Hold, then waits out the cooldown at the hide spot
-            -- (Edge / Far / Unsafe, whatever Hide Distance says)
+            -- v0.99.35 knife backstab: a Knife with Melee Ragebot goes inside them, a hair behind, for Lead before the cooldown edge, stabs (left + right click) with their own facing, holds Hold, then waits out the cooldown at the hide spot (Edge / Far / Unsafe, whatever Hide Distance says)
             if C.KnifeStab ~= false and C.Melee and it ~= nil and RG.isMelee(it) and tostring(it.Name) == "Knife" then
                 if RG.sawHeld then RG.chainsaw(nil, false) end
                 local root = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
@@ -44988,10 +43265,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     flat = flat.Magnitude > 0.01 and flat.Unit or Vector3.new(0, 0, -1)
                     local pos = tp - flat * 0.75
                     local spot = CFrame.lookAt(pos, pos + flat)
-                    -- v0.99.37: the server judges a melee hit AttackDelay after the packet,
-                    -- against where it has our body, so arrive early (Knife Arrive, at least
-                    -- half a ping) and stay through the delay plus a ping (Knife Stay floor).
-                    -- No Instant Fire here: the stab must never beat the position.
+                    -- v0.99.37: the server judges a melee hit AttackDelay after the packet, against where it has our body, so arrive early (Knife Arrive, at least half a ping) and stay through the delay plus a ping (Knife Stay floor). No Instant Fire here: the stab must never beat the position.
                     local ping = RG.ping()
                     local arrive = math.max((C.KnifeArrive or 120) / 1000, RG.v("Lead") / 1000, ping * 0.5)
                     local delay = 0
@@ -45057,10 +43331,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local pick = RG.v("ScatterArea") == "Map" and RG.mapSpot or RG.scatterSpot
                     local ch = plr.Character
                     local ignore = { LocalPlayer.Character, ch, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
-                    -- fire only what the spot can see. A refused pick leaves a stale
-                    -- spot behind, and shooting from it through a wall just burns ammo.
-                    -- That was the standing-holder misses: facing us, every aimed spot
-                    -- refused, old spot fired through cover.
+                    -- fire only what the spot can see. A refused pick leaves a stale spot behind, and shooting from it through a wall just burns ammo. That was the standing-holder misses: facing us, every aimed spot refused, old spot fired through cover.
                     local sees = RG.spot ~= nil and RG.spotFor == plr
                         and RG.los(RG.spot.Position, part.Position, ignore)
                     if C.InstantFire and live and RG.ready(it) and now >= (RG.warmUntil or 0) then
@@ -45308,18 +43579,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end)
     end)()
 
-    -- :: NATIVE SILENT AIM ::
-    -- Guns expose a plain `_on_shoot_callback` field that is handed the CameraData
-    -- table right before the shot replicates. Rewriting it in place redirects the
-    -- bullet with no metamethod, no remote hook and no camera movement at all.
-    -- v0.95.0: this is Silent Aim Method Native now, not its own module.
+    -- :: NATIVE SILENT AIM :: Guns expose a plain `_on_shoot_callback` field that is handed the CameraData table right before the shot replicates. Rewriting it in place redirects the bullet with no metamethod, no remote hook and no camera movement at all. v0.95.0: this is Silent Aim Method Native now, not its own module.
     local K0, K1, K2, K3 = utf8.char(0), utf8.char(1), utf8.char(2), utf8.char(3)
     local function redirect(cd)
         if type(cd) ~= "table" or Koffee.dead() then return end
-        -- v0.95.0: folded into the real Silent Aim as Method Native. Aims with its
-        -- Hit Part and Distance, and honors its arm key plus Require Left-Click
-        -- through the state the combat loop publishes. No namecalls in here: this
-        -- runs inside the game's own shoot path.
+        -- v0.95.0: folded into the real Silent Aim as Method Native. Aims with its Hit Part and Distance, and honors its arm key plus Require Left-Click through the state the combat loop publishes. No namecalls in here: this runs inside the game's own shoot path.
         local S = Shared.Combat and Shared.Combat.Silent
         if not (S and S.Enabled and S.Method == "Native") then return end
         if S.ActivationKey and not Shared._silHold then return end
@@ -45370,13 +43634,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             cd[K3] = U:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(aim)))
         end)
     end
-    -- v0.96.11: desync origin correction. When a desync is live (rivals or spam
-    -- ride) and neither rage nor silent claimed the shot, the game-built table
-    -- still originates at the real camera.
-    -- v0.96.12: aim at the same world hit point, from the server spot. Shifting
-    -- only the origin kept the old direction, which no longer intersects the
-    -- hit part from the new spot, so the packet read inconsistent and died.
-    -- Falls back to the direction shift when the offset cannot be decoded.
+    -- v0.96.11: desync origin correction. When a desync is live (rivals or spam ride) and neither rage nor silent claimed the shot, the game-built table still originates at the real camera. v0.96.12: aim at the same world hit point, from the server spot. Shifting only the origin kept the old direction, which no longer intersects the hit part from the new spot, so the packet read inconsistent and died. Falls back to the direction shift when the offset cannot be decoded.
     local function desyncCorrect(cd)
         if type(cd) ~= "table" or Koffee.dead() then return end
         if on("rv_rage") then return end
@@ -45446,11 +43704,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         if fine then RV._shakeHooked = true end
     end
 
-    -- v0.96.1: animation suppression through the game's own BlockAnimation, no
-    -- hooks at all. Names resolve live off the equipped item and unknown names
-    -- are harmless (PlayAnimation checks the block map before the track lookup).
-    -- Blocks last 5s and the item loop below re-applies every 0.25s, so turning
-    -- a toggle off restores the anim within seconds.
+    -- v0.96.1: animation suppression through the game's own BlockAnimation, no hooks at all. Names resolve live off the equipped item and unknown names are harmless (PlayAnimation checks the block map before the track lookup). Blocks last 5s and the item loop below re-applies every 0.25s, so turning a toggle off restores the anim within seconds.
     local function blockAnims(it)
         if not (R.Mods.NoShootAnim or R.Mods.NoReloadAnim or R.Mods.NoEquipAnim) then return end
         local vm
@@ -45559,11 +43813,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 end
             end)
         end
-        -- v0.98.1: MouseCrosshair:DamageEffect(data, divisor) runs for every hit
-        -- the local item lands (control key 0 = damage, key 1 = crit). It is the live
-        -- confirmed-hit funnel; the DamageNumberEffect event v0.98.0 hooked is gone
-        -- from the game. It also draws the hit marker and plays its tick, so
-        -- Disable Hit Marker drops both.
+        -- v0.98.1: MouseCrosshair:DamageEffect(data, divisor) runs for every hit the local item lands (control key 0 = damage, key 1 = crit). It is the live confirmed-hit funnel; the DamageNumberEffect event v0.98.0 hooked is gone from the game. It also draws the hit marker and plays its tick, so Disable Hit Marker drops both.
         local onNativeHit
         local function hookCrosshair()
             local mc = modAt({ "Modules", "ClientReplicatedClasses", "ClientFighter", "ClientItem",
@@ -45658,10 +43908,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             return nil
         end
-        -- v0.99.2: who got hit. Gun:_ShootEffect(results) is the server's reply to
-        -- our own shot, { [\0]=Position, [\1]=Instance, [\2]=Normal } per ray, where
-        -- the Instance is the victim's Hitbox* part (message (2)'s ground truth).
-        -- DamageEffect carries the damage; this carries the victim and the part.
+        -- v0.99.2: who got hit. Gun:_ShootEffect(results) is the server's reply to our own shot, { [\0]=Position, [\1]=Instance, [\2]=Normal } per ray, where the Instance is the victim's Hitbox* part (message (2)'s ground truth). DamageEffect carries the damage; this carries the victim and the part.
         local function onShootEffect(item, results)
             if type(results) ~= "table" then return end
             local mine = false
@@ -45778,10 +44025,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 part = crit and "head" or "body", weapon = weaponName() } })
         end
 
-        -- v0.99.1: VIEWMODEL (Harion). Appearance repaints the first-person rig
-        -- (Workspace.ViewModels.FirstPerson, rebuilt per weapon) with per-object
-        -- originals so turning a side off restores it. Hide Arms keeps owning the
-        -- arms while it is on.
+        -- v0.99.1: VIEWMODEL (Harion). Appearance repaints the first-person rig (Workspace.ViewModels.FirstPerson, rebuilt per weapon) with per-object originals so turning a side off restores it. Hide Arms keeps owning the arms while it is on.
         local XV = { orig = setmetatable({}, { __mode = "k" }), sa = {}, nextPaint = 0,
                      offSig = nil, fovSet = nil, wires = {}, meshLines = {} }
         -- v0.99.2: wireframe (Harion). Real mesh edges via EditableMesh, read once per
@@ -46603,11 +44847,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end)
         end)
     end)()
-    -- v0.96.8: hide the first-person arms. The rig lives at
-    -- Workspace.ViewModels.FirstPerson (one model, rebuilt per weapon), arms are
-    -- plain Parts, so Transparency hides them and the gun stays. Decals do not
-    -- follow part transparency, so the shirt decals hide too. Originals kept on
-    -- RV, restored when toggled off.
+    -- v0.96.8: hide the first-person arms. The rig lives at Workspace.ViewModels.FirstPerson (one model, rebuilt per weapon), arms are plain Parts, so Transparency hides them and the gun stays. Decals do not follow part transparency, so the shirt decals hide too. Originals kept on RV, restored when toggled off.
     local function hideArms()
         local vmRoot
         pcall(function() vmRoot = Workspace:FindFirstChild("ViewModels") end)
@@ -46778,19 +45018,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
         RV.restoreInfo()
     end)
-    -- v0.96.1: full auto re-triggers while LMB is held, paced by the game's own
-    -- cooldown, ammo and reload guards.
-    -- v0.96.2: edge-triggered. The blind 60Hz spam re-entered during cooldown and
-    -- fought the game's own queue flag; now it only knocks when the gun is ready.
-    -- v0.96.4: stands down while rage fires, so the two never stack to double
-    -- rate on the same target. Rage already paces itself off the live cooldown.
-    -- v0.96.5: fires the rage way. The game builds the real CameraData for the
-    -- shot (true aim, spread and raycast) and the packet goes out wrapped with
-    -- the raycast flag, edge-triggered on the live cooldowns.
-    -- v0.96.6: stripped to just the shoot remote. No rewrites, no forced
-    -- reload: the game-built table goes out as built, empty gun included.
-    -- v0.96.7: reverted. The rewrites and the empty reload are back: with rage
-    -- on, the spray needs silent steering and must not dry-fire.
+    -- v0.96.1: full auto re-triggers while LMB is held, paced by the game's own cooldown, ammo and reload guards. v0.96.2: edge-triggered. The blind 60Hz spam re-entered during cooldown and fought the game's own queue flag; now it only knocks when the gun is ready. v0.96.4: stands down while rage fires, so the two never stack to double rate on the same target. Rage already paces itself off the live cooldown. v0.96.5: fires the rage way. The game builds the real CameraData for the shot (true aim, spread and raycast) and the packet goes out wrapped with the raycast flag, edge-triggered on the live cooldowns. v0.96.6: stripped to just the shoot remote. No rewrites, no forced reload: the game-built table goes out as built, empty gun included. v0.96.7: reverted. The rewrites and the empty reload are back: with rage on, the spray needs silent steering and must not dry-fire.
     RunService.Heartbeat:Connect(function()
         if Koffee.dead() then return end
         if not R.Mods.AutoFire then return end
@@ -46902,10 +45130,7 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoSkins) then pcall(fun
         return Cos and RepClass and CVM
     end
 
-    -- getgc(true) walks every live object in the game. Running it per retry, three times
-    -- a pass, froze the client and starved the asset preloader (the font fell back to
-    -- Nunito). It is now one walk, once, only for what require could not reach, and it
-    -- matches all three shapes in that single pass with an early exit.
+    -- getgc(true) walks every live object in the game. Running it per retry, three times a pass, froze the client and starved the asset preloader (the font fell back to Nunito). It is now one walk, once, only for what require could not reach, and it matches all three shapes in that single pass with an early exit.
     local function gcPass()
         if (Cos and RepClass and CVM) or not getgc then return end
         local ok, objs = pcall(getgc, true)
@@ -47163,10 +45388,7 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoSkins) then pcall(fun
         return d
     end
 
-    -- Installed at most ONCE per session and never taken back out. An earlier build
-    -- guarded on a rawget of the live metamethod, which this executor does not return
-    -- as our own closure, so every weapon spawn stacked another layer until it crashed.
-    -- The body is a boolean test, so one dormant layer is the whole cost.
+    -- Installed at most ONCE per session and never taken back out. An earlier build guarded on a rawget of the live metamethod, which this executor does not return as our own closure, so every weapon spawn stacked another layer until it crashed. The body is a boolean test, so one dormant layer is the whole cost.
     SK.heal, SK.tryHeal = heal, tryHeal
     local function healArm()
         heal.at = os.clock()
@@ -47436,11 +45658,7 @@ if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoSkins) then pcall(fun
 end) end
 
 
--- v0.93.2: rivals skins window. Layout ported from the community changer (traffic
--- lights, weapon rail, card grid), restyled onto the coffee palette, no settings gear.
--- v0.93.4: the error is kept on Shared._skinsUIErr. A bare pcall here meant a build
--- failure just silently left the dock slot with no body attached to open.
--- v0.93.18: detection gated, same as the logic block above.
+-- v0.93.2: rivals skins window. Layout ported from the community changer (traffic lights, weapon rail, card grid), restyled onto the coffee palette, no settings gear. v0.93.4: the error is kept on Shared._skinsUIErr. A bare pcall here meant a build failure just silently left the dock slot with no body attached to open. v0.93.18: detection gated, same as the logic block above.
 if Koffee._isRivals and not (getgenv and getgenv().KoffeeNoSkins) then
 local _skinsOk, _skinsErr = pcall(function()
     local WM = Koffee.Windows
@@ -47701,10 +45919,7 @@ local _skinsOk, _skinsErr = pcall(function()
         catcher.MouseButton2Click:Connect(closePreview)
     end
 
-    -- :: cards ::
-    -- Both lists build in chunks on their own thread, with a sequence number so a
-    -- newer rebuild abandons the one in flight. A click or a keystroke can never
-    -- spend a frame creating a few hundred instances.
+    -- :: cards :: Both lists build in chunks on their own thread, with a sequence number so a newer rebuild abandons the one in flight. A click or a keystroke can never spend a frame creating a few hundred instances.
     local rebuildGrid, rebuildWeapons
     local rowSeq, cardSeq = 0, 0
     local function makeCard(name, order, equipped, isRandom)
