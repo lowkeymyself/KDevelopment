@@ -1,7 +1,7 @@
--- koffee v1.4.7
+-- koffee v1.4.8
 
 local Koffee = {}
-Koffee.Version = "1.4.7"
+Koffee.Version = "1.4.8"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -41976,6 +41976,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local moved = (pos - t.pos).Magnitude
                     if moved > math.max(25, root.AssemblyLinearVelocity.Magnitude * dt * 2) then
                         t.jumpAt = now
+                        t.jumpDist = moved
                         t.freshAt = now
                         t.jumps[#t.jumps + 1] = now
                         -- last teleport by anyone fighting us: a hold is only safe
@@ -42041,6 +42042,85 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             if not cfg().Adaptive then return true end
             return RG.cheating(plr)
         end
+        -- v1.4.8: silent teleporter detector. A 60+ stud single-frame jump landing
+        -- within 8 of our away server spot is nobody legit. Suspect on the first,
+        -- marked on the second inside 10s. Reads only, scoped to the duel.
+        RG.suspects = setmetatable({}, { __mode = "k" })
+        RG.marks = setmetatable({}, { __mode = "k" })
+        function RG.marked(plr) return RG.marks[plr] ~= nil end
+        function RG.myDuel()
+            local d
+            if RG.dc then pcall(function() d = RG.dc:GetDuel(LocalPlayer) end) end
+            return d
+        end
+        function RG.counterArmed() return next(RG.marks) ~= nil end
+        function RG.foesAlive()
+            for _, plr in ipairs(Plrs:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local ch = plr.Character
+                    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 and not RV.isAlly(plr) and RG.sameDuel(plr) then return true end
+                end
+            end
+            return false
+        end
+        function RG.detect(now, mr)
+            if not (RV.inRound() and RG.live()) then return end
+            local md = RG.myDuel()
+            if md ~= RG.markDuel then
+                RG.markDuel = md
+                RG.suspects = setmetatable({}, { __mode = "k" })
+                RG.marks = setmetatable({}, { __mode = "k" })
+            end
+            local srv = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
+            if not (srv and mr) then return end
+            if (srv - mr.Position).Magnitude < 15 then return end
+            for plr, t in pairs(RG.track) do
+                if t.jumpAt == now and (t.jumpDist or 0) >= 60 and t.pos
+                    and (t.pos - srv).Magnitude < 8 and not RV.isAlly(plr)
+                    and RG.sameDuel(plr) and RG.vulnerable(plr, t.char) then
+                    if not RG.marks[plr] then
+                        local s = RG.suspects[plr]
+                        if s and now - s.at < 10 then
+                            RG.suspects[plr] = nil
+                            RG.marks[plr] = { at = now }
+                            if Koffee.notify then
+                                Koffee.notify("Rage", plr.DisplayName .. " (@" .. plr.Name .. ") teleports: counter on", { severity = "error", duration = 5 })
+                            end
+                        else
+                            RG.suspects[plr] = { at = now }
+                        end
+                    end
+                end
+            end
+            for plr, s in pairs(RG.suspects) do
+                if now - s.at > 10 then RG.suspects[plr] = nil end
+            end
+        end
+        -- v1.4.8: marked arrival answer. A marked teleporter inside 8 of our server
+        -- spot gets one instant zero-lead shot the same frame. No waiting, ever.
+        function RG.arrive()
+            local it = RV.equipped()
+            if it == nil or not RV.inRound() or not RG.live() then return false end
+            if not RG.ready(it) then return false end
+            local sp = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
+            if not sp then return false end
+            for plr in pairs(RG.marks) do
+                local ch = plr.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                if hum and hum.Health > 0 and root and (root.Position - sp).Magnitude < 8
+                    and RG.sameDuel(plr) and not RV.isDeflecting(plr) and RG.vulnerable(plr, ch) then
+                    local head = ch:FindFirstChild("Head") or root
+                    RG.fire(it, sp, head)
+                    local p, y = RV.anglesTo(sp, head.Position)
+                    if p then RV.setAngles(RV.slots.Rage, p, y) end
+                    RG.action = "arrival answer"
+                    return true
+                end
+            end
+            return false
+        end
 
         -- v0.99.7: a server runs several duels in far apart arenas; only players
         -- in our own duel are targets (DuelController:GetDuel(player))
@@ -42091,6 +42171,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                             if C.CounterTP and t and now - t.freshAt < 0.35 then score = score - 30 end
                             if plr == RG.lastTarget then score = score - 6 end   -- no flicker
                         end
+                        if RG.marked(plr) then score = score - 10000 end
                         if (d < 6000 or C.AntiVoider ~= false) and score < bs then best, bp, bs = plr, part, score end
                     end
                 end
@@ -43173,8 +43254,13 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             RG.refreshBounds(now)
             RG.trackAll(now, mr)
+            RG.detect(now, mr)
             local it = RV.equipped()
             local live = it ~= nil and RV.inRound() and not RV.isDeflecting(plr)
+            if RG.arrive() then
+                RG.phase = "idle"
+                return
+            end
             local aggr = RG.aggressive(plr)
             local t = RG.track[plr]
             -- v1.3.1 anti-voider for every target: in the void or more than 1500 studs out
@@ -43328,7 +43414,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             end
             -- v0.99.9 scatter (guns): a new spot around them every hop, every shot from
             -- a spot the server has held for Lead, so nobody gets a still target
-            if C.Scatter and RG.v("ScatterArea") ~= "Long Range" and not (it ~= nil and RG.isMelee(it)) then
+            if (C.Scatter or RG.marked(plr)) and RG.v("ScatterArea") ~= "Long Range" and not (it ~= nil and RG.isMelee(it)) then
                 local hopping = t and t.sub and now - t.jumpAt < 0.12
                 local rate = math.clamp(RG.v("ScatterRate"), 2, 60)
                 if not aggr then rate = rate * 0.5 end
@@ -43352,9 +43438,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                             RG.fire(it, sp.Position, part)
                         end
                     elseif RG.spotFor ~= plr or (t and t.jumpAt > (RG.scAt or 0))
-                        or now - (RG.scAt or 0) >= (RG.spot == nil
+                        or now - (RG.scAt or 0) >= ((RG.spot == nil
                             and math.max(1 / rate, 0.03)
-                            or math.max(1 / rate, RG.v("Lead") / 1000 + 0.01)) then
+                            or math.max(1 / rate, RG.v("Lead") / 1000 + 0.01))
+                            * (RG.marked(plr) and (0.7 + math.random() * 0.6) or 1)) then
                         local sp = pick(plr, part, it)
                         if sp then
                             RG.spot, RG.scAt = sp, now
@@ -43491,7 +43578,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if pk then RV._rageCF = RG.oobStep(os.clock(), pk); return end
             end
             RG.action = "idle"
-            if on("rv_rage") and C.Strike and C.VoidHide and not C.Adaptive and mr and RV.inRound() then
+            -- v1.4.8: counter scope stays voided while anyone is left alive. Home
+            -- only when every enemy is truly dead, never on no-target. Normal rage
+            -- keeps its exact old behavior when nobody is marked.
+            if on("rv_rage") and mr and RV.inRound()
+                and ((C.Strike and C.VoidHide and not C.Adaptive)
+                    or (RG.counterArmed() and RG.foesAlive())) then
                 RV._rageCF = RG.oobStep(os.clock(), RG.hideCF(mr, os.clock()))
             else
                 RV._rageCF = nil
