@@ -1,7 +1,7 @@
--- koffee v1.4.8
+-- koffee v1.4.9
 
 local Koffee = {}
-Koffee.Version = "1.4.8"
+Koffee.Version = "1.4.9"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -42047,6 +42047,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         -- marked on the second inside 10s. Reads only, scoped to the duel.
         RG.suspects = setmetatable({}, { __mode = "k" })
         RG.marks = setmetatable({}, { __mode = "k" })
+        RG.whiff = setmetatable({}, { __mode = "k" })
         function RG.marked(plr) return RG.marks[plr] ~= nil end
         function RG.myDuel()
             local d
@@ -42071,6 +42072,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 RG.markDuel = md
                 RG.suspects = setmetatable({}, { __mode = "k" })
                 RG.marks = setmetatable({}, { __mode = "k" })
+                RG.whiff = setmetatable({}, { __mode = "k" })
             end
             local srv = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
             if not (srv and mr) then return end
@@ -42084,18 +42086,60 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         if s and now - s.at < 10 then
                             RG.suspects[plr] = nil
                             RG.marks[plr] = { at = now }
-                            if Koffee.notify then
-                                Koffee.notify("Rage", plr.DisplayName .. " (@" .. plr.Name .. ") teleports: counter on", { severity = "error", duration = 5 })
-                            end
                         else
                             RG.suspects[plr] = { at = now }
                         end
+                    end
+                    -- v1.4.9: knife whiff watch. A marked knife arrival that deals no
+                    -- damage in 0.5s whiffed into the 1.25s heavy lockout: punish it.
+                    if RG.marks[plr] and RG.enemyMelee(plr) then
+                        local mhp = RG.myHP()
+                        if mhp ~= nil then RG.whiff[plr] = { at = now, hp = mhp } end
                     end
                 end
             end
             for plr, s in pairs(RG.suspects) do
                 if now - s.at > 10 then RG.suspects[plr] = nil end
             end
+        end
+        function RG.myHP()
+            local ch = LocalPlayer.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            if hum then local h = nil; pcall(function() h = hum.Health end); return h end
+            return nil
+        end
+        -- v1.4.9: whiff punish, evaluated per frame while the window is open.
+        -- Fires instantly like the arrival answer; the window dies with the lockout.
+        function RG.punish(now)
+            if not (RV.inRound() and RG.live()) then return false end
+            for plr, w in pairs(RG.whiff) do
+                local age = now - w.at
+                if age >= 1.75 then
+                    RG.whiff[plr] = nil
+                elseif age >= 0.5 then
+                    local h0 = RG.myHP()
+                    if h0 == nil or h0 < w.hp then
+                        RG.whiff[plr] = nil
+                    else
+                        local it = RV.equipped()
+                        local ch = plr.Character
+                        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                        local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                        local sp = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
+                        if it ~= nil and RG.ready(it) and hum and hum.Health > 0 and root and sp
+                            and (root.Position - sp).Magnitude < 1500
+                            and RG.sameDuel(plr) and not RV.isDeflecting(plr) and RG.vulnerable(plr, ch) then
+                            local head = ch:FindFirstChild("Head") or root
+                            RG.fire(it, sp, head)
+                            local p, y = RV.anglesTo(sp, head.Position)
+                            if p then RV.setAngles(RV.slots.Rage, p, y) end
+                            RG.action = "whiff punish"
+                            return true
+                        end
+                    end
+                end
+            end
+            return false
         end
         -- v1.4.8: marked arrival answer. A marked teleporter inside 8 of our server
         -- spot gets one instant zero-lead shot the same frame. No waiting, ever.
@@ -43258,6 +43302,10 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local it = RV.equipped()
             local live = it ~= nil and RV.inRound() and not RV.isDeflecting(plr)
             if RG.arrive() then
+                RG.phase = "idle"
+                return
+            end
+            if RG.punish(now) then
                 RG.phase = "idle"
                 return
             end
