@@ -1,7 +1,7 @@
--- koffee v1.4.6
+-- koffee v1.4.7
 
 local Koffee = {}
-Koffee.Version = "1.4.6"
+Koffee.Version = "1.4.7"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -42059,12 +42059,12 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
 
         -- :: target :: scored when Smart, nearest otherwise; no 1000 stud cap
-        -- v1.4.6: spawn protection (ForceField or under 3s since spawn).
+        -- v1.4.6: spawn protection (ForceField or under 1.5s since spawn).
         -- Firing into it burns ammo with no damage, the standing-immune misses.
         function RG.vulnerable(plr, ch)
             if ch and ch:FindFirstChildOfClass("ForceField") then return false end
             local t = RG.track[plr]
-            if t and t.spawnedAt and os.clock() - t.spawnedAt < 3 then return false end
+            if t and t.spawnedAt and os.clock() - t.spawnedAt < 1.5 then return false end
             return true
         end
         function RG.pick()
