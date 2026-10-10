@@ -1,7 +1,7 @@
--- koffee v1.4.4
+-- koffee v1.4.5
 
 local Koffee = {}
-Koffee.Version = "1.4.4"
+Koffee.Version = "1.4.5"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -43095,7 +43095,11 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
 
         -- backstab: copy the enemy's own facing, so the server places you behind them
         -- by definition. Nothing to do with where you are actually standing.
-        if on("rv_backstab") then
+        -- slot 10 is the knife judgment: claiming it while firing guns hands the
+        -- server a sideways angle next to our packets. Melee only.
+        local bIt = RV.equipped()
+        local bMelee = RV.RG ~= nil and RV.RG.isMelee ~= nil and RV.RG.isMelee(bIt)
+        if on("rv_backstab") and bIt ~= nil and bMelee then
             local near, nd = nil, 20
             for _, plr in ipairs(Plrs:GetPlayers()) do
                 if plr ~= LocalPlayer then
