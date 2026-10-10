@@ -1,7 +1,7 @@
--- koffee v1.4.5
+-- koffee v1.4.6
 
 local Koffee = {}
-Koffee.Version = "1.4.5"
+Koffee.Version = "1.4.6"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -41540,7 +41540,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local v = on and math.clamp(b + A.lead, 5, 90) or b
                 -- v0.99.25: the first shots of a rage start / new lock wait for the spot
                 -- to reach the server (a cold start missed a lot)
-                if os.clock() < (RG.warmUntil or 0) then v = math.max(v, 70) end
+                if os.clock() < (RG.warmUntil or 0) then v = math.max(v, 70, RG.ping() * 1000 + 30) end
                 -- v0.99.27: every Long Range shot is a 40 to 200 stud jump; with no lead
                 -- the server never has us at the claimed origin and drops the round
                 if (C.ScatterArea or "Target") == "Long Range" then v = math.max(v, 60) end
@@ -41969,7 +41969,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local t = RG.track[plr]
                     local pos = root.Position
                     if not t or t.char ~= ch then
-                        t = { char = ch, pos = pos, at = now, jumpAt = 0, jumps = {}, sub = false, freshAt = 0 }
+                        t = { char = ch, pos = pos, at = now, jumpAt = 0, jumps = {}, sub = false, freshAt = 0, spawnedAt = now }
                         RG.track[plr] = t
                     end
                     local dt = math.max(now - t.at, 1e-3)
@@ -42059,6 +42059,14 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
         end
 
         -- :: target :: scored when Smart, nearest otherwise; no 1000 stud cap
+        -- v1.4.6: spawn protection (ForceField or under 3s since spawn).
+        -- Firing into it burns ammo with no damage, the standing-immune misses.
+        function RG.vulnerable(plr, ch)
+            if ch and ch:FindFirstChildOfClass("ForceField") then return false end
+            local t = RG.track[plr]
+            if t and t.spawnedAt and os.clock() - t.spawnedAt < 3 then return false end
+            return true
+        end
         function RG.pick()
             local C = cfg()
             local mr = myRoot()
@@ -42069,7 +42077,8 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ch = plr ~= LocalPlayer and plr.Character
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 and not RV.isAlly(plr) and Shared.aimAllowed(plr, true)
-                    and not RV.isDeflecting(plr) and RG.sameDuel(plr) and (RG.allow == nil or RG.allow[plr]) then
+                    and not RV.isDeflecting(plr) and RG.sameDuel(plr) and RG.vulnerable(plr, ch)
+                    and (RG.allow == nil or RG.allow[plr]) then
                     local part = partOf(ch, R.LockPart)
                     local t = RG.track[plr]
                     if part and not (t and t.sub and not C.CounterVoid and C.AntiVoider == false) then
@@ -42110,7 +42119,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local ch = plr ~= LocalPlayer and plr.Character
                     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
                     local root = ch and ch:FindFirstChild("HumanoidRootPart")
-                    if root and hum and hum.Health > 0 and not RV.isAlly(plr) and RG.sameDuel(plr) then
+                    if root and hum and hum.Health > 0 and not RV.isAlly(plr) and RG.sameDuel(plr) and RG.vulnerable(plr, ch) then
                         for _, sp in ipairs(spots) do
                             local d = (root.Position - sp).Magnitude
                             if d < bd then best, bp, bd, from = plr, partOf(ch, R.LockPart), d, sp end
@@ -42132,7 +42141,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 local ch = plr ~= LocalPlayer and plr.Character
                 local hum = ch and ch:FindFirstChildOfClass("Humanoid")
                 local root = ch and ch:FindFirstChild("HumanoidRootPart")
-                if root and hum and hum.Health > 0 and not RV.isAlly(plr) and RG.sameDuel(plr) then
+                if root and hum and hum.Health > 0 and not RV.isAlly(plr) and RG.sameDuel(plr) and RG.vulnerable(plr, ch) then
                     local d = math.huge
                     if me then d = (root.Position - me).Magnitude end
                     if mr then d = math.min(d, (root.Position - mr.Position).Magnitude) end
@@ -43339,27 +43348,29 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         local sp = pick(plr, part, it)
                         if sp and RG.placeNow(sp) then
                             RG.spot, RG.scAt = sp, now
+                            sees = true
                             RG.fire(it, sp.Position, part)
                         end
-                    elseif RG.spot == nil or RG.spotFor ~= plr
-                        or now - (RG.scAt or 0) >= math.max(1 / rate, RG.v("Lead") / 1000 + 0.01)
-                        or (t and t.jumpAt > (RG.scAt or 0)) then
+                    elseif RG.spotFor ~= plr or (t and t.jumpAt > (RG.scAt or 0))
+                        or now - (RG.scAt or 0) >= (RG.spot == nil
+                            and math.max(1 / rate, 0.03)
+                            or math.max(1 / rate, RG.v("Lead") / 1000 + 0.01)) then
                         local sp = pick(plr, part, it)
                         if sp then
                             RG.spot, RG.scAt = sp, now
                             sees = true
                         end
                     end
-                    if (not C.InstantFire or now < (RG.warmUntil or 0)) and live and RG.spot
-                        and RG.spotFor == plr
-                        and now - (RG.scAt or 0) >= RG.v("Lead") / 1000
-                        and RG.ready(it) then
-                        if sees then
+                    if (not C.InstantFire or now < (RG.warmUntil or 0)) and live and RG.ready(it)
+                        and now - (RG.scAt or 0) >= RG.v("Lead") / 1000 then
+                        if sees and RG.spotFor == plr and RG.spot then
                             RG.fire(it, RG.spot.Position, part)
-                        else
+                        elseif not sees then
                             -- holder glue, their shape: every aimed spot refused means
                             -- they are holding an angle at us. Facing stops mattering
                             -- inside their head: same-frame place + fire, no Lead.
+                            -- Hit and run, never sits in it: the spot is cleared so
+                            -- the body is back in the void until the gun is ready.
                             local head = ch and ch:FindFirstChild("Head")
                             local hp = (head and head.Position) or part.Position
                             local pos = hp + Vector3.new(0, -0.7, 0.05)
@@ -43368,16 +43379,18 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                                 and RG.budget(pos) > 0 and RG.meleeSafe(pos, keep) then
                                 local cf = CFrame.lookAt(pos, hp)
                                 if RV.cfValid(cf) and RG.placeNow(cf) then
-                                    RG.spot, RG.scAt, RG.spotFor = cf, now, plr
                                     RV._rageCF = cf
                                     RG.fire(it, pos, head or part)
                                     RG.action = "holder glue"
                                 end
                             end
+                            RG.spot, RG.scAt, RG.spotFor = nil, now, plr
                         end
                     end
-                    -- v0.99.33: no valid spot yet -> the void, never the home body
-                    RV._rageCF = RG.oobStep(now, RG.spot or (C.VoidHide and RG.hideCF(mr, now)) or nil)
+                    -- v0.99.33: no valid spot yet -> the void, never the home body.
+                    -- A refused spot is not held either: sitting where they aim kills.
+                    RV._rageCF = RG.oobStep(now, ((sees and RG.spotFor == plr) and RG.spot)
+                        or (C.VoidHide and RG.hideCF(mr, now)) or nil)
                 end
                 RG.phase = "idle"
                 local from = (RV._rageCF and RV._rageCF.Position) or RV.serverHead()
