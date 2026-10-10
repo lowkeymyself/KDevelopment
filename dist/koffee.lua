@@ -1,7 +1,7 @@
--- koffee v1.4.9
+-- koffee v1.4.10
 
 local Koffee = {}
-Koffee.Version = "1.4.9"
+Koffee.Version = "1.4.10"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -42043,9 +42043,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             return RG.cheating(plr)
         end
         -- v1.4.8: silent teleporter detector. A 60+ stud single-frame jump landing
-        -- within 8 of our away server spot is nobody legit. Suspect on the first,
-        -- marked on the second inside 10s. Reads only, scoped to the duel.
-        RG.suspects = setmetatable({}, { __mode = "k" })
+        -- within 8 of our away server spot is nobody legit: marked on the spot.
+        -- Reads only, scoped to the duel. v1.4.10: suspect stage removed, one
+        -- arrival is already conclusive and the second visit could be the kill.
         RG.marks = setmetatable({}, { __mode = "k" })
         RG.whiff = setmetatable({}, { __mode = "k" })
         function RG.marked(plr) return RG.marks[plr] ~= nil end
@@ -42070,7 +42070,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
             local md = RG.myDuel()
             if md ~= RG.markDuel then
                 RG.markDuel = md
-                RG.suspects = setmetatable({}, { __mode = "k" })
                 RG.marks = setmetatable({}, { __mode = "k" })
                 RG.whiff = setmetatable({}, { __mode = "k" })
             end
@@ -42081,15 +42080,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 if t.jumpAt == now and (t.jumpDist or 0) >= 60 and t.pos
                     and (t.pos - srv).Magnitude < 8 and not RV.isAlly(plr)
                     and RG.sameDuel(plr) and RG.vulnerable(plr, t.char) then
-                    if not RG.marks[plr] then
-                        local s = RG.suspects[plr]
-                        if s and now - s.at < 10 then
-                            RG.suspects[plr] = nil
-                            RG.marks[plr] = { at = now }
-                        else
-                            RG.suspects[plr] = { at = now }
-                        end
-                    end
+                    if RG.marks[plr] == nil then RG.marks[plr] = { at = now } end
                     -- v1.4.9: knife whiff watch. A marked knife arrival that deals no
                     -- damage in 0.5s whiffed into the 1.25s heavy lockout: punish it.
                     if RG.marks[plr] and RG.enemyMelee(plr) then
@@ -42097,9 +42088,6 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         if mhp ~= nil then RG.whiff[plr] = { at = now, hp = mhp } end
                     end
                 end
-            end
-            for plr, s in pairs(RG.suspects) do
-                if now - s.at > 10 then RG.suspects[plr] = nil end
             end
         end
         function RG.myHP()
