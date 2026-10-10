@@ -1,7 +1,7 @@
--- koffee v1.4.1
+-- koffee v1.4.2
 
 local Koffee = {}
-Koffee.Version = "1.4.1"
+Koffee.Version = "1.4.2"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -45048,19 +45048,27 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 else
                     RG.action = RG.v("ScatterArea") == "Map" and "scatter (map)" or "scatter"
                     local pick = RG.v("ScatterArea") == "Map" and RG.mapSpot or RG.scatterSpot
+                    -- still target, still spot: re-hopping every shot vs someone standing
+                    -- still just re-pays Lead from an unreplicated spot. Hold and fire on
+                    -- cooldown instead; hopping resumes the frame they move or jump.
+                    local lj = t and t.jumps[#t.jumps]
+                    local still = RG.spot ~= nil and RG.spotFor == plr and RG.spotAim ~= nil
+                        and (lj == nil or now - lj > 1) and not (t and t.sub)
+                        and (part.Position - RG.spotAim).Magnitude < 6
                     if C.InstantFire and live and RG.ready(it) and now >= (RG.warmUntil or 0) then
                         -- v0.99.10: new spot, placed and fired in the same frame
                         local sp = pick(plr, part, it)
                         if sp and RG.placeNow(sp) then
-                            RG.spot, RG.scAt = sp, now
+                            RG.spot, RG.scAt, RG.spotAim = sp, now, part.Position
                             RG.fire(it, sp.Position, part)
                         end
-                    elseif RG.spot == nil or RG.spotFor ~= plr
+                    elseif not still and (RG.spot == nil or RG.spotFor ~= plr
                         or now - (RG.scAt or 0) >= math.max(1 / rate, RG.v("Lead") / 1000 + 0.01)
-                        or (t and t.jumpAt > (RG.scAt or 0)) then
+                        or (t and t.jumpAt > (RG.scAt or 0))) then
                         local sp = pick(plr, part, it)
-                        if sp then RG.spot, RG.scAt = sp, now end
+                        if sp then RG.spot, RG.scAt, RG.spotAim = sp, now, part.Position end
                     end
+                    if still then RG.action = "holding (still target)" end
                     if (not C.InstantFire or now < (RG.warmUntil or 0)) and live and RG.spot
                         and now - (RG.scAt or 0) >= RG.v("Lead") / 1000
                         and RG.ready(it) then
