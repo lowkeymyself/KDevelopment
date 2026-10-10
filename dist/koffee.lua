@@ -1,7 +1,7 @@
--- koffee v1.4.2
+-- koffee v1.4.3
 
 local Koffee = {}
-Koffee.Version = "1.4.2"
+Koffee.Version = "1.4.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -43684,6 +43684,9 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                         t.jumpAt = now
                         t.freshAt = now
                         t.jumps[#t.jumps + 1] = now
+                        -- last teleport by anyone fighting us: a hold is only safe
+                        -- while the lobby is calm, never while someone is hopping
+                        if not RV.isAlly(plr) and RG.sameDuel(plr) then RG.lastFoeJumpAt = now end
                     end
                     for i = #t.jumps, 1, -1 do if now - t.jumps[i] > 5 then table.remove(t.jumps, i) end end
                     local sub = RG.submerged(pos, mr)
@@ -45055,6 +45058,7 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                     local still = RG.spot ~= nil and RG.spotFor == plr and RG.spotAim ~= nil
                         and (lj == nil or now - lj > 1) and not (t and t.sub)
                         and (part.Position - RG.spotAim).Magnitude < 6
+                        and now - (RG.lastFoeJumpAt or 0) > 2
                     if C.InstantFire and live and RG.ready(it) and now >= (RG.warmUntil or 0) then
                         -- v0.99.10: new spot, placed and fired in the same frame
                         local sp = pick(plr, part, it)
