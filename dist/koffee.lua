@@ -1,7 +1,7 @@
--- koffee v1.4.3
+-- koffee v1.4.4
 
 local Koffee = {}
-Koffee.Version = "1.4.3"
+Koffee.Version = "1.4.4"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -45051,32 +45051,55 @@ if Koffee._isRivals and Shared.RV and Shared.RV.ok then pcall(function()
                 else
                     RG.action = RG.v("ScatterArea") == "Map" and "scatter (map)" or "scatter"
                     local pick = RG.v("ScatterArea") == "Map" and RG.mapSpot or RG.scatterSpot
-                    -- still target, still spot: re-hopping every shot vs someone standing
-                    -- still just re-pays Lead from an unreplicated spot. Hold and fire on
-                    -- cooldown instead; hopping resumes the frame they move or jump.
-                    local lj = t and t.jumps[#t.jumps]
-                    local still = RG.spot ~= nil and RG.spotFor == plr and RG.spotAim ~= nil
-                        and (lj == nil or now - lj > 1) and not (t and t.sub)
-                        and (part.Position - RG.spotAim).Magnitude < 6
-                        and now - (RG.lastFoeJumpAt or 0) > 2
+                    local ch = plr.Character
+                    local ignore = { LocalPlayer.Character, ch, Workspace.CurrentCamera, Workspace:FindFirstChild("ViewModels") }
+                    -- fire only what the spot can see. A refused pick leaves a stale
+                    -- spot behind, and shooting from it through a wall just burns ammo.
+                    -- That was the standing-holder misses: facing us, every aimed spot
+                    -- refused, old spot fired through cover.
+                    local sees = RG.spot ~= nil and RG.spotFor == plr
+                        and RG.los(RG.spot.Position, part.Position, ignore)
                     if C.InstantFire and live and RG.ready(it) and now >= (RG.warmUntil or 0) then
                         -- v0.99.10: new spot, placed and fired in the same frame
                         local sp = pick(plr, part, it)
                         if sp and RG.placeNow(sp) then
-                            RG.spot, RG.scAt, RG.spotAim = sp, now, part.Position
+                            RG.spot, RG.scAt = sp, now
                             RG.fire(it, sp.Position, part)
                         end
-                    elseif not still and (RG.spot == nil or RG.spotFor ~= plr
+                    elseif RG.spot == nil or RG.spotFor ~= plr
                         or now - (RG.scAt or 0) >= math.max(1 / rate, RG.v("Lead") / 1000 + 0.01)
-                        or (t and t.jumpAt > (RG.scAt or 0))) then
+                        or (t and t.jumpAt > (RG.scAt or 0)) then
                         local sp = pick(plr, part, it)
-                        if sp then RG.spot, RG.scAt, RG.spotAim = sp, now, part.Position end
+                        if sp then
+                            RG.spot, RG.scAt = sp, now
+                            sees = true
+                        end
                     end
-                    if still then RG.action = "holding (still target)" end
                     if (not C.InstantFire or now < (RG.warmUntil or 0)) and live and RG.spot
+                        and RG.spotFor == plr
                         and now - (RG.scAt or 0) >= RG.v("Lead") / 1000
                         and RG.ready(it) then
-                        RG.fire(it, RG.spot.Position, part)
+                        if sees then
+                            RG.fire(it, RG.spot.Position, part)
+                        else
+                            -- holder glue, their shape: every aimed spot refused means
+                            -- they are holding an angle at us. Facing stops mattering
+                            -- inside their head: same-frame place + fire, no Lead.
+                            local head = ch and ch:FindFirstChild("Head")
+                            local hp = (head and head.Position) or part.Position
+                            local pos = hp + Vector3.new(0, -0.7, 0.05)
+                            local keep = RG.keepOut(it)
+                            if not (t and t.sub) and not RG.enemyMelee(plr) and not RV.isDeflecting(plr)
+                                and RG.budget(pos) > 0 and RG.meleeSafe(pos, keep) then
+                                local cf = CFrame.lookAt(pos, hp)
+                                if RV.cfValid(cf) and RG.placeNow(cf) then
+                                    RG.spot, RG.scAt, RG.spotFor = cf, now, plr
+                                    RV._rageCF = cf
+                                    RG.fire(it, pos, head or part)
+                                    RG.action = "holder glue"
+                                end
+                            end
+                        end
                     end
                     -- v0.99.33: no valid spot yet -> the void, never the home body
                     RV._rageCF = RG.oobStep(now, RG.spot or (C.VoidHide and RG.hideCF(mr, now)) or nil)
