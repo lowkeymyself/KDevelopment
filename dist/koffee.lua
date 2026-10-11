@@ -1,7 +1,7 @@
--- koffee v1.4.10
+-- koffee v1.5.0
 
 local Koffee = {}
-Koffee.Version = "1.4.10"
+Koffee.Version = "1.5.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -26538,6 +26538,7 @@ end)()
     end
     function ED.A.setWorld(name, W)
         local A = ED.A
+        if A.locked and A.locked[name] then return end
         local mo = A.rig and A.rig.motors[name]
         local base = A.id and X.AN.load(A.id)
         if not (mo and mo.Part0 and base and base.joints[name]) then return end
@@ -26586,7 +26587,7 @@ end)()
     end
     function ED.A.resetJoint()
         local jk, e = ED.A.jkey(), ED.A.entry(false)
-        if jk and e then pushUndo(); e.k[jk] = nil end
+        if jk and e and not (ED.A.locked and ED.A.locked[jk]) then pushUndo(); e.k[jk] = nil end
     end
     function ED.A.resetAnim()
         if type(ED.s.anims) == "table" and ED.A.key then pushUndo(); ED.s.anims[ED.A.key] = nil end
@@ -26640,8 +26641,8 @@ end)()
         A.onionSet(A.on and A.onion == true)
         if A.on then ED.view.focus = A.rig.focus end
     end
-    -- v1.4.0 :: keyframing :: joint selection (primary = ED.sel, extras in A.jsel), your
-    -- keys as their own track, poses you can key, copy, paste, ease and retime
+    -- v1.4.0 :: keyframing :: joint selection (primary = ED.sel, extras in A.jsel), a dope sheet with one lane per animated joint, keys picked per joint and time
+    ED.A.locked, ED.A.mute = {}, {}
     function ED.A.joints()
         local A, out = ED.A, {}
         local jk = A.jkey()
@@ -26675,8 +26676,8 @@ end)()
         selectTarget("j:" .. name)
     end
     function ED.A.base() return ED.A.id and X.AN.load(ED.A.id) or nil end
-    -- v1.4.0 snapping: on = the playhead and keys land on the original's frames.
-    -- Holding Shift flips it for that move.
+    function ED.A.isLocked(name) return ED.A.locked[name] == true end
+    -- snapping: on = the playhead and keys land on the original's frames. Shift flips it for a scrub or a new key.
     function ED.A.snaps()
         local on = ED.A.snapOn ~= false
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then on = not on end
@@ -26687,7 +26688,7 @@ end)()
     function ED.A.here() return (ED.A.snapOn ~= false) and ED.A.nearest(ED.A.t) or ED.A.t end
     local function tid(t) return math.floor(t * 10000 + 0.5) end
     ED.A.tid = tid
-    -- nearest original frame (keys always sit on one, so the length never changes)
+    -- nearest original frame
     function ED.A.nearest(t)
         local base = ED.A.base()
         if not base or #base.times == 0 then return t end
@@ -26712,14 +26713,16 @@ end)()
     end
     function ED.A.keyAt(name, tk)
         local e = ED.A.entry(false)
-        local list = e and e.k[name]
+        local list = e and type(e.k) == "table" and e.k[name]
         if type(list) ~= "table" then return nil end
         for i, k in ipairs(list) do
             if math.abs(k[1] - tk) < 1e-4 then return k, i, list end
         end
         return nil
     end
+    -- every write goes through here, so a locked lane can never change
     function ED.A.writeKey(name, tk, off, ease)
+        if ED.A.isLocked(name) then return end
         local e = ED.A.entry(true)
         if not e then return end
         e.k[name] = e.k[name] or {}
@@ -26735,18 +26738,21 @@ end)()
     end
     -- the joints an action works on: the picked ones, else every joint the animation has
     function ED.A.targets()
-        local js = ED.A.joints()
-        if #js > 0 then return js end
-        local base, out = ED.A.base(), {}
-        if base and ED.A.rig then
-            for n in pairs(ED.A.rig.motors) do if base.joints[n] then out[#out + 1] = n end end
+        local A, out = ED.A, {}
+        local js = A.joints()
+        if #js == 0 then
+            local base = A.base()
+            if base and A.rig then
+                for n in pairs(A.rig.motors) do if base.joints[n] then js[#js + 1] = n end end
+            end
         end
+        for _, n in ipairs(js) do if not A.isLocked(n) then out[#out + 1] = n end end
         return out
     end
-    -- key times on the picked joints (every joint when none is picked)
+    -- key times on the picked joints (every joint when none is picked, or all = true)
     function ED.A.keyTimes(all)
         local e = ED.A.entry(false)
-        if not e then return {} end
+        if not (e and type(e.k) == "table") then return {} end
         local names = {}
         if not all and ED.A.jkey() then
             for _, n in ipairs(ED.A.joints()) do names[#names + 1] = n end
@@ -26756,10 +26762,20 @@ end)()
         local set, out = {}, {}
         for _, n in ipairs(names) do
             for _, k in ipairs(type(e.k[n]) == "table" and e.k[n] or {}) do
-                local key = math.floor(k[1] * 10000 + 0.5)
-                if not set[key] then set[key] = true; out[#out + 1] = k[1] end
+                if not set[tid(k[1])] then set[tid(k[1])] = true; out[#out + 1] = k[1] end
             end
         end
+        table.sort(out)
+        return out
+    end
+    -- lanes: every joint with keys, plus the picked ones (so you see where a key will go)
+    function ED.A.laneNames()
+        local e, set, out = ED.A.entry(false), {}, {}
+        if e and type(e.k) == "table" then
+            for n, l in pairs(e.k) do if type(l) == "table" and #l > 0 then set[n] = true end end
+        end
+        for _, n in ipairs(ED.A.joints()) do set[n] = true end
+        for n in pairs(set) do out[#out + 1] = n end
         table.sort(out)
         return out
     end
@@ -26769,7 +26785,7 @@ end)()
         A.playing = false
         local tk = A.snap()
         local js = A.targets()
-        if #js == 0 then return end
+        if #js == 0 then note("Every picked joint is locked"); return end
         pushUndo()
         for _, n in ipairs(js) do
             local off = A.offAt(n, tk)
@@ -26777,89 +26793,101 @@ end)()
         end
         note("Keyed " .. #js .. (#js == 1 and " joint" or " joints") .. string.format(" at %.2fs", tk))
     end
+    -- picked keys: A.ksel["<joint>|<time id>"]; stale or locked ones drop out
+    function ED.A.selPairs()
+        local A, out = ED.A, {}
+        for id in pairs(A.ksel or {}) do
+            local n, t = id:match("^(.*)|(%-?%d+)$")
+            local hit
+            if n and not A.isLocked(n) then
+                local e = A.entry(false)
+                for _, k in ipairs(e and type(e.k) == "table" and type(e.k[n]) == "table" and e.k[n] or {}) do
+                    if tid(k[1]) == tonumber(t) then hit = k[1]; break end
+                end
+            end
+            if hit then out[#out + 1] = { n, hit } else A.ksel[id] = nil end
+        end
+        table.sort(out, function(a, b) return a[2] < b[2] end)
+        return out
+    end
+    -- Del: the picked keys, else the key at the playhead on the picked joints. Never every joint at once by accident.
     function ED.A.delKey()
         local A = ED.A
         local e = A.entry(false)
         if not e then return end
-        local times = A.selTimes()
-        if #times == 0 then times = { A.here() } end
-        local names = A.jkey() and A.joints() or {}
-        if #names == 0 then for n in pairs(e.k) do names[#names + 1] = n end end
-        local hit = false
-        for _, tk in ipairs(times) do
-            for _, n in ipairs(names) do
-                local k, i, list = A.keyAt(n, tk)
-                if k then
-                    if not hit then pushUndo(); hit = true end
-                    table.remove(list, i)
-                    if #list == 0 then e.k[n] = nil end
-                end
+        local pairsL = A.selPairs()
+        if #pairsL == 0 then
+            if not A.jkey() then note("Pick keys (click a diamond) or a joint first"); return end
+            local tk = A.here()
+            for _, n in ipairs(A.joints()) do
+                if not A.isLocked(n) and A.keyAt(n, tk) then pairsL[#pairsL + 1] = { n, tk } end
+            end
+        end
+        if #pairsL == 0 then note("No key here on those joints"); return end
+        pushUndo()
+        for _, pr in ipairs(pairsL) do
+            local k, i, list = A.keyAt(pr[1], pr[2])
+            if k then
+                table.remove(list, i)
+                if #list == 0 then e.k[pr[1]] = nil end
             end
         end
         A.ksel = {}
-        if not hit then note("No key here on those joints") end
+        note("Deleted " .. #pairsL .. (#pairsL == 1 and " key" or " keys"))
     end
-    -- selected key times (Shift-click diamonds), dropping any that no longer exist
-    function ED.A.selTimes()
-        local A, out = ED.A, {}
-        local live = {}
-        for _, tt in ipairs(A.keyTimes(true)) do live[tid(tt)] = tt end
-        for id in pairs(A.ksel or {}) do
-            if live[id] then out[#out + 1] = live[id] else A.ksel[id] = nil end
-        end
-        table.sort(out)
-        return out
-    end
-    -- move every selected key time by d (keys of the picked joints, else every joint);
-    -- a key already sitting where one lands is replaced
-    function ED.A.shiftKeys(times, d)
+    -- move picked keys by d; a key already where one lands (same joint) is replaced
+    function ED.A.shiftPairs(pairsL, d)
         local A = ED.A
         local e, base = A.entry(false), A.base()
-        if not (e and base) or #times == 0 or math.abs(d) < 1e-5 then return end
-        local lo, hi = times[1], times[#times]
+        if not (e and base) or #pairsL == 0 then return end
+        local lo, hi = math.huge, -math.huge
+        for _, pr in ipairs(pairsL) do lo = math.min(lo, pr[2]); hi = math.max(hi, pr[2]) end
         d = math.clamp(d, -lo, base.len - hi)
         if math.abs(d) < 1e-5 then return end
         pushUndo()
-        local names = A.jkey() and A.joints() or {}
-        if #names == 0 then for n in pairs(e.k) do names[#names + 1] = n end end
-        local moving = {}
-        for _, tt in ipairs(times) do moving[tid(tt)] = true end
-        for _, n in ipairs(names) do
+        local by = {}
+        for _, pr in ipairs(pairsL) do
+            by[pr[1]] = by[pr[1]] or {}
+            by[pr[1]][tid(pr[2])] = true
+        end
+        local ns = {}
+        for n, moving in pairs(by) do
             local list = e.k[n]
             if type(list) == "table" then
-                local moved, kept = {}, {}
+                local moved, kept, land = {}, {}, {}
                 for _, k in ipairs(list) do
                     if moving[tid(k[1])] then moved[#moved + 1] = k else kept[#kept + 1] = k end
                 end
-                if #moved > 0 then
-                    local land = {}
-                    for _, k in ipairs(moved) do k[1] = k[1] + d; land[tid(k[1])] = true end
-                    local out = {}
-                    for _, k in ipairs(kept) do if not land[tid(k[1])] then out[#out + 1] = k end end
-                    for _, k in ipairs(moved) do out[#out + 1] = k end
-                    table.sort(out, function(a, b) return a[1] < b[1] end)
-                    e.k[n] = out
+                for _, k in ipairs(moved) do
+                    k[1] = k[1] + d
+                    land[tid(k[1])] = true
+                    ns[n .. "|" .. tid(k[1])] = true
                 end
+                local out = {}
+                for _, k in ipairs(kept) do if not land[tid(k[1])] then out[#out + 1] = k end end
+                for _, k in ipairs(moved) do out[#out + 1] = k end
+                table.sort(out, function(a, b) return a[1] < b[1] end)
+                e.k[n] = out
             end
         end
-        local ns = {}
-        for _, tt in ipairs(times) do ns[tid(tt + d)] = true end
         A.ksel = ns
     end
-    -- Alt + , / . : nudge the selected keys one original frame
+    -- Alt + , / . : nudge the picked keys one original frame
     function ED.A.nudge(dir)
         local A = ED.A
-        local times = A.selTimes()
-        if #times == 0 then note("Shift-click diamonds to pick keys first"); return end
+        local pl = A.selPairs()
+        if #pl == 0 then note("Click a diamond to pick keys first"); return end
         local base = A.base()
         local step = (base and #base.times > 1) and (base.len / (#base.times - 1)) or (1 / 60)
-        A.shiftKeys(times, dir * step)
-        A.t = times[1] + dir * step
+        A.shiftPairs(pl, dir * step)
+        A.t = math.clamp(pl[1][2] + dir * step, 0, base and base.len or 0)
     end
     function ED.A.copyPose()
         local A, clip = ED.A, {}
         local n = 0
-        for _, j in ipairs(A.targets()) do
+        local js = A.joints()
+        if #js == 0 then js = A.targets() end
+        for _, j in ipairs(js) do
             local d = A.shown(j, A.t)
             if d then clip[j] = d; n = n + 1 end
         end
@@ -26881,16 +26909,20 @@ end)()
     end
     function ED.A.setEase(v)
         local A = ED.A
-        local tk = A.here()
+        local pl = A.selPairs()
+        if #pl == 0 then
+            local tk = A.here()
+            for _, n in ipairs(A.joints()) do if A.keyAt(n, tk) then pl[#pl + 1] = { n, tk } end end
+        end
         local hit = false
-        for _, n in ipairs(A.joints()) do
-            local k = A.keyAt(n, tk)
+        for _, pr in ipairs(pl) do
+            local k = not A.isLocked(pr[1]) and A.keyAt(pr[1], pr[2])
             if k then
                 if not hit then pushUndo(); hit = true end
                 k[3] = (v ~= "Smooth") and v or nil
             end
         end
-        if not hit then note("Easing belongs to a key: go to one (the diamonds) first") end
+        if not hit then note("Easing belongs to a key: pick one (a diamond) first") end
     end
     function ED.A.setMode(v)
         local A = ED.A
@@ -26898,7 +26930,9 @@ end)()
         if not e then return end
         pushUndo()
         e.rep = type(e.rep) == "table" and e.rep or {}
-        for _, n in ipairs(A.joints()) do e.rep[n] = (v == "Replace") or nil end
+        for _, n in ipairs(A.joints()) do
+            if not A.isLocked(n) then e.rep[n] = (v == "Replace") or nil end
+        end
         if not next(e.rep) then e.rep = nil end
     end
     function ED.A.navKey(dir)
@@ -26920,7 +26954,7 @@ end)()
     function ED.A.slide(k, v)
         local A = ED.A
         local jk = A.jkey()
-        if not (jk and A.base()) then return end
+        if not (jk and A.base()) or A.isLocked(jk) then return end
         edit()
         A.playing = false
         local tk = A.snap()
@@ -26931,38 +26965,75 @@ end)()
         c[k] = v
         A.writeKey(jk, tk, CFrame.new(c.x, c.y, c.z) * CFrame.Angles(math.rad(c.rx), math.rad(c.ry), math.rad(c.rz)))
     end
-    -- the timeline: a click near a diamond grabs that key (drag to retime), else scrubs
-    function ED.A.markerAt(x)
+    -- :: dope sheet input :: name = a joint lane, nil = the All keys lane
+    function ED.A.xToT(x)
+        local base = ED.A.base()
+        local w = ED.A.bar and ED.A.bar.AbsoluteSize.X or 0
+        if not base or w <= 0 then return nil end
+        return math.clamp((x - ED.A.bar.AbsolutePosition.X) / w, 0, 1) * base.len
+    end
+    function ED.A.hitKey(name, x)
         local A = ED.A
         local base = A.base()
         local w = A.bar and A.bar.AbsoluteSize.X or 0
         if not base or base.len <= 0 or w <= 0 then return nil end
+        local times = {}
+        if name then
+            local e = A.entry(false)
+            for _, k in ipairs(e and type(e.k) == "table" and type(e.k[name]) == "table" and e.k[name] or {}) do
+                times[#times + 1] = k[1]
+            end
+        else
+            times = A.keyTimes(true)
+        end
         local best, bd = nil, 7
-        for _, tt in ipairs(A.keyTimes(true)) do
+        for _, tt in ipairs(times) do
             local d = math.abs(A.bar.AbsolutePosition.X + tt / base.len * w - x)
             if d < bd then best, bd = tt, d end
         end
         return best
     end
-    function ED.A.kdragStart(tt)
+    function ED.A.laneDown(name, x)
+        local A = ED.A
+        -- name false = the ruler: it only ever scrubs
+        local tt = nil
+        if name ~= false then tt = A.hitKey(name, x) end
+        if tt then A.kdragStart(name, tt); return end
+        if not UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then A.ksel = {} end
+        A.scrub = true
+        A.scrubAt(x)
+    end
+    function ED.A.kdragStart(name, tt)
         local A = ED.A
         A.playing, A.t = false, tt
         A.ksel = A.ksel or {}
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
-            if A.ksel[tid(tt)] then A.ksel[tid(tt)] = nil; return end
-            A.ksel[tid(tt)] = true
-        elseif not A.ksel[tid(tt)] then
-            A.ksel = { [tid(tt)] = true }
+        if name and A.isLocked(name) then note(name .. " is locked"); return end
+        local here = {}
+        if name then
+            here[1] = name
+        else
+            local e = A.entry(false)
+            for n in pairs(e and e.k or {}) do
+                if not A.isLocked(n) and A.keyAt(n, tt) then here[#here + 1] = n end
+            end
         end
-        A.kdrag = { from = tt, to = tt, times = A.selTimes() }
+        local allSel = #here > 0
+        for _, n in ipairs(here) do if not A.ksel[n .. "|" .. tid(tt)] then allSel = false end end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+            for _, n in ipairs(here) do A.ksel[n .. "|" .. tid(tt)] = (not allSel) or nil end
+            return
+        end
+        if not allSel then
+            A.ksel = {}
+            for _, n in ipairs(here) do A.ksel[n .. "|" .. tid(tt)] = true end
+        end
+        A.kdrag = { from = tt, to = tt, pairs = A.selPairs() }
     end
     function ED.A.kdragAt(x)
         local A = ED.A
-        local base = A.base()
-        local w = A.bar.AbsoluteSize.X
-        if not (A.kdrag and base and w > 0) then return end
-        -- snap the grabbed key (Shift here would also flip snapping, so it only reads the toggle)
-        local raw = math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len
+        local raw = A.kdrag and A.xToT(x)
+        if not raw then return end
+        -- Shift is the add-to-selection key here, so only the Snap button decides
         local t = (A.snapOn ~= false) and A.nearest(raw) or raw
         A.kdrag.to, A.t = t, t
     end
@@ -26971,7 +27042,7 @@ end)()
         local d = A.kdrag
         A.kdrag = nil
         if not d then return end
-        A.shiftKeys(d.times, d.to - d.from)
+        A.shiftPairs(d.pairs, d.to - d.from)
         A.t = d.to
     end
     -- onion skin: the rig again, ghosted, at the key before and after the playhead
@@ -27010,6 +27081,61 @@ end)()
             end
         end
     end
+    -- :: dope sheet drawing ::
+    local LANE_H, LABEL_W, MAX_LANES = 22, 170, 8
+    function ED.A.diamond(parent, x, on, picked)
+        local sz = (on or picked) and 11 or 9
+        return new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(x, 0, 0.5, 0),
+            Size = UDim2.fromOffset(sz, sz), Rotation = 45,
+            BackgroundColor3 = picked and Theme.Palette.Snow or on and Theme.Palette.Accent or Theme.Palette.TextMuted,
+            ZIndex = picked and 10 or 9, Parent = parent },
+            { stroke(picked and Theme.Palette.Accent or Theme.Palette.Background, picked and 2 or 1) })
+    end
+    function ED.A.buildLanes(names)
+        local A = ED.A
+        for _, c in ipairs(A.laneBox:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+        A.lanes = {}
+        for i, n in ipairs(names) do
+            local row = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, -6, 0, LANE_H), LayoutOrder = i,
+                ZIndex = 6, Parent = A.laneBox })
+            local nameBtn = new("TextButton", { Text = "  " .. n, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                BackgroundColor3 = Theme.Palette.Pill, BackgroundTransparency = 0.4, AutoButtonColor = true,
+                Size = UDim2.new(0, LABEL_W - 64, 1, -2), ZIndex = 7, Parent = row }, { corner(4) })
+            nameBtn.MouseButton1Click:Connect(function() A.pickJoint(n, ED.ctrl()) end)
+            local function tog(txt, x, fn)
+                local b = new("TextButton", { Text = txt, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small - 2,
+                    TextColor3 = Theme.Palette.TextMuted, BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+                    Position = UDim2.new(0, x, 0, 0), Size = UDim2.new(0, 28, 1, -2), ZIndex = 7, Parent = row }, { corner(4) })
+                b.MouseButton1Click:Connect(fn)
+                return b
+            end
+            local muteBtn = tog("M", LABEL_W - 62, function() A.mute[n] = (not A.mute[n]) or nil; A.laneSig = nil end)
+            local lockBtn = tog("L", LABEL_W - 32, function()
+                A.locked[n] = (not A.locked[n]) or nil
+                A.laneSig = nil
+                if A.locked[n] then A.selPairs() end
+            end)
+            local lane = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Theme.Palette.PanelElevated,
+                BackgroundTransparency = (i % 2 == 0) and 0.55 or 0.3, Position = UDim2.new(0, LABEL_W, 0, 0),
+                Size = UDim2.new(1, -LABEL_W, 1, -2), ZIndex = 6, Parent = row }, { corner(4) })
+            lane.InputBegan:Connect(function(io)
+                if io.UserInputType == Enum.UserInputType.MouseButton1 then A.laneDown(n, io.Position.X) end
+            end)
+            A.lanes[n] = { row = row, name = nameBtn, lane = lane, mute = muteBtn, lock = lockBtn }
+        end
+        local shown = math.clamp(#names, 1, MAX_LANES)
+        A.laneBox.Size = UDim2.new(1, 0, 0, shown * (LANE_H + 2))
+        A.body.Size = UDim2.new(1, 0, 0, 22 + LANE_H + 2 + shown * (LANE_H + 2))
+        if #names == 0 then
+            A.emptyLbl.Visible = true
+        else
+            A.emptyLbl.Visible = false
+        end
+        -- controls 26, gap 6, ruler 18, All keys lane, the joint lanes, padding
+        A.tlH = 8 + 26 + 6 + 18 + LANE_H + 4 + shown * (LANE_H + 2) + 10
+        A.tl.Size = UDim2.new(1, -28, 0, A.tlH)
+    end
     function ED.A.frame(dt)
         local A = ED.A
         local base = A.base()
@@ -27023,15 +27149,20 @@ end)()
         local e = A.entry(false)
         if base and A.rig then
             for name, mo in pairs(A.rig.motors) do
-                local pose = X.AN.pose(base, e, name, A.t)
+                -- a muted lane plays the original, to compare against
+                local pose
+                if A.mute[name] then
+                    pose = base.joints[name] and X.AN.sample(base.joints[name], A.t)
+                else
+                    pose = X.AN.pose(base, e, name, A.t)
+                end
                 if pose then pcall(function() mo.Transform = pose end) end
             end
         end
         -- onions follow the picked joints' keys (every key when none is picked)
         if A.onion and base and A.onions then
-            local ts = A.keyTimes(false)
             local prev, nxt
-            for _, tt in ipairs(ts) do
+            for _, tt in ipairs(A.keyTimes(false)) do
                 if tt < A.t - 1e-4 then prev = tt elseif tt > A.t + 1e-4 and not nxt then nxt = tt end
             end
             for i, o in ipairs(A.onions) do
@@ -27046,8 +27177,7 @@ end)()
             end
         end
         local f = len > 0 and math.clamp(A.t / len, 0, 1) or 0
-        A.fill.Size = UDim2.new(f, 0, 1, 0)
-        A.head.Position = UDim2.new(f, 0, 0, 0)
+        A.head.Position = UDim2.new(0, LABEL_W + f * A.bar.AbsoluteSize.X - 1, 0, 0)
         if not base then
             A.timeLbl.Text = A.id and "loading..." or "pick an animation"
         elseif base.failed then
@@ -27055,63 +27185,97 @@ end)()
         else
             local idx = 1
             for i, tt in ipairs(base.times) do if tt <= A.t + 1e-4 then idx = i end end
+            local np = 0
+            for _ in pairs(A.ksel or {}) do np = np + 1 end
             A.timeLbl.Text = string.format("%s  %.2f / %.2fs  frame %d / %d", A.key or "", A.t, len, idx, #base.times)
+                .. (np > 0 and ("  " .. np .. " picked") or "")
         end
-        -- ticks once per animation, diamonds whenever the keys or the pick change
+        -- ruler ticks once per animation
         if base and len > 0 and A.tickId ~= A.id then
             A.tickId = A.id
-            for _, c in ipairs(A.ticks:GetChildren()) do c:Destroy() end
+            for _, c in ipairs(A.bar:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
             local step = len > 6 and 0.5 or 0.1
             local n = math.floor(len / step + 1e-6)
             for i = 0, n do
                 local tt = i * step
-                local major = math.abs(tt / 0.5 - math.floor(tt / 0.5 + 0.5)) < 1e-6
-                new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(tt / len, 0, 0, 0),
+                local major = (step == 0.5 and i % 2 == 0) or (step == 0.1 and i % 5 == 0)
+                new("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(tt / len, 0, 1, 0),
                     Size = UDim2.fromOffset(1, major and 8 or 4), BackgroundColor3 = Theme.Palette.Border,
-                    BorderSizePixel = 0, ZIndex = 6, Parent = A.ticks })
-                if major and step < 0.5 or (step == 0.5 and i % 2 == 0) then
+                    BorderSizePixel = 0, ZIndex = 6, Parent = A.bar })
+                if major then
                     new("TextLabel", { Text = string.format("%.1f", tt), FontFace = Theme.Fonts.Mono,
                         TextSize = Theme.Text.Small - 3, TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
-                        AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(tt / len, 0, 0, 8),
-                        Size = UDim2.fromOffset(30, 10), ZIndex = 6, Parent = A.ticks })
+                        AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(tt / len, 0, 0, 0),
+                        Size = UDim2.fromOffset(30, 10), ZIndex = 6, Parent = A.bar })
                 end
             end
         end
+        -- lanes when the set of animated / picked joints changes
+        local names = A.laneNames()
+        local lsig = table.concat(names, ",")
+        if A.laneSig ~= lsig or not A.lanes then
+            A.laneSig = lsig
+            A.buildLanes(names)
+            A.dotSig = nil
+        end
+        for n, L in pairs(A.lanes) do
+            local picked = false
+            for _, j in ipairs(A.joints()) do if j == n then picked = true; break end end
+            L.name.BackgroundColor3 = picked and Theme.Palette.Accent or Theme.Palette.Pill
+            L.name.TextColor3 = picked and Theme.Palette.Background or Theme.Palette.Text
+            local rep = e and type(e.rep) == "table" and e.rep[n]
+            L.name.Text = "  " .. n .. (rep and "  (R)" or "")
+            lit(L.mute, A.mute[n] == true)
+            lit(L.lock, A.locked[n] == true)
+            L.lane.BackgroundTransparency = A.locked[n] and 0.85 or ((L.row.LayoutOrder % 2 == 0) and 0.55 or 0.3)
+        end
+        -- diamonds whenever keys, picks or a drag change
         if base and len > 0 then
-            local mine = {}
-            for _, tt in ipairs(A.keyTimes(false)) do mine[math.floor(tt * 10000 + 0.5)] = true end
-            local all = A.keyTimes(true)
-            local parts = {}
-            for _, tt in ipairs(all) do parts[#parts + 1] = string.format("%.4f%s", tt, mine[math.floor(tt * 10000 + 0.5)] and "*" or "") end
             local dd = A.kdrag and (A.kdrag.to - A.kdrag.from) or 0
             local ks = {}
             for id in pairs(A.ksel or {}) do ks[#ks + 1] = id end
             table.sort(ks)
-            local sig = tostring(A.id) .. "|" .. table.concat(parts, ",") .. "|" .. table.concat(ks, ",")
-                .. "|" .. string.format("%.4f", dd)
-            if A.mkSig ~= sig then
-                A.mkSig = sig
-                for _, c in ipairs(A.marks:GetChildren()) do c:Destroy() end
-                for _, tt in ipairs(all) do
-                    local picked = A.ksel and A.ksel[tid(tt)]
-                    local on = mine[tid(tt)] and A.jkey() ~= nil
-                    local at = math.clamp((tt + (picked and dd or 0)) / len, 0, 1)
-                    new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(at, 0, 0.5, 0),
-                        Size = UDim2.fromOffset((on or picked) and 10 or 8, (on or picked) and 10 or 8), Rotation = 45,
-                        BackgroundColor3 = picked and Theme.Palette.Snow or on and Theme.Palette.Accent or Theme.Palette.TextMuted,
-                        ZIndex = picked and 9 or 8, Parent = A.marks },
-                        { stroke(picked and Theme.Palette.Accent or Theme.Palette.Background, picked and 2 or 1) })
+            local parts = {}
+            for _, n in ipairs(names) do
+                local l = e and type(e.k) == "table" and e.k[n]
+                local ts = {}
+                for _, k in ipairs(type(l) == "table" and l or {}) do ts[#ts + 1] = tid(k[1]) end
+                parts[#parts + 1] = n .. ":" .. table.concat(ts, ".")
+            end
+            local sig = tostring(A.id) .. "|" .. table.concat(parts, ";") .. "|" .. table.concat(ks, ",")
+                .. "|" .. string.format("%.4f", dd) .. "|" .. lsig
+            if A.dotSig ~= sig then
+                A.dotSig = sig
+                for _, c in ipairs(A.sumLane:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+                local cnt, sel = {}, {}
+                for _, n in ipairs(names) do
+                    local L = A.lanes[n]
+                    if L then
+                        for _, c in ipairs(L.lane:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+                        local l = e and type(e.k) == "table" and e.k[n]
+                        for _, k in ipairs(type(l) == "table" and l or {}) do
+                            local id = tid(k[1])
+                            local picked = A.ksel and A.ksel[n .. "|" .. id]
+                            cnt[id] = (cnt[id] or 0) + 1
+                            if picked then sel[id] = (sel[id] or 0) + 1 end
+                            A.diamond(L.lane, math.clamp((k[1] + (picked and dd or 0)) / len, 0, 1), true, picked)
+                        end
+                    end
+                end
+                for _, tt in ipairs(A.keyTimes(true)) do
+                    local id = tid(tt)
+                    local all = cnt[id] and sel[id] == cnt[id]
+                    A.diamond(A.sumLane, math.clamp((tt + (all and dd or 0)) / len, 0, 1), false, all)
                 end
             end
         end
     end
     function ED.A.scrubAt(x)
         local A = ED.A
-        local w = A.bar.AbsoluteSize.X
-        local base = A.base()
-        if w > 0 and base then
+        local raw = A.xToT(x)
+        if raw then
             A.playing = false
-            A.t = A.tpick(math.clamp((x - A.bar.AbsolutePosition.X) / w, 0, 1) * base.len)
+            A.t = A.tpick(raw)
         end
     end
     function ED.A.buildGui()
@@ -27129,7 +27293,7 @@ end)()
         if #l == 0 then
             text(ap, "no animations found for this weapon", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 50, true)
         end
-        text(ap, "JOINTS", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 100)
+        text(ap, "ALL JOINTS", Theme.Text.Small, Theme.Palette.TextFaint, Theme.Fonts.Bold, 100)
         A.jointBox = new("ScrollingFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 120),
             CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
             ScrollBarImageColor3 = Theme.Palette.Border, ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -27140,15 +27304,14 @@ end)()
             if e then edit(); e.blend = v end
         end)
         A.blend.row.LayoutOrder = 200
-        -- smooth: edits fade in / out and blend into each other; off: only the edited
-        -- keyframe changes, the frames around it stay the original (Layer joints only)
+        -- smooth: edits fade in / out and blend into each other; off: only the edited keyframe changes, the frames around it stay the original (Layer joints only)
         A.smooth = configCheckbox(ap, "Smooth edits", true, function(v)
             local e = A.entry(true)
             if e then edit(); e.smooth = (v == false) and false or nil end
         end)
         A.smooth.row.LayoutOrder = 199
         button(ap, "Reset animation", 202, function() A.resetAnim() end)
-        text(ap, "Ctrl-click joints to pick several. Layer adds your keys on top of the original, Replace makes your keys the motion. K key, Del delete key, [ ] your keys, , . frames, Ctrl+C / Ctrl+V pose. On the timeline: drag a diamond to move it, Shift-click to pick several, Alt + , . nudges them, Shift flips Snap.",
+        text(ap, "Ctrl-click joints to pick several. Layer adds your keys on top of the original, Replace makes your keys the motion. K key, Del delete, [ ] your keys, , . frames, Ctrl+C / Ctrl+V pose.",
             Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 203, true)
         A.panel = ap
 
@@ -27162,9 +27325,11 @@ end)()
         ED.panels[#ED.panels + 1] = ins
         pad(ins, 12, 14)
         local lay = list(ins, nil, 6)
-        lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-            ins.Size = UDim2.new(0, 290, 0, math.min(lay.AbsoluteContentSize.Y + 26, viewport().Y - 190))
-        end)
+        A.fitIns = function()
+            ins.Size = UDim2.new(0, 290, 0, math.max(120, math.min(lay.AbsoluteContentSize.Y + 26,
+                viewport().Y - (A.tlH or 120) - 110)))
+        end
+        lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(A.fitIns)
         A.jTitle = text(ins, "No joint picked", Theme.Text.Body, Theme.Palette.Text, Theme.Fonts.Bold, 1)
         A.jSub = text(ins, "", Theme.Text.Small, Theme.Palette.TextMuted, Theme.Fonts.Regular, 2, true)
         A.modeDd = dropdown(ins, "Mode", { "Layer", "Replace" }, "Layer", function(v) A.setMode(v) end)
@@ -27182,7 +27347,7 @@ end)()
         local kb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 30, ZIndex = 6, Parent = ins })
         list(kb, Enum.FillDirection.Horizontal, 6)
         button(kb, "Key", 1, function() A.keyNow() end)
-        button(kb, "Delete key", 2, function() A.delKey() end)
+        button(kb, "Delete", 2, function() A.delKey() end)
         button(kb, "Reset joint", 3, function() A.resetJoint() end)
         local pb = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 31, ZIndex = 6, Parent = ins })
         list(pb, Enum.FillDirection.Horizontal, 6)
@@ -27190,15 +27355,16 @@ end)()
         button(pb, "Paste pose", 2, function() A.pastePose() end)
         A.onionCb = configCheckbox(ins, "Onion skin (previous / next key)", A.onion == true, function(v) A.onionSet(v == true) end)
         A.onionCb.row.LayoutOrder = 40
-        text(ins, "with no joint picked, Key / Delete key / Copy pose work on the whole body", Theme.Text.Small - 1,
-            Theme.Palette.TextMuted, Theme.Fonts.Regular, 41, true)
+        text(ins, "with no joint picked, Key and Copy pose work on the whole body. Delete only ever removes picked keys, or the playhead key on picked joints.",
+            Theme.Text.Small - 1, Theme.Palette.TextMuted, Theme.Fonts.Regular, 41, true)
         A.insp = ins
 
-        -- timeline (bottom)
+        -- dope sheet (bottom, full width): controls, ruler, All keys, one lane per joint
         local at = mkPanel({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
-            Size = UDim2.new(0, 780, 0, 84), Visible = false })
+            Size = UDim2.new(1, -28, 0, 160), Visible = false })
         pad(at, 8, 12)
-        local ctr = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), ZIndex = 6, Parent = at })
+        list(at, nil, 4)
+        local ctr = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 1, ZIndex = 6, Parent = at })
         list(ctr, Enum.FillDirection.Horizontal, 4)
         button(ctr, "|<", 1, function() A.ends(-1) end, 34)
         button(ctr, "<<", 2, function() A.navKey(-1) end, 34)
@@ -27214,30 +27380,40 @@ end)()
         A.loopBtn = button(ctr, "Loop", 20, function() A.loop = A.loop == false end, 50)
         A.snapBtn = button(ctr, "Snap", 21, function() A.snapOn = A.snapOn == false end, 50)
         A.timeLbl = text(ctr, "", Theme.Text.Small, Theme.Palette.Text, Theme.Fonts.Mono, 30)
-        local track = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
-            Position = UDim2.new(0, 0, 0, 32), Size = UDim2.new(1, 0, 0, 36), ZIndex = 6, Parent = at })
-        local bar = new("Frame", { Position = UDim2.new(0, 0, 0, 2), Size = UDim2.new(1, 0, 0, 16),
-            BackgroundColor3 = Theme.Palette.PanelElevated, ZIndex = 6, Parent = track }, { corner(4) })
-        A.fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Theme.Palette.Accent,
-            BackgroundTransparency = 0.8, ZIndex = 6, Parent = bar }, { corner(4) })
-        A.marks = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), ZIndex = 8, Parent = bar })
-        A.head = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Size = UDim2.new(0, 2, 1, 6), Position = UDim2.new(0, 0, 0, 0),
-            BackgroundColor3 = Theme.Palette.Snow, BorderSizePixel = 0, ZIndex = 9, Parent = bar })
-        A.ticks = new("Frame", { BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 20), Size = UDim2.new(1, 0, 0, 16),
-            ZIndex = 6, Parent = track })
-        A.tickId, A.mkSig = nil, nil
-        track.InputBegan:Connect(function(io)
-            if io.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-            local tt = A.markerAt(io.Position.X)
-            if tt then
-                A.kdragStart(tt)
-            else
-                if not UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then A.ksel = {} end
-                A.scrub = true
-                A.scrubAt(io.Position.X)
-            end
+        text(ctr, "   click a diamond to pick it, Shift-click for more, drag to move, Del deletes, Alt + , . nudges",
+            Theme.Text.Small - 2, Theme.Palette.TextMuted, Theme.Fonts.Regular, 31)
+        -- the body holds the lanes; the playhead line runs over all of them
+        local body = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 60), LayoutOrder = 2, ZIndex = 6, Parent = at })
+        local ruler = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, -6, 0, 18), ZIndex = 6, Parent = body })
+        A.bar = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+            Position = UDim2.new(0, LABEL_W, 0, 0), Size = UDim2.new(1, -LABEL_W, 1, 0), ZIndex = 6, Parent = ruler })
+        A.bar.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 then A.laneDown(false, io.Position.X) end
         end)
-        A.bar, A.tl = bar, at
+        local sumRow = new("Frame", { BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 20), Size = UDim2.new(1, -6, 0, LANE_H),
+            ZIndex = 6, Parent = body })
+        new("TextLabel", { Text = "  All keys", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, TextXAlignment = Enum.TextXAlignment.Left, BackgroundTransparency = 1,
+            Size = UDim2.new(0, LABEL_W, 1, 0), ZIndex = 7, Parent = sumRow })
+        A.sumLane = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Theme.Palette.Background,
+            BackgroundTransparency = 0.3, Position = UDim2.new(0, LABEL_W, 0, 0), Size = UDim2.new(1, -LABEL_W, 1, -2),
+            ZIndex = 6, Parent = sumRow }, { corner(4) })
+        A.sumLane.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 then A.laneDown(nil, io.Position.X) end
+        end)
+        A.laneBox = new("ScrollingFrame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, LANE_H),
+            Position = UDim2.new(0, 0, 0, 22 + LANE_H), CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Palette.Border, ScrollingDirection = Enum.ScrollingDirection.Y,
+            ZIndex = 6, Parent = body })
+        list(A.laneBox, nil, 2)
+        A.emptyLbl = text(A.laneBox, "  no keys yet: pick a joint (it gets a lane) and press K or drag the gizmo",
+            Theme.Text.Small - 1, Theme.Palette.TextFaint, Theme.Fonts.Regular, 0)
+        -- the playhead runs over the ruler and every lane (body has no list layout, so it can float)
+        A.head = new("Frame", { Position = UDim2.new(0, LABEL_W, 0, 0), Size = UDim2.new(0, 2, 1, 0),
+            BackgroundColor3 = Theme.Palette.Snow, BorderSizePixel = 0, ZIndex = 11, Parent = body })
+        A.body = body
+        A.tl = at
+        A.tickId, A.dotSig, A.laneSig, A.lanes = nil, nil, nil, nil
     end
     function ED.A.refresh()
         local A = ED.A
@@ -27256,20 +27432,20 @@ end)()
         for name, b in pairs(A.jointRows or {}) do
             lit(b, jk == name)
             if jk ~= name and A.jsel and A.jsel[name] and jk then b.BackgroundColor3 = Theme.Palette.Border end
-            local n = e and type(e.k[name]) == "table" and #e.k[name] or 0
-            local rep = e and type(e.rep) == "table" and e.rep[name]
-            b.Text = name .. (n > 0 and ("  (" .. n .. ")") or "") .. (rep and "  R" or "")
+            local n = e and type(e.k) == "table" and type(e.k[name]) == "table" and #e.k[name] or 0
+            b.Text = name .. (n > 0 and ("  (" .. n .. ")") or "") .. (A.locked[name] and "  locked" or "")
         end
         A.blend.set(e and tonumber(e.blend) or 0.2)
         A.blend.row.Visible = not (e and e.smooth == false)
         if A.smooth.setState then A.smooth.setState(not (e and e.smooth == false)) end
         -- joint inspector
         local js = A.joints()
-        A.jTitle.Text = jk and (jk .. (#js > 1 and ("  (+" .. (#js - 1) .. " more)") or "")) or "No joint picked"
+        A.jTitle.Text = jk and (jk .. (#js > 1 and ("  (+" .. (#js - 1) .. " more)") or "") .. (A.locked[jk] and "  (locked)" or ""))
+            or "No joint picked"
         local tk = A.here()
         local key = jk and A.keyAt(jk, tk)
-        local nk = jk and e and type(e.k[jk]) == "table" and #e.k[jk] or 0
-        A.jSub.Text = not jk and "click a joint on the model or in the list"
+        local nk = jk and e and type(e.k) == "table" and type(e.k[jk]) == "table" and #e.k[jk] or 0
+        A.jSub.Text = not jk and "click a joint on the model, in the list, or a lane name"
             or key and string.format("key at %.2fs  (%d on this joint)", tk, nk)
             or (nk > 0 and (nk .. " keys on this joint, none at the playhead") or "no keys yet: move it or press K")
         A.modeDd.frame.Visible, A.easeDd.frame.Visible = jk ~= nil, key ~= nil
@@ -27285,6 +27461,7 @@ end)()
             end
         end
         for _, sl in pairs(A.js) do sl.row.Visible = jk ~= nil end
+        if A.fitIns then A.fitIns() end
     end
     local close
     local function buildGui()
