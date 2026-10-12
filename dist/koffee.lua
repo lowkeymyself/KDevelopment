@@ -1,7 +1,7 @@
--- koffee v1.6.0
+-- koffee v1.6.1
 
 local Koffee = {}
-Koffee.Version = "1.6.0"
+Koffee.Version = "1.6.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2511,7 +2511,10 @@ Koffee.UI.seen = {}
 Koffee.UI.tabIcon = { Combat = "crosshair", Visuals = "eye", World = "globe",
     Character = "user", Options = "settings", Custom = "pencil", Configs = "folder",
     NPC = "bot", Extra = "package", AI = "sparkles" }
-Koffee.UI.tabIcons = {}   -- name -> the bar's ImageLabel, so colouring can follow the label
+-- v1.6.0: the control registry gets its OWN table. `reg`/`n` belong to Koffee.UI.skin
+-- (instance -> skin fn, swept whenever n hits a multiple of 400), and sharing them put
+-- skin functions in front of code expecting entries, and let the sweep eat the entries.
+Koffee.UI.ctl, Koffee.UI.ctlN = {}, 0
 -- Path is Tab > Box > Secondary Tab > Label, each part skipped when absent. Cards set
 -- curBox (nil for untitled ones, which resets it); a page whose parent card has
 -- Secondary Tabs is itself named after its tab, so the sub name is free.
@@ -2532,11 +2535,11 @@ function Koffee.UI.declare(kind, parent, label, info)
         path = path .. " (" .. n .. ")"
     end
     Koffee.UI.seen[path] = true
-    local e = Koffee.UI.reg[path]
+    local e = Koffee.UI.ctl[path]
     if not e then
-        Koffee.UI.n += 1
-        e = { path = path, tab = tab, box = Koffee.UI.curBox, sub = sub, label = label, order = Koffee.UI.n }
-        Koffee.UI.reg[path] = e
+        Koffee.UI.ctlN += 1
+        e = { path = path, tab = tab, box = Koffee.UI.curBox, sub = sub, label = label, order = Koffee.UI.ctlN }
+        Koffee.UI.ctl[path] = e
     end
     e.kind, e.get, e.set = kind, info.get, info.set
     e.min, e.max, e.step, e.options, e.module = info.min, info.max, info.step, info.options, info.module
@@ -3115,19 +3118,12 @@ local function selectTab(name)
     local tabsAnim = Koffee.Anim.spot("AnimTabs")
     for tabName, tab in pairs(tabs) do
         local isActive = tabName == name
-        -- v1.6.0: the tab's glyph tracks its label, and the active one takes the accent
-        -- so the bar reads at a glance even before the pill has finished moving.
-        local tabIc = Koffee.UI.tabIcons[tabName]
-        local wantIc = Theme.Palette.TextMuted
-        if isActive then wantIc = Theme.Palette.Accent end
         if tabsAnim then
             tween(tab.Button, Theme.Animation.Fast, {
                 TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted,
             })
-            if tabIc then tween(tabIc, Theme.Animation.Fast, { ImageColor3 = wantIc }) end
         else
             tab.Button.TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted
-            if tabIc then tabIc.ImageColor3 = wantIc end
         end
         -- v0.0.99: pure crossfade: the outgoing panel fades out, the incoming fades in. No scale pop, no scroll jump: panels are ScrollingFrames so the fade lives on each tab's CanvasGroup wrapper (GroupTransparency). Panels get CanvasGroup wrappers in addTab; the wrapper's Visible flag is the real show/hide (GroupTransparency = 1 is not enough: children of an invisible canvas can still eat input).
         local w = tab.Wrap
@@ -3293,24 +3289,9 @@ local function addTab(name, buildFn)
         }),
     })
 
-    -- v1.6.0: each tab carries its own glyph from the shared map, left of the label.
-    -- The padding opens up to make room, so AutomaticSize still measures the pair and
-    -- the pill keeps snapping to the real rect.
-    local tabIco = Koffee.UI.tabIcon[name]
-    if tabIco then
-        Koffee.UI.tabIcons[name] = new("ImageLabel", {
-            Name = "Icon",
-            AnchorPoint = Vector2.new(0, 0.5),
-            Position = UDim2.new(0, 12, 0.5, 0),
-            Size = UDim2.new(0, 13, 0, 13),
-            BackgroundTransparency = 1,
-            Image = Koffee.icon(tabIco),
-            ImageColor3 = Theme.Palette.TextMuted,
-            ZIndex = 35,
-            Parent = button,
-        })
-        button:FindFirstChildOfClass("UIPadding").PaddingLeft = UDim.new(0, 31)
-    end
+    -- v1.6.0: icons live in the shared tabIcon map and render in the Glass sidebar and
+    -- Rail, NOT in this bar: ten icon+text tabs measure 808px against a 640px bar, which
+    -- pushed npc, extra and ai clean off the right edge. Measured, not guessed.
 
     -- v0.0.30: the button's own rect changing (AutomaticSize settling after the
     -- font's glyph metrics load, or a reflow) re-snaps the pill if this tab is the
@@ -3383,15 +3364,11 @@ local function addTab(name, buildFn)
     button.MouseEnter:Connect(function()
         if activeTab ~= name then
             tween(button, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
-            local ic = Koffee.UI.tabIcons[name]
-            if ic then tween(ic, Theme.Animation.Fast, { ImageColor3 = Theme.Palette.Text }) end
         end
     end)
     button.MouseLeave:Connect(function()
         if activeTab ~= name then
             tween(button, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
-            local ic = Koffee.UI.tabIcons[name]
-            if ic then tween(ic, Theme.Animation.Fast, { ImageColor3 = Theme.Palette.TextMuted }) end
         end
     end)
     button.MouseButton1Click:Connect(function() selectTab(name) end)
@@ -38493,8 +38470,9 @@ end
 -- controls are skipped: it has no business repointing its own brain mid-sentence.
 function AI.digest()
     local list = {}
-    for _, e in pairs(Koffee.UI.reg) do
-        if e.tab ~= "AI" and e.get then list[#list + 1] = e end
+    for _, e in pairs(Koffee.UI.ctl) do
+        -- type guard: anything but an entry in here must never reach e.tab
+        if type(e) == "table" and e.tab ~= "AI" and e.get then list[#list + 1] = e end
     end
     table.sort(list, function(a, b) return (a.order or 0) < (b.order or 0) end)
     local rows, n = {}, 0
@@ -38659,7 +38637,7 @@ function AI.resolve(changes)
     if type(changes) ~= "table" then return out end
     for _, c in ipairs(changes) do
         if type(c) == "table" and type(c.path) == "string" then
-            local e = Koffee.UI.reg[c.path]
+            local e = Koffee.UI.ctl[c.path]
             local row = { path = c.path, why = tostring(c.why or ""), apply = true }
             if not e then
                 row.bad = "no such control"
@@ -38764,23 +38742,27 @@ local function animOn(spot)
     return true
 end
 
--- the tab's own glyph reports state: it breathes while a request is out and keeps a
--- dot until he comes back to read the answer.
+-- the tab itself reports state: its label breathes while a request is out, and it keeps
+-- a dot until he comes back to read the answer.
 local function tabPulse()
     task.spawn(function()
-        local ic = Koffee.UI.tabIcons.AI
-        if not ic then return end
-        while UIst.busy and not Koffee.dead() do
-            tween(ic, Theme.Animation.Slow, { ImageColor3 = P.Accent, ImageTransparency = 0.25 })
+        local t = tabs.AI
+        local btn = t and t.Button
+        if not btn then return end
+        while UIst.busy and not Koffee.dead() and btn.Parent do
+            tween(btn, Theme.Animation.Slow, { TextColor3 = P.Accent })
             task.wait(0.42)
             if not UIst.busy then break end
-            tween(ic, Theme.Animation.Slow, { ImageColor3 = P.Text, ImageTransparency = 0 })
+            tween(btn, Theme.Animation.Slow, { TextColor3 = P.TextMuted })
             task.wait(0.42)
         end
-        if Koffee.dead() or not ic.Parent then return end
-        local on = activeTab == "AI"
-        ic.ImageTransparency = 0
-        if on then ic.ImageColor3 = P.Accent else ic.ImageColor3 = P.TextMuted end
+        if Koffee.dead() or not btn.Parent then return end
+        -- hand the colour back to whatever the tab's real state is
+        if activeTab == "AI" then
+            btn.TextColor3 = P.Text
+        else
+            btn.TextColor3 = P.TextMuted
+        end
     end)
 end
 local function setUnread(v)
@@ -38795,6 +38777,10 @@ local function setUnread(v)
 end
 
 addTab("AI", function(root)
+    -- v1.6.0: addTab runs this inline on the main chunk, so anything throwing in
+    -- here takes out every IIFE after it (window manager, notify, the Glass, Rail
+    -- and Bento shells). A failure degrades to a note in the tab instead.
+    local okBuild, errBuild = pcall(function()
     -- one shell filling the tab instead of a stack of cards: the transcript owns the
     -- scrolling, so the outer panel never scrolls with it.
     local shell = new("Frame", {
@@ -39656,6 +39642,17 @@ addTab("AI", function(root)
             Visible = false, ZIndex = 36, Parent = btn,
         }, { pillCorner() })
     end)
+    end)
+    if not okBuild then
+        new("TextLabel", {
+            Text = "the ai tab failed to build: " .. tostring(errBuild),
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = P.Danger,
+            BackgroundTransparency = 1, TextWrapped = true, Size = UDim2.new(1, 0, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 35, Parent = root,
+        })
+        warn("[koffee] ai tab build failed: " .. tostring(errBuild))
+    end
 end)
 end)()
 
