@@ -1,7 +1,7 @@
--- koffee v1.6.2
+-- koffee v1.6.3
 
 local Koffee = {}
-Koffee.Version = "1.6.2"
+Koffee.Version = "1.6.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38353,8 +38353,14 @@ AI.BENCH = {
     ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"] = { 16, true  },
     ["liquid/lfm-2.5-2.6b:free"]                           = { 8,  true  },
 }
--- a content classifier, not a chat model, so it never belongs in the picker
-AI.SKIP = { ["nvidia/nemotron-3.5-content-safety:free"] = true }
+-- Never offered. The content model is a classifier, not a chat model. Both Inkling
+-- builds are gated by OpenRouter to "agentic harnesses", so a plain API key gets 403
+-- forever: measured 2026-10-12, when they ranked 1st and 3rd.
+AI.SKIP = {
+    ["nvidia/nemotron-3.5-content-safety:free"] = true,
+    ["thinkingmachines/inkling:free"] = true,
+    ["thinkingmachines/inkling-small:free"] = true,
+}
 
 -- An unlisted free model still has to land somewhere sensible, or the picker breaks
 -- every time the roster turns over. Read the parameter count out of the id, then nudge
@@ -38419,8 +38425,10 @@ local function call(method, path, body)
     if not ok then return nil, "request failed: " .. tostring(res) end
     local code = (res and (res.StatusCode or res.status_code)) or 0
     local text = (res and res.Body) or ""
-    if code == 401 or code == 403 then return nil, "key rejected (" .. tostring(code) .. ")" end
-    if code == 429 then return nil, "rate limited, give it a moment" end
+    if code == 401 then return nil, "The worker's key was rejected (401)" end
+    -- free models fail in two ways that are nothing to do with Koffee, so say which
+    if code == 403 then return nil, "That model is gated upstream (403). Pick another from the model pill." end
+    if code == 429 then return nil, "Rate limited upstream (429). Wait a moment, or pick another model." end
     if code ~= 200 then
         return nil, "http " .. tostring(code) .. ": " .. string.sub(text, 1, 180)
     end
@@ -38718,7 +38726,9 @@ function AI.ask(text, cb)
         local ch = data.choices and data.choices[1]
         local raw = ch and ch.message and ch.message.content
         if type(raw) ~= "string" or raw == "" then
-            cb(nil, "the model sent back an empty reply")
+            -- reasoning models can spend the whole token budget thinking and return an
+            -- empty content field, which is a model choice, not a transport failure
+            cb(nil, "That model returned nothing. It may have spent its budget reasoning: try another.")
             return
         end
         local parsed = parseReply(raw)
@@ -39497,7 +39507,13 @@ addTab("AI", function(root)
             end
             steps.done(loose and "Answered (not strict JSON)"
                 or ("Answered, " .. tostring(n2) .. " change" .. (n2 == 1 and "" or "s")))
-            if type(res.reply) == "string" and res.reply ~= "" then addReply(res.reply) end
+            -- a non-strict model can return changes with no reply field at all, so say
+            -- so plainly rather than showing a silent diff card
+            if type(res.reply) == "string" and res.reply ~= "" then
+                addReply(res.reply)
+            elseif #rows > 0 then
+                addNote("The model returned changes with no summary.", P.TextFaint)
+            end
             if #rows == 0 then
                 if activeTab ~= "AI" then setUnread(true) end
                 return
