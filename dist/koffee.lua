@@ -1,7 +1,7 @@
--- koffee v1.5.0
+-- koffee v1.5.1
 
 local Koffee = {}
-Koffee.Version = "1.5.0"
+Koffee.Version = "1.5.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -4587,46 +4587,64 @@ local function dropdown(parent, label, options, initial, onChange)
         end
     end
 
-    for i, opt in ipairs(options) do
-        local optBtn = new("TextButton", {
-            Text = "",
-            AutoButtonColor = false,
-            Size = UDim2.new(1, 0, 0, 26),
-            Position = UDim2.new(0, 0, 0, (i - 1) * 26),
-            BackgroundColor3 = Theme.Palette.PanelElevated,
-            BackgroundTransparency = 1,
-            BorderSizePixel = 0,
-            ZIndex = 261,
-            Parent = list,
-        })
-        new("TextLabel", {
-            Text = opt,
-            FontFace = Theme.Fonts.Medium,
-            TextSize = Theme.Text.Small,
-            TextColor3 = Theme.Palette.Text,
-            BackgroundTransparency = 1,
-            TextTransparency = 1,
-            Position = UDim2.new(0, 12, 0, 0),
-            Size = UDim2.new(1, -20, 1, 0),
-            TextXAlignment = Enum.TextXAlignment.Left,
-            ZIndex = 262,
-            Parent = optBtn,
-        })
-        optBtn.MouseEnter:Connect(function()
-            tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 0.7 })
-        end)
-        optBtn.MouseLeave:Connect(function()
-            tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 1 })
-        end)
-        optBtn.MouseButton1Click:Connect(function()
-            if locked then return end
-            valueLbl.Text = opt
-            pulse(valueLbl, 1.08)   -- v0.0.98: value ticks on pick
-            Koffee.Sfx.play("select")
-            closeList()
-            if onChange then onChange(opt) end
-        end)
+    -- v1.5.1: rows are built through a function so an option list can change while
+    -- the UI is live (the silent Method list hides External until it answers). The
+    -- popup keeps its own corner/stroke children, so only the rows are cleared.
+    local function buildRows()
+        for _, child in ipairs(list:GetChildren()) do
+            if child:IsA("TextButton") then child:Destroy() end
+        end
+        for i, opt in ipairs(options) do
+            local optBtn = new("TextButton", {
+                Text = "",
+                AutoButtonColor = false,
+                Size = UDim2.new(1, 0, 0, 26),
+                Position = UDim2.new(0, 0, 0, (i - 1) * 26),
+                BackgroundColor3 = Theme.Palette.PanelElevated,
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                ZIndex = 261,
+                Parent = list,
+            })
+            new("TextLabel", {
+                Text = opt,
+                FontFace = Theme.Fonts.Medium,
+                TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text,
+                BackgroundTransparency = 1,
+                TextTransparency = 1,
+                Position = UDim2.new(0, 12, 0, 0),
+                Size = UDim2.new(1, -20, 1, 0),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 262,
+                Parent = optBtn,
+            })
+            optBtn.MouseEnter:Connect(function()
+                tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 0.7 })
+            end)
+            optBtn.MouseLeave:Connect(function()
+                tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 1 })
+            end)
+            optBtn.MouseButton1Click:Connect(function()
+                if locked then return end
+                valueLbl.Text = opt
+                pulse(valueLbl, 1.08)   -- v0.0.98: value ticks on pick
+                Koffee.Sfx.play("select")
+                closeList()
+                if onChange then onChange(opt) end
+            end)
+        end
+        list.CanvasSize = UDim2.new(0, 0, 0, #options * 26)
+        -- rows are born hidden (the popup is normally closed). A swap made while the
+        -- popup is open has to show them itself, or the new list reads as empty.
+        if isOpen then
+            for _, child in ipairs(list:GetChildren()) do
+                local lbl = child:FindFirstChildOfClass("TextLabel")
+                if lbl then lbl.TextTransparency = 0 end
+            end
+        end
     end
+    buildRows()
 
     btn.MouseButton1Click:Connect(function()
         if locked then return end
@@ -4638,6 +4656,14 @@ local function dropdown(parent, label, options, initial, onChange)
         button = btn,
         setValue = function(v) valueLbl.Text = v end,
         close = function() closeList(true) end,
+        -- v1.5.1: swap the option list live. placeBelow reads #options every frame,
+        -- so an open popup resizes itself on the next tick without reopening.
+        setOptions = function(newOpts, newValue)
+            options = newOpts or {}
+            buildRows()
+            if newValue then valueLbl.Text = newValue end
+            if isOpen then placeBelow() end
+        end,
         -- v0.93.22: locks the control out of input entirely and optionally shows an
         -- override label. Interactable also kills hover and the press squash; the
         -- Lua guards stay as the hard stop in case it is missing on a client.
@@ -12853,6 +12879,9 @@ local Combat = {
         -- Each resolver returns (handled, value). handled=true short-circuits the
         -- game's real call; handled=false falls through to the original metamethod.
         local PASS_H, PASS_V = false, nil
+        -- v1.5.1: camera-ray-only methods, keyed to the one namecall each owns.
+        -- Membership test and method match in one lookup; nothing else is spoofed.
+        local RAY_ONLY = { Viewport = "ViewportPointToRay", Screenpoint = "ScreenPointToRay" }
         -- v0.0.35: redirect only when actually armed. silentPos is now kept fresh EVERY frame by the heartbeat (independent of LMB) so the redirect lands the instant the weapon reads it: fixes "Require Left-Click misses" (the old code set silentPos reactively, one frame behind the click). The LMB gate is applied HERE via a tracked flag: never IsMouseButtonPressed, which is a namecall and illegal inside these hooks.
         local function isArmed()
             if not silentPos then return false end
@@ -12960,6 +12989,9 @@ local Combat = {
             end
             -- v0.3.0: External method delegates ALL silent-aim work to KoffeeHelper.exe over localhost HTTP. Under this method, every Lua-side spoof stays dormant so the game sees 100% vanilla client behaviour: the raycast rewrite happens inside Roblox via the helper's inline hook on the raycast bound function, not here. v0.95.0: same dormancy for Native. The CameraData rewrite owns the shot there, so every Lua-side spoof stays off too.
             if Combat.Silent.Method == "External" or Combat.Silent.Method == "Native" then return PASS_H, PASS_V end
+            -- v1.5.1: Viewport / Screenpoint own one namecall each, so no property read
+            -- is spoofed under them at all: no Mouse.Hit, no Camera.CFrame, no cursor.
+            if RAY_ONLY[Combat.Silent.Method] then return PASS_H, PASS_V end
             -- (A) Mouse aim reads (Hit/Target/UnitRay): safe on every game, no caller
             -- scoping needed (nothing but aim code reads these). v0.0.35 behaviour.
             if (key == "Hit" or key == "Target" or key == "UnitRay")
@@ -13174,11 +13206,23 @@ local Combat = {
             -- Forced-MB/Second-Camera fire reads. Skipped under Raycast method (that
             -- method deliberately touches ONLY Mouse.Hit reads + workspace:Raycast).
             if Combat.Silent.Method == "Raycast" then return PASS_H, PASS_V end
+            -- v1.5.1: a ray-only method answers ONLY the call it owns, so a game that
+            -- reads the other one stays vanilla and the cursor is never touched. The two
+            -- differ by the GUI inset, so picking the wrong one reads as a clean no-op.
+            local rayOwn = RAY_ONLY[Combat.Silent.Method]
+            if rayOwn and method ~= rayOwn then return PASS_H, PASS_V end
             -- camera-ray / cursor methods the game uses to build its shot. Direction bends to
             -- the target; on the Pos Spoof fire frame the ORIGIN moves in front of the target
             -- (wallbang), else real (SR.camPos). spoofAim excludes the camera + Koffee. Namecall-free.
             if method == "ViewportPointToRay" or method == "ScreenPointToRay" then
                 if silentPos and SR.camPos and SR.spoofAim(getCS and getCS()) then
+                    -- v1.5.1: ray-only methods carry wallbang on this origin (the
+                    -- Second-Camera shape), since posFire is Raycast-only by contract.
+                    if rayOwn and Combat.Silent.Wallbang and silentTarget
+                       and (not Combat.Silent.ActivationKey or silentHeld) then
+                        local o, d = wallShot()
+                        return true, Ray.new(o, d)
+                    end
                     if posFire() then local o, d = wallShot(); return true, Ray.new(o, d) end
                     return true, Ray.new(SR.camPos, (silentPos - SR.camPos).Unit)
                 end
@@ -14636,11 +14680,29 @@ local Combat = {
         -- Keepalive + target push loop. Fires while (Silent.Enabled AND Method == External). 30Hz tick keeps the target ~1.7 studs fresh at sprint speed. Executor request() bypasses HttpService rate limits so the throughput is fine. Also probes /health on the enable transition + POST /clear on the disable transition. v0.3.6: reverted v0.3.5's Heartbeat-based push + in-flight guard: simpler is better while we chase the flake, and the LMB gate removal makes stale-target windows less painful (always-on aim doesn't need per-frame LMB freshness).
         local warned = false
         local wasActive = false
+        -- v1.5.1: standing presence probe on the AIM port (27374), which is a separate
+        -- process from the KoffeeHelper input poller on 7912. Drives whether the Method
+        -- dropdown lists External at all. Only probes with the window open, so it is free.
+        M.detected = false
+        local probeAt = 0
         task.spawn(function()
             while true do
                 -- v0.22.0: was immortal. Unload left it pushing config at 30Hz and
                 -- every re-exec stacked another pusher on top.
                 if Koffee.dead() then M.clear(); break end
+                local wins = Shared.Windows
+                local look = (probeAt == 0) or (wins and wins._primaryOpen)
+                    or Combat.Silent.Method == "External"
+                if look and os.clock() - probeAt > 4 then
+                    probeAt = os.clock()
+                    local was = M.detected
+                    M.detected = M.healthOk()
+                    -- the list only changes on a transition, so the UI is left alone
+                    -- while the external stays up or stays down.
+                    if M.detected ~= was and Shared._silentMethodRefresh then
+                        pcall(Shared._silentMethodRefresh)
+                    end
+                end
                 local isActive = Combat.Silent.Enabled
                     and Combat.Silent.Method == "External"
                 if isActive then
@@ -14672,6 +14734,16 @@ local Combat = {
 
         return M
     end)()
+
+    -- v1.5.1: the live Method list. Viewport / Screenpoint each own one Camera ray
+    -- call. External is listed only while the external answers on its own port, so a
+    -- method that cannot work is never offered.
+    function Shared.silentMethods()
+        local out = { "Forced Camera", "Second-Camera", "Viewport", "Screenpoint", "Raycast" }
+        if Koffee.External and Koffee.External.detected then out[#out + 1] = "External" end
+        if Koffee._isRivals then out[#out + 1] = "Native" end
+        return out
+    end
 
     registerModule("silentaim", "Silent Aim",
         function() installSilentHooks(); Combat.Silent.Enabled = true end,
@@ -15200,10 +15272,14 @@ local Combat = {
         dropdown(R["Silent Aim"], "Hit Part", HITPART_OPTIONS, Combat.Silent.HitPart, function(v) Combat.Silent.HitPart = v end)
         -- v0.95.0: rivals adds the Native method (CameraData rewrite, no hooks).
         -- It only functions there; anywhere else the hooks stay dormant on it.
-        dropdown(R["Silent Aim"], "Method", Koffee._isRivals
-            and { "Forced Camera", "Second-Camera", "Raycast", "External", "Native" }
-            or { "Forced Camera", "Second-Camera", "Raycast", "External" }, Combat.Silent.Method,
+        -- v1.5.1: the list is live now (see Shared.silentMethods), so External can leave
+        -- and rejoin it while the menu is open. No new locals here: the handle rides Shared.
+        Shared._silentMethodDd = dropdown(R["Silent Aim"], "Method", Shared.silentMethods(), Combat.Silent.Method,
             function(v) Combat.Silent.Method = v; if Koffee.External then Koffee.External.onMethodChange(v) end end)
+        Shared._silentMethodRefresh = function()
+            local dd = Shared._silentMethodDd
+            if dd and dd.setOptions then dd.setOptions(Shared.silentMethods(), Combat.Silent.Method) end
+        end
         configCheckbox(R["Silent Aim"], "Require Left-Click", Combat.Silent.RequireLMB, function(v) Combat.Silent.RequireLMB = v end)
         -- v0.34.0: Wallbang works on every method now: Raycast + External (origin
         -- rewrite), Forced Camera (shifts the camera read = everything), Second-Camera
