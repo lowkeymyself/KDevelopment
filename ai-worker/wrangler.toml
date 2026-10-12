@@ -1,0 +1,13 @@
+name = "koffee-ai"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Optional: per-day request counting shared across everyone on this proxy.
+# Create it with `wrangler kv namespace create KOFFEE_AI`, then paste the id here.
+# [[kv_namespaces]]
+# binding = "KOFFEE_AI"
+# id = ""
+
+# Secrets are set with `wrangler secret put`, never in this file:
+#   OPENROUTER_KEY   required
+#   KOFFEE_TOKEN     optional, gates who may spend the budget

@@ -1,7 +1,7 @@
--- koffee v1.5.1
+-- koffee v1.6.0
 
 local Koffee = {}
-Koffee.Version = "1.5.1"
+Koffee.Version = "1.6.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2501,6 +2501,47 @@ Koffee.UI = { mode = "Classic", modes = { "Classic", "Glass", "Rail", "Bento" },
     -- v1.2.0: what Rail and Ctrl+K need to know about the built UI
     cards = {}, cardN = 0, cardSubs = {}, subShow = {}, subCur = {}, items = {}, modRows = {}, cfgLabels = {},
     shells = {}, tabHooks = {}, openHooks = {}, subHooks = {}, beforeRebuild = {}, afterRebuild = {} }
+-- v1.6.0 CONTROL REGISTRY (drives the AI tab). Every config control declares itself
+-- as it is built, so the assistant always sees the live option set with nothing to
+-- keep in sync: a feature added later is known the moment its control exists.
+Koffee.UI.seen = {}
+-- v1.6.0: one Primary Tab icon map for the bar, the Glass sidebar and Rail, which each
+-- held their own copy. Every tab is a distinct glyph: Extra moved off sparkles so the
+-- AI tab could take it, since that is the one glyph that reads as "assistant".
+Koffee.UI.tabIcon = { Combat = "crosshair", Visuals = "eye", World = "globe",
+    Character = "user", Options = "settings", Custom = "pencil", Configs = "folder",
+    NPC = "bot", Extra = "package", AI = "sparkles" }
+Koffee.UI.tabIcons = {}   -- name -> the bar's ImageLabel, so colouring can follow the label
+-- Path is Tab > Box > Secondary Tab > Label, each part skipped when absent. Cards set
+-- curBox (nil for untitled ones, which resets it); a page whose parent card has
+-- Secondary Tabs is itself named after its tab, so the sub name is free.
+function Koffee.UI.declare(kind, parent, label, info)
+    local tab = Koffee.UI.curTab
+    if not (tab and label and info) then return end
+    local sub
+    if parent and parent.Parent and Koffee.UI.cardSubs[parent.Parent] then sub = parent.Name end
+    local path = tab
+    if Koffee.UI.curBox then path = path .. " > " .. Koffee.UI.curBox end
+    if sub then path = path .. " > " .. sub end
+    path = path .. " > " .. label
+    -- same build pass twice means two controls really do share a label: number the
+    -- second one rather than letting it overwrite the first.
+    if Koffee.UI.seen[path] then
+        local n = 2
+        while Koffee.UI.seen[path .. " (" .. n .. ")"] do n += 1 end
+        path = path .. " (" .. n .. ")"
+    end
+    Koffee.UI.seen[path] = true
+    local e = Koffee.UI.reg[path]
+    if not e then
+        Koffee.UI.n += 1
+        e = { path = path, tab = tab, box = Koffee.UI.curBox, sub = sub, label = label, order = Koffee.UI.n }
+        Koffee.UI.reg[path] = e
+    end
+    e.kind, e.get, e.set = kind, info.get, info.set
+    e.min, e.max, e.step, e.options, e.module = info.min, info.max, info.step, info.options, info.module
+    return e
+end
 pcall(function()
     if isfile and readfile and isfile("Koffee/startup.json") then
         local d = game:GetService("HttpService"):JSONDecode(readfile("Koffee/startup.json"))
@@ -3074,12 +3115,19 @@ local function selectTab(name)
     local tabsAnim = Koffee.Anim.spot("AnimTabs")
     for tabName, tab in pairs(tabs) do
         local isActive = tabName == name
+        -- v1.6.0: the tab's glyph tracks its label, and the active one takes the accent
+        -- so the bar reads at a glance even before the pill has finished moving.
+        local tabIc = Koffee.UI.tabIcons[tabName]
+        local wantIc = Theme.Palette.TextMuted
+        if isActive then wantIc = Theme.Palette.Accent end
         if tabsAnim then
             tween(tab.Button, Theme.Animation.Fast, {
                 TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted,
             })
+            if tabIc then tween(tabIc, Theme.Animation.Fast, { ImageColor3 = wantIc }) end
         else
             tab.Button.TextColor3 = isActive and Theme.Palette.Text or Theme.Palette.TextMuted
+            if tabIc then tabIc.ImageColor3 = wantIc end
         end
         -- v0.0.99: pure crossfade: the outgoing panel fades out, the incoming fades in. No scale pop, no scroll jump: panels are ScrollingFrames so the fade lives on each tab's CanvasGroup wrapper (GroupTransparency). Panels get CanvasGroup wrappers in addTab; the wrapper's Visible flag is the real show/hide (GroupTransparency = 1 is not enough: children of an invisible canvas can still eat input).
         local w = tab.Wrap
@@ -3245,6 +3293,25 @@ local function addTab(name, buildFn)
         }),
     })
 
+    -- v1.6.0: each tab carries its own glyph from the shared map, left of the label.
+    -- The padding opens up to make room, so AutomaticSize still measures the pair and
+    -- the pill keeps snapping to the real rect.
+    local tabIco = Koffee.UI.tabIcon[name]
+    if tabIco then
+        Koffee.UI.tabIcons[name] = new("ImageLabel", {
+            Name = "Icon",
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, 12, 0.5, 0),
+            Size = UDim2.new(0, 13, 0, 13),
+            BackgroundTransparency = 1,
+            Image = Koffee.icon(tabIco),
+            ImageColor3 = Theme.Palette.TextMuted,
+            ZIndex = 35,
+            Parent = button,
+        })
+        button:FindFirstChildOfClass("UIPadding").PaddingLeft = UDim.new(0, 31)
+    end
+
     -- v0.0.30: the button's own rect changing (AutomaticSize settling after the
     -- font's glyph metrics load, or a reflow) re-snaps the pill if this tab is the
     -- active one: kills the "pill offset on launch until you switch tabs" bug.
@@ -3293,7 +3360,11 @@ local function addTab(name, buildFn)
             PaddingBottom = UDim.new(0, 12),   -- room past last panel so scroll feels right
             Parent = panel,
         })
+        -- v1.6.0: name the tab being built so every control can declare its path.
+        Koffee.UI.curTab, Koffee.UI.curBox = name, nil
+        Koffee.UI.seen = {}
         buildFn(panel)
+        Koffee.UI.curTab, Koffee.UI.curBox = nil, nil
     else
         new("TextLabel", {
             Text = name .. ": Coming Soon",
@@ -3312,11 +3383,15 @@ local function addTab(name, buildFn)
     button.MouseEnter:Connect(function()
         if activeTab ~= name then
             tween(button, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text })
+            local ic = Koffee.UI.tabIcons[name]
+            if ic then tween(ic, Theme.Animation.Fast, { ImageColor3 = Theme.Palette.Text }) end
         end
     end)
     button.MouseLeave:Connect(function()
         if activeTab ~= name then
             tween(button, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted })
+            local ic = Koffee.UI.tabIcons[name]
+            if ic then tween(ic, Theme.Animation.Fast, { ImageColor3 = Theme.Palette.TextMuted }) end
         end
     end)
     button.MouseButton1Click:Connect(function() selectTab(name) end)
@@ -3343,7 +3418,12 @@ local function rebuildTabPanel(name)
     })
     new("UIPadding", { PaddingBottom = UDim.new(0, 12), Parent = p })
     if Koffee.UI.padPanel then pcall(Koffee.UI.padPanel, p, Koffee.UI.glass()) end
+    -- v1.6.0: a rebuild re-declares this tab's controls, so the registry picks up the
+    -- fresh setters and visual updaters instead of holding the destroyed ones.
+    Koffee.UI.curTab, Koffee.UI.curBox = name, nil
+    Koffee.UI.seen = {}
     pcall(entry.Build, p)
+    Koffee.UI.curTab, Koffee.UI.curBox = nil, nil
     for _, f in ipairs(Koffee.UI.afterRebuild) do pcall(f, name) end
 end
 rebuildConfigTabs = function()
@@ -3361,6 +3441,8 @@ rebuildConfigTabs = function()
     -- v0.68.0: Extra is never rebuilt either. Same treatment for the HvH rows.
     if Shared and Shared._hvhResync then pcall(Shared._hvhResync) end
     if Shared and Shared._rvAutoResync then pcall(Shared._rvAutoResync) end
+    -- v1.6.0: the AI tab is never rebuilt, so its mode row and model value resync here.
+    if Shared and Shared._aiResync then pcall(Shared._aiResync) end
     -- v0.62.0: replay the window-switcher bar drop-in on a config switch, and
     -- re-sync each slot's on/off visual to the freshly loaded open-states.
     if Koffee.Windows and Koffee.Windows.playIntro then pcall(Koffee.Windows.playIntro) end
@@ -3370,6 +3452,9 @@ end
 -- Matcha groups related controls in cards inside tab content.
 -- Card auto-sizes vertically to fit its rows.
 local function panel(parent, title)
+    -- v1.6.0: this card owns every control declared until the next one. An untitled
+    -- card clears it on purpose, so its rows do not inherit the previous card's name.
+    Koffee.UI.curBox = title
     local card = new("Frame", {
         Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
@@ -3716,6 +3801,16 @@ local function moduleCheckbox(parent, label, moduleId)
     subscribeModule(moduleId, function(newState)
         ctrl.setState(newState)
     end)
+    -- v1.6.0: a module row goes through toggleModule, never a raw setter, so enabling
+    -- it from the AI tab runs the module's own onEnable exactly like a click would.
+    Koffee.UI.declare("module", parent, label, {
+        module = moduleId,
+        get = function() return Modules[moduleId] and Modules[moduleId].Enabled == true end,
+        set = function(v)
+            local m = Modules[moduleId]
+            if m and (m.Enabled == true) ~= (v == true) then toggleModule(moduleId) end
+        end,
+    })
     return ctrl
 end
 
@@ -3727,6 +3822,15 @@ local function configCheckbox(parent, label, initialOn, onChange)
         Koffee.Sfx.play(newState and "toggle_on" or "toggle_off")
         if onChange then onChange(newState) end
     end)
+    -- v1.6.0: set paints the row AND fires onChange, so an AI change behaves as a click.
+    Koffee.UI.declare("bool", parent, label, {
+        get = ctrl.getState,
+        set = function(v)
+            v = v == true
+            ctrl.setState(v)
+            if onChange then onChange(v) end
+        end,
+    })
     return ctrl
 end
 
@@ -4651,6 +4755,20 @@ local function dropdown(parent, label, options, initial, onChange)
         if isOpen then closeList() else openList() end
     end)
     popFx(btn)   -- v0.0.98: dropdowns squash on press
+    -- v1.6.0: options are read live, so a list that changes (silent Method) stays true.
+    Koffee.UI.declare("enum", parent, label, {
+        options = function() return options end,
+        get = function() return valueLbl.Text end,
+        set = function(v)
+            for _, o in ipairs(options) do
+                if o == v then
+                    valueLbl.Text = v
+                    if onChange then onChange(v) end
+                    return
+                end
+            end
+        end,
+    })
     return {
         frame = wrap,
         button = btn,
@@ -4947,6 +5065,24 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
             tween(valueStroke, Theme.Animation.Fast, { Transparency = 1 })
         end
     end)
+    -- v1.6.0: the registry needs the opposite of the mirror setter below: move the
+    -- knob AND fire onChange. opts.infinite means max reads as Infinite to the model.
+    Koffee.UI.declare("number", parent, label, {
+        min = min, max = max, step = 10 ^ -precision,
+        get = function() return current end,
+        set = function(v)
+            v = round(math.clamp(tonumber(v) or min, min, max))
+            current = v
+            local pct = (current - min) / (max - min)
+            fill.Size = UDim2.new(pct, 0, 1, 0)
+            knob.Position = UDim2.new(pct, 0, 0.5, 0)
+            local inf = opts.infinite and current >= max
+            valueBox.Text = inf and "Infinite" or tostring(current)
+            if onChange then
+                if inf then onChange(math.huge) else onChange(current) end
+            end
+        end,
+    })
     -- v0.87.0: push a value in without firing onChange, so a slider can mirror live data
     return { row = row, set = function(v)
         if dragging or valueBox:IsFocused() then return end
@@ -38168,6 +38304,1361 @@ addTab("Extra", function(epanel)
     end
 end)
 
+
+-- :: KOFFEE AI :: in-product assistant over OpenRouter's free models. It reads the live
+-- control registry (Koffee.UI.reg) and proposes real setting changes. Own IIFE for the
+-- 200-local budget; anything the rest of the file needs rides Koffee.AI.
+;(function()
+local AI = {}
+Koffee.AI, Shared.AI = AI, AI
+local HttpService = game:GetService("HttpService")
+local P = Theme.Palette
+
+-- Preferences ride a config like everything else. The key does NOT: see AI.Local.
+AI.Opt = { Model = "nvidia/nemotron-3-super-120b-a12b:free", Mode = "Manual",
+    Temp = 0.3, SendGame = true, Reveal = true }
+registerConfig("ai", AI.Opt)
+
+-- v1.6.0: the key, the proxy and the YOLO acknowledgement live in their own file and
+-- never in a config. Configs get shared and pushed to Cloud Configs, so a key stored
+-- in one would ride along to whoever loads it.
+local LFILE = "Koffee/ai.json"
+AI.Local = { Key = "", Proxy = "", YoloAck = false, Day = "", Used = 0 }
+local function saveLocal()
+    if not writefile then return end
+    pcall(function() writefile(LFILE, HttpService:JSONEncode(AI.Local)) end)
+end
+pcall(function()
+    if not (isfile and readfile and isfile(LFILE)) then return end
+    local d = HttpService:JSONDecode(readfile(LFILE))
+    if type(d) ~= "table" then return end
+    for k, v in pairs(AI.Local) do
+        if d[k] ~= nil and type(d[k]) == type(v) then AI.Local[k] = d[k] end
+    end
+end)
+
+-- :: budget :: 1,000 free requests a day on a funded account and 20 a minute account
+-- wide. The day stamp rolls the counter over on its own.
+local function today() return os.date("!%Y-%m-%d") end
+local function dayLeft()
+    if AI.Local.Day ~= today() then
+        AI.Local.Day, AI.Local.Used = today(), 0
+        saveLocal()
+    end
+    return 1000 - AI.Local.Used
+end
+local minuteHits = {}
+local function minuteLeft()
+    local now, keep = os.clock(), {}
+    for _, t in ipairs(minuteHits) do
+        if now - t < 60 then keep[#keep + 1] = t end
+    end
+    minuteHits = keep
+    return 20 - #minuteHits
+end
+
+-- :: model catalog :: Artificial Analysis Intelligence Index where it is published,
+-- estimated from family, size and generation otherwise. The flag marks an estimate so
+-- the picker can say so instead of inventing precision.
+AI.BENCH = {
+    ["thinkingmachines/inkling:free"]                      = { 41, false },
+    ["nvidia/nemotron-3-ultra-550b-a55b:free"]             = { 38, false },
+    ["thinkingmachines/inkling-small:free"]                = { 31, true  },
+    ["google/gemma-4-31b-it:free"]                         = { 29, false },
+    ["nvidia/nemotron-3-super-120b-a12b:free"]             = { 27, false },
+    ["nvidia/nemotron-3.5-lightning:free"]                 = { 26, true  },
+    ["dots-studio/dots-3-note-preview:free"]               = { 25, true  },
+    ["apodex/apodex-1.1-mini:free"]                        = { 24, true  },
+    ["poolside/laguna-s-2.1:free"]                         = { 24, true  },
+    ["google/gemma-4-26b-a4b-it:free"]                     = { 23, false },
+    ["poolside/laguna-xs-2.1:free"]                        = { 20, true  },
+    ["cohere/north-mini-code:free"]                        = { 18, true  },
+    ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"] = { 16, true  },
+    ["liquid/lfm-2.5-2.6b:free"]                           = { 8,  true  },
+}
+-- a content classifier, not a chat model, so it never belongs in the picker
+AI.SKIP = { ["nvidia/nemotron-3.5-content-safety:free"] = true }
+
+-- An unlisted free model still has to land somewhere sensible, or the picker breaks
+-- every time the roster turns over. Read the parameter count out of the id, then nudge
+-- for the size words vendors put in their names.
+local function guessIQ(m)
+    local id = string.lower(m.id or "")
+    local best = 0
+    for num, unit in string.gmatch(id, "(%d+%.?%d*)([bm])") do
+        local n = tonumber(num) or 0
+        if unit == "m" then n = n / 1000 end
+        if n > best then best = n end
+    end
+    local iq = 14
+    if best > 0 then iq = math.clamp(8 + math.log(best + 1) * 7, 8, 34) end
+    for _, w in ipairs({ "mini", "nano", "small", "lite", "tiny" }) do
+        if string.find(id, w, 1, true) then iq -= 3 break end
+    end
+    if m.strict then iq += 1 end
+    return iq
+end
+
+-- 0 to 100. Intelligence dominates; context and strict-JSON support break ties, since
+-- strict output is what makes the change protocol parse on the first try.
+function AI.score(m)
+    local b = AI.BENCH[m.id]
+    local iq = b and b[1] or guessIQ(m)
+    local ctx = math.log(math.max(m.context or 8192, 8192)) / math.log(1048576)
+    local s = iq / 41 * 74 + ctx * 18
+    if m.strict then s += 6 end
+    if m.tools then s += 2 end
+    local est = true
+    if b then est = b[2] end
+    return math.clamp(math.floor(s + 0.5), 1, 100), est
+end
+
+AI.models = {}
+local function pickReq()
+    return (syn and syn.request) or (http and http.request) or http_request or request
+end
+local function base()
+    local p = AI.Local.Proxy
+    if p and p ~= "" then return (string.gsub(p, "/+$", "")) end
+    return "https://openrouter.ai/api/v1"
+end
+local function headers()
+    local h = { ["Content-Type"] = "application/json",
+        ["HTTP-Referer"] = "https://koffee.local", ["X-Title"] = "Koffee" }
+    local k = AI.Local.Key
+    if k and k ~= "" then h.Authorization = "Bearer " .. k end
+    return h
+end
+
+-- Blocking, so every caller runs it in its own thread. Never from a render step.
+local function call(method, path, body)
+    local req = pickReq()
+    if not req then return nil, "this runtime has no request()" end
+    local args = { Url = base() .. path, Method = method, Headers = headers() }
+    if body then args.Body = HttpService:JSONEncode(body) end
+    local ok, res = pcall(req, args)
+    if not ok then return nil, "request failed: " .. tostring(res) end
+    local code = (res and (res.StatusCode or res.status_code)) or 0
+    local text = (res and res.Body) or ""
+    if code == 401 or code == 403 then return nil, "key rejected (" .. tostring(code) .. ")" end
+    if code == 429 then return nil, "rate limited, give it a moment" end
+    if code ~= 200 then
+        return nil, "http " .. tostring(code) .. ": " .. string.sub(text, 1, 180)
+    end
+    local okj, data = pcall(function() return HttpService:JSONDecode(text) end)
+    if not okj or type(data) ~= "table" then return nil, "the endpoint sent back bad json" end
+    return data
+end
+
+-- The free roster changed from 26 models to 15 in a few months, so it is fetched, never
+-- hardcoded. A proxy can return the short filtered list; straight to OpenRouter the full
+-- catalog comes back and gets filtered here.
+function AI.fetchModels(onDone)
+    task.spawn(function()
+        if Koffee.dead() then return end
+        local data, err = call("GET", "/models", nil)
+        if not data then
+            if onDone then onDone(nil, err) end
+            return
+        end
+        local list = data.data or data
+        local out = {}
+        if type(list) == "table" then
+            for _, m in ipairs(list) do
+                local id = m.id or m.name
+                if type(id) == "string" and string.sub(id, -5) == ":free" and not AI.SKIP[id] then
+                    local sp = m.supported_parameters or {}
+                    local strict, tools = false, false
+                    for _, s in ipairs(sp) do
+                        if s == "structured_outputs" then strict = true end
+                        if s == "tools" then tools = true end
+                    end
+                    out[#out + 1] = { id = id, name = m.name or id, strict = strict,
+                        tools = tools, context = m.context_length or 0 }
+                end
+            end
+        end
+        for _, m in ipairs(out) do m.score, m.est = AI.score(m) end
+        table.sort(out, function(a, b)
+            if a.score ~= b.score then return a.score > b.score end
+            return a.id < b.id
+        end)
+        AI.models = out
+        if onDone then onDone(out) end
+    end)
+end
+
+-- :: knowledge pack :: one line per control with its live value and what it accepts.
+-- This IS the pack, so it is always exactly as current as the build. The AI tab's own
+-- controls are skipped: it has no business repointing its own brain mid-sentence.
+function AI.digest()
+    local list = {}
+    for _, e in pairs(Koffee.UI.reg) do
+        if e.tab ~= "AI" and e.get then list[#list + 1] = e end
+    end
+    table.sort(list, function(a, b) return (a.order or 0) < (b.order or 0) end)
+    local rows, n = {}, 0
+    for _, e in ipairs(list) do
+        local okv, v = pcall(e.get)
+        if okv then
+            local line
+            if e.kind == "module" then
+                line = e.path .. " [module=" .. (v and "on" or "off") .. "]"
+            elseif e.kind == "bool" then
+                line = e.path .. " [bool=" .. (v and "true" or "false") .. "]"
+            elseif e.kind == "number" then
+                line = e.path .. " [number=" .. tostring(v) .. "] from "
+                    .. tostring(e.min) .. " to " .. tostring(e.max)
+            elseif e.kind == "enum" then
+                local oko, opts = pcall(e.options)
+                if oko and type(opts) == "table" then
+                    line = e.path .. " [choice=" .. tostring(v) .. "] one of "
+                        .. table.concat(opts, " | ")
+                end
+            end
+            if line then
+                n += 1
+                rows[n] = line
+            end
+        end
+    end
+    return table.concat(rows, "\n"), n
+end
+
+-- What is actually happening right now, so advice lands concrete instead of generic.
+-- Deliberately carries no player names: the transcript leaves this machine.
+function AI.situation()
+    local t = { "koffee version: " .. tostring(Koffee.Version),
+        "ui mode: " .. tostring(Koffee.UI.mode) }
+    if AI.Opt.SendGame then
+        t[#t + 1] = "placeid: " .. tostring(game.PlaceId)
+        t[#t + 1] = "rivals build active: " .. tostring(Koffee._isRivals == true)
+        t[#t + 1] = "players in server: " .. tostring(#Players:GetPlayers())
+    end
+    local st = Koffee.UI.stats
+    if st then
+        t[#t + 1] = "session hits: " .. tostring(st.hits) .. ", kills: " .. tostring(st.kills)
+    end
+    local png = -1
+    pcall(function() png = math.floor(LocalPlayer:GetNetworkPing() * 1000) end)
+    if png >= 0 then t[#t + 1] = "ping ms: " .. tostring(png) end
+    -- Combat is scoped to its own IIFE; Shared.Combat is the published handle
+    local C = Shared.Combat
+    if C and C.Aim and C.Aim._target then t[#t + 1] = "the aimbot currently holds a target" end
+    if C and C.Silent then t[#t + 1] = "silent method: " .. tostring(C.Silent.Method) end
+    return table.concat(t, "\n")
+end
+
+local SYS = table.concat({
+    "You are the assistant built into Koffee, a private Roblox script suite. You are talking to its author on his own machine.",
+    "He knows exactly what every option here does and what it risks. Never warn him, never moralise, never add caveats he did not ask for, never refuse a setting.",
+    "Write in lowercase, short and concrete, like a knowledgeable friend. No marketing, no exclamation marks, no filler.",
+    "",
+    "You can change his settings by listing them in `changes`:",
+    "- `path` must be copied EXACTLY from the control list below, character for character, including the > separators.",
+    "- `value` is ALWAYS a string: \"true\"/\"false\" for bool and module, the number as text for number, the exact option text for choice.",
+    "- only list a change you actually want made. an empty list is the right answer when he just asked a question.",
+    "- `why` is one short clause on what it does for him.",
+    "- never invent a path. if what he wants does not exist as a control, say so in `reply` and leave `changes` empty.",
+    "",
+    "Reply with JSON and nothing else, shaped exactly:",
+    "{\"reply\": \"...\", \"changes\": [{\"path\": \"...\", \"value\": \"...\", \"why\": \"...\"}]}",
+}, "\n")
+
+local SCHEMA = { type = "json_schema", json_schema = { name = "koffee_reply",
+    strict = true, schema = {
+        type = "object", additionalProperties = false,
+        required = { "reply", "changes" },
+        properties = {
+            reply = { type = "string" },
+            changes = { type = "array", items = {
+                type = "object", additionalProperties = false,
+                required = { "path", "value", "why" },
+                properties = { path = { type = "string" }, value = { type = "string" },
+                    why = { type = "string" } },
+            } },
+        },
+    } } }
+
+-- Free models wrap their JSON in fences or put a sentence in front of it often enough
+-- to matter, so take the outermost braces rather than trusting the whole body.
+local function parseReply(text)
+    if type(text) ~= "string" then return nil end
+    local a = string.find(text, "{", 1, true)
+    local b
+    for i = #text, 1, -1 do
+        if string.sub(text, i, i) == "}" then
+            b = i
+            break
+        end
+    end
+    if not (a and b and b > a) then return nil end
+    local ok, d = pcall(function() return HttpService:JSONDecode(string.sub(text, a, b)) end)
+    if ok and type(d) == "table" then return d end
+    return nil
+end
+
+-- The model always sends value as a string; the control's own kind decides how to read
+-- it. A bool can never arrive as 1 and a choice can never land half matched.
+local function coerce(e, raw)
+    local s = tostring(raw)
+    local l = string.lower(s)
+    if e.kind == "bool" or e.kind == "module" then
+        if l == "true" or l == "on" or l == "1" or l == "yes" or l == "enabled" then return true end
+        if l == "false" or l == "off" or l == "0" or l == "no" or l == "disabled" then return false end
+        return nil
+    elseif e.kind == "number" then
+        if l == "infinite" or l == "inf" or l == "max" then return e.max end
+        local v = tonumber(s)
+        if not v then return nil end
+        return math.clamp(v, e.min or v, e.max or v)
+    elseif e.kind == "enum" then
+        local ok, opts = pcall(e.options)
+        if not (ok and type(opts) == "table") then return nil end
+        for _, o in ipairs(opts) do
+            if o == s then return o end
+        end
+        for _, o in ipairs(opts) do
+            if string.lower(o) == l then return o end
+        end
+        return nil
+    end
+    return nil
+end
+
+local function readable(v)
+    if type(v) == "boolean" then
+        if v then return "on" end
+        return "off"
+    end
+    if v == math.huge then return "Infinite" end
+    if type(v) == "number" then
+        if v == math.floor(v) then return tostring(math.floor(v)) end
+        return string.format("%.2f", v)
+    end
+    return tostring(v)
+end
+
+-- Changes that can cost an account rather than a round. Auto holds these back for a
+-- click; only YOLO applies them unattended. Substring match, so new rows inherit it.
+local RISKY = { "fly", "noclip", "walkspeed", "tp walk", "float", "click tp", "spinbot",
+    "desync", "blink", "spam tp", "velocity", "infinite ammo", "hitbox", "rapid fire",
+    "unload", "anticheat", "fast reload", "instant equip", "gun mod" }
+local function isRisky(path)
+    local l = string.lower(path)
+    for _, w in ipairs(RISKY) do
+        if string.find(l, w, 1, true) then return true end
+    end
+    return false
+end
+
+-- Resolve what the model asked for against the live registry. Unknown paths and
+-- unreadable values are reported rather than guessed at.
+function AI.resolve(changes)
+    local out = {}
+    if type(changes) ~= "table" then return out end
+    for _, c in ipairs(changes) do
+        if type(c) == "table" and type(c.path) == "string" then
+            local e = Koffee.UI.reg[c.path]
+            local row = { path = c.path, why = tostring(c.why or ""), apply = true }
+            if not e then
+                row.bad = "no such control"
+            else
+                local v = coerce(e, c.value)
+                if v == nil then
+                    row.bad = "cannot read " .. tostring(c.value) .. " as a value"
+                else
+                    local okg, cur = pcall(e.get)
+                    row.entry, row.value = e, v
+                    if okg then row.from = cur end
+                    row.risky = isRisky(c.path)
+                    if okg and cur == v then row.bad = "already set" end
+                end
+            end
+            out[#out + 1] = row
+        end
+    end
+    return out
+end
+
+-- Snapshot before writing so a whole batch goes back in one click.
+function AI.applyRows(rows)
+    local done, undo = 0, {}
+    for _, r in ipairs(rows) do
+        if r.apply and r.entry and not r.bad then
+            local okg, before = pcall(r.entry.get)
+            if pcall(r.entry.set, r.value) then
+                done += 1
+                r.applied = true
+                if okg then undo[#undo + 1] = { entry = r.entry, value = before } end
+            else
+                r.bad = "the control refused it"
+            end
+        end
+    end
+    return done, undo
+end
+
+AI.history = {}
+
+-- One request per message by design: the whole control list and live state are already
+-- in the prompt, so there is nothing left for the model to go looking for.
+function AI.ask(text, cb)
+    local strict = false
+    for _, m in ipairs(AI.models) do
+        if m.id == AI.Opt.Model then strict = m.strict end
+    end
+    task.spawn(function()
+        if Koffee.dead() then return end
+        local dig, n = AI.digest()
+        local msgs = { { role = "system", content = SYS .. "\n\nSITUATION\n" .. AI.situation()
+            .. "\n\nCONTROLS (" .. tostring(n) .. ")\n" .. dig } }
+        -- keep the last few turns only: the pack dwarfs them and a long tail buys
+        -- nothing but tokens.
+        local h = AI.history
+        local from = math.max(1, #h - 7)
+        for i = from, #h do msgs[#msgs + 1] = h[i] end
+        msgs[#msgs + 1] = { role = "user", content = text }
+        local body = { model = AI.Opt.Model, messages = msgs,
+            temperature = AI.Opt.Temp, max_tokens = 1600 }
+        if strict then
+            body.response_format = SCHEMA
+        else
+            body.response_format = { type = "json_object" }
+        end
+        minuteHits[#minuteHits + 1] = os.clock()
+        AI.Local.Used += 1
+        saveLocal()
+        local data, err = call("POST", "/chat/completions", body)
+        if Koffee.dead() then return end
+        if not data then
+            cb(nil, err)
+            return
+        end
+        local ch = data.choices and data.choices[1]
+        local raw = ch and ch.message and ch.message.content
+        if type(raw) ~= "string" or raw == "" then
+            cb(nil, "the model sent back an empty reply")
+            return
+        end
+        local parsed = parseReply(raw)
+        if not parsed then
+            -- still give him the words rather than swallowing a usable answer
+            cb({ reply = raw, changes = {} }, nil, true)
+            return
+        end
+        h[#h + 1] = { role = "user", content = text }
+        h[#h + 1] = { role = "assistant", content = raw }
+        cb(parsed)
+    end)
+end
+
+-- :: UI :: a transcript of what the assistant did, not a bubble chat. Steps while it
+-- works, a diff card when it wants to change something, the reply revealed as it lands.
+local UIst = { busy = false, unread = false, rowY = 0 }
+AI.ui = UIst
+
+local function animOn(spot)
+    local ok, v = pcall(Koffee.Anim.spot, spot or "AnimPopups")
+    if ok then return v end
+    return true
+end
+
+-- the tab's own glyph reports state: it breathes while a request is out and keeps a
+-- dot until he comes back to read the answer.
+local function tabPulse()
+    task.spawn(function()
+        local ic = Koffee.UI.tabIcons.AI
+        if not ic then return end
+        while UIst.busy and not Koffee.dead() do
+            tween(ic, Theme.Animation.Slow, { ImageColor3 = P.Accent, ImageTransparency = 0.25 })
+            task.wait(0.42)
+            if not UIst.busy then break end
+            tween(ic, Theme.Animation.Slow, { ImageColor3 = P.Text, ImageTransparency = 0 })
+            task.wait(0.42)
+        end
+        if Koffee.dead() or not ic.Parent then return end
+        local on = activeTab == "AI"
+        ic.ImageTransparency = 0
+        if on then ic.ImageColor3 = P.Accent else ic.ImageColor3 = P.TextMuted end
+    end)
+end
+local function setUnread(v)
+    UIst.unread = v
+    local dot = UIst.dot
+    if not dot then return end
+    dot.Visible = v
+    if v then
+        dot.Size = UDim2.new(0, 0, 0, 0)
+        tween(dot, Theme.Animation.Pill, { Size = UDim2.new(0, 5, 0, 5) })
+    end
+end
+
+addTab("AI", function(root)
+    -- one shell filling the tab instead of a stack of cards: the transcript owns the
+    -- scrolling, so the outer panel never scrolls with it.
+    local shell = new("Frame", {
+        Size = UDim2.new(1, 0, 1, -2),
+        BackgroundColor3 = P.Panel,
+        BackgroundTransparency = 0.15,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        ZIndex = 33,
+        Parent = root,
+    }, { corner(Theme.Radius.XLarge), stroke(P.BorderSubtle) })
+    local shCr = shell:FindFirstChildOfClass("UICorner")
+    local shSt = shell:FindFirstChildOfClass("UIStroke")
+    Koffee.UI.skin(shell, function(mode)
+        local g = mode ~= "Classic"
+        shell.BackgroundTransparency = g and 0.45 or 0.15
+        if shCr then shCr.CornerRadius = UDim.new(0, g and 14 or Theme.Radius.XLarge) end
+        if shSt then
+            shSt.Color = g and P.Snow or P.BorderSubtle
+            shSt.Transparency = g and 0.88 or 0
+        end
+    end)
+
+    -- :: header ::
+    local head = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 42), BackgroundTransparency = 1, ZIndex = 34, Parent = shell,
+    })
+    local mark = new("ImageLabel", {
+        AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 14, 0.5, 0),
+        Size = UDim2.new(0, 16, 0, 16), BackgroundTransparency = 1,
+        Image = Koffee.icon("sparkles"), ImageColor3 = P.Accent, ZIndex = 35, Parent = head,
+    })
+    new("TextLabel", {
+        Text = "koffee ai", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+        TextColor3 = P.Text, BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 38, 0.5, 0),
+        Size = UDim2.new(0, 90, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 35, Parent = head,
+    })
+    -- small right-aligned strip: budget, then the mode pill, then the gear
+    local budget = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+        TextColor3 = P.TextFaint, BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -108, 0.5, 0),
+        Size = UDim2.new(0, 150, 0, 14), TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 35, Parent = head,
+    })
+    local MODECOL = { Manual = P.TextMuted, Auto = P.Accent, YOLO = P.Danger }
+    local modePill = new("TextButton", {
+        Text = "", AutoButtonColor = false,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -40, 0.5, 0),
+        Size = UDim2.new(0, 62, 0, 20), BackgroundColor3 = P.Pill,
+        BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 35, Parent = head,
+    }, { pillCorner(), stroke(P.Border) })
+    local modeLbl = new("TextLabel", {
+        Text = "manual", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Tiny,
+        TextColor3 = P.TextMuted, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+        ZIndex = 36, Parent = modePill,
+    })
+    local gear = new("ImageButton", {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0),
+        Size = UDim2.new(0, 15, 0, 15), BackgroundTransparency = 1,
+        Image = Koffee.icon("settings"), ImageColor3 = P.TextMuted, ZIndex = 35, Parent = head,
+    })
+    attachHover(gear, gear)
+    popFx(gear)
+    -- hairline under the header, and the sweep that rides it while a request is out
+    new("Frame", {
+        Position = UDim2.new(0, 0, 0, 42), Size = UDim2.new(1, 0, 0, 1),
+        BackgroundColor3 = P.Border, BackgroundTransparency = 0.4, BorderSizePixel = 0,
+        ZIndex = 34, Parent = shell,
+    })
+    local sweep = new("Frame", {
+        Position = UDim2.new(0, 0, 0, 42), Size = UDim2.new(0.22, 0, 0, 1),
+        BackgroundColor3 = P.Accent, BorderSizePixel = 0, Visible = false,
+        ZIndex = 35, Parent = shell,
+    })
+
+    local function paintMode()
+        local m = AI.Opt.Mode
+        modeLbl.Text = string.lower(m)
+        local c = MODECOL[m] or P.TextMuted
+        tween(modeLbl, Theme.Animation.Fast, { TextColor3 = c })
+        local st = modePill:FindFirstChildOfClass("UIStroke")
+        if st then tween(st, Theme.Animation.Fast, { Color = c }) end
+    end
+
+    -- :: transcript ::
+    local feed = new("ScrollingFrame", {
+        Position = UDim2.new(0, 0, 0, 44), Size = UDim2.new(1, 0, 1, -44 - 60),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+        ScrollBarImageColor3 = P.TextFaint, ScrollBarImageTransparency = 0.5,
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 34, Parent = shell,
+    }, {
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+            Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }),
+        -- 10px right gutter so a block's stroke is not clipped by the scrollbar edge
+        new("UIPadding", { PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14),
+            PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12) }),
+    })
+    local order = 0
+    local function nextOrder()
+        order += 1
+        return order
+    end
+    local function toBottom()
+        task.delay(0.03, function()
+            if feed.Parent then feed.CanvasPosition = Vector2.new(0, feed.AbsoluteCanvasSize.Y) end
+        end)
+    end
+    -- the list layout owns child Position, so an entrance has to be a scale pop: the
+    -- same reason the feature cards use one instead of sliding.
+    local function enter(f)
+        if not animOn() then return end
+        local sc = uScaleOf(f)
+        sc.Scale = 0.97
+        tween(sc, Theme.Animation.Normal, { Scale = 1 })
+    end
+
+    local function block(h)
+        local f = new("Frame", {
+            Size = UDim2.new(1, 0, 0, h or 0), BackgroundTransparency = 1,
+            AutomaticSize = h and Enum.AutomaticSize.None or Enum.AutomaticSize.Y,
+            LayoutOrder = nextOrder(), ZIndex = 35, Parent = feed,
+        })
+        return f
+    end
+
+    local function addUser(text)
+        local f = block()
+        new("TextLabel", {
+            Text = "you", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = P.TextFaint, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 12), TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 36, Parent = f,
+        })
+        new("TextLabel", {
+            Text = text, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body,
+            TextColor3 = P.Text, BackgroundTransparency = 1, TextWrapped = true,
+            Position = UDim2.new(0, 0, 0, 14), Size = UDim2.new(1, 0, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 36, Parent = f,
+        })
+        enter(f)
+        toBottom()
+        return f
+    end
+
+    -- the step strip: what it is doing, with three dots that chase while it runs
+    local function addSteps()
+        local f = block(20)
+        local rail = new("Frame", {
+            Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = P.Accent,
+            BackgroundTransparency = 0.45, BorderSizePixel = 0, ZIndex = 36, Parent = f,
+        }, { pillCorner() })
+        local lbl = new("TextLabel", {
+            Text = "thinking", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = P.TextMuted, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(1, -40, 1, 0),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 36, Parent = f,
+        })
+        local dots = {}
+        for i = 1, 3 do
+            dots[i] = new("Frame", {
+                AnchorPoint = Vector2.new(0, 0.5),
+                Position = UDim2.new(0, 10 + (i - 1) * 7, 0.5, 0),
+                Size = UDim2.new(0, 3, 0, 3), BackgroundColor3 = P.Accent,
+                BackgroundTransparency = 0.6, BorderSizePixel = 0, Visible = false,
+                ZIndex = 37, Parent = f,
+            }, { pillCorner() })
+        end
+        local alive = true
+        task.spawn(function()
+            local i = 0
+            while alive and not Koffee.dead() do
+                i = i % 3 + 1
+                for k, d in ipairs(dots) do
+                    d.BackgroundTransparency = (k == i) and 0.1 or 0.7
+                end
+                task.wait(0.18)
+            end
+        end)
+        enter(f)
+        toBottom()
+        return {
+            set = function(s)
+                lbl.Text = s
+                -- dots trail the text, so push them past it
+                local w = 10 + math.max(#s * 5, 30)
+                for i, d in ipairs(dots) do
+                    d.Visible = true
+                    d.Position = UDim2.new(0, w + (i - 1) * 7, 0.5, 0)
+                end
+                toBottom()
+            end,
+            done = function(final)
+                alive = false
+                for _, d in ipairs(dots) do d:Destroy() end
+                lbl.Text = final or "done"
+                tween(lbl, Theme.Animation.Normal, { TextColor3 = P.TextFaint })
+                tween(rail, Theme.Animation.Normal, { BackgroundTransparency = 0.8 })
+            end,
+            fail = function(msg)
+                alive = false
+                for _, d in ipairs(dots) do d:Destroy() end
+                lbl.Text = msg
+                lbl.TextColor3 = P.Danger
+                rail.BackgroundColor3 = P.Danger
+            end,
+        }
+    end
+
+    local function addReply(text)
+        local f = block()
+        new("Frame", {
+            Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = P.Accent,
+            BackgroundTransparency = 0.5, BorderSizePixel = 0, ZIndex = 36, Parent = f,
+        }, { pillCorner() })
+        local lbl = new("TextLabel", {
+            Text = text, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body,
+            TextColor3 = P.Text, BackgroundTransparency = 1, TextWrapped = true,
+            Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(1, -12, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 36, Parent = f,
+        })
+        enter(f)
+        -- the request is one blocking call so there is nothing to stream, but revealing
+        -- the text as it arrives reads the way it actually feels to wait for it.
+        if AI.Opt.Reveal and animOn() then
+            local total = utf8.len(text) or #text
+            lbl.MaxVisibleGraphemes = 0
+            task.spawn(function()
+                local shown = 0
+                while shown < total and not Koffee.dead() and lbl.Parent do
+                    shown = math.min(total, shown + math.max(1, math.floor(total / 90)))
+                    lbl.MaxVisibleGraphemes = shown
+                    if shown % 24 < 2 then toBottom() end
+                    task.wait(0.016)
+                end
+                if lbl.Parent then lbl.MaxVisibleGraphemes = -1 end
+                toBottom()
+            end)
+        end
+        toBottom()
+        return f
+    end
+
+    local function addNote(text, col)
+        local f = block()
+        new("TextLabel", {
+            Text = text, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = col or P.TextFaint, BackgroundTransparency = 1, TextWrapped = true,
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 36, Parent = f,
+        })
+        enter(f)
+        toBottom()
+        return f
+    end
+
+    -- :: the diff card :: one row per change, old to new, each row its own switch
+    local function addChanges(rows, held)
+        local card = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.35,
+            BorderSizePixel = 0, LayoutOrder = nextOrder(), ZIndex = 35, Parent = feed,
+        }, {
+            corner(8), stroke(P.Border),
+            new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+                Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+            new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
+                PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }),
+        })
+        local good = 0
+        for _, r in ipairs(rows) do
+            if not r.bad then good += 1 end
+        end
+        local title = new("TextLabel", {
+            Text = (held and "held for you: " or "") .. tostring(good) .. " change"
+                .. (good == 1 and "" or "s"),
+            FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = P.Text,
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14),
+            TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 0, ZIndex = 36, Parent = card,
+        })
+        local rowFrames = {}
+        for i, r in ipairs(rows) do
+            local rf = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1,
+                LayoutOrder = i, ZIndex = 36, Parent = card,
+            })
+            local tick
+            if not r.bad then
+                tick = new("TextButton", {
+                    Text = "", AutoButtonColor = false,
+                    AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+                    Size = UDim2.new(0, 13, 0, 13), BackgroundColor3 = P.Accent,
+                    BackgroundTransparency = 0, BorderSizePixel = 0, ZIndex = 37, Parent = rf,
+                }, { corner(3) })
+                new("ImageLabel", {
+                    Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+                    Image = Koffee.icon("check"), ImageColor3 = P.Background,
+                    ZIndex = 38, Parent = tick,
+                })
+                tick.MouseButton1Click:Connect(function()
+                    r.apply = not r.apply
+                    Koffee.Sfx.play(r.apply and "toggle_on" or "toggle_off")
+                    tween(tick, Theme.Animation.Fast, {
+                        BackgroundTransparency = r.apply and 0 or 0.75,
+                        BackgroundColor3 = r.apply and P.Accent or P.Pill,
+                    })
+                end)
+            end
+            new("TextLabel", {
+                Text = r.path, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+                TextColor3 = r.bad and P.TextFaint or P.TextMuted, BackgroundTransparency = 1,
+                Position = UDim2.new(0, 20, 0, 1), Size = UDim2.new(1, -20, 0, 12),
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                ZIndex = 37, Parent = rf,
+            })
+            local detail
+            if r.bad then
+                detail = r.bad
+            else
+                detail = readable(r.from) .. "  >  " .. readable(r.value)
+                if r.risky then detail = detail .. "   [risky]" end
+                if r.why ~= "" then detail = detail .. "   " .. r.why end
+            end
+            new("TextLabel", {
+                Text = detail, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Tiny,
+                TextColor3 = r.bad and P.Danger or (r.risky and P.Danger or P.Accent),
+                BackgroundTransparency = 1,
+                Position = UDim2.new(0, 20, 0, 15), Size = UDim2.new(1, -20, 0, 12),
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                ZIndex = 37, Parent = rf,
+            })
+            rowFrames[r] = rf
+            -- rows stagger in on a scale pop, latest last, for the same layout reason
+            if animOn() then
+                local rsc = uScaleOf(rf)
+                rsc.Scale = 0.94
+                task.delay(0.03 * i, function()
+                    if rf.Parent then tween(rsc, Theme.Animation.Normal, { Scale = 1 }) end
+                end)
+            end
+        end
+        -- applied rows flash and settle so the card becomes a record of what happened
+        local function markApplied()
+            for r, rf in pairs(rowFrames) do
+                if r.applied then
+                    local fl = new("Frame", {
+                        Size = UDim2.new(1, 8, 1, 2), Position = UDim2.new(0, -4, 0, -1),
+                        BackgroundColor3 = P.Success, BackgroundTransparency = 0.75,
+                        BorderSizePixel = 0, ZIndex = 36, Parent = rf,
+                    }, { corner(4) })
+                    tween(fl, Theme.Animation.Slow, { BackgroundTransparency = 1 })
+                    task.delay(0.4, function() if fl.Parent then fl:Destroy() end end)
+                end
+            end
+        end
+        local bar
+        local function closeBar(text)
+            if bar then
+                bar:Destroy()
+                bar = nil
+            end
+            title.Text = text
+            tween(title, Theme.Animation.Normal, { TextColor3 = P.Success })
+        end
+        if good > 0 then
+            bar = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
+                LayoutOrder = 999, ZIndex = 36, Parent = card,
+            })
+            local function act(label, x, w, col, fn)
+                local b = new("TextButton", {
+                    Text = "", AutoButtonColor = false,
+                    Position = UDim2.new(0, x, 0, 4), Size = UDim2.new(0, w, 0, 20),
+                    BackgroundColor3 = col, BackgroundTransparency = 0.12,
+                    BorderSizePixel = 0, ZIndex = 37, Parent = bar,
+                }, { corner(5) })
+                new("TextLabel", {
+                    Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Tiny,
+                    TextColor3 = P.Background, BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 1, 0), ZIndex = 38, Parent = b,
+                })
+                popFx(b)
+                b.MouseButton1Click:Connect(fn)
+                return b
+            end
+            act("apply", 0, 54, P.Accent, function()
+                local done, undo = AI.applyRows(rows)
+                markApplied()
+                Koffee.Sfx.play("select")
+                closeBar("applied " .. tostring(done) .. " of " .. tostring(good))
+                if #undo > 0 then
+                    local u = new("TextButton", {
+                        Text = "", AutoButtonColor = false, Size = UDim2.new(0, 56, 0, 20),
+                        Position = UDim2.new(0, 0, 0, 4), BackgroundColor3 = P.Pill,
+                        BackgroundTransparency = 0.25, BorderSizePixel = 0,
+                        LayoutOrder = 999, ZIndex = 37, Parent = card,
+                    }, { corner(5), stroke(P.Border) })
+                    new("TextLabel", { Text = "revert", FontFace = Theme.Fonts.Medium,
+                        TextSize = Theme.Text.Tiny, TextColor3 = P.TextMuted,
+                        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+                        ZIndex = 38, Parent = u })
+                    popFx(u)
+                    u.MouseButton1Click:Connect(function()
+                        for _, s in ipairs(undo) do pcall(s.entry.set, s.value) end
+                        Koffee.Sfx.play("toggle_off")
+                        u:Destroy()
+                        title.Text = "reverted " .. tostring(#undo)
+                        title.TextColor3 = P.TextMuted
+                    end)
+                end
+            end)
+            act("skip", 60, 46, P.Pill, function()
+                closeBar("skipped")
+                title.TextColor3 = P.TextFaint
+            end)
+        end
+        enter(card)
+        toBottom()
+        return { markApplied = markApplied, closeBar = closeBar, title = title }
+    end
+
+    -- :: composer ::
+    local comp = new("Frame", {
+        AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0),
+        Size = UDim2.new(1, 0, 0, 60), BackgroundTransparency = 1, ZIndex = 34, Parent = shell,
+    })
+    local inputWrap = new("Frame", {
+        Position = UDim2.new(0, 14, 0, 8), Size = UDim2.new(1, -28, 0, 32),
+        BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.25,
+        BorderSizePixel = 0, ZIndex = 35, Parent = comp,
+    }, { corner(8), stroke(P.Border) })
+    local inputStroke = inputWrap:FindFirstChildOfClass("UIStroke")
+    local box = new("TextBox", {
+        Text = "", PlaceholderText = "ask it to change something, or just ask",
+        PlaceholderColor3 = P.TextFaint, ClearTextOnFocus = false,
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body, TextColor3 = P.Text,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 10, 0, 0),
+        Size = UDim2.new(1, -56, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 36, Parent = inputWrap,
+    })
+    local send = new("TextButton", {
+        Text = "", AutoButtonColor = false,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -5, 0.5, 0),
+        Size = UDim2.new(0, 38, 0, 22), BackgroundColor3 = P.Accent,
+        BackgroundTransparency = 0.1, BorderSizePixel = 0, ZIndex = 36, Parent = inputWrap,
+    }, { corner(6) })
+    new("TextLabel", { Text = "send", FontFace = Theme.Fonts.Medium,
+        TextSize = Theme.Text.Tiny, TextColor3 = P.Background, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0), ZIndex = 37, Parent = send })
+    popFx(send)
+    local status = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+        TextColor3 = P.TextFaint, BackgroundTransparency = 1,
+        Position = UDim2.new(0, 16, 0, 42), Size = UDim2.new(1, -32, 0, 12),
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = comp,
+    })
+    box.Focused:Connect(function()
+        tween(inputStroke, Theme.Animation.Fast, { Color = P.Accent, Transparency = 0 })
+    end)
+    box.FocusLost:Connect(function()
+        tween(inputStroke, Theme.Animation.Fast, { Color = P.Border, Transparency = 0 })
+    end)
+
+    local function refreshBudget()
+        local d, m = dayLeft(), minuteLeft()
+        local who = (AI.Local.Key ~= "" and "own key") or (AI.Local.Proxy ~= "" and "proxy") or "unset"
+        budget.Text = who .. "  ::  " .. tostring(d) .. "/day  " .. tostring(m) .. "/min"
+    end
+
+    -- :: the turn ::
+    local function setBusy(v)
+        UIst.busy = v
+        send.BackgroundTransparency = v and 0.6 or 0.1
+        box.TextEditable = not v
+        sweep.Visible = v
+        if v then
+            tabPulse()
+            task.spawn(function()
+                while UIst.busy and not Koffee.dead() and sweep.Parent do
+                    sweep.Position = UDim2.new(-0.22, 0, 0, 42)
+                    tween(sweep, TweenInfo.new(0.9, Enum.EasingStyle.Sine), { Position = UDim2.new(1, 0, 0, 42) })
+                    task.wait(0.95)
+                end
+            end)
+        end
+        pcall(function() mark.Rotation = 0 end)
+        if v then
+            task.spawn(function()
+                local r = 0
+                while UIst.busy and not Koffee.dead() and mark.Parent do
+                    r += 6
+                    mark.Rotation = r
+                    RunService.RenderStepped:Wait()
+                end
+                if mark.Parent then tween(mark, Theme.Animation.Slow, { Rotation = 0 }) end
+            end)
+        end
+    end
+
+    local function turn()
+        local text = box.Text
+        if text == nil or text:gsub("%s", "") == "" then return end
+        if UIst.busy then return end
+        if AI.Local.Key == "" and AI.Local.Proxy == "" then
+            addNote("no key and no proxy set yet. open the gear and fill one in.", P.Danger)
+            return
+        end
+        if minuteLeft() <= 0 then
+            addNote("20 requests a minute is the account-wide cap. wait a few seconds.", P.Danger)
+            return
+        end
+        if dayLeft() <= 0 then
+            addNote("the daily free budget is spent. it resets at utc midnight.", P.Danger)
+            return
+        end
+        box.Text = ""
+        addUser(text)
+        local steps = addSteps()
+        setBusy(true)
+        local _, n = AI.digest()
+        steps.set("read " .. tostring(n) .. " controls")
+        task.delay(0.25, function()
+            if UIst.busy then steps.set("asking " .. string.match(AI.Opt.Model, "([^/]+)$")) end
+        end)
+        AI.ask(text, function(res, err, loose)
+            setBusy(false)
+            refreshBudget()
+            if not res then
+                steps.fail(err or "that did not go through")
+                return
+            end
+            local rows = AI.resolve(res.changes)
+            local n2 = 0
+            for _, r in ipairs(rows) do
+                if not r.bad then n2 += 1 end
+            end
+            steps.done(loose and "answered (not strict json)" or ("answered, " .. tostring(n2) .. " change" .. (n2 == 1 and "" or "s")))
+            if type(res.reply) == "string" and res.reply ~= "" then addReply(res.reply) end
+            if #rows == 0 then
+                if activeTab ~= "AI" then setUnread(true) end
+                return
+            end
+            -- Manual holds everything. Auto applies the plain ones and keeps the risky
+            -- ones for a click. YOLO applies the lot, which is what he turned it on for.
+            local mode = AI.Opt.Mode
+            if mode == "Manual" then
+                addChanges(rows)
+            elseif mode == "YOLO" then
+                local card = addChanges(rows)
+                local done = AI.applyRows(rows)
+                card.markApplied()
+                card.closeBar("applied " .. tostring(done) .. " automatically")
+            else
+                local auto, hold = {}, {}
+                for _, r in ipairs(rows) do
+                    if r.risky and not r.bad then
+                        hold[#hold + 1] = r
+                    else
+                        auto[#auto + 1] = r
+                    end
+                end
+                if #auto > 0 then
+                    local card = addChanges(auto)
+                    local done = AI.applyRows(auto)
+                    card.markApplied()
+                    card.closeBar("applied " .. tostring(done) .. " automatically")
+                end
+                if #hold > 0 then addChanges(hold, true) end
+            end
+            if activeTab ~= "AI" then setUnread(true) end
+        end)
+    end
+    send.MouseButton1Click:Connect(turn)
+    box.FocusLost:Connect(function(enter2)
+        if enter2 then turn() end
+    end)
+
+    -- :: settings overlay :: slides over the transcript, so the chat keeps its space
+    local panelS = new("Frame", {
+        Position = UDim2.new(1, 0, 0, 44), Size = UDim2.new(1, 0, 1, -44),
+        BackgroundColor3 = P.Background, BackgroundTransparency = 0.06,
+        BorderSizePixel = 0, Visible = false, ZIndex = 40, Parent = shell,
+    })
+    local sScroll = new("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+        ScrollBarThickness = 4, ScrollBarImageColor3 = P.TextFaint,
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 41, Parent = panelS,
+    }, {
+        new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+            Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }),
+        new("UIPadding", { PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 16),
+            PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 14) }),
+    })
+    local sOpen = false
+    local function toggleSettings()
+        sOpen = not sOpen
+        Koffee.Sfx.play("select")
+        if sOpen then
+            panelS.Visible = true
+            panelS.Position = UDim2.new(1, 0, 0, 44)
+            tween(panelS, Theme.Animation.Menu, { Position = UDim2.new(0, 0, 0, 44) })
+            tween(gear, Theme.Animation.Menu, { Rotation = 90, ImageColor3 = P.Accent })
+        else
+            tween(panelS, Theme.Animation.Menu, { Position = UDim2.new(1, 0, 0, 44) })
+            tween(gear, Theme.Animation.Menu, { Rotation = 0, ImageColor3 = P.TextMuted })
+            task.delay(0.24, function()
+                if not sOpen then panelS.Visible = false end
+            end)
+        end
+    end
+    gear.MouseButton1Click:Connect(toggleSettings)
+
+    local function sLabel(text, sub)
+        new("TextLabel", {
+            Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = P.Text, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 15),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = sScroll,
+        })
+        if sub then
+            new("TextLabel", {
+                Text = sub, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Tiny,
+                TextColor3 = P.TextFaint, BackgroundTransparency = 1, TextWrapped = true,
+                Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+                TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = sScroll,
+            })
+        end
+    end
+    local function sField(place, get, set, mask)
+        local w = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = P.PanelElevated,
+            BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 42, Parent = sScroll,
+        }, { corner(6), stroke(P.BorderSubtle) })
+        local f = new("TextBox", {
+            Text = "", PlaceholderText = place, PlaceholderColor3 = P.TextFaint,
+            ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = P.Text, BackgroundTransparency = 1,
+            Position = UDim2.new(0, 9, 0, 0), Size = UDim2.new(1, -18, 1, 0),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 43, Parent = w,
+        })
+        -- a key is shown as a stub, never in full, so a screenshot of this tab is safe
+        local function paint()
+            local v = get()
+            if mask and v ~= "" then
+                f.Text = string.sub(v, 1, 8) .. string.rep("*", math.min(14, math.max(0, #v - 8)))
+            else
+                f.Text = v
+            end
+        end
+        paint()
+        f.Focused:Connect(function()
+            if mask then f.Text = get() end
+        end)
+        f.FocusLost:Connect(function()
+            set(f.Text)
+            paint()
+            refreshBudget()
+        end)
+        return f
+    end
+
+    sLabel("openrouter key", "goes to Koffee/ai.json, never into a config, so sharing a config never ships your key. leave blank to use the proxy instead.")
+    sField("sk-or-v1-...", function() return AI.Local.Key end,
+        function(v) AI.Local.Key = v; saveLocal() end, true)
+    sLabel("proxy url", "a worker that holds the key for you and your friends. used when the key above is blank.")
+    sField("https://koffee-ai.<you>.workers.dev", function() return AI.Local.Proxy end,
+        function(v) AI.Local.Proxy = v; saveLocal() end)
+
+    sLabel("model", "free models only, best first by benchmark and context. refresh pulls the live roster.")
+    local modelDd = dropdown(sScroll, "Model", { AI.Opt.Model }, AI.Opt.Model, function(v)
+        local id = string.match(v, "^(%S+)")
+        if id then
+            AI.Opt.Model = id
+            addNote("model is now " .. id, P.TextMuted)
+        end
+    end)
+    local modelNote = new("TextLabel", {
+        Text = "not loaded yet", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+        TextColor3 = P.TextFaint, BackgroundTransparency = 1, TextWrapped = true,
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 42, Parent = sScroll,
+    })
+    -- the picker shows id, score and context, ordered best to worst, so the ranking is
+    -- visible rather than implied.
+    local function fillModels()
+        modelNote.Text = "fetching the free roster..."
+        AI.fetchModels(function(list, err)
+            if not list then
+                modelNote.Text = "could not load models: " .. tostring(err)
+                modelNote.TextColor3 = P.Danger
+                return
+            end
+            local opts, cur = {}, nil
+            for _, m in ipairs(list) do
+                local k = math.floor(m.context / 1000)
+                local tag = m.id .. "   " .. tostring(m.score)
+                if m.est then tag = tag .. "~" end
+                tag = tag .. "  " .. tostring(k) .. "k"
+                if m.strict then tag = tag .. "  strict" end
+                opts[#opts + 1] = tag
+                if m.id == AI.Opt.Model then cur = tag end
+            end
+            if #opts == 0 then
+                modelNote.Text = "the endpoint returned no free models"
+                return
+            end
+            modelDd.setOptions(opts, cur or opts[1])
+            if not cur then
+                AI.Opt.Model = list[1].id
+                modelNote.TextColor3 = P.TextFaint
+            end
+            modelNote.Text = tostring(#list) .. " free models. score blends benchmark, context and strict json; ~ means the benchmark is estimated from size and family."
+        end)
+    end
+
+    -- The roster is pulled the first time he actually looks at the tab, never at load:
+    -- an outbound request on every load is a network signature on games that have no
+    -- business seeing one (the v0.45.1 lesson). Declared here so it is a real local.
+    local fetched = false
+    local function fetchOnce()
+        if fetched then return end
+        fetched = true
+        fillModels()
+    end
+
+    local function sButton(label, fn)
+        local b = new("TextButton", {
+            Text = "", AutoButtonColor = false, Size = UDim2.new(0, 112, 0, 24),
+            BackgroundColor3 = P.Pill, BackgroundTransparency = 0.25, BorderSizePixel = 0,
+            ZIndex = 42, Parent = sScroll,
+        }, { corner(6), stroke(P.Border) })
+        new("TextLabel", { Text = label, FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Tiny, TextColor3 = P.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 1, 0), ZIndex = 43, Parent = b })
+        popFx(b)
+        b.MouseButton1Click:Connect(fn)
+        return b
+    end
+    sButton("refresh models", function()
+        fetched = true
+        fillModels()
+    end)
+
+    sLabel("permission", "manual asks for every change. auto applies the plain ones and holds anything that can cost an account. yolo applies everything the moment it lands.")
+    local mrow = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, ZIndex = 42, Parent = sScroll,
+    })
+    local mbtns = {}
+    local function paintModeRow()
+        for name, b in pairs(mbtns) do
+            local on = AI.Opt.Mode == name
+            local col = MODECOL[name] or P.TextMuted
+            tween(b, Theme.Animation.Fast, { BackgroundTransparency = on and 0.15 or 0.8 })
+            b.BackgroundColor3 = on and col or P.Pill
+            local l = b:FindFirstChildOfClass("TextLabel")
+            if l then l.TextColor3 = on and P.Background or P.TextMuted end
+        end
+        paintMode()
+    end
+    local function setMode(name)
+        -- YOLO is acknowledged once and the answer is kept on disk forever, so it never
+        -- asks twice. Nothing else gates it after that.
+        if name == "YOLO" and not AI.Local.YoloAck then
+            addNote("yolo applies every change the instant it arrives, risky ones included, with no confirm. say the word and it never asks again.", P.Danger)
+            local f = block(26)
+            local function mini(label, x, col, fn)
+                local b = new("TextButton", {
+                    Text = "", AutoButtonColor = false, Position = UDim2.new(0, x, 0, 2),
+                    Size = UDim2.new(0, 96, 0, 20), BackgroundColor3 = col,
+                    BackgroundTransparency = 0.12, BorderSizePixel = 0, ZIndex = 37, Parent = f,
+                }, { corner(5) })
+                new("TextLabel", { Text = label, FontFace = Theme.Fonts.Medium,
+                    TextSize = Theme.Text.Tiny, TextColor3 = P.Background,
+                    BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+                    ZIndex = 38, Parent = b })
+                popFx(b)
+                b.MouseButton1Click:Connect(fn)
+            end
+            mini("i understand", 0, P.Danger, function()
+                AI.Local.YoloAck = true
+                saveLocal()
+                AI.Opt.Mode = "YOLO"
+                paintModeRow()
+                f:Destroy()
+                addNote("yolo is on and acknowledged. it will not ask again.", P.Danger)
+            end)
+            mini("cancel", 102, P.Pill, function() f:Destroy() end)
+            toBottom()
+            return
+        end
+        AI.Opt.Mode = name
+        Koffee.Sfx.play("select")
+        paintModeRow()
+    end
+    for i, name in ipairs({ "Manual", "Auto", "YOLO" }) do
+        local b = new("TextButton", {
+            Text = "", AutoButtonColor = false,
+            Position = UDim2.new(0, (i - 1) * 86, 0, 1), Size = UDim2.new(0, 80, 0, 24),
+            BackgroundColor3 = P.Pill, BackgroundTransparency = 0.8, BorderSizePixel = 0,
+            ZIndex = 43, Parent = mrow,
+        }, { corner(6) })
+        new("TextLabel", { Text = string.lower(name), FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Tiny, TextColor3 = P.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 1, 0), ZIndex = 44, Parent = b })
+        popFx(b)
+        mbtns[name] = b
+        b.MouseButton1Click:Connect(function() setMode(name) end)
+    end
+    modePill.MouseButton1Click:Connect(function()
+        local nextOf = { Manual = "Auto", Auto = "YOLO", YOLO = "Manual" }
+        setMode(nextOf[AI.Opt.Mode] or "Manual")
+    end)
+
+    sLabel("behaviour")
+    slider(sScroll, "Temperature", 0, 1, AI.Opt.Temp, 2, function(v) AI.Opt.Temp = v end)
+    configCheckbox(sScroll, "Send game info", AI.Opt.SendGame, function(v) AI.Opt.SendGame = v end)
+    configCheckbox(sScroll, "Reveal replies as they land", AI.Opt.Reveal, function(v) AI.Opt.Reveal = v end)
+    sButton("clear conversation", function()
+        AI.history = {}
+        for _, c in ipairs(feed:GetChildren()) do
+            if c:IsA("Frame") then c:Destroy() end
+        end
+        order = 0
+        addNote("conversation cleared. it keeps seeing your live settings either way.", P.TextMuted)
+    end)
+    sLabel("privacy", "it is sent your settings, the placeid, server size, ping and session hit counts. never player names, never your username, never a config file.")
+
+    -- :: first paint ::
+    paintModeRow()
+    refreshBudget()
+    -- The AI tab is deliberately not in rebuildConfigTabs (a rebuild would wipe the
+    -- transcript and refetch the roster), so a config load resyncs these rows instead.
+    Shared._aiResync = function()
+        paintModeRow()
+        refreshBudget()
+        modelDd.setValue(AI.Opt.Model)
+    end
+    addNote("koffee ai reads every control in the build (" .. tostring(select(2, AI.digest()))
+        .. " of them) and can change them for you. ask it anything.", P.TextMuted)
+
+    -- clear the unread dot the moment he lands on the tab, and pull the roster then
+    Koffee.UI.tabHooks[#Koffee.UI.tabHooks + 1] = function(nm)
+        if nm ~= "AI" then return end
+        setUnread(false)
+        if AI.Local.Key ~= "" or AI.Local.Proxy ~= "" then fetchOnce() end
+    end
+    task.delay(0.1, function()
+        local btn = tabs.AI and tabs.AI.Button
+        if not btn then return end
+        UIst.dot = new("Frame", {
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -4, 0, 9),
+            Size = UDim2.new(0, 5, 0, 5), BackgroundColor3 = P.Accent, BorderSizePixel = 0,
+            Visible = false, ZIndex = 36, Parent = btn,
+        }, { pillCorner() })
+    end)
+end)
+end)()
+
 -- select first tab AFTER layout AND positioning have settled. v0.0.5 only checked AbsoluteSize: but AbsolutePosition can still be zero for a frame or two after that, which put the pill at (0,0) on first launch. also, the tabBar AbsolutePosition signal above will re-snap once it moves.
 task.spawn(function()
     local btn = tabs.Visuals.Button
@@ -46611,8 +48102,8 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
     local U = Koffee.UI
     local P = Theme.Palette
     local SIDE, GAP, CLASSIC_W = 64, 12, Theme.Sizes.WindowWidth
-    local ICON = { Combat = "crosshair", Visuals = "eye", World = "globe", Character = "user", Options = "settings",
-        Custom = "pencil", Configs = "folder", NPC = "bot", Extra = "sparkles" }
+    -- v1.6.0: was a local copy here and another in Rail; both now read the shared map.
+    local ICON = Koffee.UI.tabIcon
     local G = { built = false, buttons = {}, order = {} }
     local wStroke = window:FindFirstChildOfClass("UIStroke")
 
@@ -46894,8 +48385,8 @@ end)()
     local U = Koffee.UI
     local P = Theme.Palette
     local RAIL, RAIL_OPEN, LIST, HEAD = 58, 196, 252, 66
-    local ICON = { Combat = "crosshair", Visuals = "eye", World = "globe", Character = "user", Options = "settings",
-        Custom = "pencil", Configs = "folder", NPC = "bot", Extra = "sparkles" }
+    -- v1.6.0: was a local copy here and another in Rail; both now read the shared map.
+    local ICON = Koffee.UI.tabIcon
     local GROUPS = { { "Combat", "Visuals", "World", "Character" }, { "Custom", "Configs", "NPC", "Extra" } }
     local R = { built = false, btns = {}, remember = {}, entries = {} }
     local wCorner = window:FindFirstChildOfClass("UICorner")
