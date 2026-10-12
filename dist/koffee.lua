@@ -1,7 +1,7 @@
--- koffee v1.6.3
+-- koffee v1.6.4
 
 local Koffee = {}
-Koffee.Version = "1.6.3"
+Koffee.Version = "1.6.4"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38299,8 +38299,13 @@ registerConfig("ai", AI.Opt)
 -- v1.6.0: the key, the proxy and the YOLO acknowledgement live in their own file and
 -- never in a config. Configs get shared and pushed to Cloud Configs, so a key stored
 -- in one would ride along to whoever loads it.
+-- v1.6.4: Koffee is private, so the worker is baked in instead of pasted per user. The
+-- worker holds the OpenRouter key and caps the spend; this token only says "this is
+-- Koffee". It is a seam like the helper key, not real auth, which is the accepted trade.
+AI.WORKER = "https://koffee-ai.companiesfrm.workers.dev"
+AI.TOKEN  = "kf_a79d9a64f544e3223707820cc455f867"
 local LFILE = "Koffee/ai.json"
-AI.Local = { Token = "", Proxy = "", YoloAck = false, Day = "", Used = 0 }
+AI.Local = { YoloAck = false, Day = "", Used = 0 }
 local function saveLocal()
     if not writefile then return end
     pcall(function() writefile(LFILE, HttpService:JSONEncode(AI.Local)) end)
@@ -38400,18 +38405,13 @@ AI.models = {}
 local function pickReq()
     return (syn and syn.request) or (http and http.request) or http_request or request
 end
-local function base()
-    local p = AI.Local.Proxy
-    if p and p ~= "" then return (string.gsub(p, "/+$", "")) end
-    return "https://openrouter.ai/api/v1"
-end
+local function base() return AI.WORKER end
 -- v1.6.2: the worker holds the OpenRouter key, so nothing here ever carries one. The
 -- client sends at most a shared access token, which gates who may spend the budget.
 local function headers()
     local h = { ["Content-Type"] = "application/json",
         ["HTTP-Referer"] = "https://koffee.local", ["X-Title"] = "Koffee" }
-    local t = AI.Local.Token
-    if t and t ~= "" then h["X-Koffee-Token"] = t end
+    h["X-Koffee-Token"] = AI.TOKEN
     return h
 end
 
@@ -39431,9 +39431,7 @@ addTab("AI", function(root)
 
     local function refreshBudget()
         local d, m = dayLeft(), minuteLeft()
-        local where = "No proxy set"
-        if AI.Local.Proxy ~= "" then where = "Shared proxy" end
-        budget.Text = where .. "  ::  " .. tostring(d) .. "/day   " .. tostring(m) .. "/min"
+        budget.Text = "Shared worker  ::  " .. tostring(d) .. "/day   " .. tostring(m) .. "/min"
     end
 
     -- :: the turn ::
@@ -39466,10 +39464,6 @@ addTab("AI", function(root)
         local text = box.Text
         if text == nil or text:gsub("%s", "") == "" then return end
         if UIst.busy then return end
-        if AI.Local.Proxy == "" then
-            addNote("No proxy set yet. Open the gear and paste the worker URL.", P.Danger)
-            return
-        end
         if minuteLeft() <= 0 then
             addNote("20 requests a minute is the account-wide cap. Wait a few seconds.", P.Danger)
             return
@@ -39637,10 +39631,6 @@ addTab("AI", function(root)
             modelMenu = nil
             return
         end
-        if AI.Local.Proxy == "" then
-            addNote("No proxy set yet. Open the gear and paste the worker URL.", P.Danger)
-            return
-        end
         local function show()
             local items = {}
             for _, m in ipairs(AI.models) do
@@ -39738,39 +39728,6 @@ addTab("AI", function(root)
             })
         end
     end
-    local function sField(place, get, set, mask)
-        local w = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = P.PanelElevated,
-            BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 42, Parent = sScroll,
-        }, { corner(6), stroke(P.BorderSubtle) })
-        local f = new("TextBox", {
-            Text = "", PlaceholderText = place, PlaceholderColor3 = P.TextFaint,
-            ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
-            TextColor3 = P.Text, BackgroundTransparency = 1,
-            Position = UDim2.new(0, 9, 0, 0), Size = UDim2.new(1, -18, 1, 0),
-            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-            ZIndex = 43, Parent = w,
-        })
-        -- a token renders as a stub, never in full, so a screenshot of this tab is safe
-        local function paint()
-            local v = get()
-            if mask and v ~= "" then
-                f.Text = string.sub(v, 1, 6) .. string.rep("*", math.min(14, math.max(0, #v - 6)))
-            else
-                f.Text = v
-            end
-        end
-        paint()
-        f.Focused:Connect(function()
-            if mask then f.Text = get() end
-        end)
-        f.FocusLost:Connect(function()
-            set(f.Text)
-            paint()
-            refreshBudget()
-        end)
-        return f
-    end
     local function sButton(label, fn)
         local b = new("TextButton", {
             Text = "", AutoButtonColor = false, Size = UDim2.new(0, 126, 0, 24),
@@ -39784,15 +39741,6 @@ addTab("AI", function(root)
         b.MouseButton1Click:Connect(fn)
         return b
     end
-
-    sLabel("Worker URL", "Every request goes through your worker, which holds the key. "
-        .. "Nothing here ever carries an OpenRouter key, so a shared config cannot leak one.")
-    sField("https://koffee-ai.<you>.workers.dev", function() return AI.Local.Proxy end,
-        function(v) AI.Local.Proxy = v; saveLocal(); fetched = false end)
-    sLabel("Access token", "Optional. Set KOFFEE_TOKEN on the worker and paste the same value here "
-        .. "so only you and your friends can spend the budget.")
-    sField("Leave blank if the worker has no token", function() return AI.Local.Token end,
-        function(v) AI.Local.Token = v; saveLocal() end, true)
 
     sLabel("Model", "Free models only, best first. Pick it from the chat header too.")
     modelNote = new("TextLabel", {
@@ -39841,7 +39789,7 @@ addTab("AI", function(root)
     Koffee.UI.tabHooks[#Koffee.UI.tabHooks + 1] = function(nm)
         if nm ~= "AI" then return end
         setUnread(false)
-        if AI.Local.Proxy ~= "" then fetchOnce() end
+        fetchOnce()
     end
     task.delay(0.1, function()
         local btn = tabs.AI and tabs.AI.Button
