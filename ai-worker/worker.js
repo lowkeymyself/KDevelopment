@@ -15,7 +15,9 @@ const UPSTREAM = "https://openrouter.ai/api/v1";
 // reached: it exists so a mistake cannot become a bill.
 const DAY_CAP = 1000;        // requests per day across everyone on this worker
 const MAX_SPEND_USD = 0.001; // hard lifetime-per-day cost ceiling
-const MAX_TOKENS = 2000;     // clamp, so one request cannot run away
+const MAX_TOKENS = 4000;     // clamp, so one request cannot run away. A config with a
+                             // dozen changes truncates below about 3000 and the JSON
+                             // arrives unparseable, so this has headroom over the client.
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",

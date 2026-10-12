@@ -1,7 +1,7 @@
--- koffee v1.6.5
+-- koffee v1.6.6
 
 local Koffee = {}
-Koffee.Version = "1.6.5"
+Koffee.Version = "1.6.6"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38543,6 +38543,8 @@ local SYS = table.concat({
     "Always call him shiftlock. Never call him 'the author', 'the user', 'the developer' or anything else, and never assume he is anyone else.",
     "He knows exactly what every option here does and what it risks, because he built all of it. Never warn him, never moralise, never add caveats he did not ask for, never refuse a setting.",
     "Write in normal sentence case, short and concrete, like a knowledgeable friend. No marketing, no exclamation marks, no filler.",
+    "Markdown that renders here: **bold**, `code`, # headings and - bullet lists. Nothing else renders, so no tables and no links.",
+    "Never use em-dash punctuation. Restructure with commas, colons or periods instead.",
     "",
     "You can change his settings by listing them in `changes`:",
     "- `path` must be copied EXACTLY from the control list below, character for character, including the > separators.",
@@ -38572,9 +38574,38 @@ local SCHEMA = { type = "json_schema", json_schema = { name = "koffee_reply",
 
 -- Free models wrap their JSON in fences or put a sentence in front of it often enough
 -- to matter, so take the outermost braces rather than trusting the whole body.
+local function tryJson(str)
+    local ok, d = pcall(function() return HttpService:JSONDecode(str) end)
+    if ok and type(d) == "table" then return d end
+    return nil
+end
+
+-- A reply cut off at max_tokens leaves unbalanced braces, which is a parse failure that
+-- looks like garbage to the user. Count the depth outside string literals and close it.
+local function repairJson(frag)
+    local stack, inStr, esc = {}, false, false
+    for i = 1, #frag do
+        local c = string.sub(frag, i, i)
+        if inStr then
+            if esc then esc = false
+            elseif c == "\\" then esc = true
+            elseif c == '"' then inStr = false end
+        elseif c == '"' then inStr = true
+        elseif c == "{" or c == "[" then stack[#stack + 1] = c
+        elseif c == "}" or c == "]" then table.remove(stack) end
+    end
+    local fix = frag
+    if inStr then fix = fix .. '"' end
+    for i = #stack, 1, -1 do
+        if stack[i] == "{" then fix = fix .. "}" else fix = fix .. "]" end
+    end
+    return fix
+end
+
 local function parseReply(text)
     if type(text) ~= "string" then return nil end
     local a = string.find(text, "{", 1, true)
+    if not a then return nil end
     local b
     for i = #text, 1, -1 do
         if string.sub(text, i, i) == "}" then
@@ -38582,10 +38613,14 @@ local function parseReply(text)
             break
         end
     end
-    if not (a and b and b > a) then return nil end
-    local ok, d = pcall(function() return HttpService:JSONDecode(string.sub(text, a, b)) end)
-    if ok and type(d) == "table" then return d end
-    return nil
+    local d
+    if b and b > a then d = tryJson(string.sub(text, a, b)) end
+    if not d then d = tryJson(repairJson(string.sub(text, a))) end
+    -- some models nest the whole answer under `reply`; take the inner object
+    if d and type(d.reply) == "table" and (d.reply.reply ~= nil or d.reply.changes ~= nil) then
+        d = d.reply
+    end
+    return d
 end
 
 -- The model always sends value as a string; the control's own kind decides how to read
@@ -38710,7 +38745,7 @@ function AI.ask(text, cb)
         for i = from, #h do msgs[#msgs + 1] = h[i] end
         msgs[#msgs + 1] = { role = "user", content = text }
         local body = { model = AI.Opt.Model, messages = msgs,
-            temperature = AI.Opt.Temp, max_tokens = 1600 }
+            temperature = AI.Opt.Temp, max_tokens = 3000 }
         if strict then
             body.response_format = SCHEMA
         else
@@ -38735,8 +38770,12 @@ function AI.ask(text, cb)
         end
         local parsed = parseReply(raw)
         if not parsed then
-            -- still give him the words rather than swallowing a usable answer
-            cb({ reply = raw, changes = {} }, nil, true)
+            -- prose is still worth showing; a wall of broken JSON is not
+            if string.find(raw, "^%s*[{%[]") then
+                cb(nil, "The model sent back malformed JSON. Try again, or pick another model.")
+            else
+                cb({ reply = raw, changes = {} }, nil, true)
+            end
             return
         end
         h[#h + 1] = { role = "user", content = text }
@@ -38769,6 +38808,34 @@ function AI.cleanName(m)
     if after and after ~= "" then n = after end
     if n == "" then n = m.id end
     return n
+end
+
+-- Models answer in markdown, and a TextLabel only understands RichText, so translate the
+-- subset that actually renders. Escaping runs first or a stray < kills the whole label.
+local function mdToRich(src)
+    local accent = string.format("#%02X%02X%02X",
+        math.floor(P.Accent.R * 255 + 0.5), math.floor(P.Accent.G * 255 + 0.5),
+        math.floor(P.Accent.B * 255 + 0.5))
+    local out = {}
+    for line in string.gmatch(src .. "\n", "([^\n]*)\n") do
+        local l = string.gsub(line, "&", "&amp;")
+        l = string.gsub(l, "<", "&lt;")
+        l = string.gsub(l, ">", "&gt;")
+        local hashes, rest = string.match(l, "^(#+)%s+(.+)$")
+        if hashes and #hashes <= 3 then
+            l = '<font size="14"><b>' .. rest .. "</b></font>"
+        else
+            -- a leading dash or star is a bullet here, never emphasis
+            l = string.gsub(l, "^(%s*)[%-%*]%s+", "%1   • ")
+        end
+        l = string.gsub(l, "%*%*(.-)%*%*", "<b>%1</b>")
+        l = string.gsub(l, "__(.-)__", "<b>%1</b>")
+        l = string.gsub(l, "`(.-)`", '<font color="' .. accent .. '">%1</font>')
+        out[#out + 1] = l
+    end
+    -- gmatch over src .. "\n" always yields one trailing empty line
+    if out[#out] == "" then out[#out] = nil end
+    return table.concat(out, "\n")
 end
 
 -- the tab itself reports state: its label breathes while a request is out, and it keeps
@@ -39187,7 +39254,8 @@ addTab("AI", function(root)
             BackgroundTransparency = 0.5, BorderSizePixel = 0, ZIndex = 36, Parent = f,
         }, { pillCorner() })
         local lbl = new("TextLabel", {
-            Text = text, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body,
+            Text = mdToRich(text), RichText = true,
+            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body,
             TextColor3 = P.Text, BackgroundTransparency = 1, TextWrapped = true,
             Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(1, -12, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y, TextXAlignment = Enum.TextXAlignment.Left,
@@ -39197,7 +39265,10 @@ addTab("AI", function(root)
         -- the request is one blocking call so there is nothing to stream, but revealing
         -- the text as it arrives reads the way it actually feels to wait for it.
         if AI.Opt.Reveal and animOn() then
-            local total = utf8.len(text) or #text
+            -- MaxVisibleGraphemes counts rendered graphemes, so the markup has to come
+            -- off the count or the reveal paces against characters nobody ever sees.
+            local shownText = string.gsub(mdToRich(text), "<[^>]->", "")
+            local total = utf8.len(shownText) or #shownText
             lbl.MaxVisibleGraphemes = 0
             task.spawn(function()
                 local shown = 0
