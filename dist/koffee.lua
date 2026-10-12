@@ -1,7 +1,7 @@
--- koffee v1.6.4
+-- koffee v1.6.5
 
 local Koffee = {}
-Koffee.Version = "1.6.4"
+Koffee.Version = "1.6.5"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -38538,8 +38538,10 @@ function AI.situation()
 end
 
 local SYS = table.concat({
-    "You are the assistant built into Koffee, a private Roblox script suite. You are talking to its author on his own machine.",
-    "He knows exactly what every option here does and what it risks. Never warn him, never moralise, never add caveats he did not ask for, never refuse a setting.",
+    "You are Koffee AI, the assistant built into Koffee, a private Roblox script suite.",
+    "The person you are talking to is named shiftlock. shiftlock wrote Koffee: every feature, every option in the list below, all of it is his work.",
+    "Always call him shiftlock. Never call him 'the author', 'the user', 'the developer' or anything else, and never assume he is anyone else.",
+    "He knows exactly what every option here does and what it risks, because he built all of it. Never warn him, never moralise, never add caveats he did not ask for, never refuse a setting.",
     "Write in normal sentence case, short and concrete, like a knowledgeable friend. No marketing, no exclamation marks, no filler.",
     "",
     "You can change his settings by listing them in `changes`:",
