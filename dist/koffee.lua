@@ -1,7 +1,7 @@
--- koffee v1.6.6
+-- koffee v1.6.7
 
 local Koffee = {}
-Koffee.Version = "1.6.6"
+Koffee.Version = "1.6.7"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2515,6 +2515,9 @@ Koffee.UI.tabIcon = { Combat = "crosshair", Visuals = "eye", World = "globe",
 -- (instance -> skin fn, swept whenever n hits a multiple of 400), and sharing them put
 -- skin functions in front of code expecting entries, and let the sweep eat the entries.
 Koffee.UI.ctl, Koffee.UI.ctlN = {}, 0
+-- v1.6.7: right-click settings popups build lazily, so their controls do not exist
+-- until opened and the assistant cannot see them. Each queues a one-time prime here.
+Koffee.UI.pendingPopups = {}
 -- Path is Tab > Box > Secondary Tab > Label, each part skipped when absent. Cards set
 -- curBox (nil for untitled ones, which resets it); a page whose parent card has
 -- Secondary Tabs is itself named after its tab, so the sub name is free.
@@ -5083,6 +5086,9 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         if c:IsA("TextButton") then btn = c break end
     end
     if not btn then return end
+    -- v1.6.7: these controls belong to the tab being built right now, but the body is
+    -- not built until the popup opens, when curTab is already nil. Capture it here.
+    local ctxTab, ctxBox = Koffee.UI.curTab, Koffee.UI.curBox
 
     local popupFrame, isOpen = nil, false
     local body, spawned = nil, {}
@@ -5209,7 +5215,29 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         function api:rebuild()
             task.defer(function() if body and body.Parent then buildBody() end end)
         end
+        -- v1.6.7: put the owning tab back so each control declares a real path, e.g.
+        -- "Visuals > Effects > Wings > Style" instead of being skipped entirely.
+        local sTab, sBox, sSeen = Koffee.UI.curTab, Koffee.UI.curBox, Koffee.UI.seen
+        if ctxTab then
+            Koffee.UI.curTab = ctxTab
+            local pre = ""
+            if ctxBox then pre = ctxBox .. " > " end
+            Koffee.UI.curBox = pre .. tostring(title or "Settings")
+            Koffee.UI.seen = {}
+        end
         buildFn(api)
+        Koffee.UI.curTab, Koffee.UI.curBox, Koffee.UI.seen = sTab, sBox, sSeen
+    end
+
+    -- Queue a one-time prime, so he never has to right-click 80 rows just to let the
+    -- assistant see what is behind them. Drained when the AI tab is first opened.
+    if ctxTab then
+        local q = Koffee.UI.pendingPopups
+        q[#q + 1] = function()
+            local fresh = popupFrame == nil
+            ensurePopup()
+            if fresh then buildBody() end
+        end
     end
 
     local popupSeq = 0   -- v0.48.0: guards the close-shrink delay below
@@ -39143,7 +39171,10 @@ addTab("AI", function(root)
     end
     local function toBottom()
         task.delay(0.03, function()
-            if feed.Parent then feed.CanvasPosition = Vector2.new(0, feed.AbsoluteCanvasSize.Y) end
+            -- AbsoluteCanvasSize reads 0 while the tab is hidden, so scrolling then
+            -- jumps the transcript to the top instead of the bottom.
+            if not feed.Parent or activeTab ~= "AI" then return end
+            feed.CanvasPosition = Vector2.new(0, feed.AbsoluteCanvasSize.Y)
         end)
     end
     -- the list layout owns child Position, so an entrance has to be a scale pop: the
@@ -39273,6 +39304,9 @@ addTab("AI", function(root)
             task.spawn(function()
                 local shown = 0
                 while shown < total and not Koffee.dead() and lbl.Parent do
+                    -- nobody is watching once he leaves the tab, and a reveal left
+                    -- part-written reads as the answer having stopped. Finish it.
+                    if activeTab ~= "AI" then break end
                     shown = math.min(total, shown + math.max(1, math.floor(total / 90)))
                     lbl.MaxVisibleGraphemes = shown
                     if shown % 24 < 2 then toBottom() end
@@ -39858,11 +39892,40 @@ addTab("AI", function(root)
     addNote("Koffee AI reads every control in the build (" .. tostring(select(2, AI.digest()))
         .. " of them) and can change them for you. Ask it anything.", P.TextMuted)
 
+    -- Build every right-click settings popup once, a few per frame, so the assistant
+    -- sees what is behind those 80 rows. Only on first open, so nobody who never uses
+    -- the tab pays for it, and nothing blocks the frame it starts on.
+    local primed = false
+    local function primePopups()
+        if primed then return end
+        primed = true
+        local q = Koffee.UI.pendingPopups
+        if #q == 0 then return end
+        local was = select(2, AI.digest())
+        task.spawn(function()
+            while #q > 0 and not Koffee.dead() do
+                for _ = 1, 5 do
+                    local f = table.remove(q)
+                    if not f then break end
+                    pcall(f)
+                end
+                RunService.Heartbeat:Wait()
+            end
+            if Koffee.dead() then return end
+            local now = select(2, AI.digest())
+            if now > was then
+                addNote("Read " .. tostring(now - was) .. " more controls from the right-click panels. "
+                    .. tostring(now) .. " in total.", P.TextMuted)
+            end
+        end)
+    end
+
     -- clear the unread dot the moment he lands on the tab, and pull the roster then
     Koffee.UI.tabHooks[#Koffee.UI.tabHooks + 1] = function(nm)
         if nm ~= "AI" then return end
         setUnread(false)
         fetchOnce()
+        primePopups()
     end
     task.delay(0.1, function()
         local btn = tabs.AI and tabs.AI.Button
