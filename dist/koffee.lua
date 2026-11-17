@@ -1,7 +1,7 @@
--- koffee v1.7.2
+-- koffee v1.7.3
 
 local Koffee = {}
-Koffee.Version = "1.7.2"
+Koffee.Version = "1.7.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -5498,6 +5498,13 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         function api:dropdown(label, options, initial, onChange)
             local d = dropdown(body, label, options, initial, onChange)
             spawned[#spawned + 1] = d.destroy
+            -- v1.7.3: room to breathe. The popup body clips at its own rect, so a
+            -- full-width box lost the outer half of its 1px outline down both sides,
+            -- and the last row sat flush with the bottom clip. Inset it and add
+            -- height below the field.
+            new("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4), Parent = d.frame })
+            d.frame.Size = UDim2.new(1, 0, 0, 56)
+            d.rowHeight = 56
             return d
         end
         -- v0.0.28: colour control inside a settings popup (label + right swatch).
@@ -23414,17 +23421,18 @@ addTab("Visuals", function(root)
         popup:swatch("Bottom", ESP.Health.GradBot, function(c) ESP.Health.GradBot = c end)
         -- v1.7.0: Rainbow takes over the bar; Direction only exists while it does,
         -- and folds out of the popup instead of popping in.
-        -- v1.7.2: 54, not 48. The dropdown box ends exactly at the row edge and the
-        -- popup body clips at its own edge, so the bottom of its outline was being
-        -- shaved off. The spare 6px gives the stroke somewhere to sit.
+        -- v1.7.2: the row is taller than the field so its outline has somewhere to
+        -- sit inside the body's clip rect.
         local dirDd
         popup:toggle("Rainbow", ESP.Health.Rainbow, function(v)
             ESP.Health.Rainbow = v
-            if dirDd then Shared.revealRow(dirDd.frame, v, 54) end
+            if dirDd then Shared.revealRow(dirDd.frame, v, dirDd.rowHeight or 56) end
         end)
         dirDd = popup:dropdown("Direction", { "Up", "Down" }, ESP.Health.RainbowDir,
             function(v) ESP.Health.RainbowDir = v end)
-        if dirDd then Shared.revealRow(dirDd.frame, ESP.Health.Rainbow == true, 54, true) end
+        if dirDd then
+            Shared.revealRow(dirDd.frame, ESP.Health.Rainbow == true, dirDd.rowHeight or 56, true)
+        end
     end)
     configCheckbox(healthPanel, "Health Text", ESP.Health.Text, function(v) ESP.Health.Text = v end)
     dropdown(healthPanel, "Text Pos", { "Above Name", "On Health Bar" }, ESP.Health.TextPos, function(v) ESP.Health.TextPos = v end)
