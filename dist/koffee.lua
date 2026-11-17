@@ -1,7 +1,7 @@
--- koffee v1.6.7
+-- koffee v1.7.0
 
 local Koffee = {}
-Koffee.Version = "1.6.7"
+Koffee.Version = "1.7.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -1553,27 +1553,45 @@ local function colorToRGB(c)
         math.floor(c.B * 255 + 0.5))
 end
 
+-- v1.7.0: the window follows the cursor on a short curve instead of teleporting a
+-- pixel at a time, and it is clamped so a drag can never park it off screen. Touch
+-- still works, and the defaults are nil-safe for a config saved before this.
 local function makeDraggable(handle, target)
     target = target or handle
-    local dragging, dragStart, startPos
+    local dragging, dragStart, startPos, motion
     handle.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             dragStart = input.Position
             startPos = target.Position
+            if motion then motion:Cancel(); motion = nil end
             input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then dragging = false end
             end)
         end
     end)
     UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-                       or input.UserInputType == Enum.UserInputType.Touch) then
-            local d = input.Position - dragStart
-            target.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + d.X,
-                startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local cam = Workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(0, 0)
+        local size, anchor = target.AbsoluteSize, target.AnchorPoint
+        local d = input.Position - dragStart
+        local x = startPos.X.Scale * vp.X + startPos.X.Offset + d.X
+        local y = startPos.Y.Scale * vp.Y + startPos.Y.Offset + d.Y
+        -- an 8px lip of the window always stays on screen, in every direction
+        x = math.clamp(x, size.X * anchor.X + 8, math.max(size.X * anchor.X + 8, vp.X - size.X * (1 - anchor.X) - 8))
+        y = math.clamp(y, size.Y * anchor.Y + 8, math.max(size.Y * anchor.Y + 8, vp.Y - size.Y * (1 - anchor.Y) - 8))
+        local goal = UDim2.fromOffset(math.floor(x + 0.5), math.floor(y + 0.5))
+        if motion then motion:Cancel() end
+        local o = Koffee.options
+        if Koffee.Anim.enabled() and (not o or o.SmoothWindowDrag ~= false) then
+            motion = tween(target, Koffee.Anim.follow(o and o.WindowMotionStyle), { Position = goal })
+        else
+            motion = nil
+            target.Position = goal
         end
     end)
 end
@@ -1774,6 +1792,11 @@ local function newSnowflake()
     local core  = 1.0 + depth * 2.5                 -- 1.0 - 3.5 px core diameter
     local sf = {
         depth     = depth,
+        diameter  = core,
+        -- v1.7.0: 3D snow parks each flake on a plane `distance` px in front of the
+        -- camera, so the camera's own motion parallaxes it. Unused in flat mode.
+        distance  = 35 + (1 - depth) * 110,
+        arrival   = 1,
         speedY    = 10 + depth * 42,                -- 10 - 52 px/sec (parallax)
         swayAmp   = 3 + depth * 12,                 -- 3 - 15 px
         swayFreq  = math.random(30, 90) / 100,
@@ -1827,6 +1850,7 @@ RunService.RenderStepped:Connect(function(dt)
         snowFade = math.max(snowFade - dt * SNOW_FADE_SPEED, 0)
     end
     local vp = viewport()
+    local o = Koffee.options
 
     if snowFade < 0.01 then
         snowLayer.Visible = false
@@ -1840,10 +1864,43 @@ RunService.RenderStepped:Connect(function(dt)
         if sf.y > vp.Y + 8 then
             sf.y = -8
             sf.baseX = math.random() * vp.X
+            sf.world = nil
         end
         local x = sf.baseX + math.sin(sf.swayPhase) * sf.swayAmp
-        sf.wrap.Position = UDim2.new(0, x, 0, sf.y)
-        local visible = sf.alpha * snowFade
+        local y, perspective, edge = sf.y, 1, 1
+        local cam = Workspace.CurrentCamera
+        -- v1.7.0: opt-in 3D snow. Each flake is a point on a plane in front of the
+        -- camera; moving the camera slides it by real parallax and it scales with
+        -- depth. Off keeps the flat layer exactly as it was.
+        if not (o and o.MenuSnow3D == true) then
+            sf.world = nil
+        elseif cam and cam.CFrame then
+            local focal = vp.Y / (2 * math.tan(math.rad(cam.FieldOfView or 70) / 2))
+            if not sf.world then
+                sf.arrival = 0
+                sf.world = cam.CFrame:VectorToWorldSpace(
+                    Vector3.new((x - vp.X / 2) / focal, -(y - vp.Y / 2) / focal, -1) * sf.distance)
+            end
+            sf.world -= Vector3.new(0, sf.speedY * dt * sf.distance / focal, 0)
+            local point = cam.CFrame:VectorToObjectSpace(sf.world)
+            if point.Z >= -1 then
+                sf.world = nil; edge = 0
+            else
+                x, y = vp.X / 2 + point.X / -point.Z * focal, vp.Y / 2 - point.Y / -point.Z * focal
+                perspective = math.clamp(sf.distance / -point.Z, 0.4, 2.5)
+                edge = math.clamp(math.min(x + 12, vp.X + 12 - x, y + 12, vp.Y + 12 - y) / 24, 0, 1)
+                local d = sf.diameter * perspective
+                sf.outer.frame.Size = UDim2.fromOffset(d * 2, d * 2)
+                sf.mid.frame.Size = UDim2.fromOffset(d * 1.4, d * 1.4)
+                sf.core.frame.Size = UDim2.fromOffset(d, d)
+                if x < -16 or x > vp.X + 16 or y < -16 or y > vp.Y + 16 then
+                    sf.baseX, sf.y, sf.world = math.random() * vp.X, math.random() * vp.Y, nil
+                end
+            end
+        end
+        sf.wrap.Position = UDim2.fromOffset(x, y)
+        sf.arrival = math.min(1, sf.arrival + dt / 0.25)
+        local visible = sf.alpha * snowFade * edge * sf.arrival
         sf.outer.frame.BackgroundTransparency = 1 - (visible * sf.outer.alphaMult)
         sf.mid.frame.BackgroundTransparency   = 1 - (visible * sf.mid.alphaMult)
         sf.core.frame.BackgroundTransparency  = 1 - (visible * sf.core.alphaMult)
@@ -2366,6 +2423,9 @@ KoffeeOptions = {
     -- v0.26.0: the three window-open background effects, each independently off-able
     MenuDim = true, MenuSnow = true, MenuBlur = true,
     MenuBlockInput = true,   -- v0.56.0: block clicks off the menu while it is open
+    -- v1.7.0: the AI tab is opt-in. Off means its button is absent from the bar,
+    -- the Glass sidebar, the Rail and the Bento pills, not just greyed out.
+    AI = false,
     -- v0.82.0: every workspace Humanoid model counts as a person (ESP +
     -- combat + player list, through the NPC feed). Off by default.
     IncludeHumanoids = false,
@@ -2386,6 +2446,15 @@ KoffeeOptions = {
     AnimOn = true, AnimSpeed = 1,
     AnimWindow = true, AnimTabs = true, AnimPopups = true,
     AnimPress = true, AnimHover = true, AnimLists = true, AnimToggles = true,
+    -- v1.7.0: the newer motion set. Sliders and window drags follow the cursor on a
+    -- short curve instead of snapping, and the press/hover waves are opt-OUT.
+    SmoothSliders = true, SliderMotionStyle = "Smooth",
+    SmoothWindowDrag = true, WindowMotionStyle = "Smooth",
+    NewAnimations = true,
+    -- v1.7.0: 3D snow is opt-in (right-click the Snow row); popup dropdowns can also
+    -- expand in place. Both read live, so switching them needs no rebuild.
+    MenuSnow3D = false,
+    DropdownStyle = "Popup", DropdownIncludeSelected = true,
     -- v0.11.0 CUSTOM UI COLORS. Seven palette roles the user can repaint. Defaults
     -- are the stock Theme.Palette values, so an untouched config is a no-op.
     UIColors = {
@@ -2402,6 +2471,10 @@ KoffeeOptions = {
     SfxOn = true, SfxVolume = 0.5, SfxPack = "Crisp",
     SfxMenu = true, SfxControls = false, SfxConfigs = true, SfxHotkeys = true,
 }
+-- v1.7.0: helpers defined ABOVE the options table (draggable, the widget builders)
+-- cannot see this local, so publish it. Saves a register, which the main chunk
+-- cannot spare.
+Koffee.options = KoffeeOptions
 -- v0.90.0: UI sound player. Cloned Sound per play (overlaps, cleans itself up),
 -- slight pitch variance so repeats do not sound robotic, rate-limited per name.
 Koffee.Sfx = (function()
@@ -2492,6 +2565,147 @@ function Koffee.Anim.wait(base)
     -- hide/destroy delays that trail a tween must shrink with the tween
     return base / Koffee.Anim.speed()
 end
+-- v1.7.0: the "follow" curve behind smooth sliders and window dragging. Short and
+-- front-loaded so the value still feels attached to the cursor, not lagging behind.
+function Koffee.Anim.follow(style)
+    local easing = Enum.EasingStyle.Quint
+    if style == "Bouncy" then easing = Enum.EasingStyle.Back
+    elseif style == "Linear" then easing = Enum.EasingStyle.Linear end
+    return Koffee.Anim.info(TweenInfo.new(style == "Bouncy" and 0.24 or 0.14,
+        easing, Enum.EasingDirection.Out))
+end
+
+-- v1.7.0: MotionExtras, ported from the UI lib. A ripple that runs out from the
+-- cursor on press, a focus underline for text inputs, and a curtain wipe for
+-- popups. Opt-OUT through Options > New Animations (older looks on request).
+Koffee.MotionExtras = {}
+;(function()
+local extras = Koffee.MotionExtras
+local function on()
+    local o = Koffee.options
+    return Koffee.Anim.enabled() and (not o or o.NewAnimations ~= false)
+end
+-- the visible width of a rounded rect on one scanline, so a wave can follow a
+-- rounded corner instead of spilling past it
+local function roundedSpan(w, h, r, top, bottom)
+    r = math.clamp(r, 0, math.min(w, h) * 0.5)
+    if r == 0 then return 0, w end
+    local function inset(y)
+        local d = 0
+        if y < r then d = r - y
+        elseif y > h - r then d = y - (h - r) end
+        return r - math.sqrt(math.max(0, r * r - d * d))
+    end
+    local edge = math.max(inset(top), inset(bottom))
+    return edge, w - edge
+end
+local function waveFade(progress)
+    return math.min(progress / 0.06, 1) * (1 - math.clamp(progress, 0, 1)) ^ 2
+end
+-- ripple. The target is sliced into 1px scanlines (capped, so a tall frame cannot
+-- spawn hundreds of parts) and each slice shows only the chord the expanding
+-- circle covers, with a soft gradient so the edge reads as light, not a ring.
+function extras.pressWave(button, visual, hover)
+    local function emit()
+        if not on() then return end
+        local target = visual or button
+        if type(target) == "function" then target = target() end
+        if not (target and target.Parent) then return end
+        local scale = target:FindFirstChildOfClass("UIScale")
+        local factor = scale and math.max(scale.Scale, 0.01) or 1
+        local size, position = target.AbsoluteSize / factor, target.AbsolutePosition
+        local mouse = UserInputService:GetMouseLocation()
+        local inset = game:GetService("GuiService"):GetGuiInset()
+        local x, y = (mouse.X - inset.X - position.X) / factor, (mouse.Y - inset.Y - position.Y) / factor
+        if x < 0 or x > size.X or y < 0 or y > size.Y then x, y = size.X / 2, size.Y / 2 end
+        local previous = target:FindFirstChild("PressWash")
+        if previous then previous.Name = "RetiringPressWash"; previous:SetAttribute("Retiring", true) end
+        local host = new("Frame", { Name = "PressWash", BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1), ZIndex = target.ZIndex + 1, Parent = target })
+        local rounding = target:FindFirstChildOfClass("UICorner")
+        local radius = 0
+        if rounding then radius = math.min(size.X, size.Y) * rounding.CornerRadius.Scale + rounding.CornerRadius.Offset end
+        local soft = target.Name == "ToggleTrack" or target.Name == "ToggleBox"
+        local waveColor = soft and Theme.Palette.Snow or Theme.Palette.Accent
+        local step = math.max(1, math.ceil(size.Y / 48))
+        local bands = {}
+        local top = 0
+        while top < math.ceil(size.Y) do
+            local bottom = math.min(top + step, size.Y)
+            local left, right = roundedSpan(size.X, size.Y, radius, top, bottom)
+            local band = new("Frame", { Name = "WaveBand", BackgroundColor3 = waveColor,
+                BackgroundTransparency = 1, Visible = false, ZIndex = host.ZIndex, Parent = host }, {
+                new("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1),
+                    NumberSequenceKeypoint.new(0.18, 0.25), NumberSequenceKeypoint.new(0.5, 0),
+                    NumberSequenceKeypoint.new(0.82, 0.25), NumberSequenceKeypoint.new(1, 1) }) }) })
+            bands[#bands + 1] = { frame = band, y = top, h = bottom - top, left = left, right = right }
+            top = bottom
+        end
+        local lifetime = Koffee.Anim.wait(soft and 0.65 or 0.5)
+        local age, connection, retiringAt = 0, nil, nil
+        local reach = math.sqrt(size.X * size.X + size.Y * size.Y)
+        connection = RunService.RenderStepped:Connect(function(dt)
+            age += dt
+            if not host.Parent or not target.Parent or not on() or age >= lifetime then
+                connection:Disconnect(); host:Destroy(); return
+            end
+            local progress = age / lifetime
+            local waveRadius = reach * (1 - (1 - progress) ^ 3)
+            local opacity = (soft and 0.42 or 0.2) * waveFade(progress)
+            if host:GetAttribute("Retiring") then
+                retiringAt = retiringAt or age
+                local retirement = (age - retiringAt) / Koffee.Anim.wait(0.12)
+                if retirement >= 1 then connection:Disconnect(); host:Destroy(); return end
+                opacity *= 1 - retirement
+            end
+            for _, band in ipairs(bands) do
+                local dy = band.y + band.h * 0.5 - y
+                local span = math.sqrt(math.max(0, waveRadius * waveRadius - dy * dy))
+                local left, right = math.max(band.left, x - span), math.min(band.right, x + span)
+                local visible = math.abs(dy) < waveRadius and right > left
+                band.frame.Visible = visible
+                if visible then
+                    band.frame.Position = UDim2.fromOffset(left, band.y)
+                    band.frame.Size = UDim2.fromOffset(right - left, band.h)
+                    band.frame.BackgroundTransparency = 1 - opacity * math.sqrt(math.max(0, 1 - (dy / waveRadius) ^ 2))
+                end
+            end
+        end)
+    end
+    button.MouseButton1Down:Connect(emit)
+    if hover then button.MouseEnter:Connect(emit) end
+end
+-- focus underline: a 2px accent line that grows in under a text input while it
+-- is being typed into, so focus is obvious without a border flash
+function extras.focus(input)
+    local line = new("Frame", { Name = "FocusLine", AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, 0, 1, -2), Size = UDim2.fromOffset(0, 2),
+        BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.1,
+        ZIndex = input.ZIndex + 1, Parent = input }, { pillCorner() })
+    input.Focused:Connect(function()
+        if on() then tween(line, Theme.Animation.Menu, { Size = UDim2.new(1, -18, 0, 2) }) end
+    end)
+    input.FocusLost:Connect(function()
+        tween(line, Theme.Animation.Normal, { Size = UDim2.fromOffset(0, 2) })
+    end)
+end
+-- reveal curtain: a panel-coloured sheet anchored to the bottom of a popup that
+-- slides away, so the contents read as uncovered rather than faded in
+function extras.reveal(target)
+    if not on() or not (target and target.Parent) then return end
+    local previous = target:FindFirstChild("RevealCurtain")
+    if previous then previous:Destroy() end
+    local z = target.ZIndex
+    for _, child in ipairs(target:GetDescendants()) do if child:IsA("GuiObject") then z = math.max(z, child.ZIndex) end end
+    local mask = new("Frame", { Name = "RevealCurtain", AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Theme.Palette.Panel, ZIndex = z + 1, Parent = target })
+    local rounding = target:FindFirstChildOfClass("UICorner")
+    if rounding then rounding:Clone().Parent = mask end
+    tween(mask, TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Size = UDim2.new(1, 0, 0, 0) })
+    task.delay(Koffee.Anim.wait(0.3), function() if mask.Parent then mask:Destroy() end end)
+end
+end)()
 
 -- v1.1.0: UI modes. Each widget registers a skin fn that restyles it in place, so a
 -- switch is live with no tab rebuild (Extra included). Mode lives in startup.json.
@@ -3155,6 +3369,31 @@ local function selectTab(name)
     end
 end
 
+-- v1.7.0: a tab whose feature is opt-in can leave every navigation surface and
+-- come back on demand. The bar, Glass, Rail and Bento each register their own
+-- button, so one call reaches all four without rebuilding any shell.
+Koffee.UI.heldTabs = {}
+Koffee.UI.tabBtns = {}
+function Koffee.UI.tabHeld(name)
+    return Koffee.UI.heldTabs[name] == true
+end
+function Koffee.UI.holdTabBtn(name, btn)
+    local l = Koffee.UI.tabBtns[name]
+    if not l then l = {}; Koffee.UI.tabBtns[name] = l end
+    l[#l + 1] = btn
+    btn.Visible = not Koffee.UI.tabHeld(name)
+end
+function Koffee.UI.setTabHeld(name, held)
+    held = held == true
+    Koffee.UI.heldTabs[name] = held or nil
+    local entry = tabs[name]
+    if held and activeTab == name then selectTab("Visuals") end
+    if entry and entry.Button then entry.Button.Visible = not held end
+    for _, btn in ipairs(Koffee.UI.tabBtns[name] or {}) do
+        if btn and btn.Parent then btn.Visible = not held end
+    end
+end
+
 -- v0.0.34: forward-declared shared upvalues. Config + team/friend helpers live inside IIFEs so their locals get their OWN register budget (Luau's 200-local ceiling is per-function; main chunk is already close). Only these handles are promoted so ESP / World / Combat can call them. Options flag + Team Check config: MyTeams : Team NAMES the user marked "my team" (allies -> skipped) AdvancedTeam : use automatic isSameTeam heuristic instead of manual list
 local Shared = { IgnoreFriends = false, IgnoreFriendsScope = "Everything", AdvancedTeam = false, MyTeams = {} }
 -- v0.0.97 Target Lock: type a player name, toggle the feature on, hit the keybind to "activate": while active, the named player is the ONLY target for aimbot, silent aim, trigger bot AND the only player ESP renders. Deactivate (hit the keybind again) -> normal multi-target behaviour resumes. The toggle (Enabled) arms the feature; the keybind (Active) engages / disengages the lock at runtime.
@@ -3381,6 +3620,9 @@ local function addTab(name, buildFn)
     -- v0.0.34: stash the build fn so the config system can re-run it against the
     -- same panel (clears children first) to push loaded values into every widget.
     tabs[name] = { Button = button, Panel = panel, Wrap = wrap, Build = buildFn }
+    -- v1.7.0: an opt-in tab is built and kept, it just starts hidden here and in
+    -- every other nav surface, so the shell builds against the real tab list.
+    button.Visible = not Koffee.UI.tabHeld(name)
 end
 
 -- v0.0.34: rebuild the config-driven tabs after a config load so sliders / dropdowns / checkboxes / keybind pills re-read the freshly applied state. moduleCheckbox is the only Watchers subscriber, so clearing Watchers first keeps the subscriber count flat across reloads (they re-subscribe here).
@@ -3535,6 +3777,36 @@ local function panel(parent, title)
     return card
 end
 
+-- v1.7.0: collapse a conditional row in and out instead of leaving a hole, so a
+-- control that only applies to one mode can come and go without a tab rebuild.
+-- Rows sit in AutomaticSize cards, so tweening Size.Y shrinks the card with it;
+-- the contents hold still and clip, which reads as an accordion, not a jump.
+Shared._revealFull = setmetatable({}, { __mode = "k" })
+Shared._revealSeq = setmetatable({}, { __mode = "k" })
+function Shared.revealRow(row, open, h, instant)
+    if not (row and row.Parent) then return end
+    local full = h or Shared._revealFull[row] or row.Size.Y.Offset
+    if full and full > 0 then Shared._revealFull[row] = full end
+    full = full or 0
+    local seq = (Shared._revealSeq[row] or 0) + 1
+    Shared._revealSeq[row] = seq
+    if open then row.Visible = true end
+    row.ClipsDescendants = true
+    local function settle()
+        if Shared._revealSeq[row] ~= seq or not row.Parent then return end
+        row.ClipsDescendants = false
+        if not open then row.Visible = false end
+    end
+    local goal = UDim2.new(1, 0, 0, open and full or 0)
+    if instant or not Koffee.Anim.enabled() then
+        row.Size = goal
+        settle()
+    else
+        tween(row, Theme.Animation.Normal, { Size = goal })
+        task.delay(Koffee.Anim.wait(0.24), settle)
+    end
+end
+
 -- HOVER helper: adds a subtle background overlay that fades in/out
 -- when the target's TextButton child is hovered. Idempotent per row.
 local function attachHover(row, hoverBtn)
@@ -3573,6 +3845,9 @@ end
 function Koffee.attachBtnHover(b, hovered, resting)
     hovered = hovered == nil and 0 or hovered
     resting = resting == nil and 0.2 or resting
+    -- v1.7.0: the press ripple rides along with every button that already asks for
+    -- the hover treatment, so no call site has to know about it.
+    if Koffee.MotionExtras then Koffee.MotionExtras.pressWave(b) end
     b.MouseEnter:Connect(function()
         if Koffee.Anim and Koffee.Anim.spot("AnimHover") then
             tween(b, Theme.Animation.Fast, { BackgroundTransparency = hovered })
@@ -3647,6 +3922,8 @@ local function checkboxVisual(parent, label, initialOn)
     })
     attachHover(row, btn)
     popFx(btn)   -- v0.0.98: checkbox rows squash on press
+    -- v1.7.0: the toggle rows get the press ripple too, washed across the row
+    if Koffee.MotionExtras then Koffee.MotionExtras.pressWave(btn, row) end
     Koffee.UI.items[row] = label
     Koffee.UI.cbOn[row] = function() return state end
 
@@ -4467,10 +4744,23 @@ local function chevron(parent, sizePx)
     return root, img, img
 end
 
-local function dropdown(parent, label, options, initial, onChange)
+-- v1.7.0: dropdown, rebuilt from the UI lib. Two styles: "Popup" hangs a list
+-- under the button, "Expand" grows the button itself into a panel holding the
+-- list. The new value wipes over the old one instead of blinking, and the rows
+-- can leave the current pick out of their own list.
+local function dropdown(parent, label, options, initial, onChange, controlOptions)
     -- v0.10.0: never let a nil/absent option list take the whole tab down with it.
     -- An empty dropdown is a visible, reportable bug; a stack trace is a dead UI.
     options = options or {}
+    controlOptions = controlOptions or {}
+    local includeSelected = controlOptions.IncludeSelected
+    if includeSelected == nil then includeSelected = Koffee.options.DropdownIncludeSelected ~= false end
+    local function styleOf()
+        local s = controlOptions.Style or Koffee.options.DropdownStyle or "Popup"
+        if s ~= "Expand" then s = "Popup" end
+        return s
+    end
+    local selected = initial or options[1] or ""
     local wrap = new("Frame", {
         Size = UDim2.new(1, 0, 0, 48),
         BackgroundTransparency = 1,
@@ -4500,283 +4790,331 @@ local function dropdown(parent, label, options, initial, onChange)
         ZIndex = 35,
         Parent = wrap,
     }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
-    local valueLbl = new("TextLabel", {
-        Text = initial or options[1] or "",
-        FontFace = Theme.Fonts.Medium,
-        TextSize = Theme.Text.Small,
-        TextColor3 = Theme.Palette.Text,
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, 12, 0, 0),
-        Size = UDim2.new(1, -30, 1, 0),
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 36,
-        Parent = btn,
-    })
-    local caretRoot = chevron(btn, 10)
-    -- v1.1.0: glass skin
-    local dCr, dSt = btn:FindFirstChildOfClass("UICorner"), btn:FindFirstChildOfClass("UIStroke")
-    Koffee.UI.items[wrap] = label
-    Koffee.UI.skin(wrap, function(mode)
-        local g = mode ~= "Classic"
-        btn.BackgroundTransparency = g and 0.5 or 0.15
-        if dCr then dCr.CornerRadius = UDim.new(0, g and 9 or 4) end
-        if dSt then dSt.Color = g and Theme.Palette.Snow or Theme.Palette.BorderSubtle; dSt.Transparency = g and 0.88 or 0 end
-    end)
-
-    -- popup lives in the dedicated popup ScreenGui, above everything: ZIndex 260 so it clears the settings popup (210) AND the colour picker (250) when a dropdown is opened from inside one of them. v0.10.1: ScrollingFrame, not Frame. The sound catalog is 43 entries: at 26px a row that is a 1118px list, taller than most screens, and the tail was simply unreachable. Capped at LIST_MAX with the full height as CanvasSize.
-    local LIST_MAX = 260
-    local list = new("ScrollingFrame", {
-        Size = UDim2.new(0, 100, 0, math.min(#options * 26, LIST_MAX)),
-        CanvasSize = UDim2.new(0, 0, 0, #options * 26),
-        ScrollBarThickness = 4,
-        ScrollBarImageColor3 = Theme.Palette.TextFaint,
-        ScrollingDirection = Enum.ScrollingDirection.Y,
-        BackgroundColor3 = Theme.Palette.Panel,
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        Visible = false,
-        ZIndex = 260,
-        Parent = popupScreen,
-    }, {
-        corner(4),
-        stroke(Theme.Palette.Border, 1),
-    })
-
-    local isOpen = false
-    -- v0.93.22: real lock. Active alone does not stop MouseButton1Click on a
-    -- TextButton, so a "locked" dropdown still opened and overwrote its own label.
-    local locked = false
-    -- v0.0.12: RenderStepped lock keeps popup glued below the button even when it shifts
-    -- (scroll, tab-switch, drag): calculate every frame, not once at open.
-    local positionConn = nil
-    -- v0.0.20: rule-based placement: anchor list TOP-LEFT to button bottom-left every
-    -- frame, clamp X to viewport, flip above when no room below. All from live rect.
-    local GAP = 6
-    local function placeBelow()
-        local abs = btn.AbsolutePosition
-        local siz = btn.AbsoluteSize
-        if siz.X <= 0 or siz.Y <= 0 then return end
-        local vp = viewport()
-        -- v0.10.1: the RENDERED height is capped; CanvasSize keeps the rest reachable.
-        local listH = math.min(#options * 26, LIST_MAX)
-        list.AnchorPoint = Vector2.new(0, 0)
-        -- desired TOP-LEFT in the button's screen space.
-        local desX = abs.X
-        local desY = abs.Y + siz.Y + GAP
-        -- flip above only if there is genuinely no room below.
-        if vp.Y > 0 and desY + listH > vp.Y then
-            local aboveY = abs.Y - listH - GAP
-            if aboveY >= 0 then desY = aboveY end
-        end
-        if vp.X > 0 then
-            desX = math.clamp(desX, 0, math.max(0, vp.X - siz.X))
-        end
-        -- convert the screen-space target into this popup's Position offset so it
-        -- actually lands there (see popupOffsetFor: fixes the inset mismatch).
-        local ox, oy = popupOffsetFor(list, desX, desY)
-        list.Size = UDim2.new(0, siz.X, 0, listH)
-        list.Position = UDim2.new(0, ox, 0, oy)
+    -- two stacked labels: the value that is being shown, and the one it replaces.
+    -- each carries a UIGradient whose transparency ramp is the wipe.
+    local function valueLabel(owner, z)
+        local text = new("TextLabel", {
+            Name = "SelectedValue", Text = selected, FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+            BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 0),
+            Size = UDim2.new(1, -34, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = z, Parent = owner,
+        })
+        local gradient = new("UIGradient", { Name = "SelectionReveal", Parent = text })
+        return text, gradient
     end
-
-    local function closeList(instant)
-        if not isOpen then return end
+    local valueLbl, valueGradient = valueLabel(btn, 36)
+    local previousValue, previousGradient = valueLabel(btn, 36)
+    previousValue.Name, previousValue.Visible = "PreviousValue", false
+    local caretRoot = chevron(btn, 10)
+    local dCr, dSt = btn:FindFirstChildOfClass("UICorner"), btn:FindFirstChildOfClass("UIStroke")
+    -- popup lives in the dedicated popup ScreenGui, above everything: ZIndex 260 so
+    -- it clears the settings popup (210) AND the colour picker (250).
+    local list = new("CanvasGroup", {
+        Name = "DropdownPopup", Visible = false, GroupTransparency = 1,
+        Size = UDim2.fromOffset(100, 0), BackgroundColor3 = Theme.Palette.Panel,
+        BackgroundTransparency = 0.05, BorderSizePixel = 0, ZIndex = 260, Parent = popupScreen,
+    }, { corner(6), stroke(Theme.Palette.Border) })
+    local outerCorner = list:FindFirstChildOfClass("UICorner")
+    local outerStroke = list:FindFirstChildOfClass("UIStroke")
+    local header = new("TextButton", {
+        Name = "ExpandedHeader", Text = "", AutoButtonColor = false,
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), ZIndex = 261, Parent = list,
+    })
+    local headerValue, headerGradient = valueLabel(header, 262)
+    local previousHeader, previousHeaderGradient = valueLabel(header, 262)
+    previousHeader.Name, previousHeader.Visible = "PreviousValue", false
+    local headerCaret = chevron(header, 10)
+    headerCaret.ZIndex = 262
+    for _, child in ipairs(headerCaret:GetDescendants()) do
+        if child:IsA("GuiObject") then child.ZIndex = 263 end
+    end
+    local separator = new("Frame", {
+        Name = "SelectionSeparator", AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 33), Size = UDim2.fromOffset(0, 3),
+        BackgroundColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+        BorderSizePixel = 0, ZIndex = 262, Parent = list,
+    }, { pillCorner() })
+    local rows = new("ScrollingFrame", {
+        Name = "DropdownOptions", BackgroundTransparency = 1, BorderSizePixel = 0,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = Theme.Palette.TextFaint,
+        ScrollingDirection = Enum.ScrollingDirection.Y, CanvasSize = UDim2.new(),
+        ZIndex = 261, Parent = list,
+    })
+    -- animation drivers. They are the tweens' targets, so the choreography is one
+    -- property write per frame and nothing has to be re-planned mid-flight.
+    local expansion = new("NumberValue", { Value = 0, Parent = wrap })
+    local reveal = new("NumberValue", { Value = 1, Parent = wrap })
+    local isOpen, locked, generation, destroyed = false, false, 0, false
+    local positionConn, expansionTween, groupTween, revealTween
+    local rowCount = 0
+    local savedBackground, savedStroke
+    local baseHidden, textTransition, textFraction = false, false, 1
+    local function paintSurface()
+        local expanding = styleOf() == "Expand"
+        outerCorner.CornerRadius = expanding and dCr.CornerRadius or UDim.new(0, 6)
+        outerStroke.Color = expanding and dSt.Color or Theme.Palette.Border
+        local opacity = expanding and (savedStroke or dSt.Transparency) or 0
+        if list.Visible then tween(outerStroke, Theme.Animation.Menu, { Transparency = opacity })
+        else outerStroke.Transparency = opacity end
+        list.BackgroundColor3 = expanding and btn.BackgroundColor3 or Theme.Palette.Panel
+        list.BackgroundTransparency = expanding and 0.02 or 0.05
+    end
+    -- in Expand the open panel IS the button, so the button's own face steps aside
+    local function setBaseVisible(show)
+        baseHidden = not show
+        if show then
+            if savedBackground ~= nil then btn.BackgroundTransparency = savedBackground; savedBackground = nil end
+            if savedStroke ~= nil then dSt.Transparency = savedStroke; savedStroke = nil end
+        else
+            if savedBackground == nil then savedBackground = btn.BackgroundTransparency end
+            if savedStroke == nil then savedStroke = dSt.Transparency end
+            btn.BackgroundTransparency, dSt.Transparency = 1, 1
+        end
+        valueLbl.Visible, caretRoot.Visible = show, show
+        previousValue.Visible = show and textTransition and reveal.Value < 0.999
+    end
+    -- the wipe: a soft gradient edge sweeps left to right, uncovering the new text
+    -- and covering the old one at the same rate, so nothing ever blinks
+    local function paintReveal()
+        local progress = reveal.Value
+        local keys, inverse = {}, {}
+        local front = (-0.12 + progress * 1.24) * textFraction
+        for i = 0, 6 do
+            local x = i / 6 * textFraction
+            local transparency = math.clamp((x - front + 0.12 * textFraction) / (0.24 * textFraction), 0, 1)
+            keys[#keys + 1] = NumberSequenceKeypoint.new(x, transparency)
+            inverse[#inverse + 1] = NumberSequenceKeypoint.new(x, 1 - transparency)
+        end
+        if textFraction < 1 then
+            keys[#keys + 1], inverse[#inverse + 1] = NumberSequenceKeypoint.new(1, 1), NumberSequenceKeypoint.new(1, 0)
+        end
+        local alpha = NumberSequence.new(keys)
+        valueGradient.Transparency, headerGradient.Transparency = alpha, alpha
+        local oldAlpha = NumberSequence.new(inverse)
+        previousGradient.Transparency, previousHeaderGradient.Transparency = oldAlpha, oldAlpha
+        previousValue.Visible = textTransition and progress < 0.999 and not baseHidden
+        previousHeader.Visible = textTransition and progress < 0.999
+        local offset = math.floor(4 * (1 - progress) ^ 2 + 0.5)
+        valueLbl.Position, headerValue.Position = UDim2.fromOffset(12 + offset, 0), UDim2.fromOffset(12 + offset, 0)
+    end
+    reveal.Changed:Connect(paintReveal)
+    local function renderValue(text, animate)
+        local oldText = valueLbl.Text
+        textTransition = animate and oldText ~= text
+        previousValue.Text, previousHeader.Text = oldText, oldText
+        valueLbl.Text, headerValue.Text = text, text
+        local width = math.max(valueLbl.TextBounds.X, headerValue.TextBounds.X,
+            previousValue.TextBounds.X, previousHeader.TextBounds.X)
+        textFraction = math.clamp(width / math.max(valueLbl.AbsoluteSize.X, 1), 0.02, 1)
+        if revealTween then revealTween:Cancel() end
+        if animate and Koffee.Anim.spot("AnimTabs") then
+            reveal.Value = 0
+            paintReveal()
+            revealTween = tween(reveal, TweenInfo.new(0.34, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), { Value = 1 })
+        else
+            reveal.Value = 1
+            paintReveal()
+        end
+    end
+    -- rule-based placement, recomputed every frame while open: glued under the
+    -- button, flipped above when there is no room, clamped to the viewport.
+    local function place()
+        if destroyed or not (btn.Parent and list.Parent) then return end
+        local abs, size, vp = btn.AbsolutePosition, btn.AbsoluteSize, viewport()
+        local width = math.max(size.X, 1)
+        local x, y = math.clamp(abs.X, 0, math.max(0, vp.X - width)), abs.Y
+        local optionsHeight = math.min(rowCount * 26, 260)
+        local fullHeight
+        if styleOf() == "Expand" then
+            fullHeight = math.min(26 + 14 + optionsHeight + 6, math.max(26, vp.Y - abs.Y - 8))
+            header.Visible, separator.Visible = true, true
+            rows.Position = UDim2.fromOffset(4, 40)
+            rows.Size = UDim2.fromOffset(math.max(0, width - 8), math.max(0, fullHeight - 46))
+            list.Size = UDim2.fromOffset(width, math.floor(26 + (fullHeight - 26) * expansion.Value + 0.5))
+            local phase = math.clamp((expansion.Value - 0.28) / 0.72, 0, 1)
+            separator.Size = UDim2.fromOffset(math.max(0, math.floor((width - 24) * phase + 0.5)), 3)
+            separator.BackgroundTransparency = 1 - 0.55 * phase
+        else
+            fullHeight = optionsHeight + 8
+            y = abs.Y + size.Y + 6
+            if y + fullHeight > vp.Y and abs.Y - fullHeight - 6 >= 0 then y = abs.Y - fullHeight - 6 end
+            header.Visible, separator.Visible = false, false
+            rows.Position, rows.Size = UDim2.fromOffset(4, 4), UDim2.fromOffset(math.max(0, width - 8), optionsHeight)
+            list.Size = UDim2.fromOffset(width, fullHeight)
+        end
+        local ox, oy = popupOffsetFor(list, x, y)
+        list.Position = UDim2.fromOffset(ox, oy)
+    end
+    expansion.Changed:Connect(place)
+    local buildRows, closeList
+    local function assign(value, animate)
+        selected = value
+        renderValue(value, animate and styleOf() == "Expand")
+    end
+    closeList = function(instant)
+        if not isOpen and not list.Visible then return end
         isOpen = false
+        generation += 1
+        local current = generation
         openDropdowns[list] = nil
         if positionConn then positionConn:Disconnect(); positionConn = nil end
-        -- v0.48.0: dropdowns honour Animations > Popups; off (or forced
-        -- instant, e.g. window close) hides immediately instead of fading.
-        if instant or not Koffee.Anim.spot("AnimPopups") then
-            caretRoot.Rotation = 0
+        if expansionTween then expansionTween:Cancel() end
+        if groupTween then groupTween:Cancel() end
+        local function finish()
+            if current ~= generation or isOpen or destroyed then return end
             list.Visible = false
-        else
-            tween(caretRoot, Theme.Animation.Menu, { Rotation = 0 })
-            tween(list, Theme.Animation.Menu, {
-                BackgroundTransparency = 1,
-            })
-            task.delay(Koffee.Anim.wait(0.22), function()
-                if not isOpen then list.Visible = false end
-            end)
+            setBaseVisible(true)
         end
-        -- v0.0.17: option button bg stays at transparency 1 (hover drives it to 0.7).
-        -- Only the text labels need to fade out.
-        for _, child in ipairs(list:GetChildren()) do
-            if child:IsA("TextButton") then
-                for _, sub in ipairs(child:GetChildren()) do
-                    if sub:IsA("TextLabel") then
-                        if instant or not Koffee.Anim.spot("AnimPopups") then
-                            sub.TextTransparency = 1
-                        else
-                            tween(sub, Theme.Animation.Menu, { TextTransparency = 1 })
-                        end
-                    end
-                end
+        if instant or not Koffee.Anim.spot("AnimPopups") then
+            list.GroupTransparency, expansion.Value = 1, 0
+            caretRoot.Rotation, headerCaret.Rotation = 0, 0
+            outerStroke.Transparency = 1
+            finish()
+            return
+        end
+        tween(caretRoot, Theme.Animation.Menu, { Rotation = 0 })
+        tween(headerCaret, Theme.Animation.Menu, { Rotation = 0 })
+        if styleOf() == "Expand" then
+            tween(list, Theme.Animation.Menu, { BackgroundTransparency = savedBackground or 0.15 })
+            expansionTween = tween(expansion, Theme.Animation.Menu, { Value = 0 })
+            task.delay(Koffee.Anim.wait(0.24), finish)
+        else
+            groupTween = tween(list, Theme.Animation.Menu, { GroupTransparency = 1 })
+            tween(outerStroke, Theme.Animation.Menu, { Transparency = 1 })
+            task.delay(Koffee.Anim.wait(0.24), finish)
+        end
+    end
+    buildRows = function()
+        for _, child in ipairs(rows:GetChildren()) do child:Destroy() end
+        rowCount = 0
+        for _, option in ipairs(options) do
+            if includeSelected or styleOf() ~= "Expand" or option ~= selected then
+                local item = new("TextButton", {
+                    Name = "DropdownOption", Text = "", AutoButtonColor = false,
+                    Position = UDim2.fromOffset(0, rowCount * 26), Size = UDim2.new(1, 0, 0, 26),
+                    BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 1,
+                    BorderSizePixel = 0, ZIndex = 262, Parent = rows,
+                }, { corner(5) })
+                new("TextLabel", {
+                    Name = "OptionText", Text = option, FontFace = Theme.Fonts.Medium,
+                    TextSize = Theme.Text.Small,
+                    TextColor3 = option == selected and Theme.Palette.Accent or Theme.Palette.Text,
+                    BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 0),
+                    Size = UDim2.new(1, -24, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+                    ZIndex = 263, Parent = item,
+                })
+                item.MouseEnter:Connect(function()
+                    tween(item, Theme.Animation.Fast, { BackgroundTransparency = 0.65 })
+                end)
+                item.MouseLeave:Connect(function()
+                    tween(item, Theme.Animation.Fast, { BackgroundTransparency = 1 })
+                end)
+                item.MouseButton1Click:Connect(function()
+                    if locked or not isOpen then return end
+                    assign(option, true)
+                    Koffee.Sfx.play("select")
+                    closeList()
+                    if onChange then onChange(option) end
+                end)
+                rowCount += 1
             end
         end
+        rows.CanvasSize = UDim2.fromOffset(0, rowCount * 26)
     end
     local function openList()
-        if isOpen or locked then return end
-        for _, entry in pairs(openDropdowns) do
-            if entry.close ~= closeList then entry.close(true) end
-        end
+        if isOpen or locked or destroyed then return end
+        for _, entry in pairs(openDropdowns) do entry.close(true) end
+        generation += 1
         isOpen = true
-        openDropdowns[list] = { btn = btn, close = closeList }
-        placeBelow()
+        if groupTween then groupTween:Cancel() end
+        if expansionTween then expansionTween:Cancel() end
+        buildRows()
+        headerValue.Text = valueLbl.Text
+        paintSurface()
+        if not list.Visible then list.GroupTransparency, expansion.Value = 1, 0 end
+        if styleOf() == "Expand" then setBaseVisible(false) end
         list.Visible = true
-        -- lock position while open: RenderStepped keeps `list` glued to btn
+        place()
+        openDropdowns[list] = { btn = btn, close = closeList }
         if positionConn then positionConn:Disconnect() end
         positionConn = RunService.RenderStepped:Connect(function()
-            if not isOpen or not btn.Parent then return end
-            placeBelow()
+            if not btn.Parent then closeList(true); return end
+            place()
         end)
-        -- v0.48.0: options cascade in with a tiny per-row stagger (capped, so a
-        -- 40-option list doesn't take all day). Off means everything just shows.
-        local popAnim = Koffee.Anim.spot("AnimPopups")
-        if popAnim then
-            list.BackgroundTransparency = 1
-            tween(list, Theme.Animation.Menu, {
-                BackgroundTransparency = 0.05,
-            })
-            -- v0.0.98: popup drops open with a quick grow (scale from 0.92) instead
-            -- of materialising: same Menu timing as the fade so they land together.
-            local usc = uScaleOf(list)
-            usc.Scale = 0.92
-            tween(usc, Theme.Animation.Menu, { Scale = 1 })
-            tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
-        else
-            list.BackgroundTransparency = 0.05
-            caretRoot.Rotation = 180
-        end
-        -- v0.0.17: only text labels fade in. Option button bg is always 1
-        -- (invisible): hover drives it to 0.7.
-        local stagger = 0
-        for _, child in ipairs(list:GetChildren()) do
-            if child:IsA("TextButton") then
-                for _, sub in ipairs(child:GetChildren()) do
-                    if sub:IsA("TextLabel") then
-                        if popAnim then
-                            sub.TextTransparency = 1
-                            local d, target = math.min(stagger * 0.02, 0.3), sub
-                            stagger = stagger + 1
-                            task.delay(d, function()
-                                if isOpen and target.Parent then
-                                    tween(target, Theme.Animation.Menu, { TextTransparency = 0 })
-                                end
-                            end)
-                        else
-                            sub.TextTransparency = 0
-                        end
-                    end
-                end
-            end
-        end
+        groupTween = tween(list, Theme.Animation.Menu, { GroupTransparency = 0 })
+        expansionTween = tween(expansion, TweenInfo.new(0.32, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Value = 1 })
+        tween(caretRoot, Theme.Animation.Menu, { Rotation = 180 })
+        tween(headerCaret, Theme.Animation.Menu, { Rotation = 180 })
     end
-
-    -- v1.5.1: rows are built through a function so an option list can change while
-    -- the UI is live (the silent Method list hides External until it answers). The
-    -- popup keeps its own corner/stroke children, so only the rows are cleared.
-    local function buildRows()
-        for _, child in ipairs(list:GetChildren()) do
-            if child:IsA("TextButton") then child:Destroy() end
-        end
-        for i, opt in ipairs(options) do
-            local optBtn = new("TextButton", {
-                Text = "",
-                AutoButtonColor = false,
-                Size = UDim2.new(1, 0, 0, 26),
-                Position = UDim2.new(0, 0, 0, (i - 1) * 26),
-                BackgroundColor3 = Theme.Palette.PanelElevated,
-                BackgroundTransparency = 1,
-                BorderSizePixel = 0,
-                ZIndex = 261,
-                Parent = list,
-            })
-            new("TextLabel", {
-                Text = opt,
-                FontFace = Theme.Fonts.Medium,
-                TextSize = Theme.Text.Small,
-                TextColor3 = Theme.Palette.Text,
-                BackgroundTransparency = 1,
-                TextTransparency = 1,
-                Position = UDim2.new(0, 12, 0, 0),
-                Size = UDim2.new(1, -20, 1, 0),
-                TextXAlignment = Enum.TextXAlignment.Left,
-                ZIndex = 262,
-                Parent = optBtn,
-            })
-            optBtn.MouseEnter:Connect(function()
-                tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 0.7 })
-            end)
-            optBtn.MouseLeave:Connect(function()
-                tween(optBtn, Theme.Animation.Fast, { BackgroundTransparency = 1 })
-            end)
-            optBtn.MouseButton1Click:Connect(function()
-                if locked then return end
-                valueLbl.Text = opt
-                pulse(valueLbl, 1.08)   -- v0.0.98: value ticks on pick
-                Koffee.Sfx.play("select")
-                closeList()
-                if onChange then onChange(opt) end
-            end)
-        end
-        list.CanvasSize = UDim2.new(0, 0, 0, #options * 26)
-        -- rows are born hidden (the popup is normally closed). A swap made while the
-        -- popup is open has to show them itself, or the new list reads as empty.
-        if isOpen then
-            for _, child in ipairs(list:GetChildren()) do
-                local lbl = child:FindFirstChildOfClass("TextLabel")
-                if lbl then lbl.TextTransparency = 0 end
-            end
-        end
-    end
-    buildRows()
-
     btn.MouseButton1Click:Connect(function()
         if locked then return end
         if isOpen then closeList() else openList() end
     end)
+    header.MouseButton1Click:Connect(function()
+        if locked then return end
+        if isOpen then closeList() else openList() end
+    end)
     popFx(btn)   -- v0.0.98: dropdowns squash on press
+    -- v1.1.0: glass skin
+    Koffee.UI.items[wrap] = label
+    Koffee.UI.skin(wrap, function(mode)
+        local g = mode ~= "Classic"
+        btn.BackgroundTransparency = g and 0.5 or 0.15
+        dCr.CornerRadius = UDim.new(0, g and 9 or 4)
+        dSt.Color, dSt.Transparency = g and Theme.Palette.Snow or Theme.Palette.BorderSubtle, g and 0.88 or 0
+        paintSurface()
+    end)
     -- v1.6.0: options are read live, so a list that changes (silent Method) stays true.
     Koffee.UI.declare("enum", parent, label, {
         options = function() return options end,
-        get = function() return valueLbl.Text end,
+        get = function() return selected end,
         set = function(v)
-            for _, o in ipairs(options) do
-                if o == v then
-                    valueLbl.Text = v
+            for _, opt in ipairs(options) do
+                if opt == v then
+                    assign(v, true)
                     if onChange then onChange(v) end
                     return
                 end
             end
         end,
     })
+    buildRows()
     return {
         frame = wrap,
         button = btn,
-        setValue = function(v) valueLbl.Text = v end,
+        popup = list,
+        optionList = rows,
+        valueLabel = valueLbl,
+        setValue = function(v) assign(v, true) end,
+        getValue = function() return selected end,
         close = function() closeList(true) end,
-        -- v1.5.1: swap the option list live. placeBelow reads #options every frame,
-        -- so an open popup resizes itself on the next tick without reopening.
+        -- v1.5.1: swap the option list live. place reads rowCount every frame, so an
+        -- open popup resizes itself on the next tick without reopening.
         setOptions = function(newOpts, newValue)
             options = newOpts or {}
+            if newValue ~= nil then assign(newValue, true) end
             buildRows()
-            if newValue then valueLbl.Text = newValue end
-            if isOpen then placeBelow() end
+            if isOpen then place() end
         end,
         -- v0.93.22: locks the control out of input entirely and optionally shows an
-        -- override label. Interactable also kills hover and the press squash; the
-        -- Lua guards stay as the hard stop in case it is missing on a client.
+        -- override label. Interactable also kills hover and the press squash.
         setLocked = function(v, text)
             locked = v and true or false
             if locked then closeList(true) end
             btn.Active = not locked
             pcall(function() btn.Interactable = not locked end)
             valueLbl.TextColor3 = locked and Theme.Palette.TextMuted or Theme.Palette.Text
-            if text then valueLbl.Text = text end
+            renderValue(text or selected, false)
         end,
         -- v0.0.47: full teardown: the popup `list` lives on popupScreen (not a
-        -- child of wrap), so destroying the wrap alone leaks it. Callers that
-        -- rebuild a dropdown (e.g. the config manager's live selector) use this.
-        destroy = function() closeList(true); list:Destroy(); wrap:Destroy() end,
+        -- child of wrap), so destroying the wrap alone leaks it.
+        destroy = function()
+            closeList(true)
+            destroyed = true
+            list:Destroy()
+            wrap:Destroy()
+        end,
     }
 end
 
@@ -4876,6 +5214,8 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     })
     local valueStroke = valueBox:FindFirstChildOfClass("UIStroke")
     if valueStroke then valueStroke.Transparency = 1 end   -- hide stroke by default too
+    -- v1.7.0: typing into a value box now shows a focus underline
+    if Koffee.MotionExtras then Koffee.MotionExtras.focus(valueBox) end
     local track = new("Frame", {
         Position = UDim2.new(0, 0, 0, 30),
         Size = UDim2.new(1, 0, 0, 6),                     -- v0.0.32: thicker track
@@ -4932,18 +5272,29 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         end
     end)
 
+    local fillMotion, knobMotion
     local function applyValue(animate)
         local pct = (current - min) / (max - min)
-        -- v0.48.0: Toggles off snaps the fill + knob (drag already passes
-        -- false; this covers typed values settling in).
-        if animate and Koffee.Anim.spot("AnimToggles") then
-            tween(fill, Theme.Animation.Fast, { Size = UDim2.new(pct, 0, 1, 0) })
-            tween(knob, Theme.Animation.Fast, { Position = UDim2.new(pct, 0, 0.5, 0) })
+        -- v0.48.0: Toggles off snaps the fill + knob.
+        -- v1.7.0: drag is smooth now. The handle chases the cursor on a short
+        -- curve instead of snapping per pixel of mouse travel.
+        local smooth = animate and Koffee.Anim.spot("AnimToggles")
+            and (opts.Smooth == true or (opts.Smooth ~= false
+                and Koffee.options.SmoothSliders ~= false))
+        if smooth then
+            if fillMotion then fillMotion:Cancel() end
+            if knobMotion then knobMotion:Cancel() end
+            local info = Koffee.Anim.follow(opts.MotionStyle or Koffee.options.SliderMotionStyle)
+            fillMotion = tween(fill, info, { Size = UDim2.new(pct, 0, 1, 0) })
+            knobMotion = tween(knob, info, { Position = UDim2.new(pct, 0, 0.5, 0) })
         else
+            if fillMotion then fillMotion:Cancel(); fillMotion = nil end
+            if knobMotion then knobMotion:Cancel(); knobMotion = nil end
             fill.Size = UDim2.new(pct, 0, 1, 0)
             knob.Position = UDim2.new(pct, 0, 0.5, 0)
         end
-        if animate then pulse(track, 1.02) end   -- v0.0.98: track ticks on settle
+        -- the pulse is a settle tick, so it must not fire on every drag frame
+        if animate and not dragging then pulse(track, 1.02) end
         local atMax = opts.infinite and current >= max
         if sfxState.last ~= nil and sfxState.last ~= current then Koffee.Sfx.play("slider") end
         sfxState.last = current
@@ -4956,7 +5307,7 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         if trackW <= 0 then return end
         local pct = math.clamp((inputX - trackAbs) / trackW, 0, 1)
         current = round(min + (max - min) * pct)
-        applyValue(false)
+        applyValue(true)
     end
     UserInputService.InputChanged:Connect(function(input)
         if dragging
@@ -5276,6 +5627,9 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         local ox, oy = popupOffsetFor(popupFrame, cx, cy)
         popupFrame.Position = UDim2.new(0, ox, 0, oy)
         popupFrame.Visible = true
+        -- v1.7.0: the settings body is uncovered by a curtain wipe rather than
+        -- simply switching on, matching the popups in the UI lib.
+        if Koffee.MotionExtras then pcall(Koffee.MotionExtras.reveal, popupFrame) end
         task.defer(function()
             if not isOpen or not popupFrame.Parent then return end
             local w, h = popupFrame.AbsoluteSize.X, popupFrame.AbsoluteSize.Y
@@ -6224,6 +6578,11 @@ local ESP = {
         GradTop  = Color3.fromRGB(0, 255, 0),
         GradMid  = Color3.fromRGB(255, 255, 0),
         GradBot  = Color3.fromRGB(255, 0, 0),
+        -- v1.7.0: Rainbow replaces the three stops with a hue ramp that scrolls
+        -- up or down the bar. Direction picks which way the bands travel.
+        Rainbow = false,
+        RainbowDir = "Up",
+        RainbowSpeed = 0.4,
         Lerp     = false,   -- v0.99.1: bar eases toward the new value instead of snapping
         Text    = false,            -- show the health number
         TextPos = "Above Name",     -- "Above Name" ([hp] Name) | "On Health Bar"
@@ -7535,12 +7894,25 @@ function ESP._set(o, k, v)
     if c[k] ~= v then o[k] = v; c[k] = v end
 end
 
+-- v1.7.0: hue ramp for Health Rainbow. Ends match (both red) so the scroll wraps
+-- with no snap, same trick the ESP line gradient uses.
+function ESP._rainbowSeq()
+    if ESP._rbSeq then return ESP._rbSeq end
+    local kp = {}
+    for i = 0, 6 do
+        local h = i / 6
+        kp[#kp + 1] = ColorSequenceKeypoint.new(h, Color3.fromHSV(h, 1, 1))
+    end
+    ESP._rbSeq = ColorSequence.new(kp)
+    return ESP._rbSeq
+end
+
 -- v0.98.0: health gradient sampled across the WHOLE bar, then clipped to the
 -- part the fill covers, so low health shows the bottom colour rather than all
 -- three squeezed in. Rebuilt only when the fill moves. Returns the top colour.
 function ESP._hpGrad(rig, frac, H)
     local g = rig.healthGrad
-    if not H.Gradient then
+    if not (H.Gradient or H.Rainbow) then
         if g then g.Enabled = false end
         return nil
     end
@@ -7552,6 +7924,19 @@ function ESP._hpGrad(rig, frac, H)
         rig._gradKey = nil
     end
     g.Enabled = true
+    -- v1.7.0: rainbow ignores the three stops entirely and sweeps the whole hue
+    -- wheel vertically. Offset stays inside -1..1 because the sequence is
+    -- periodic, so both ends of the sweep are the same colour.
+    if H.Rainbow then
+        ESP._set(g, "Color", ESP._rainbowSeq())
+        local sp = math.clamp(tonumber(H.RainbowSpeed) or 0.4, 0.02, 4)
+        local t = ((os.clock() * sp) % 2) - 1
+        if H.RainbowDir == "Down" then t = -t end
+        ESP._set(g, "Offset", Vector2.new(0, t))
+        rig._gradKey = nil
+        return Color3.fromHSV((1 - math.max(frac, 0.001)) % 1, 1, 1)
+    end
+    ESP._set(g, "Offset", Vector2.zero)
     local function at(y)
         if y <= 0.5 then return H.GradTop:Lerp(H.GradMid, y / 0.5) end
         return H.GradMid:Lerp(H.GradBot, (y - 0.5) / 0.5)
@@ -8736,34 +9121,56 @@ end)
 -- v0.90.0 OFF-SCREEN ARROWS: an arrow on a ring around the screen centre for every
 -- ESP target that is off screen (or behind you), pointing the way to them. Same
 -- gates as the ESP boxes; colour from the ESP colour engine unless turned off.
+-- v1.7.0: rewritten. The art was fetched once at pool creation, which can happen
+-- before the fx assets finish writing, and the empty result stuck for the session,
+-- so the arrows were invisible. The pool now also prunes players who leave.
 ;(function()
     local pool = {}
+    local texId, texAt = nil, 0
+    -- resolve the arrow art lazily, retried at most once a second until it loads
+    local function arrowTex()
+        if texId and texId ~= "" then return texId end
+        local now = os.clock()
+        if now - texAt < 1 then return texId end
+        texAt = now
+        local ok, id = pcall(function() return Shared._hfx and Shared._hfx.tex("fx_arrow") end)
+        texId = (ok and type(id) == "string" and id ~= "") and id or ""
+        return texId
+    end
     local function arrowFor(key)
         local a = pool[key]
         if a and a.img.Parent then return a end
-        local img = new("ImageLabel", { Name = KID.name("oa"), BackgroundTransparency = 1, Image = "",
-            AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(18, 18), ZIndex = 14, Parent = ensureBoxLayer() })
-        local ok, id = pcall(function() return Shared._hfx and Shared._hfx.tex("fx_arrow") end)
-        img.Image = (ok and id) or ""
+        local layer = ensureBoxLayer()
+        local img = new("ImageLabel", { Name = KID.name("oa"), BackgroundTransparency = 1,
+            Image = arrowTex(), AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(18, 18),
+            ZIndex = 14, Parent = layer })
         -- a soft dark copy underneath (a sibling: children always draw over parents)
-        local sh = new("ImageLabel", { Name = KID.name("oas"), BackgroundTransparency = 1, Image = img.Image,
-            ImageColor3 = Color3.new(0, 0, 0), ImageTransparency = 0.55, AnchorPoint = Vector2.new(0.5, 0.5),
-            ZIndex = 13, Parent = ensureBoxLayer() })
-        local lbl = new("TextLabel", { BackgroundTransparency = 1, Text = "", FontFace = Theme.Fonts.Bold, TextSize = 11,
-            TextColor3 = Color3.new(1, 1, 1), AnchorPoint = Vector2.new(0.5, 0), Size = UDim2.fromOffset(60, 12),
-            ZIndex = 14, Parent = ensureBoxLayer() }, { new("UIStroke", { Thickness = 1, Transparency = 0.3 }) })
+        local sh = new("ImageLabel", { Name = KID.name("oas"), BackgroundTransparency = 1,
+            Image = img.Image, ImageColor3 = Color3.new(0, 0, 0), ImageTransparency = 0.55,
+            AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(18, 18), ZIndex = 13, Parent = layer })
+        local lbl = new("TextLabel", { Name = KID.name("oal"), BackgroundTransparency = 1, Text = "",
+            FontFace = Theme.Fonts.Bold, TextSize = 11, TextColor3 = Color3.new(1, 1, 1),
+            AnchorPoint = Vector2.new(0.5, 0), Size = UDim2.fromOffset(60, 12), ZIndex = 14, Parent = layer },
+            { new("UIStroke", { Thickness = 1, Transparency = 0.3 }) })
         a = { img = img, lbl = lbl, sh = sh }
         pool[key] = a
         return a
     end
+    local function dropArrow(a)
+        pcall(function() a.img:Destroy() end)
+        pcall(function() a.lbl:Destroy() end)
+        pcall(function() a.sh:Destroy() end)
+    end
     local function hideAll(except)
         for k, a in pairs(pool) do
-            if not (except and except[k]) then a.img.Visible = false; a.lbl.Visible = false; a.sh.Visible = false end
+            if not (except and except[k]) then
+                a.img.Visible, a.lbl.Visible, a.sh.Visible = false, false, false
+            end
         end
     end
     RunService.RenderStepped:Connect(function()
         if Koffee.dead() then
-            for _, a in pairs(pool) do pcall(function() a.img:Destroy(); a.lbl:Destroy(); a.sh:Destroy() end) end
+            for _, a in pairs(pool) do dropArrow(a) end
             pool = {}
             return
         end
@@ -8771,32 +9178,37 @@ end)
         local cam = Workspace.CurrentCamera
         if not (cfg and cfg.Enabled and Modules.esp and Modules.esp.Enabled and cam) then hideAll(); return end
         local vp = cam.ViewportSize
+        if vp.X <= 0 or vp.Y <= 0 then hideAll(); return end
+        local id = arrowTex()
         local cx, cy = vp.X * 0.5, vp.Y * 0.5
         local camPos = cam.CFrame.Position
         local shown = {}
         local now = os.clock()
+        local R = math.max(cfg.Radius or 150, 20)
+        local baseSize = math.max(cfg.Size or 22, 4)
         local function place(key, pos, hum, phase)
             local sp = cam:WorldToViewportPoint(pos)
             local onScreen = sp.Z > 0 and sp.X >= 0 and sp.X <= vp.X and sp.Y >= 0 and sp.Y <= vp.Y
             if onScreen then return end
             local d = Vector2.new(sp.X - cx, sp.Y - cy)
-            if sp.Z < 0 then d = -d end   -- behind you: the projection mirrors, flip it back
+            if sp.Z <= 0 then d = -d end   -- behind you: the projection mirrors, flip it back
             if d.Magnitude < 1 then d = Vector2.new(0, 1) end
             local u = d.Unit
-            local R = math.max(cfg.Radius or 150, 20)
             local dist = (pos - camPos).Magnitude
             local a = arrowFor(key)
             shown[key] = true
-            local sz = math.max(cfg.Size or 22, 4)
+            if id and id ~= "" and a.img.Image ~= id then a.img.Image, a.sh.Image = id, id end
+            local sz = baseSize
             if cfg.Pulse ~= false then sz = sz * (1 + math.sin(now * 5 + phase * 6) * 0.08) end
+            local ax, ay = cx + u.X * R, cy + u.Y * R
             a.img.Size = UDim2.fromOffset(sz, sz)
-            a.img.Position = UDim2.fromOffset(cx + u.X * R, cy + u.Y * R)
+            a.img.Position = UDim2.fromOffset(ax, ay)
             a.img.Rotation = math.deg(math.atan2(u.Y, u.X)) + 90
             local col = cfg.Color
             if cfg.UseEspColor ~= false and Shared.dyeColor then
                 local maxHp = (hum and hum.MaxHealth > 0) and hum.MaxHealth or 100
-                local c = Shared.dyeColor({ hidden = false, same = false, health = hum and hum.Health / maxHp or 1,
-                    dist = dist, phase = phase })
+                local c = Shared.dyeColor({ hidden = false, same = false,
+                    health = hum and hum.Health / maxHp or 1, dist = dist, phase = phase })
                 if c then col = c end
             end
             a.img.ImageColor3 = col
@@ -8804,12 +9216,12 @@ end)
             a.img.ImageTransparency = math.clamp((dist - 60) / 900, 0, 0.55)
             a.img.Visible = true
             a.sh.Size = UDim2.fromOffset(sz * 1.25, sz * 1.25)
-            a.sh.Position = UDim2.fromOffset(cx + u.X * R + 1, cy + u.Y * R + 2)
+            a.sh.Position = UDim2.fromOffset(ax + 1, ay + 2)
             a.sh.Rotation = a.img.Rotation
             a.sh.Visible = true
             if cfg.Distance then
                 a.lbl.Text = math.floor(dist + 0.5) .. "m"
-                a.lbl.Position = UDim2.fromOffset(cx + u.X * (R + sz), cy + u.Y * (R + sz))
+                a.lbl.Position = UDim2.fromOffset(ax + u.X * sz, ay + u.Y * sz)
                 a.lbl.Visible = true
             else
                 a.lbl.Visible = false
@@ -8820,13 +9232,13 @@ end)
             local ch = rig and rig.character
             local root = rig and rig.torso
             local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-            if root and root.Parent and ch:IsDescendantOf(Workspace) and (not hum or hum.Health > 0)
-                and (plr ~= LocalPlayer or ESP.Config.SelfESP) then
+            if root and root.Parent and ch and ch:IsDescendantOf(Workspace) and (not hum or hum.Health > 0)
+                and plr ~= LocalPlayer then
                 local same = isTeammate(plr)
                 local skip = (same and ESP.Config.TeamCheck) or Shared.friendIgnored(plr, "Visuals")
                     or (Shared.targetMark and Shared.targetMark(plr) == "exclude")
                     or (root.Position - camPos).Magnitude > ESP.Config.RenderDistance
-                if not skip and plr ~= LocalPlayer then
+                if not skip then
                     place(plr, root.Position, hum, Shared.dyePhase and Shared.dyePhase(plr) or 0)
                 end
             end
@@ -8836,16 +9248,18 @@ end)
         if Shared.NPCESP and Shared.NPCESP.Config.MasterOn and NPC and NPC.entities then
             for _, e in ipairs(NPC.entities()) do
                 local ch = e.char
-                local root = ch and (ch:IsA("BasePart") and ch or ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChildWhichIsA("BasePart"))
+                local root = ch and (ch:IsA("BasePart") and ch or ch:FindFirstChild("HumanoidRootPart")
+                    or ch:FindFirstChildWhichIsA("BasePart"))
                 if root and not (e.exclude and e.exclude.ESP) and (not e.hum or e.hum.Health > 0) then
                     place(ch, root.Position, e.hum, 0.5)
                 end
             end
         end
         hideAll(shown)
+        -- v1.7.0: drop the entries for anyone who left, or the pool grows forever
         for k, a in pairs(pool) do
-            if not shown[k] and typeof(k) == "Instance" and not k.Parent then
-                pcall(function() a.img:Destroy(); a.lbl:Destroy(); a.sh:Destroy() end)
+            if not shown[k] and not (typeof(k) == "Instance" and k.Parent) then
+                dropArrow(a)
                 pool[k] = nil
             end
         end
@@ -18112,14 +18526,22 @@ end)()
 
     -- v0.10.0: particle art shipped by the loader (Koffee/fx/*.png). Untextured emitters draw hard white squares, which is most of why v0.9's effects read as cheap. getcustomasset hands out per-session ids, so resolve once and cache; "" falls back to the engine default on executors with no file API.
     local texCache = {}
+    local texMiss = {}
     local function tex(name)
-        if texCache[name] ~= nil then return texCache[name] end
+        local cached = texCache[name]
+        if cached and cached ~= "" then return cached end
+        -- v1.7.0: a miss is not an answer. The fx assets are written after the
+        -- script starts, so caching "" pinned every untextured effect for the whole
+        -- session (off-screen arrows included). Retry, throttled so a missing file
+        -- costs one isfile every couple of seconds instead of one per frame.
+        local now = os.clock()
+        if texMiss[name] and now - texMiss[name] < 2 then return "" end
         local id, path = "", "Koffee/fx/" .. name .. ".png"
         if getcustomasset and ((not isfile) or isfile(path)) then
             local ok, r = pcall(getcustomasset, path)
             if ok and type(r) == "string" then id = r end
         end
-        texCache[name] = id
+        if id ~= "" then texCache[name] = id; texMiss[name] = nil else texMiss[name] = now end
         return id
     end
 
@@ -18798,14 +19220,22 @@ end)()
     local MAX_ANIMS = 64
 
     local texCache = {}
+    local texMiss = {}
     local function tex(name)
-        if texCache[name] ~= nil then return texCache[name] end
+        local cached = texCache[name]
+        if cached and cached ~= "" then return cached end
+        -- v1.7.0: a miss is not an answer. The fx assets are written after the
+        -- script starts, so caching "" pinned every untextured effect for the whole
+        -- session (off-screen arrows included). Retry, throttled so a missing file
+        -- costs one isfile every couple of seconds instead of one per frame.
+        local now = os.clock()
+        if texMiss[name] and now - texMiss[name] < 2 then return "" end
         local id, path = "", "Koffee/fx/" .. name .. ".png"
         if getcustomasset and ((not isfile) or isfile(path)) then
             local ok, r = pcall(getcustomasset, path)
             if ok and type(r) == "string" then id = r end
         end
-        texCache[name] = id
+        if id ~= "" then texCache[name] = id; texMiss[name] = nil else texMiss[name] = now end
         return id
     end
 
@@ -22770,7 +23200,9 @@ addTab("Visuals", function(root)
     configCheckbox(espPanel, "Character Only", ESP.Config.CharacterOnly, function(v) ESP.Config.CharacterOnly = v end)
     -- v0.0.28: Follow Direction is Cube-only. It refuses to arm unless Box Type is
     -- Cube, and the Box Type dropdown forces it off on every switch (below).
-    local followDirCtrl
+    -- v1.7.0: it is also invisible unless Cube is the selected box, folded out of
+    -- the card rather than deleted, so it comes back without a tab rebuild.
+    local followDirCtrl, followDirRow
     followDirCtrl = configCheckbox(espPanel, "Follow Direction", ESP.Config.FollowDirection, function(v)
         if v and ESP.Boxes.BoxType ~= "Cube" then
             followDirCtrl.setState(false)   -- 2D box -> not allowed, snap back off
@@ -22778,6 +23210,12 @@ addTab("Visuals", function(root)
         end
         ESP.Config.FollowDirection = v
     end)
+    followDirRow = followDirCtrl.row
+    Shared.revealRow(followDirRow, ESP.Boxes.BoxType == "Cube", nil, true)
+    -- the Box Type dropdown lives in the next card, so it calls back through this
+    Shared._followDirSync = function(boxType)
+        Shared.revealRow(followDirRow, boxType == "Cube")
+    end
     configCheckbox(espPanel, "Immediate Mode", ESP.Config.ImmediateMode, function(v) ESP.Config.ImmediateMode = v end)
     dropdown(espPanel, "Sizing Type", { "Static", "Bounding", "Prediction", "Algorithm" }, ESP.Config.SizingType,
         function(v) ESP.Config.SizingType = v end)
@@ -22824,6 +23262,7 @@ addTab("Visuals", function(root)
         -- reset Follow Direction on any switch (per he) so it never lingers wrong
         ESP.Config.FollowDirection = false
         if followDirCtrl then followDirCtrl.setState(false) end
+        if Shared._followDirSync then pcall(Shared._followDirSync, v) end
     end)
     cornersCtrl = configCheckbox(boxesPanel, "Corners", ESP.Boxes.Corners, function(v)
         if v and ESP.Boxes.BoxType == "Cube" then
@@ -22992,6 +23431,16 @@ addTab("Visuals", function(root)
         popup:swatch("Top", ESP.Health.GradTop, function(c) ESP.Health.GradTop = c end)
         popup:swatch("Middle", ESP.Health.GradMid, function(c) ESP.Health.GradMid = c end)
         popup:swatch("Bottom", ESP.Health.GradBot, function(c) ESP.Health.GradBot = c end)
+        -- v1.7.0: Rainbow takes over the bar; Direction only exists while it does,
+        -- and folds out of the popup instead of popping in.
+        local dirDd
+        popup:toggle("Rainbow", ESP.Health.Rainbow, function(v)
+            ESP.Health.Rainbow = v
+            if dirDd then Shared.revealRow(dirDd.frame, v, 48) end
+        end)
+        dirDd = popup:dropdown("Direction", { "Up", "Down" }, ESP.Health.RainbowDir,
+            function(v) ESP.Health.RainbowDir = v end)
+        if dirDd then Shared.revealRow(dirDd.frame, ESP.Health.Rainbow == true, 48, true) end
     end)
     configCheckbox(healthPanel, "Health Text", ESP.Health.Text, function(v) ESP.Health.Text = v end)
     dropdown(healthPanel, "Text Pos", { "Above Name", "On Health Bar" }, ESP.Health.TextPos, function(v) ESP.Health.TextPos = v end)
@@ -29250,6 +29699,11 @@ addTab("Options", function(root)
     local uiPanel = panel(root, "Interface")
     -- v1.1.0: live UI mode switch (saved in startup.json, never a config)
     dropdown(uiPanel, "UI Mode", Koffee.UI.modes, Koffee.UI.mode, function(v) Koffee.UI.setMode(v) end)
+    -- v1.7.0: how a selector opens. Popup hangs the list under the button, Expand
+    -- grows the button into a panel. Read live at open, so no rebuild is needed.
+    dropdown(uiPanel, "Dropdown Style", { "Popup", "Expand" },
+        KoffeeOptions.DropdownStyle or "Popup",
+        function(v) KoffeeOptions.DropdownStyle = v end)
     local arrRow = configCheckbox(uiPanel, "Arraylist", KoffeeOptions.Arraylist, function(v)
         KoffeeOptions.Arraylist = v
         activeArray.Visible = v
@@ -29265,6 +29719,33 @@ addTab("Options", function(root)
         if Shared._playerListRefresh then pcall(Shared._playerListRefresh) end
     end)
 
+    -- v1.7.0: Koffee AI is opt-in. The toggle is the only thing that puts the tab
+    -- back on every nav surface; off pulls it from the bar, sidebar, rail and pills.
+    local aiPanel = panel(root, "Assistant")
+    configCheckbox(aiPanel, "Koffee AI", KoffeeOptions.AI == true, function(v)
+        KoffeeOptions.AI = v
+        Koffee.UI.setTabHeld("AI", not v)
+    end)
+    -- seeded here because the Options tab is built far above the AI tab: the hold
+    -- lands first, so the AI button is created already hidden instead of flashing.
+    Koffee.UI.setTabHeld("AI", KoffeeOptions.AI ~= true)
+
+    -- v1.7.0: the newer motion set, each switchable on its own. Opt-out, not
+    -- opt-in: the defaults are the intended look, these are the escape hatches.
+    local motionPanel = panel(root, "Motion")
+    configCheckbox(motionPanel, "Smooth Sliders", KoffeeOptions.SmoothSliders ~= false,
+        function(v) KoffeeOptions.SmoothSliders = v end)
+    configCheckbox(motionPanel, "Smooth Window Drag", KoffeeOptions.SmoothWindowDrag ~= false,
+        function(v) KoffeeOptions.SmoothWindowDrag = v end)
+    configCheckbox(motionPanel, "Press + Hover Waves", KoffeeOptions.NewAnimations ~= false,
+        function(v) KoffeeOptions.NewAnimations = v end)
+    dropdown(motionPanel, "Slider Motion", { "Smooth", "Bouncy", "Linear" },
+        KoffeeOptions.SliderMotionStyle or "Smooth",
+        function(v) KoffeeOptions.SliderMotionStyle = v end)
+    dropdown(motionPanel, "Window Motion", { "Smooth", "Bouncy", "Linear" },
+        KoffeeOptions.WindowMotionStyle or "Smooth",
+        function(v) KoffeeOptions.WindowMotionStyle = v end)
+
     -- v0.26.0: the three background effects that play while the window is open.
     -- Re-applying with the live bg state makes each toggle take effect instantly.
     local bgPanel = panel(root, "Menu Background")
@@ -29276,9 +29757,17 @@ addTab("Options", function(root)
         KoffeeOptions.MenuBlur = v
         setBackgroundActive(bgActive)
     end)
-    configCheckbox(bgPanel, "Snow", KoffeeOptions.MenuSnow, function(v)
+    local snowRow = configCheckbox(bgPanel, "Snow", KoffeeOptions.MenuSnow, function(v)
         KoffeeOptions.MenuSnow = v
         setBackgroundActive(bgActive)
+    end)
+    -- v1.7.0: 3D snow is opt-in. The flakes then sit on a plane in front of the
+    -- camera, so they parallax as you look around and swell as they drift closer.
+    rightClickSettings(snowRow.row, "Snow", function(popup)
+        popup:toggle("3D Snow", KoffeeOptions.MenuSnow3D == true, function(v)
+            KoffeeOptions.MenuSnow3D = v
+            setBackgroundActive(bgActive)
+        end)
     end)
     -- v0.56.0: swallow clicks that land off the window so a settings click never
     -- reaches the game (no accidental firing) and empty space is inert.
@@ -40062,7 +40551,14 @@ local function setWindowOpen(open)
             pcall(function() LocalPlayer.CameraMode = _preMenuCamMode end)
             _preMenuCamMode = nil
         end
-        if _preMenuMouseBehavior then
+        -- v1.7.0: never hand LockCenter back unless the camera really is first
+        -- person. A shift-lock or aim assist can set it for one frame, we capture
+        -- that, and the restore then pins the cursor to the middle with nothing
+        -- on. Default leaves the game free to re-lock if it wants to.
+        if _preMenuMouseBehavior == Enum.MouseBehavior.LockCenter
+            and LocalPlayer.CameraMode ~= Enum.CameraMode.LockFirstPerson then
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        elseif _preMenuMouseBehavior then
             UserInputService.MouseBehavior = _preMenuMouseBehavior
         end
         if _preMenuMouseIcon ~= nil then
@@ -48493,6 +48989,7 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
             ic.AnchorPoint = Vector2.new(0.5, 0.5)
             ic.Position = UDim2.new(0.5, 0, 0.5, 0)
             G.buttons[name] = { b = b, ic = ic }
+            Koffee.UI.holdTabBtn(name, b)
             G.order[#G.order + 1] = name
             b.MouseEnter:Connect(function()
                 if activeTab ~= name then tween(b, Theme.Animation.Fast, { BackgroundTransparency = 0.94 }) end
@@ -48946,6 +49443,7 @@ end)()
                 Size = UDim2.new(0, 130, 1, 0), TextTransparency = 1, ZIndex = 42 })
             R.fade[#R.fade + 1] = l
             R.btns[name] = { b = b, ic = ic, l = l }
+            Koffee.UI.holdTabBtn(name, b)
             b.MouseEnter:Connect(function() if name ~= R.tab then tween(b, Theme.Animation.Fast, { BackgroundTransparency = 0.94 }) end end)
             b.MouseLeave:Connect(function() paintRail() end)
             b.MouseButton1Click:Connect(function() selectTab(name) end)
@@ -49754,6 +50252,7 @@ end)()
                 BackgroundTransparency = 1, LayoutOrder = i, ZIndex = 34, Parent = pills },
                 { corner(14), new("UIPadding", { PaddingLeft = UDim.new(0, 11), PaddingRight = UDim.new(0, 11) }) })
             B.pills[name] = b
+            Koffee.UI.holdTabBtn(name, b)
             b.MouseEnter:Connect(function() if name ~= B.tab then tween(b, Theme.Animation.Fast, { TextColor3 = P.Text }) end end)
             b.MouseLeave:Connect(function() paintPills() end)
             b.MouseButton1Click:Connect(function()
