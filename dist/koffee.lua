@@ -1,7 +1,7 @@
--- koffee v1.7.0
+-- koffee v1.7.1
 
 local Koffee = {}
-Koffee.Version = "1.7.0"
+Koffee.Version = "1.7.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2688,22 +2688,6 @@ function extras.focus(input)
     input.FocusLost:Connect(function()
         tween(line, Theme.Animation.Normal, { Size = UDim2.fromOffset(0, 2) })
     end)
-end
--- reveal curtain: a panel-coloured sheet anchored to the bottom of a popup that
--- slides away, so the contents read as uncovered rather than faded in
-function extras.reveal(target)
-    if not on() or not (target and target.Parent) then return end
-    local previous = target:FindFirstChild("RevealCurtain")
-    if previous then previous:Destroy() end
-    local z = target.ZIndex
-    for _, child in ipairs(target:GetDescendants()) do if child:IsA("GuiObject") then z = math.max(z, child.ZIndex) end end
-    local mask = new("Frame", { Name = "RevealCurtain", AnchorPoint = Vector2.new(0, 1),
-        Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = Theme.Palette.Panel, ZIndex = z + 1, Parent = target })
-    local rounding = target:FindFirstChildOfClass("UICorner")
-    if rounding then rounding:Clone().Parent = mask end
-    tween(mask, TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Size = UDim2.new(1, 0, 0, 0) })
-    task.delay(Koffee.Anim.wait(0.3), function() if mask.Parent then mask:Destroy() end end)
 end
 end)()
 
@@ -5627,9 +5611,6 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         local ox, oy = popupOffsetFor(popupFrame, cx, cy)
         popupFrame.Position = UDim2.new(0, ox, 0, oy)
         popupFrame.Visible = true
-        -- v1.7.0: the settings body is uncovered by a curtain wipe rather than
-        -- simply switching on, matching the popups in the UI lib.
-        if Koffee.MotionExtras then pcall(Koffee.MotionExtras.reveal, popupFrame) end
         task.defer(function()
             if not isOpen or not popupFrame.Parent then return end
             local w, h = popupFrame.AbsoluteSize.X, popupFrame.AbsoluteSize.Y
