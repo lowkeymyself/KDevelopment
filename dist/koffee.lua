@@ -1,7 +1,7 @@
--- koffee v1.7.3
+-- koffee v1.8.0
 
 local Koffee = {}
-Koffee.Version = "1.7.3"
+Koffee.Version = "1.8.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -1511,14 +1511,19 @@ local function popFx(btn)
         if not (Koffee.Anim and Koffee.Anim.spot("AnimPress")) then sc.Scale = 1; return false end
         return true
     end
+    -- v1.8.0: squish on CLICK, not while held. The scale used to stay at 0.94 for as
+    -- long as the button was down; now it dips and springs back on its own, so a held
+    -- control never sits there shrunk.
     btn.MouseButton1Down:Connect(function()
-        if gate() then tween(sc, Theme.Animation.Fast, { Scale = 0.94 }) end
+        if not gate() then return end
+        sc.Scale = 0.94
+        tween(sc, Theme.Animation.Fast, { Scale = 1 })
     end)
     btn.MouseButton1Up:Connect(function()
-        if gate() then tween(sc, Theme.Animation.Fast, { Scale = 1 }) end
+        if gate() and sc.Scale < 1 then tween(sc, Theme.Animation.Fast, { Scale = 1 }) end
     end)
     btn.MouseLeave:Connect(function()
-        if gate() then tween(sc, Theme.Animation.Fast, { Scale = 1 }) end
+        if gate() and sc.Scale < 1 then tween(sc, Theme.Animation.Fast, { Scale = 1 }) end
     end)
 end
 
@@ -2078,7 +2083,6 @@ do
 end
 
 -- LIVE STATS
-local uptimeStart = os.time()
 local frameCount  = 0
 local lastSample  = tick()
 
@@ -2089,10 +2093,14 @@ RunService.RenderStepped:Connect(function()
     if now - lastSample >= 0.5 then
         fpsLabel.Text = math.floor(frameCount / (now - lastSample) + 0.5) .. " fps"
         frameCount, lastSample = 0, now
+        -- v1.8.0: the Time slot is a real clock now, and 12 or 24 hour is a
+        -- right-click setting on the bar. Half a second is plenty for seconds.
+        local d = Koffee.Details
+        local twelve = d and d.Clock24 == false
+        local txt = os.date(twelve and "%I:%M:%S %p" or "%H:%M:%S")
+        if twelve then txt = (txt:gsub("^0", "")) end
+        timeLabel.Text = txt
     end
-    local e = os.time() - uptimeStart
-    timeLabel.Text = string.format("%02d:%02d:%02d",
-        math.floor(e / 3600), math.floor((e % 3600) / 60), e % 60)
 end)
 
 task.spawn(function()
@@ -2140,15 +2148,17 @@ end)
         })
         return l
     end
-    group(1, "bar-chart-2", fpsLabel)
-    group(2, "signal", pingLabel)
-    group(3, "clock", timeLabel)
+    local function named(g, n) g.Name = n; return g end
+    named(group(1, "bar-chart-2", fpsLabel), "stat_fps")
+    named(group(2, "signal", pingLabel), "stat_ping")
+    named(group(3, "clock", timeLabel), "stat_time")
     local region = textLike("..")
-    group(4, "map-pin", region)
+    named(group(4, "map-pin", region), "stat_region")
     local user = textLike(LocalPlayer.Name)
     user.TextColor3 = Theme.Palette.Text
-    local ug = group(5, "user", user)
+    local ug = named(group(5, "user", user), "stat_user")
     local av = new("ImageLabel", {
+        Name = "stat_avatar",
         Size = UDim2.fromOffset(16, 16), BackgroundColor3 = Theme.Palette.PanelElevated, Image = "",
         LayoutOrder = 3, ZIndex = 23, Parent = ug,
     }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
@@ -2166,7 +2176,11 @@ end)()
 -- v0.85.0 DETAILS WIDGET: drag the details bar out of the strip (menu open) and it
 -- pops into a larger floating card that stays up with the menu closed. Dragging it
 -- near its old slot lights the slot; dropping there docks it back. State persists.
-Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3 }   -- registered with the v0.85.0 configs below
+-- v1.8.0: right-click it for time style, per-part toggles, drag smoothness and a
+-- session-only delete. The parts live in the config, the delete flag does not.
+Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3,
+    Clock24 = true, DragSmooth = 16,
+    FPS = true, Ping = true, Clock = true, Region = true, User = true, Avatar = true }
 ;(function()
     local D = Koffee.Details
     local W = statsWidget
@@ -2243,6 +2257,32 @@ Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3 }   -- registered 
             docking = false
             if not Koffee.dead() then dockNow() end
         end)
+    end
+    -- v1.8.0: parts can be switched off from the bar's right-click menu. A hidden
+    -- group leaves the strip layout so the bar shrinks, and the dock slot follows so
+    -- the drop target keeps matching what will actually land there.
+    function Koffee._detailsApply()
+        local o = Koffee.Details
+        for _, e in ipairs({
+            { "stat_fps", o.FPS }, { "stat_ping", o.Ping }, { "stat_time", o.Clock },
+            { "stat_region", o.Region }, { "stat_user", o.User },
+        }) do
+            local g = W:FindFirstChild(e[1])
+            if g then g.Visible = e[2] ~= false end
+        end
+        local av = W:FindFirstChild("stat_avatar", true)
+        if av then av.Visible = o.Avatar ~= false end
+        if not docked then
+            local sc = math.max(ui.Scale, 0.05)
+            slot.Size = UDim2.fromOffset(W.AbsoluteSize.X / sc, W.AbsoluteSize.Y / sc)
+        end
+    end
+    -- session-only: never written to a config, so a reload brings the bar back
+    function Koffee._detailsDelete()
+        Koffee._detailsGone = true
+        W.Visible = false
+        float.Visible = false
+        slot.Visible = false
     end
     local goal = Vector2.new(D.X, D.Y)
     local lastMouse = Vector2.zero
@@ -2338,6 +2378,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3 }   -- registered 
         -- v0.90.0: the dock's Info slot shows / hides the details bar
         local WMs = Koffee.Windows
         local want = not (WMs and WMs.isOpen) or WMs.isOpen("info")
+        if Koffee._detailsGone then want = false end
         if W.Visible ~= want then W.Visible = want end
         if docking then return end
         if not dragging then
@@ -2363,7 +2404,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3 }   -- registered 
             if d.Magnitude > 0 then float.Position = UDim2.fromOffset(goal.X, goal.Y) end
             return
         end
-        local n = cur + d * math.min(dt * 16, 1)
+        local n = cur + d * math.min(dt * (math.clamp(tonumber(D.DragSmooth) or 16, 4, 40)), 1)
         float.Position = UDim2.fromOffset(n.X, n.Y)
     end)
 end)()
@@ -2713,6 +2754,9 @@ Koffee.UI.tabIcon = { Combat = "crosshair", Visuals = "eye", World = "globe",
 -- (instance -> skin fn, swept whenever n hits a multiple of 400), and sharing them put
 -- skin functions in front of code expecting entries, and let the sweep eat the entries.
 Koffee.UI.ctl, Koffee.UI.ctlN = {}, 0
+-- v1.8.0: which settings popup opened which. A popup opened out of another one (the
+-- crosshair text rows) must not close its parent while the click lands inside it.
+Koffee.UI.popupParent = {}
 -- v1.6.7: right-click settings popups build lazily, so their controls do not exist
 -- until opened and the assistant cannot see them. Each queues a one-time prime here.
 Koffee.UI.pendingPopups = {}
@@ -5300,15 +5344,17 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
             setFromInputX(input.Position.X)
         end
     end)
-    -- v0.0.98: track squashes to 0.98 while the drag grabs it, springs back on
-    -- release (both on the button's own end AND the service end as a failsafe).
-    -- v0.48.0: gated on Button Press; off leaves the scale at rest.
+    -- v0.0.98: track squashes when the drag grabs it.
+    -- v1.8.0: it springs back on its own instead of staying small while held, so a
+    -- drag reads as a click tick. The end handlers are only a failsafe now.
     hitArea.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             if Koffee.Anim.spot("AnimPress") then
-                tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 0.98 })
+                local s = uScaleOf(hitArea)
+                s.Scale = 0.98
+                tween(s, Theme.Animation.Fast, { Scale = 1 })
             end
             setFromInputX(input.Position.X)
         end
@@ -5317,11 +5363,8 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
-            if Koffee.Anim.spot("AnimPress") then
-                tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
-            else
-                uScaleOf(hitArea).Scale = 1
-            end
+            local s = uScaleOf(hitArea)
+            if s.Scale < 1 then s.Scale = 1 end
         end
     end)
     UserInputService.InputEnded:Connect(function(input)
@@ -5329,11 +5372,8 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         and (input.UserInputType == Enum.UserInputType.MouseButton1
           or input.UserInputType == Enum.UserInputType.Touch) then
             dragging = false
-            if Koffee.Anim.spot("AnimPress") then
-                tween(uScaleOf(hitArea), Theme.Animation.Fast, { Scale = 1 })
-            else
-                uScaleOf(hitArea).Scale = 1
-            end
+            local s = uScaleOf(hitArea)
+            if s.Scale < 1 then s.Scale = 1 end
         end
     end)
     -- v0.48.0: the knob swells slightly under the cursor so the track reads
@@ -5417,8 +5457,14 @@ local openSettingsPopups = {}   -- frame -> close fn
 -- v0.13.0: `alsoLeft` additionally opens on LEFT click. Used by Custom Features, where the button IS the options button and hiding it behind RMB is a trap. v0.19.1: `dynamic` rebuilds the body on every open. The default builds once, which is right for fixed knobs and wrong for anything listing live state.
 local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
     local btn
-    for _, c in ipairs(row:GetDescendants()) do
-        if c:IsA("TextButton") then btn = c break end
+    -- v1.8.0: a GuiButton can be the binding target directly. The details bar has no
+    -- rows to scan, just one click catcher.
+    if row:IsA("TextButton") or row:IsA("ImageButton") then
+        btn = row
+    else
+        for _, c in ipairs(row:GetDescendants()) do
+            if c:IsA("TextButton") then btn = c break end
+        end
     end
     if not btn then return end
     -- v1.6.7: these controls belong to the tab being built right now, but the body is
@@ -5494,6 +5540,30 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         end
         function api:toggle(label, initial, onChange)
             return configCheckbox(body, label, initial, onChange)
+        end
+        -- v1.8.0: free text field, commits on focus lost or Enter
+        function api:text(label, initial, onChange)
+            local r = new("Frame", { Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1,
+                ZIndex = 211, Parent = body })
+            new("TextLabel", {
+                Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 212, Parent = r,
+            })
+            local box = new("TextBox", {
+                Text = tostring(initial or ""), PlaceholderText = "", ClearTextOnFocus = false,
+                FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.PanelElevated,
+                BackgroundTransparency = 0.15, BorderSizePixel = 0,
+                Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 20),
+                TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 212, Parent = r,
+            }, { corner(4), stroke(Theme.Palette.BorderSubtle),
+                new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+            box.FocusLost:Connect(function()
+                if onChange then onChange(box.Text) end
+            end)
+            return box
         end
         function api:dropdown(label, options, initial, onChange)
             local d = dropdown(body, label, options, initial, onChange)
@@ -5587,6 +5657,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         if not isOpen then return end
         isOpen = false
         openSettingsPopups[popupFrame] = nil
+        Koffee.UI.popupParent[popupFrame] = nil
         if not popupFrame then return end
         -- v0.48.0: popups shrink out on close instead of blinking away. Off
         -- (or master off, via tween's snap) hides immediately.
@@ -5601,20 +5672,30 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
             popupFrame.Visible = false
         end
     end
-    local function openPopup()
+    local function openPopup(at, nested, parentFrame)
         local fresh = popupFrame == nil
         ensurePopup()
         if fresh or dynamic then buildBody() end
-        for _, closer in pairs(openSettingsPopups) do closer() end
-        -- v0.5.3: openDropdowns stores { btn, close } tables, not bare functions (see openList at ~3355). Old contract lingered here and tripped "attempt to call a table value" the moment a right-click popup was opened while any dropdown was open. Same access pattern openList uses.
-        for _, entry in pairs(openDropdowns) do entry.close(true) end
+        -- v1.8.0: a popup opened out of another one keeps its parent up, and is told
+        -- who that parent is so the outside-click closer can leave the pair alone.
+        if not nested then
+            for _, closer in pairs(openSettingsPopups) do closer() end
+            -- v0.5.3: openDropdowns stores { btn, close } tables, not bare functions (see openList at ~3355). Old contract lingered here and tripped "attempt to call a table value" the moment a right-click popup was opened while any dropdown was open. Same access pattern openList uses.
+            for _, entry in pairs(openDropdowns) do entry.close(true) end
+        end
         isOpen = true
         openSettingsPopups[popupFrame] = closePopup
+        if parentFrame then Koffee.UI.popupParent[popupFrame] = parentFrame end
         -- v0.72.2: open at the cursor, not the row rect. v0.72.3: no guessed sizes or offsets. GetMouseLocation includes the topbar inset while popup space does not (that gap was the downward drift), and the popup's real size is measured one frame after showing, then clamped.
-        local mp = UserInputService:GetMouseLocation()
         local inset = game:GetService("GuiService"):GetGuiInset()
         local vp = viewport()
-        local cx, cy = mp.X - inset.X - 4, mp.Y - inset.Y - 4
+        local cx, cy
+        if at then
+            cx, cy = at.X, at.Y
+        else
+            local mp = UserInputService:GetMouseLocation()
+            cx, cy = mp.X - inset.X - 4, mp.Y - inset.Y - 4
+        end
         local ox, oy = popupOffsetFor(popupFrame, cx, cy)
         popupFrame.Position = UDim2.new(0, ox, 0, oy)
         popupFrame.Visible = true
@@ -5646,6 +5727,14 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
     end
     btn.MouseButton2Click:Connect(toggle)
     if alsoLeft then btn.MouseButton1Click:Connect(toggle) end
+    -- v1.8.0: a handle, so a control can open a second panel beside this one.
+    return {
+        open = function(x, y, parent) openPopup(Vector2.new(x, y), true, parent) end,
+        toggle = toggle,
+        close = closePopup,
+        frame = function() return popupFrame end,
+        isOpen = function() return isOpen end,
+    }
 end
 
 -- outside-click closer for the settings popups (own handler since openSettingsPopups
@@ -5666,7 +5755,14 @@ UserInputService.InputBegan:Connect(function(input)
         if lst.Visible and hits(lst) then return end
     end
     for frame, closer in pairs(openSettingsPopups) do
-        if not hits(frame) then closer() end
+        if not hits(frame) then
+            -- v1.8.0: a panel opened out of this one owns clicks inside itself.
+            local borrowed = false
+            for child, par in pairs(Koffee.UI.popupParent) do
+                if par == frame and child.Visible and hits(child) then borrowed = true break end
+            end
+            if not borrowed then closer() end
+        end
     end
 end)
 
@@ -6740,6 +6836,18 @@ local Crosshair = {
     SpinDir       = "CW",                          -- "CW" | "CCW"
     -- v0.8.0: Crosshair follows ESP.Config.Gradient (same toggle + same ColorA2/B2/Speed/Rotation/Spacing/Reverse tuning). One gradient master toggle across features: no separate crosshair state. v0.9.0: run the ramp outward from the centre along every arm at once instead of as one linear sweep across the canvas: symmetric under spin.
     DoubleGradient = false,
+    -- v1.8.0: text stamped on the crosshair. Each row is an independent label; Pos is
+    -- one of Top/Bottom/Left/Right/Middle, Offset is percent of the crosshair's reach
+    -- so a big crosshair pushes its own words further out.
+    Text = {
+        Enabled = false,
+        Spin = false, SpinSpeed = 45, SpinDir = "CW",
+        OriginX = 0, OriginY = 0,
+        Items = {
+            { Text = "KOFFEE", Pos = "Bottom", Offset = 0, Size = 13, Rotation = 0,
+              Font = "None", Color = Color3.new(1, 1, 1), Opacity = 1, Outline = true },
+        },
+    },
     Follow = {
         Enabled    = false,
         Part       = "HumanoidRootPart",           -- follows the target's part of this name
@@ -16778,7 +16886,20 @@ end
             BorderSizePixel = 0, Visible = false, ZIndex = 15, Parent = canvas,
         }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }),
              new("UIStroke", { Thickness = 2, Enabled = true }) })
-        return { canvas = canvas, arms = arms, dot = dot, outer = outer }
+        -- v1.8.0: text rides OUTSIDE the canvas, so a CanvasGroup's texture bounds
+        -- never clip a label that sits past the arm tips.
+        local textRoot = new("Frame", {
+            Name = "TextRoot", AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.new(0, 64, 0, 64), Position = UDim2.new(0.5, 0, 0.5, 0),
+            BackgroundTransparency = 1, Visible = false, ZIndex = 17, Parent = layer,
+        })
+        local textInner = new("Frame", {
+            Name = "TextInner", AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.fromOffset(0, 0), Position = UDim2.new(0.5, 0, 0.5, 0),
+            BackgroundTransparency = 1, ZIndex = 17, Parent = textRoot,
+        })
+        return { canvas = canvas, arms = arms, dot = dot, outer = outer,
+            texts = {}, textRoot = textRoot, textInner = textInner }
     end
 
     -- grown on demand: 96 segs x 2 chains x 6 arms up front is real cost for a
@@ -16926,8 +17047,99 @@ end
         return Vector2.new(1280, 720)
     end
 
+    -- v1.8.0 CROSSHAIR TEXT. Each row is a label riding a pivot that orbits the
+    -- crosshair centre. The pivot is pushed by Origin X/Y (percent of the reach), and
+    -- the label holder counter-rotates the canvas so a spinning crosshair does not
+    -- drag the words around with it. Rows live in the config, so they save and load
+    -- with everything else.
+    local XH_POS = { "Top", "Bottom", "Left", "Right", "Middle" }
+    Shared._xhTextPositions = XH_POS
+    local xhFaceCache = {}
+    local function xhFace(name)
+        if not name or name == "None" then return nil end
+        local cached = xhFaceCache[name]
+        if cached ~= nil then return cached or nil end
+        local ok, got = pcall(function() return Theme.loadFeiFont and Theme.loadFeiFont(name) end)
+        xhFaceCache[name] = ((ok and got) and got) or false
+        return (ok and got) or nil
+    end
+    local function paintText(cfg, g, cx, cy, canvasRot, reach, dt)
+        local T = cfg.Text
+        if not (T and T.Enabled) then
+            if g.textRoot.Visible then
+                g.textRoot.Visible = false
+                for _, l in ipairs(g.texts) do l.Visible = false end
+            end
+            return
+        end
+        local items = T.Items or {}
+        for i = #g.texts + 1, #items do
+            g.texts[i] = new("TextLabel", {
+                Name = "Text" .. i, BackgroundTransparency = 1, Text = "",
+                FontFace = Theme.Fonts.Mono, TextSize = 13, TextColor3 = Color3.new(1, 1, 1),
+                Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+                Visible = false, ZIndex = 18, Parent = g.textInner,
+            }, { new("UIStroke", { Thickness = 1, Color = Color3.new(0, 0, 0), Transparency = 0.3 }) })
+        end
+        for i = #items + 1, #g.texts do g.texts[i].Visible = false end
+        local spin = 0
+        if T.Spin then
+            local sp = (tonumber(T.SpinSpeed) or 45) * ((T.SpinDir == "CCW") and -1 or 1)
+            T._spin = ((T._spin or 0) + sp * dt) % 360
+            spin = T._spin
+        else
+            T._spin = 0
+        end
+        local px = (tonumber(T.OriginX) or 0) / 100 * reach
+        local py = (tonumber(T.OriginY) or 0) / 100 * reach
+        g.textRoot.Size = g.canvas.Size
+        g.textRoot.Position = UDim2.fromOffset(math.floor(cx + 0.5), math.floor(cy + 0.5))
+        g.textRoot.Rotation = spin
+        -- keep the holder's centre on the crosshair while the pivot above it is free
+        g.textInner.Position = UDim2.new(0.5, -px, 0.5, -py)
+        g.textInner.Size = UDim2.fromOffset(0, 0)
+        g.textInner.Rotation = -canvasRot
+        g.textRoot.Visible = true
+        local opacity = math.clamp(tonumber(cfg.Opacity) or 1, 0, 1)
+        local base = reach + 4
+        for i, it in ipairs(items) do
+            local l = g.texts[i]
+            local pos = it.Pos or "Bottom"
+            local tsize = math.clamp(tonumber(it.Size) or 13, 1, 200)
+            -- offset is a percentage of the row's own text size: it scales with the
+            -- text instead of pinning a raw pixel count nobody can reason about
+            local off = (tonumber(it.Offset) or 0) / 100 * tsize
+            local gap = base + off
+            l.Text = tostring(it.Text or "")
+            l.TextSize = tsize
+            l.FontFace = xhFace(it.Font) or Theme.Fonts.Mono
+            l.TextColor3 = it.Color or Color3.new(1, 1, 1)
+            l.TextTransparency = 1 - math.clamp(tonumber(it.Opacity) or 1, 0, 1) * opacity
+            local st = l:FindFirstChildOfClass("UIStroke")
+            if st then st.Enabled = it.Outline ~= false end
+            l.Rotation = tonumber(it.Rotation) or 0
+            if pos == "Top" then
+                l.AnchorPoint = Vector2.new(0.5, 1)
+                l.Position = UDim2.fromOffset(0, -gap)
+            elseif pos == "Bottom" then
+                l.AnchorPoint = Vector2.new(0.5, 0)
+                l.Position = UDim2.fromOffset(0, gap)
+            elseif pos == "Left" then
+                l.AnchorPoint = Vector2.new(1, 0.5)
+                l.Position = UDim2.fromOffset(-gap, 0)
+            elseif pos == "Right" then
+                l.AnchorPoint = Vector2.new(0, 0.5)
+                l.Position = UDim2.fromOffset(gap, 0)
+            else
+                l.AnchorPoint = Vector2.new(0.5, 0.5)
+                l.Position = UDim2.fromOffset(0, off)
+            end
+            l.Visible = true
+        end
+    end
+
     local function drawXH(cfg, g, dt, which)
-        if not cfg.Enabled then g.canvas.Visible = false; return end
+        if not cfg.Enabled then g.canvas.Visible = false; g.textRoot.Visible = false; return end
         g.canvas.Visible = true
 
         -- base center from Origin (Center | Mouse) + user Offset. Priority chain:
@@ -17124,6 +17336,8 @@ end
                 os_.Enabled = true
             end
         end
+        -- v1.8.0: words last, so they sit over the arms and outlive a hidden dot
+        paintText(cfg, g, cx, cy, (cfg.Rotation or 0) + spinDeg, (cfg.Length or 0) + (cfg.Gap or 0), dt)
     end
 
     local XA, XS = mkXH("A"), mkXH("S")
@@ -17146,6 +17360,7 @@ end
             drawXH(Crosshair.S, XS, dt, "Silent")
         else
             XS.canvas.Visible = false
+            XS.textRoot.Visible = false
         end
     end
 
@@ -23635,6 +23850,67 @@ addTab("Visuals", function(root)
         rightClickSettings(dotRow.row, "Center Dot", function(popup)
             popup:slider("Size", 1, 12, cfg.Dot.Size, 0, function(v) cfg.Dot.Size = v end)
         end)
+
+        -- v1.8.0: crosshair text. Rows live in cfg.Text.Items, so a config carries
+        -- every stamp, and the S crosshair gets its own copy of the whole set.
+        if type(cfg.Text) ~= "table" then cfg.Text = { Enabled = false, Items = {} } end
+        if type(cfg.Text.Items) ~= "table" then cfg.Text.Items = {} end
+        local function textItemPanel(popup, index)
+            local it = cfg.Text.Items[index]
+            if not it then return end
+            popup:text("Content", it.Text, function(v) it.Text = v end)
+            popup:dropdown("Position", Shared._xhTextPositions, it.Pos or "Bottom",
+                function(v) it.Pos = v end)
+            popup:slider("Offset (%)", -300, 300, it.Offset or 0, 0, function(v) it.Offset = v end)
+            popup:slider("Size", 4, 90, it.Size or 13, 0, function(v) it.Size = v end)
+            popup:slider("Rotation", 0, 360, it.Rotation or 0, 0, function(v) it.Rotation = v end)
+            popup:slider("Opacity", 0, 1, it.Opacity or 1, 2, function(v) it.Opacity = v end)
+            popup:dropdown("Font", Theme.FontNames, it.Font or "None", function(v) it.Font = v end)
+            popup:toggle("Outline", it.Outline ~= false, function(v) it.Outline = v end)
+            popup:swatch("Colour", it.Color or Color3.new(1, 1, 1), function(c) it.Color = c end)
+            popup:action("Remove This Text", function()
+                table.remove(cfg.Text.Items, index)
+            end)
+        end
+        -- a row's panel opens beside the Text menu, not on top of it
+        local function openTextRow(index, parentFrame)
+            local holder = new("Frame", { Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1,
+                Visible = false, Parent = popupScreen })
+            local hitch = new("TextButton", { Text = "", Size = UDim2.fromOffset(0, 0),
+                BackgroundTransparency = 1, Parent = holder })
+            local h = rightClickSettings(hitch, "Text " .. index, function(popup)
+                textItemPanel(popup, index)
+            end)
+            if not (h and parentFrame and parentFrame.Parent) then return end
+            local abs, sz = parentFrame.AbsolutePosition, parentFrame.AbsoluteSize
+            h.open(abs.X + sz.X + 8, abs.Y, parentFrame)
+        end
+        local txtRow = configCheckbox(card, "Text", cfg.Text.Enabled, function(v) cfg.Text.Enabled = v end)
+        rightClickSettings(txtRow.row, "Text", function(popup)
+            -- dynamic: the row list changes as rows are added or removed
+            popup:toggle("Spin", cfg.Text.Spin, function(v) cfg.Text.Spin = v end)
+            popup:slider("Spin Speed (deg/s)", 0, 720, cfg.Text.SpinSpeed or 45, 0,
+                function(v) cfg.Text.SpinSpeed = v end)
+            popup:dropdown("Spin Direction", { "CW", "CCW" }, cfg.Text.SpinDir or "CW",
+                function(v) cfg.Text.SpinDir = v end)
+            popup:slider("Spin Origin X (%)", -200, 200, cfg.Text.OriginX or 0, 0,
+                function(v) cfg.Text.OriginX = v end)
+            popup:slider("Spin Origin Y (%)", -200, 200, cfg.Text.OriginY or 0, 0,
+                function(v) cfg.Text.OriginY = v end)
+            for i, it in ipairs(cfg.Text.Items) do
+                popup:action(i .. ". " .. tostring(it.Text or ""), function(btn)
+                    local pf = btn and btn.Parent and btn.Parent.Parent
+                    openTextRow(i, pf)
+                end)
+            end
+            popup:action("+ Add Text", function(btn)
+                local items = cfg.Text.Items
+                items[#items + 1] = { Text = "TEXT", Pos = "Top", Offset = 0, Size = 13,
+                    Rotation = 0, Font = "None", Color = Color3.new(1, 1, 1), Opacity = 1, Outline = true }
+                local pf = btn and btn.Parent and btn.Parent.Parent
+                openTextRow(#items, pf)
+            end)
+        end, false, true)
 
         -- Lock To Part: overrides Follow Target + Origin. "open" reopens the picker.
         local lockRow = new("Frame", {
@@ -34519,9 +34795,59 @@ function Shared.confirm(title, body, confirmText, onConfirm)
     end)
 end
 
+-- v1.8.0: the details bar's right-click menu. Time style, per-part toggles, drag
+-- smoothness, and a delete that lives for this session only.
+;(function()
+    local W = statsWidget
+    if not (W and W.Parent) then return end
+    local D = Koffee.Details
+    -- A zero-size button only exists so rightClickSettings has something to bind; the
+    -- bar itself catches the right-click. A full-size catcher would have stretched an
+    -- AutomaticSize parent, which is exactly what these bars are.
+    local hitch = new("TextButton", {
+        Name = "ctx", Text = "", Size = UDim2.fromOffset(0, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = W,
+    })
+    local menu = rightClickSettings(hitch, "Details Bar", function(popup)
+        popup:dropdown("Time Style", { "24 Hour", "12 Hour" },
+            (D.Clock24 == false) and "12 Hour" or "24 Hour",
+            function(v) D.Clock24 = (v ~= "12 Hour") end)
+        local function partRow(label, key)
+            popup:toggle(label, D[key] ~= false, function(v)
+                D[key] = v
+                if Koffee._detailsApply then pcall(Koffee._detailsApply) end
+            end)
+        end
+        partRow("FPS", "FPS")
+        partRow("Ping", "Ping")
+        partRow("Time", "Clock")
+        partRow("Region", "Region")
+        partRow("User", "User")
+        partRow("Avatar", "Avatar")
+        popup:slider("Drag Smoothness", 4, 40, tonumber(D.DragSmooth) or 16, 0,
+            function(v) D.DragSmooth = v end)
+        popup:action("Delete Details Bar", function()
+            Shared.confirm("Delete the details bar?",
+                "It goes away for this session. Nothing is saved, so it comes back the next time Koffee starts.",
+                "Delete", function()
+                    if Koffee._detailsDelete then pcall(Koffee._detailsDelete) end
+                end)
+        end)
+    end)
+    W.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
+        if not menu then return end
+        if menu.isOpen() then menu.close() else menu.toggle() end
+    end)
+    -- a config load rewrites the part switches underneath the running bar
+    Koffee.UI.afterRebuild[#Koffee.UI.afterRebuild + 1] = function()
+        if Koffee._detailsApply then pcall(Koffee._detailsApply) end
+    end
+    if Koffee._detailsApply then pcall(Koffee._detailsApply) end
+end)()
+
 addTab("Configs", function(root)
     local CIO = Koffee.Config
-
     -- v0.0.47: pill button whose resting colour can flip at runtime (the `auto`
     -- button toggles accent/muted). Base colour is stored as an attribute so the
     -- MouseLeave handler always restores the CURRENT base, not the creation-time one.
