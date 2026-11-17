@@ -1,7 +1,7 @@
--- koffee v1.8.0
+-- koffee v1.8.1
 
 local Koffee = {}
-Koffee.Version = "1.8.0"
+Koffee.Version = "1.8.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -5613,11 +5613,19 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         end
         -- v0.17.0: clickable action (popup built once, needs button not toggle).
         function api:action(label, onClick)
+            -- v1.8.1: actions sit in their own slot. A full-width, full-height button
+            -- put its 1px outline right on the body's clip rect, so the bottom, left
+            -- and right edges were all shaved. 4px inset each side, 8px under it.
+            local holder = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1,
+                ZIndex = 211, Parent = body,
+            })
             local b = new("TextButton", {
                 Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.Text, AutoButtonColor = false,
                 BackgroundColor3 = Theme.Palette.PanelElevated, BorderSizePixel = 0,
-                Size = UDim2.new(1, 0, 0, 20), ZIndex = 211, Parent = body,
+                Position = UDim2.fromOffset(4, 0), Size = UDim2.new(1, -8, 0, 20),
+                ZIndex = 211, Parent = holder,
             }, { corner(4), stroke(Theme.Palette.Border, 1) })
             b.MouseButton1Click:Connect(function() pcall(onClick, b) end)
             popFx(b)
@@ -23885,6 +23893,13 @@ addTab("Visuals", function(root)
             local abs, sz = parentFrame.AbsolutePosition, parentFrame.AbsoluteSize
             h.open(abs.X + sz.X + 8, abs.Y, parentFrame)
         end
+        -- v1.8.1: actions now live inside a padded holder, so climb to the popup frame
+        -- by name instead of counting parents.
+        local function popupFrameOf(inst)
+            local p = inst
+            while p and p.Name ~= "Settings" do p = p.Parent end
+            return p
+        end
         local txtRow = configCheckbox(card, "Text", cfg.Text.Enabled, function(v) cfg.Text.Enabled = v end)
         rightClickSettings(txtRow.row, "Text", function(popup)
             -- dynamic: the row list changes as rows are added or removed
@@ -23899,16 +23914,14 @@ addTab("Visuals", function(root)
                 function(v) cfg.Text.OriginY = v end)
             for i, it in ipairs(cfg.Text.Items) do
                 popup:action(i .. ". " .. tostring(it.Text or ""), function(btn)
-                    local pf = btn and btn.Parent and btn.Parent.Parent
-                    openTextRow(i, pf)
+                    openTextRow(i, btn and popupFrameOf(btn))
                 end)
             end
             popup:action("+ Add Text", function(btn)
                 local items = cfg.Text.Items
                 items[#items + 1] = { Text = "TEXT", Pos = "Top", Offset = 0, Size = 13,
                     Rotation = 0, Font = "None", Color = Color3.new(1, 1, 1), Opacity = 1, Outline = true }
-                local pf = btn and btn.Parent and btn.Parent.Parent
-                openTextRow(#items, pf)
+                openTextRow(#items, btn and popupFrameOf(btn))
             end)
         end, false, true)
 
