@@ -1,7 +1,7 @@
--- koffee v1.8.2
+-- koffee v1.8.3
 
 local Koffee = {}
-Koffee.Version = "1.8.2"
+Koffee.Version = "1.8.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -6676,6 +6676,9 @@ local ESP = {
         Rainbow = false,
         RainbowDir = "Up",
         RainbowSpeed = 0.4,
+        -- v1.8.3: distance between colour bands, in bar heights. 1 = one full wheel
+        -- over the bar, 2 = bands twice as far apart, 0.5 = twice as tight.
+        RainbowSeparation = 1,
         Lerp     = false,   -- v0.99.1: bar eases toward the new value instead of snapping
         Text    = false,            -- show the health number
         TextPos = "Above Name",     -- "Above Name" ([hp] Name) | "On Health Bar"
@@ -8001,15 +8004,38 @@ end
 
 -- v1.7.0: hue ramp for Health Rainbow. Ends match (both red) so the scroll wraps
 -- with no snap, same trick the ESP line gradient uses.
-function ESP._rainbowSeq()
-    if ESP._rbSeq then return ESP._rbSeq end
-    local kp = {}
-    for i = 0, 6 do
-        local h = i / 6
-        kp[#kp + 1] = ColorSequenceKeypoint.new(h, Color3.fromHSV(h, 1, 1))
+-- v1.8.3: built for ONE fill height instead of one wheel for every bar. The old
+-- version put the whole wheel across the fill, so at low health a full rainbow got
+-- squeezed into a few pixels (which is what read as "way more of one colour"). The
+-- ramp now covers `frac` of the wheel, so the hue rate per pixel stays constant no
+-- matter the health. Quantized and cached: 16 rigs at the same health share a ramp.
+function ESP._rainbowSeq(phase, frac, cycles, down)
+    local fq = math.floor(math.max(frac, 0.001) * 48 + 0.5) / 48
+    local pq = math.floor((phase % 1) * 48 + 0.5) / 48
+    local cq = math.floor(cycles * 8 + 0.5) / 8
+    local key = fq .. "|" .. pq .. "|" .. cq .. (down and "|d" or "|u")
+    local cache = ESP._rbCache
+    if not cache then
+        cache = {}
+        ESP._rbCache, ESP._rbN = cache, 0
     end
-    ESP._rbSeq = ColorSequence.new(kp)
-    return ESP._rbSeq
+    local seq = cache[key]
+    if seq then return seq end
+    local kp = {}
+    for i = 0, 8 do
+        local t = i / 8
+        local h = (pq + (down and -1 or 1) * t * fq * cq) % 1
+        kp[#kp + 1] = ColorSequenceKeypoint.new(t, Color3.fromHSV(h, 1, 1))
+    end
+    seq = ColorSequence.new(kp)
+    ESP._rbN = (ESP._rbN or 0) + 1
+    if ESP._rbN > 400 then
+        ESP._rbCache = {}
+        ESP._rbN = 0
+        cache = ESP._rbCache
+    end
+    cache[key] = seq
+    return seq
 end
 
 -- v0.98.0: health gradient sampled across the WHOLE bar, then clipped to the
@@ -8029,17 +8055,19 @@ function ESP._hpGrad(rig, frac, H)
         rig._gradKey = nil
     end
     g.Enabled = true
-    -- v1.7.0: rainbow ignores the three stops entirely and sweeps the whole hue
-    -- wheel vertically. Offset stays inside -1..1 because the sequence is
-    -- periodic, so both ends of the sweep are the same colour.
+    -- v1.7.0: rainbow ignores the three stops entirely and takes over the bar colour.
+    -- v1.8.3: the ramp itself carries the phase, so a half-empty bar shows half a
+    -- wheel instead of a squeezed one. Returns white so the health number on the bar
+    -- stays legible instead of picking up a random hue.
     if H.Rainbow then
-        ESP._set(g, "Color", ESP._rainbowSeq())
         local sp = math.clamp(tonumber(H.RainbowSpeed) or 0.4, 0.02, 4)
-        local t = ((os.clock() * sp) % 2) - 1
-        if H.RainbowDir == "Down" then t = -t end
-        ESP._set(g, "Offset", Vector2.new(0, t))
+        local sep = math.clamp(tonumber(H.RainbowSeparation) or 1, 0.25, 4)
+        local seq = ESP._rainbowSeq((os.clock() * sp) % 1, frac, 1 / sep,
+            H.RainbowDir == "Down")
+        ESP._set(g, "Color", seq)
+        ESP._set(g, "Offset", Vector2.zero)
         rig._gradKey = nil
-        return Color3.fromHSV((1 - math.max(frac, 0.001)) % 1, 1, 1)
+        return Color3.new(1, 1, 1)
     end
     ESP._set(g, "Offset", Vector2.zero)
     local function at(y)
@@ -9111,6 +9139,22 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             rig.healthBg.Position = UDim2.new(0, barLeft - 2 - barW, 0, hbTop)
             rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(hbBot - hbTop, 1))
             rig.healthBg.Visible = true
+            -- v1.8.3: the ESP card's global Outline toggle borders the bar too, in the
+            -- same colour as the boxes. Created once per rig, then just toggled.
+            local hs = rig.healthStroke
+            if ESP.Config.Outline then
+                if not (hs and hs.Parent) then
+                    hs = Instance.new("UIStroke")
+                    hs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+                    hs.Thickness = 1
+                    hs.Parent = rig.healthBg
+                    rig.healthStroke = hs
+                end
+                ESP._set(hs, "Enabled", true)
+                ESP._set(hs, "Color", ESP.Boxes.OutlineColor)
+            elseif hs then
+                ESP._set(hs, "Enabled", false)
+            end
             local barColor
             if ESP.Health.Based then
                 -- v0.0.22: pure red -> pure green (was a muted/desaturated pair).
@@ -23667,10 +23711,11 @@ addTab("Visuals", function(root)
         -- sit inside the body's clip rect.
         -- v1.8.2: RainbowSpeed existed in the config with no control. Speed folds out
         -- with Direction, since neither means anything while Rainbow is off.
-        local dirDd, spdRow
+        local dirDd, spdRow, sepRow
         local function reveal(v, instant)
             if dirDd then Shared.revealRow(dirDd.frame, v, dirDd.rowHeight or 56, instant) end
             if spdRow then Shared.revealRow(spdRow, v, 44, instant) end
+            if sepRow then Shared.revealRow(sepRow, v, 44, instant) end
         end
         popup:toggle("Rainbow", ESP.Health.Rainbow, function(v)
             ESP.Health.Rainbow = v
@@ -23681,6 +23726,9 @@ addTab("Visuals", function(root)
         spdRow = popup:slider("Speed", 0.05, 2, ESP.Health.RainbowSpeed or 0.4, 2,
             function(v) ESP.Health.RainbowSpeed = v end)
         if spdRow and spdRow.row then spdRow = spdRow.row end
+        sepRow = popup:slider("Separation", 0.25, 4, ESP.Health.RainbowSeparation or 1, 2,
+            function(v) ESP.Health.RainbowSeparation = v end)
+        if sepRow and sepRow.row then sepRow = sepRow.row end
         reveal(ESP.Health.Rainbow == true, true)
     end)
     configCheckbox(healthPanel, "Health Text", ESP.Health.Text, function(v) ESP.Health.Text = v end)
