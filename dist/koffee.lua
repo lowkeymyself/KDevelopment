@@ -1,7 +1,7 @@
--- koffee v1.8.5
+-- koffee v1.8.6
 
 local Koffee = {}
-Koffee.Version = "1.8.5"
+Koffee.Version = "1.8.6"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2495,6 +2495,9 @@ KoffeeOptions = {
     -- v1.7.0: 3D snow is opt-in (right-click the Snow row); popup dropdowns can also
     -- expand in place. Both read live, so switching them needs no rebuild.
     MenuSnow3D = false,
+    -- v1.8.6: Buffer Lab verbosity. "Simple" (default) reads a buffer and names what it
+    -- found; "Experienced" is the offset/type/hex anatomy view.
+    BufferStyle = "Simple",
     DropdownStyle = "Popup", DropdownIncludeSelected = true,
     -- v0.11.0 CUSTOM UI COLORS. Seven palette roles the user can repaint. Defaults
     -- are the stock Theme.Palette values, so an untouched config is a no-op.
@@ -17833,13 +17836,30 @@ end)() end
         end
         return scan(inst, 6)
     end
-    local function iconColor(inst)
-        if inst:IsA("MeshPart")       then return Color3.fromRGB(160, 130, 220) end  -- purple
-        if inst:IsA("UnionOperation") or inst:IsA("NegateOperation")
-           or inst:IsA("IntersectOperation") then return Color3.fromRGB(240, 160, 90) end -- orange
-        if inst:IsA("BasePart")       then return Color3.fromRGB(140, 210, 150) end  -- green
-        if inst:IsA("Model")          then return Color3.fromRGB(130, 200, 240) end  -- cyan
-        return Color3.fromRGB(235, 200, 120) -- yellow: folder/service
+    -- v1.8.6: one icon per instance family instead of a coloured square for anything
+    -- that was not a part, folder or script. Coloured squares made a Model tree read as
+    -- a wall of identical dots; a package/user/music glyph says what the row is.
+    local function iconFor(inst)
+        if inst:IsA("Model") then return "package" end
+        if inst:IsA("MeshPart") then return "box" end
+        if inst:IsA("BasePart") then return "box" end
+        if inst:IsA("Folder") or inst:IsA("Configuration") then return "folder" end
+        if inst:IsA("LuaSourceContainer") then return "file" end
+        if inst:IsA("Humanoid") then return "user" end
+        if inst:IsA("Sound") then return "music" end
+        if inst:IsA("Camera") then return "eye" end
+        if inst:IsA("Light") then return "sparkles" end
+        if inst:IsA("ValueBase") or inst:IsA("RemoteEvent")
+            or inst:IsA("RemoteFunction") or inst:IsA("BindableEvent")
+            or inst:IsA("BindableFunction") then return "signal" end
+        if inst:IsA("Tool") then return "target" end
+        if inst:IsA("Decal") or inst:IsA("Texture") then return "file" end
+        if inst:IsA("GuiObject") then return "sliders-horizontal" end
+        if inst:IsA("ServiceProvider") or inst.ClassName:find("Service", 1, true) then
+            return "server"
+        end
+        if inst:IsA("Instance") and #inst:GetChildren() > 0 then return "folder" end
+        return "file"
     end
     local function isSelectableAsTarget(inst)
         return inst:IsA("BasePart") or inst:IsA("Model") or inst:IsA("MeshPart")
@@ -17949,7 +17969,10 @@ end)() end
         -- Click Part needs to walk down to an arbitrary instance and open the tree
         -- on the way; `force` lets that walk surface a node shouldShow would filter.
         local nodes, force = {}, {}
-        local ROOTS = {
+        -- v1.8.6: opts.roots narrows the tree. The rules flow only ever accepts a
+        -- Workspace target, so offering Players / Lighting / StarterGui there was just
+        -- a way to pick something the rule can never use.
+        local ROOTS = opts.roots or {
             game:GetService("Workspace"),
             game:GetService("Players"),
             game:GetService("ReplicatedStorage"),
@@ -18020,18 +18043,10 @@ end)() end
                 caretImg.Image = "rbxassetid://" .. d[1]
                 caretImg.ImageRectOffset = Vector2.new(d[2], d[3])
             end
-            local clsIcon = (inst:IsA("Folder") or inst:IsA("Configuration")) and "folder"
-                or (inst:IsA("BasePart") and "box")
-                or (inst:IsA("LuaSourceContainer") and "file") or nil
+            local clsIcon = iconFor(inst)
             if clsIcon then
                 local ci = Koffee.lucideIcon(row, clsIcon, 12, Theme.Palette.TextMuted, 205)
                 if ci then ci.Position = UDim2.new(0, x + 16, 0.5, 0) end
-            else
-                new("Frame", {
-                    Position = UDim2.new(0, x + 18, 0.5, -4), Size = UDim2.new(0, 8, 0, 8),
-                    BackgroundColor3 = iconColor(inst), BorderSizePixel = 0,
-                    ZIndex = 205, Parent = row,
-                }, { corner(2) })
             end
             new("TextLabel", {
                 Text = inst.Name, FontFace = Theme.Fonts.Medium,
@@ -18791,7 +18806,9 @@ end)() end
             if pick == "ObjectOffset" then
                 openInstancePicker(function(inst, path)
                     openObjectOffsetPopup(inst, path, nil)
-                end, { title = "select target for object offset" })
+                end, { title = "select a target in Workspace",
+                    subtitle = "only Workspace can be targeted. expand a model, click a part, then submit.",
+                    roots = { game:GetService("Workspace") } })
             elseif pick == "AntiAnimation" then
                 openTextPopup("anti-animation", "", "rbxassetid (numbers or full url)",
                     function(id)
@@ -30231,6 +30248,16 @@ addTab("Options", function(root)
     dropdown(uiPanel, "Dropdown Style", { "Popup", "Expand" },
         KoffeeOptions.DropdownStyle or "Popup",
         function(v) KoffeeOptions.DropdownStyle = v end)
+    -- v1.8.6: Buffer Lab verbosity. Rebuilds the Custom tab so the new build is the one
+    -- you see, delayed past the dropdown's own close animation.
+    dropdown(uiPanel, "Buffer Lab", { "Simple", "Experienced" },
+        KoffeeOptions.BufferStyle or "Simple",
+        function(v)
+            KoffeeOptions.BufferStyle = v
+            task.delay(0.35, function()
+                if rebuildConfigTabs then pcall(rebuildConfigTabs) end
+            end)
+        end)
     local arrRow = configCheckbox(uiPanel, "Arraylist", KoffeeOptions.Arraylist, function(v)
         KoffeeOptions.Arraylist = v
         activeArray.Visible = v
@@ -34635,7 +34662,7 @@ registerConfig("custom", Koffee.Custom)
     -- v0.37.0 BUFFER LAB (paste + inspect + schema): grab a buffer from an external
     -- spy (Turtle Spy / Cobalt), paste it, decode it, then label its fields into a
     -- reusable schema. Stage 3 (build + fire from a schema) is still to come.
-    local function buildBufferLab(parent)
+    local function buildBufferLabFull(parent)
         local RTYPES = { "u8", "i8", "u16", "i16", "u32", "i32", "f32", "f64", "string" }
         local SDIR = "Koffee/buffers"
         local HttpService = game:GetService("HttpService")
@@ -35115,6 +35142,335 @@ registerConfig("custom", Koffee.Custom)
         inspect()
         refreshFields()
         rebuildLoadDd()
+    end
+
+    -- v1.8.6 SIMPLE buffer lab (default). Paste, read, save. No offsets, no types, no
+    -- hex anatomy: it reads the buffer, shows what it found in plain words, and saves
+    -- those values as a schema. The detailed view is one setting away.
+    local function buildBufferLabSimple(parent)
+        local SDIR = "Koffee/buffers"
+        local HttpService = game:GetService("HttpService")
+        local curBytes, fields, pickSchema = "", {}, ""
+
+        local function filesOk() return writefile and readfile and isfile and listfiles end
+        local function ensureDir()
+            if isfolder and makefolder then
+                if not isfolder("Koffee") then pcall(makefolder, "Koffee") end
+                if not isfolder(SDIR) then pcall(makefolder, SDIR) end
+            end
+        end
+        local function listSchemas()
+            local out = {}
+            if not filesOk() then return out end
+            ensureDir()
+            local ok, files = pcall(listfiles, SDIR)
+            if ok and type(files) == "table" then
+                for _, p in ipairs(files) do
+                    local nm = tostring(p):match("([^/\\]+)%.json$")
+                    if nm then out[#out + 1] = nm end
+                end
+            end
+            table.sort(out)
+            return out
+        end
+        local function unescape(s)
+            s = s:gsub("\\x(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+            s = s:gsub("\\n", "\n"):gsub("\\r", "\r"):gsub("\\t", "\t")
+            s = s:gsub("\\\\(.)", "%1")
+            return s
+        end
+        local function parsePaste(txt)
+            if not txt or txt == "" then return nil, "paste something first" end
+            local lit = txt:match('fromstring%s*%(%s*"(.-)"') or txt:match("fromstring%s*%(%s*'(.-)'")
+            if lit then return unescape(lit) end
+            local stripped = txt:gsub("0[xX]", ""):gsub("[%s,]", "")
+            if #stripped >= 2 and stripped:match("^%x+$") then
+                if #stripped % 2 ~= 0 then stripped = stripped:sub(1, #stripped - 1) end
+                local out = {}
+                for h in stripped:gmatch("..") do out[#out + 1] = string.char(tonumber(h, 16)) end
+                return table.concat(out)
+            end
+            return txt
+        end
+        local function readField(off, ty)
+            if curBytes == "" then return nil end
+            local ok, b = pcall(buffer.fromstring, curBytes)
+            if not ok then return nil end
+            local n = buffer.len(b)
+            local ok2, v = pcall(function()
+                if ty == "u8" then return buffer.readu8(b, off) end
+                if ty == "i8" then return buffer.readi8(b, off) end
+                if ty == "u16" then return buffer.readu16(b, off) end
+                if ty == "i16" then return buffer.readi16(b, off) end
+                if ty == "u32" then return buffer.readu32(b, off) end
+                if ty == "i32" then return buffer.readi32(b, off) end
+                if ty == "f32" then return buffer.readf32(b, off) end
+                if ty == "f64" then return buffer.readf64(b, off) end
+                if ty == "string" then return buffer.readstring(b, off, math.max(0, math.min(16, n - off))) end
+            end)
+            return ok2 and v or nil
+        end
+
+        local card = panel(parent, "Buffer Lab")
+        labelRow(card, "paste a buffer from a spy tool: Koffee reads it and tells you what is in it")
+        labelRow(card, "hex, a buffer.fromstring(\"...\") snippet, or raw bytes all work")
+        local box = new("TextBox", {
+            Text = "", PlaceholderText = "Paste it here...",
+            ClearTextOnFocus = false, MultiLine = true, TextWrapped = true,
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+            BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.15,
+            Size = UDim2.new(1, 0, 0, 72), TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = 20, ZIndex = 36, Parent = card,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+                PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        local status = new("TextLabel", {
+            Text = "waiting for bytes", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 21, ZIndex = 36, Parent = card,
+        })
+        local function setStatus(msg, ok)
+            status.Text = msg
+            status.TextColor3 = ok and Theme.Palette.TextMuted or (Theme.Palette.Danger or Color3.fromRGB(220, 90, 90))
+        end
+        local function btn(p, text, w, order, fn, accent)
+            local b = new("TextButton", {
+                Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Medium,
+                TextSize = Theme.Text.Small,
+                BackgroundColor3 = accent and Theme.Palette.Accent or Theme.Palette.PanelElevated,
+                BackgroundTransparency = accent and 0.15 or 0.2,
+                Size = UDim2.fromOffset(w, 24),
+                TextColor3 = accent and Theme.Palette.Background or Theme.Palette.TextMuted,
+                LayoutOrder = order, ZIndex = 36, Parent = p,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            b.MouseEnter:Connect(function()
+                if not accent then tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.Text }) end
+            end)
+            b.MouseLeave:Connect(function()
+                if not accent then tween(b, Theme.Animation.Fast, { TextColor3 = Theme.Palette.TextMuted }) end
+            end)
+            b.MouseButton1Click:Connect(fn)
+            Koffee.attachBtnHover(b, accent and 0.02 or 0, accent and 0.15 or 0.2)
+            popFx(b)
+            return b
+        end
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 23, ZIndex = 36, Parent = card,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        -- === what it found ===
+        local vcard = panel(parent, "What it found")
+        local vHint = new("TextLabel", {
+            Text = "nothing yet: paste a buffer above", FontFace = Theme.Fonts.Regular,
+            TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
+            BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 1, ZIndex = 36, Parent = vcard,
+        })
+        local vList = new("Frame", {
+            Size = UDim2.fromScale(1, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+            LayoutOrder = 2, ZIndex = 36, Parent = vcard,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical,
+            Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        -- === schemas ===
+        local scard = panel(parent, "Reuse it")
+        labelRow(scard, "save what it found as a schema, then use it in Build Buffer")
+        local nameBox = new("TextBox", {
+            Text = "", PlaceholderText = "schema name...", ClearTextOnFocus = false,
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+            Size = UDim2.new(1, 0, 0, 24), TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = 2, ZIndex = 36, Parent = scard,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle),
+            new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        local sRow = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 3, ZIndex = 36, Parent = scard,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local loadHold = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 56), BackgroundTransparency = 1, LayoutOrder = 4, ZIndex = 36, Parent = scard,
+        })
+        local loadDd
+        local function rebuildLoadDd()
+            if loadDd then pcall(loadDd.destroy) end
+            local names = listSchemas()
+            if #names == 0 then names = { "none saved yet" } end
+            if pickSchema == "" or not table.find(names, pickSchema) then pickSchema = names[1] end
+            loadDd = dropdown(loadHold, "Saved schemas", names, pickSchema, function(v)
+                pickSchema = v
+            end)
+        end
+        local lRow = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 5, ZIndex = 36, Parent = scard,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        local function paintValues(rows, title)
+            for _, c in ipairs(vList:GetChildren()) do
+                if c:IsA("GuiObject") then c:Destroy() end
+            end
+            local any = false
+            for i, r in ipairs(rows) do
+                any = true
+                new("TextLabel", {
+                    Text = r, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+                    TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.PanelElevated,
+                    BackgroundTransparency = 0.45, BorderSizePixel = 0,
+                    TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                    Size = UDim2.new(1, 0, 0, 20), LayoutOrder = i, ZIndex = 37, Parent = vList,
+                }, { corner(4), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+            end
+            vHint.Text = any and (title or ("%d value(s)"):format(#rows)) or "nothing readable in that buffer"
+            vHint.TextColor3 = any and Theme.Palette.TextMuted or Theme.Palette.TextFaint
+        end
+
+        -- plain-words read: a vec3 becomes "3 numbers (looks like a position)", a lone
+        -- sane float becomes "number", and everything else is left out rather than
+        -- guessed at. Simple mode never asks you to reason about byte offsets.
+        local function readIt()
+            local bytes, err = parsePaste(box.Text)
+            if not bytes then
+                setStatus(err or "nothing to read", false)
+                return
+            end
+            curBytes = bytes
+            local ok, b = pcall(buffer.fromstring, bytes)
+            local rows, found = {}, {}
+            if ok and #bytes > 0 then
+                local n = buffer.len(b)
+                local function rf(o) local okk, v = pcall(buffer.readf32, b, o); return okk and v or nil end
+                local function sane(f)
+                    return f ~= nil and f == f and math.abs(f) ~= math.huge
+                        and (f == 0 or (math.abs(f) >= 1e-3 and math.abs(f) < 50000))
+                end
+                local off = 0
+                while off <= n - 4 and #found < 24 do
+                    if off <= n - 12 then
+                        local x, y, z = rf(off), rf(off + 4), rf(off + 8)
+                        if sane(x) and sane(y) and sane(z) and not (x == 0 and y == 0 and z == 0) then
+                            rows[#rows + 1] = ("position or direction at byte %d:  %.1f, %.1f, %.1f"):format(off, x, y, z)
+                            found[#found + 1] = { off = off, type = "f32", name = "x" }
+                            found[#found + 1] = { off = off + 4, type = "f32", name = "y" }
+                            found[#found + 1] = { off = off + 8, type = "f32", name = "z" }
+                            off = off + 12
+                            continue
+                        end
+                    end
+                    local x = rf(off)
+                    if sane(x) and x ~= 0 then
+                        rows[#rows + 1] = ("number at byte %d:  %.3f"):format(off, x)
+                        found[#found + 1] = { off = off, type = "f32", name = "value" .. (#found + 1) }
+                    end
+                    off = off + 4
+                end
+            end
+            fields = found
+            paintValues(rows)
+            setStatus(("%d bytes, %d value(s) found"):format(#bytes, #found), true)
+        end
+
+        btn(row, "Read it", 84, 1, readIt, true)
+        btn(row, "Clear", 60, 2, function()
+            box.Text = ""
+            curBytes, fields = "", {}
+            paintValues({})
+            setStatus("cleared", true)
+        end)
+        btn(sRow, "Save", 72, 1, function()
+            local nm = (nameBox.Text or ""):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+            if nm == "" then setStatus("give the schema a name first", false) return end
+            if #fields == 0 then setStatus("read a buffer first: nothing to save yet", false) return end
+            if not filesOk() then setStatus("this executor has no file API", false) return end
+            ensureDir()
+            local tmplHex = {}
+            for i = 1, #curBytes do tmplHex[i] = ("%02x"):format(curBytes:byte(i)) end
+            local ok = pcall(function()
+                writefile(SDIR .. "/" .. nm .. ".json",
+                    HttpService:JSONEncode({ fields = fields, template = table.concat(tmplHex) }))
+            end)
+            if ok then
+                pickSchema = nm
+                rebuildLoadDd()
+                nameBox.Text = ""
+                setStatus(("saved '%s' with %d value(s)"):format(nm, #fields), true)
+            else
+                setStatus("save failed", false)
+            end
+        end, true)
+        btn(lRow, "Load", 60, 1, function()
+            if not filesOk() or pickSchema == "" or pickSchema == "none saved yet" then
+                setStatus("no schema picked", false)
+                return
+            end
+            local p = SDIR .. "/" .. pickSchema .. ".json"
+            if not isfile(p) then setStatus("that schema file is gone", false) return end
+            local ok, txt = pcall(readfile, p)
+            if not ok then setStatus("read failed", false) return end
+            local dok, data = pcall(function() return HttpService:JSONDecode(txt) end)
+            if not dok or type(data) ~= "table" then setStatus("that file is not a schema", false) return end
+            local flds = (type(data.fields) == "table") and data.fields or data
+            fields = {}
+            for _, fd in ipairs(flds) do
+                if type(fd) == "table" and fd.off and fd.type then
+                    fields[#fields + 1] = { off = fd.off, type = fd.type, name = fd.name or (fd.type .. "@" .. fd.off) }
+                end
+            end
+            local rows = {}
+            for _, fd in ipairs(fields) do
+                local v = readField(fd.off, fd.type)
+                local vs = (v == nil) and "?" or (type(v) == "number" and ("%.3f"):format(v) or tostring(v))
+                rows[#rows + 1] = ("%s = %s"):format(fd.name, vs)
+            end
+            paintValues(rows, ("loaded '%s': %d value(s)"):format(pickSchema, #fields))
+            setStatus(("loaded '%s'"):format(pickSchema), true)
+        end)
+        btn(lRow, "Delete", 66, 2, function()
+            if not (filesOk() and delfile) or pickSchema == "" or pickSchema == "none saved yet" then
+                setStatus("no schema picked", false)
+                return
+            end
+            local p = SDIR .. "/" .. pickSchema .. ".json"
+            local had = isfile(p)
+            if had then pcall(delfile, p) end
+            setStatus(had and ("deleted '" .. pickSchema .. "'") or "already gone", had)
+            pickSchema = ""
+            rebuildLoadDd()
+        end)
+        labelRow(scard, "the detailed view (offsets, types, hex) is in Options > Buffer Lab")
+
+        -- same auto-read as the detailed view
+        do
+            local pendingAt = 0
+            box:GetPropertyChangedSignal("Text"):Connect(function()
+                pendingAt = os.clock() + 0.45
+            end)
+            local conn
+            conn = RunService.RenderStepped:Connect(function()
+                if Koffee.dead() or not box.Parent then
+                    if conn then conn:Disconnect() end
+                    return
+                end
+                if pendingAt > 0 and os.clock() >= pendingAt then
+                    pendingAt = 0
+                    if (box.Text or "") ~= "" then readIt() end
+                end
+            end)
+        end
+
+        paintValues({})
+        rebuildLoadDd()
+    end
+
+    -- v1.8.6: the style switch. Simple is the default; Experienced is the anatomy view.
+    local function buildBufferLab(parent)
+        if (KoffeeOptions.BufferStyle or "Simple") == "Experienced" then
+            return buildBufferLabFull(parent)
+        end
+        return buildBufferLabSimple(parent)
     end
 
     addTab("Custom", function(root)
