@@ -1,7 +1,7 @@
--- koffee v1.8.1
+-- koffee v1.8.2
 
 local Koffee = {}
-Koffee.Version = "1.8.1"
+Koffee.Version = "1.8.2"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -5536,7 +5536,8 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         end
         local api = { frame = body }   -- v0.0.46: expose parent for custom content
         function api:slider(label, mn, mx, initial, precision, onChange)
-            slider(body, label, mn, mx, initial, precision, onChange)
+            -- v1.8.2: hand the row back so a caller can move or fold it like any other
+            return slider(body, label, mn, mx, initial, precision, onChange)
         end
         function api:toggle(label, initial, onChange)
             return configCheckbox(body, label, initial, onChange)
@@ -16895,19 +16896,9 @@ end
         }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }),
              new("UIStroke", { Thickness = 2, Enabled = true }) })
         -- v1.8.0: text rides OUTSIDE the canvas, so a CanvasGroup's texture bounds
-        -- never clip a label that sits past the arm tips.
-        local textRoot = new("Frame", {
-            Name = "TextRoot", AnchorPoint = Vector2.new(0.5, 0.5),
-            Size = UDim2.new(0, 64, 0, 64), Position = UDim2.new(0.5, 0, 0.5, 0),
-            BackgroundTransparency = 1, Visible = false, ZIndex = 17, Parent = layer,
-        })
-        local textInner = new("Frame", {
-            Name = "TextInner", AnchorPoint = Vector2.new(0.5, 0.5),
-            Size = UDim2.fromOffset(0, 0), Position = UDim2.new(0.5, 0, 0.5, 0),
-            BackgroundTransparency = 1, ZIndex = 17, Parent = textRoot,
-        })
-        return { canvas = canvas, arms = arms, dot = dot, outer = outer,
-            texts = {}, textRoot = textRoot, textInner = textInner }
+        -- never clip a label that sits past the arm tips. One pivot pair per row is
+        -- built on demand in paintText, since each row spins on its own.
+        return { canvas = canvas, arms = arms, dot = dot, outer = outer, textRows = {} }
     end
 
     -- grown on demand: 96 segs x 2 chains x 6 arms up front is real cost for a
@@ -17055,11 +17046,13 @@ end
         return Vector2.new(1280, 720)
     end
 
-    -- v1.8.0 CROSSHAIR TEXT. Each row is a label riding a pivot that orbits the
-    -- crosshair centre. The pivot is pushed by Origin X/Y (percent of the reach), and
-    -- the label holder counter-rotates the canvas so a spinning crosshair does not
-    -- drag the words around with it. Rows live in the config, so they save and load
-    -- with everything else.
+    -- v1.8.0 CROSSHAIR TEXT. Each row is a label on its own pivot, so every row can
+    -- orbit at its own speed, direction and origin offset. The pivot is pushed by
+    -- Origin X/Y (percent of the reach) and the holder counter-rotates the canvas, so
+    -- a spinning crosshair never drags the words around with it. Rows live in the
+    -- config, so they save and load with everything else.
+    -- v1.8.2: spin moved onto the row. Text.Spin/SpinSpeed/SpinDir/OriginX/OriginY
+    -- stay as the fallback for rows that predate this, so old configs look the same.
     local XH_POS = { "Top", "Bottom", "Left", "Right", "Middle" }
     Shared._xhTextPositions = XH_POS
     local xhFaceCache = {}
@@ -17071,47 +17064,47 @@ end
         xhFaceCache[name] = ((ok and got) and got) or false
         return (ok and got) or nil
     end
+    -- a row's own value, else the old crosshair-wide one, else the default
+    local function rowSpin(it, T, key, default)
+        local v = it[key]
+        if v == nil then v = T and T[key] end
+        if v == nil then return default end
+        return v
+    end
     local function paintText(cfg, g, cx, cy, canvasRot, reach, dt)
         local T = cfg.Text
-        if not (T and T.Enabled) then
-            if g.textRoot.Visible then
-                g.textRoot.Visible = false
-                for _, l in ipairs(g.texts) do l.Visible = false end
-            end
-            return
+        local items = (T and T.Enabled) and (T.Items or {}) or {}
+        -- hide everything not in use before building anything
+        for i = #items + 1, #g.textRows do
+            local r = g.textRows[i]
+            r.root.Visible = false
+            r.lbl.Visible = false
         end
-        local items = T.Items or {}
-        for i = #g.texts + 1, #items do
-            g.texts[i] = new("TextLabel", {
+        if #items == 0 then return end
+        for i = #g.textRows + 1, #items do
+            local root = new("Frame", {
+                Name = "TextRoot", AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.fromOffset(0, 0), Position = UDim2.fromOffset(0, 0),
+                BackgroundTransparency = 1, Visible = false, ZIndex = 17, Parent = layer,
+            })
+            local inner = new("Frame", {
+                Name = "TextInner", AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.fromOffset(0, 0), Position = UDim2.new(0.5, 0, 0.5, 0),
+                BackgroundTransparency = 1, ZIndex = 17, Parent = root,
+            })
+            local lbl = new("TextLabel", {
                 Name = "Text" .. i, BackgroundTransparency = 1, Text = "",
                 FontFace = Theme.Fonts.Mono, TextSize = 13, TextColor3 = Color3.new(1, 1, 1),
                 Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-                Visible = false, ZIndex = 18, Parent = g.textInner,
+                Visible = false, ZIndex = 18, Parent = inner,
             }, { new("UIStroke", { Thickness = 1, Color = Color3.new(0, 0, 0), Transparency = 0.3 }) })
+            g.textRows[i] = { root = root, inner = inner, lbl = lbl, spin = 0 }
         end
-        for i = #items + 1, #g.texts do g.texts[i].Visible = false end
-        local spin = 0
-        if T.Spin then
-            local sp = (tonumber(T.SpinSpeed) or 45) * ((T.SpinDir == "CCW") and -1 or 1)
-            T._spin = ((T._spin or 0) + sp * dt) % 360
-            spin = T._spin
-        else
-            T._spin = 0
-        end
-        local px = (tonumber(T.OriginX) or 0) / 100 * reach
-        local py = (tonumber(T.OriginY) or 0) / 100 * reach
-        g.textRoot.Size = g.canvas.Size
-        g.textRoot.Position = UDim2.fromOffset(math.floor(cx + 0.5), math.floor(cy + 0.5))
-        g.textRoot.Rotation = spin
-        -- keep the holder's centre on the crosshair while the pivot above it is free
-        g.textInner.Position = UDim2.new(0.5, -px, 0.5, -py)
-        g.textInner.Size = UDim2.fromOffset(0, 0)
-        g.textInner.Rotation = -canvasRot
-        g.textRoot.Visible = true
         local opacity = math.clamp(tonumber(cfg.Opacity) or 1, 0, 1)
         local base = reach + 4
         for i, it in ipairs(items) do
-            local l = g.texts[i]
+            local row = g.textRows[i]
+            local root, inner, l = row.root, row.inner, row.lbl
             local pos = it.Pos or "Bottom"
             local tsize = math.clamp(tonumber(it.Size) or 13, 1, 200)
             -- offset is a percentage of the row's own text size: it scales with the
@@ -17142,12 +17135,38 @@ end
                 l.AnchorPoint = Vector2.new(0.5, 0.5)
                 l.Position = UDim2.fromOffset(0, off)
             end
+            -- v1.8.2: this row's own orbit
+            local spinOn = rowSpin(it, T, "Spin", false)
+            if spinOn then
+                local speed = (tonumber(rowSpin(it, T, "SpinSpeed", 45)) or 45)
+                    * ((rowSpin(it, T, "SpinDir", "CW") == "CCW") and -1 or 1)
+                row.spin = (row.spin + speed * dt) % 360
+            else
+                row.spin = 0
+            end
+            local px = (tonumber(rowSpin(it, T, "OriginX", 0)) or 0) / 100 * reach
+            local py = (tonumber(rowSpin(it, T, "OriginY", 0)) or 0) / 100 * reach
+            root.Size = g.canvas.Size
+            root.Position = UDim2.fromOffset(math.floor(cx + 0.5), math.floor(cy + 0.5))
+            root.Rotation = row.spin
+            -- the holder keeps its centre on the crosshair while the pivot above it
+            -- is free to sit anywhere: that is the adjustable spin origin
+            inner.Position = UDim2.new(0.5, -px, 0.5, -py)
+            inner.Rotation = -canvasRot
+            root.Visible = true
             l.Visible = true
         end
     end
 
+    local function hideTextRows(g)
+        for _, r in ipairs(g.textRows or {}) do
+            r.root.Visible = false
+            r.lbl.Visible = false
+        end
+    end
+
     local function drawXH(cfg, g, dt, which)
-        if not cfg.Enabled then g.canvas.Visible = false; g.textRoot.Visible = false; return end
+        if not cfg.Enabled then g.canvas.Visible = false; hideTextRows(g); return end
         g.canvas.Visible = true
 
         -- base center from Origin (Center | Mouse) + user Offset. Priority chain:
@@ -17368,7 +17387,7 @@ end
             drawXH(Crosshair.S, XS, dt, "Silent")
         else
             XS.canvas.Visible = false
-            XS.textRoot.Visible = false
+            hideTextRows(XS)
         end
     end
 
@@ -23646,16 +23665,23 @@ addTab("Visuals", function(root)
         -- and folds out of the popup instead of popping in.
         -- v1.7.2: the row is taller than the field so its outline has somewhere to
         -- sit inside the body's clip rect.
-        local dirDd
+        -- v1.8.2: RainbowSpeed existed in the config with no control. Speed folds out
+        -- with Direction, since neither means anything while Rainbow is off.
+        local dirDd, spdRow
+        local function reveal(v, instant)
+            if dirDd then Shared.revealRow(dirDd.frame, v, dirDd.rowHeight or 56, instant) end
+            if spdRow then Shared.revealRow(spdRow, v, 44, instant) end
+        end
         popup:toggle("Rainbow", ESP.Health.Rainbow, function(v)
             ESP.Health.Rainbow = v
-            if dirDd then Shared.revealRow(dirDd.frame, v, dirDd.rowHeight or 56) end
+            reveal(v)
         end)
         dirDd = popup:dropdown("Direction", { "Up", "Down" }, ESP.Health.RainbowDir,
             function(v) ESP.Health.RainbowDir = v end)
-        if dirDd then
-            Shared.revealRow(dirDd.frame, ESP.Health.Rainbow == true, dirDd.rowHeight or 56, true)
-        end
+        spdRow = popup:slider("Speed", 0.05, 2, ESP.Health.RainbowSpeed or 0.4, 2,
+            function(v) ESP.Health.RainbowSpeed = v end)
+        if spdRow and spdRow.row then spdRow = spdRow.row end
+        reveal(ESP.Health.Rainbow == true, true)
     end)
     configCheckbox(healthPanel, "Health Text", ESP.Health.Text, function(v) ESP.Health.Text = v end)
     dropdown(healthPanel, "Text Pos", { "Above Name", "On Health Bar" }, ESP.Health.TextPos, function(v) ESP.Health.TextPos = v end)
@@ -23876,6 +23902,17 @@ addTab("Visuals", function(root)
             popup:dropdown("Font", Theme.FontNames, it.Font or "None", function(v) it.Font = v end)
             popup:toggle("Outline", it.Outline ~= false, function(v) it.Outline = v end)
             popup:swatch("Colour", it.Color or Color3.new(1, 1, 1), function(c) it.Color = c end)
+            -- v1.8.2: this row's own orbit. Unset means it inherits the old
+            -- crosshair-wide values, so a config from v1.8.0 keeps behaving.
+            popup:toggle("Spin", it.Spin == true, function(v) it.Spin = v end)
+            popup:slider("Spin Speed (deg/s)", 0, 720, tonumber(it.SpinSpeed) or 45, 0,
+                function(v) it.SpinSpeed = v end)
+            popup:dropdown("Spin Direction", { "CW", "CCW" }, it.SpinDir or "CW",
+                function(v) it.SpinDir = v end)
+            popup:slider("Spin Origin X (%)", -200, 200, tonumber(it.OriginX) or 0, 0,
+                function(v) it.OriginX = v end)
+            popup:slider("Spin Origin Y (%)", -200, 200, tonumber(it.OriginY) or 0, 0,
+                function(v) it.OriginY = v end)
             popup:action("Remove This Text", function()
                 table.remove(cfg.Text.Items, index)
             end)
@@ -23903,15 +23940,8 @@ addTab("Visuals", function(root)
         local txtRow = configCheckbox(card, "Text", cfg.Text.Enabled, function(v) cfg.Text.Enabled = v end)
         rightClickSettings(txtRow.row, "Text", function(popup)
             -- dynamic: the row list changes as rows are added or removed
-            popup:toggle("Spin", cfg.Text.Spin, function(v) cfg.Text.Spin = v end)
-            popup:slider("Spin Speed (deg/s)", 0, 720, cfg.Text.SpinSpeed or 45, 0,
-                function(v) cfg.Text.SpinSpeed = v end)
-            popup:dropdown("Spin Direction", { "CW", "CCW" }, cfg.Text.SpinDir or "CW",
-                function(v) cfg.Text.SpinDir = v end)
-            popup:slider("Spin Origin X (%)", -200, 200, cfg.Text.OriginX or 0, 0,
-                function(v) cfg.Text.OriginX = v end)
-            popup:slider("Spin Origin Y (%)", -200, 200, cfg.Text.OriginY or 0, 0,
-                function(v) cfg.Text.OriginY = v end)
+            -- v1.8.2: spin is per row now, so this menu lists rows and then hands each
+            -- one its own panel. The old crosshair-wide spin lives on as a fallback.
             for i, it in ipairs(cfg.Text.Items) do
                 popup:action(i .. ". " .. tostring(it.Text or ""), function(btn)
                     openTextRow(i, btn and popupFrameOf(btn))
@@ -23964,6 +23994,29 @@ addTab("Visuals", function(root)
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
         popFx(syncBtn)
         syncBtn.MouseButton1Click:Connect(function() Crosshair._sync = tag end)
+        -- v1.8.2: text rows do not ride the rotation Sync above, so A gets its own
+        -- button that pushes the whole row set onto S.
+        if tag == "A" then
+            local syncTextBtn = new("TextButton", {
+                Text = "Sync Text", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 24),
+                ZIndex = 34, Parent = card,
+            }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            popFx(syncTextBtn)
+            syncTextBtn.MouseButton1Click:Connect(function()
+                local src = (Crosshair.Text and Crosshair.Text.Items) or {}
+                local dst = {}
+                for i, it in ipairs(src) do
+                    local c = {}
+                    for k, v in pairs(it) do c[k] = v end
+                    dst[i] = c
+                end
+                Crosshair.S.Text = Crosshair.S.Text or {}
+                Crosshair.S.Text.Items = dst
+            end)
+        end
 
         return card
     end
