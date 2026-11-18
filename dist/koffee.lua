@@ -1,7 +1,7 @@
--- koffee v1.8.3
+-- koffee v1.8.4
 
 local Koffee = {}
-Koffee.Version = "1.8.3"
+Koffee.Version = "1.8.4"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -5228,7 +5228,9 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, 0, 0, 0),
         Size = UDim2.new(0, 82, 0, 18),
-        TextXAlignment = Enum.TextXAlignment.Right,
+        -- v1.8.4: centred. Right-aligned numbers read as a spreadsheet cell; the box
+        -- is a value field, and the value belongs in the middle of it.
+        TextXAlignment = Enum.TextXAlignment.Center,
         ClearTextOnFocus = false,
         ZIndex = 38,
         Parent = row,
@@ -5236,8 +5238,8 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
         pillCorner(),
         stroke(Theme.Palette.BorderSubtle, 1),
         new("UIPadding", {
-            PaddingLeft = UDim.new(0, 8),
-            PaddingRight = UDim.new(0, 10),
+            PaddingLeft = UDim.new(0, 4),
+            PaddingRight = UDim.new(0, 4),
         }),
     })
     local valueStroke = valueBox:FindFirstChildOfClass("UIStroke")
@@ -18345,6 +18347,15 @@ end)() end
                 local val = tb.Text; m.close(); onSubmit(val)
             end
         end)
+        -- v1.8.4: the field takes focus on open. Every one of these dialogs exists for
+        -- exactly one input, so making the user click the box first was busywork.
+        task.defer(function()
+            if tb.Parent then
+                pcall(function() tb:CaptureFocus() end)
+            end
+        end)
+        popFx(cancel)
+        popFx(submit)
     end
     Shared.openTextPopup = openTextPopup
 
@@ -18624,13 +18635,15 @@ end)() end
 
     -- :: rule TYPE picker (first popup) ::
     local RULE_TYPES = {
-        { key = "ObjectOffset",  label = "Object Offset",
+        { key = "ObjectOffset",  label = "Object Offset", icon = "rotate-3d",
           desc = "material + position + rotation + spin on a target instance." },
-        { key = "AntiAnimation", label = "Anti-animation",
+        { key = "AntiAnimation", label = "Anti-animation", icon = "ban",
           desc = "block a specific animation id from ever playing on you." },
     }
     local function openRuleTypePicker()
-        local m = openModal(400, 250)
+        -- v1.8.4: 216, not 250. The dialog was sized for the old padded layout and
+        -- carried a dead 60px gap between the options and the buttons.
+        local m = openModal(400, 216)
         new("TextLabel", {
             Text = "New Rule", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
@@ -18640,7 +18653,10 @@ end)() end
         })
         local pick = nil
         local buttons = {}
+        local submitRef
         -- v0.9.0: these were ONE unwrapped single-line label: "Object Offset: material + position + rotation + spin on a target instance." on a 328px button with TextWrapped off and nothing clipping it, so the description ran straight out past the edge of the popup. Split into a title line and a wrapped description, with the button tall enough to hold both.
+        -- v1.8.4: each type gets its own icon, the rows light on hover, and Submit is
+        -- a dead grey button until something is actually picked.
         for i, rt in ipairs(RULE_TYPES) do
             local b = new("TextButton", {
                 Text = "", AutoButtonColor = false,
@@ -18650,11 +18666,22 @@ end)() end
                 Size = UDim2.new(1, -32, 0, 50),
                 ZIndex = 202, Parent = m.box,
             }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            popFx(b)
+            local badge = new("Frame", {
+                BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, Position = UDim2.fromOffset(8, 9),
+                Size = UDim2.fromOffset(30, 30), ZIndex = 203, Parent = b,
+            }, { corner(6) })
+            local ic = Koffee.lucideIcon(badge, rt.icon, 16, Theme.Palette.TextMuted, 204)
+            if ic then
+                ic.AnchorPoint = Vector2.new(0.5, 0.5)
+                ic.Position = UDim2.new(0.5, 0, 0.5, 0)
+            end
             new("TextLabel", {
                 Text = rt.label, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
                 TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
                 TextXAlignment = Enum.TextXAlignment.Left,
-                Position = UDim2.new(0, 10, 0, 6), Size = UDim2.new(1, -20, 0, 15),
+                Position = UDim2.new(0, 46, 0, 6), Size = UDim2.new(1, -56, 0, 15),
                 ZIndex = 203, Parent = b,
             })
             new("TextLabel", {
@@ -18662,18 +18689,40 @@ end)() end
                 TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
                 TextXAlignment = Enum.TextXAlignment.Left,
                 TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
-                Position = UDim2.new(0, 10, 0, 22), Size = UDim2.new(1, -20, 0, 24),
+                Position = UDim2.new(0, 46, 0, 22), Size = UDim2.new(1, -56, 0, 24),
                 ZIndex = 203, Parent = b,
             })
-            buttons[i] = b
+            local check = new("TextLabel", {
+                Text = "", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Accent, BackgroundTransparency = 1,
+                AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
+                Size = UDim2.fromOffset(14, 14), Visible = false, ZIndex = 203, Parent = b,
+            })
+            local checkIc = Koffee.lucideIcon(check, "check", 14, Theme.Palette.Accent, 204)
+            if checkIc then
+                checkIc.AnchorPoint = Vector2.new(0.5, 0.5)
+                checkIc.Position = UDim2.new(0.5, 0, 0.5, 0)
+            end
+            buttons[i] = { b = b, check = check, ic = ic }
+            b.MouseEnter:Connect(function()
+                if pick ~= rt.key then tween(b, Theme.Animation.Fast, { BackgroundTransparency = 0.15 }) end
+            end)
+            b.MouseLeave:Connect(function()
+                if pick ~= rt.key then tween(b, Theme.Animation.Fast, { BackgroundTransparency = 0.3 }) end
+            end)
             b.MouseButton1Click:Connect(function()
                 pick = rt.key
-                for _, bb in ipairs(buttons) do
-                    bb.BackgroundColor3 = Theme.Palette.PanelElevated
-                    bb.BackgroundTransparency = 0.3
+                for _, e in ipairs(buttons) do
+                    e.b.BackgroundColor3 = Theme.Palette.PanelElevated
+                    e.b.BackgroundTransparency = 0.3
+                    e.check.Visible = (e.b == b)
                 end
                 b.BackgroundColor3 = Theme.Palette.Accent
                 b.BackgroundTransparency = 0.15
+                if submitRef then
+                    submitRef.BackgroundColor3 = Theme.Palette.Accent
+                    submitRef.TextColor3 = Theme.Palette.Text
+                end
             end)
         end
         local cancel = new("TextButton", {
@@ -18686,14 +18735,21 @@ end)() end
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
         local submit = new("TextButton", {
             Text = "Submit", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
-            AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
-            BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
+            AutoButtonColor = false,
+            -- v1.8.4: starts dead. Submitting with nothing picked used to close the
+            -- dialog and silently do nothing, which reads as a broken button.
+            TextColor3 = Theme.Palette.TextMuted,
+            BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.15,
             BorderSizePixel = 0,
             AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14),
             Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        submitRef = submit
         cancel.MouseButton1Click:Connect(function() m.close() end)
+        popFx(cancel)
+        popFx(submit)
         submit.MouseButton1Click:Connect(function()
+            if not pick then return end
             m.close()
             if pick == "ObjectOffset" then
                 openInstancePicker(function(inst, path)
@@ -24025,6 +24081,8 @@ addTab("Visuals", function(root)
             Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.new(0, 60, 0, 20),
             ZIndex = 38, Parent = lockCB.row,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        Koffee.attachBtnHover(openBtn, 0.02, 0.2)
+        popFx(openBtn)
         openBtn.MouseButton1Click:Connect(function()
             if not Shared.openInstancePicker then return end
             Shared.openInstancePicker(function(inst, path)
@@ -24040,6 +24098,7 @@ addTab("Visuals", function(root)
             BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 24),
             ZIndex = 34, Parent = card,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        Koffee.attachBtnHover(syncBtn, 0.02, 0.2)
         popFx(syncBtn)
         syncBtn.MouseButton1Click:Connect(function() Crosshair._sync = tag end)
         -- v1.8.2: text rows do not ride the rotation Sync above, so A gets its own
@@ -24052,6 +24111,7 @@ addTab("Visuals", function(root)
                 BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 24),
                 ZIndex = 34, Parent = card,
             }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            Koffee.attachBtnHover(syncTextBtn, 0.02, 0.2)
             popFx(syncTextBtn)
             syncTextBtn.MouseButton1Click:Connect(function()
                 local src = (Crosshair.Text and Crosshair.Text.Items) or {}
@@ -24320,14 +24380,25 @@ addTab("World", function(root)
         Position = UDim2.new(0, 0, 0, 4), Size = UDim2.new(1, -34, 0, 16),
         ZIndex = 34, Parent = headerRow,
     })
+    -- v1.8.4: this used to be a Bold 16px "+" glyph, which renders as a plus sign from
+    -- a proportional font: off-centre and out of scale with every other icon in the
+    -- build. A lucide plus at 14 sits on the same optical grid as the rest.
     local plusBtn = new("TextButton", {
-        Text = "+", FontFace = Theme.Fonts.Bold, TextSize = 16,
-        AutoButtonColor = false, TextColor3 = Theme.Palette.Text,
+        Text = "", AutoButtonColor = false,
         BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.15,
         BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0),
-        Position = UDim2.new(1, 0, 0, 0), Size = UDim2.new(0, 26, 0, 20),
+        Position = UDim2.new(1, 0, 0, 0), Size = UDim2.new(0, 26, 0, 22),
         ZIndex = 34, Parent = headerRow,
     }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+    do
+        local ic = Koffee.lucideIcon(plusBtn, "plus", 14, Theme.Palette.Snow, 35)
+        if ic then
+            ic.AnchorPoint = Vector2.new(0.5, 0.5)
+            ic.Position = UDim2.new(0.5, 0, 0.5, 0)
+        end
+    end
+    Koffee.attachBtnHover(plusBtn, 0.02, 0.15)
+    popFx(plusBtn)
     plusBtn.MouseButton1Click:Connect(function()
         if Shared.openRuleTypePicker then Shared.openRuleTypePicker() end
     end)
@@ -24338,11 +24409,11 @@ addTab("World", function(root)
     }, { new("UIListLayout", { Padding = UDim.new(0, 4),
         SortOrder = Enum.SortOrder.LayoutOrder }) })
     local emptyLabel = new("TextLabel", {
-            Text = "No rules yet: click + to add one.",
+            Text = "No rules yet. Use the + button above to add one.",
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Size = UDim2.new(1, 0, 0, 20), ZIndex = 34, Parent = rulesList,
+        Size = UDim2.new(1, 0, 0, 22), ZIndex = 34, Parent = rulesList,
     })
 
     local function refreshRules()
@@ -24353,7 +24424,7 @@ addTab("World", function(root)
         emptyLabel.Visible = (#Shared.WorldRules.List == 0)
         for i, rule in ipairs(Shared.WorldRules.List) do
             local row = new("Frame", {
-                Size = UDim2.new(1, 0, 0, 26),
+                Size = UDim2.new(1, 0, 0, 28),
                 BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.3,
                 BorderSizePixel = 0, LayoutOrder = i, ZIndex = 34, Parent = rulesList,
             }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
@@ -24370,7 +24441,7 @@ addTab("World", function(root)
                 Text = rule.name, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Body,
                 TextColor3 = Theme.Palette.Text, AutoButtonColor = false,
                 BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
-                Position = UDim2.new(0, 76, 0, 0), Size = UDim2.new(1, -110, 1, 0),
+                Position = UDim2.new(0, 76, 0, 0), Size = UDim2.new(1, -136, 1, 0),
                 TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 35, Parent = row,
             })
             nameBtn.MouseButton1Click:Connect(function()
@@ -24379,17 +24450,35 @@ addTab("World", function(root)
                         function(newName) Shared.renameRule(rule.id, newName) end)
                 end
             end)
-            -- delete icon
-            local delBtn = new("TextButton", {
-                Text = "X", FontFace = Theme.Fonts.Bold, TextSize = 14,
-                AutoButtonColor = false, TextColor3 = Theme.Palette.Danger or Color3.fromRGB(220, 90, 90),
-                BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.35,
-                BorderSizePixel = 0,
-                AnchorPoint = Vector2.new(1, 0.5),
-                Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.new(0, 22, 0, 20),
-                ZIndex = 35, Parent = row,
-            }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
-            delBtn.MouseButton1Click:Connect(function() Shared.removeRule(rule.id) end)
+            -- v1.8.4: rename and delete are icons now, sitting on the row's right edge
+            -- like every other list in the build. The name itself still renames.
+            local function iconBtn(icon, color, order, onClick)
+                local b = new("TextButton", {
+                    Text = "", AutoButtonColor = false,
+                    BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 1,
+                    BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -6 - (order - 1) * 24, 0.5, 0),
+                    Size = UDim2.new(0, 20, 0, 20), ZIndex = 35, Parent = row,
+                }, { corner(4) })
+                local ic = Koffee.lucideIcon(b, icon, 13, color, 36)
+                if ic then
+                    ic.AnchorPoint = Vector2.new(0.5, 0.5)
+                    ic.Position = UDim2.new(0.5, 0, 0.5, 0)
+                end
+                Koffee.attachBtnHover(b, 0.1, 1)
+                popFx(b)
+                b.MouseButton1Click:Connect(onClick)
+                return b
+            end
+            iconBtn("trash-2", Theme.Palette.Danger or Color3.fromRGB(220, 90, 90), 1, function()
+                Shared.removeRule(rule.id)
+            end)
+            iconBtn("pencil", Theme.Palette.TextMuted, 2, function()
+                if Shared.openTextPopup then
+                    Shared.openTextPopup("rename rule", rule.name, "new name",
+                        function(newName) Shared.renameRule(rule.id, newName) end)
+                end
+            end)
         end
     end
     Shared._rulesListRefresh = refreshRules
@@ -34207,21 +34296,36 @@ registerConfig("custom", Koffee.Custom)
                         BackgroundTransparency = 0.15, BorderSizePixel = 0,
                         Size = UDim2.new(1, 0, 0, HEAD_H), ZIndex = 36, Parent = f,
                     }, { corner(6) })
+                    -- v1.8.4: the node's delete and fold were text glyphs ("X", "+"/"-").
+                    -- Lucide icons line up with the rest of the build's affordances.
                     local del = new("TextButton", {
-                        Text = "X", AutoButtonColor = false, FontFace = Theme.Fonts.Bold,
-                        TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
+                        Text = "", AutoButtonColor = false,
                         BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5),
-                        Position = UDim2.new(1, -5, 0.5, 0), Size = UDim2.new(0, 16, 0, 16),
+                        Position = UDim2.new(1, -4, 0.5, 0), Size = UDim2.new(0, 18, 0, 18),
                         ZIndex = 37, Parent = head,
                     })
+                    do
+                        local ic = Koffee.lucideIcon(del, "x", 12, Theme.Palette.TextFaint, 38)
+                        if ic then
+                            ic.AnchorPoint = Vector2.new(0.5, 0.5)
+                            ic.Position = UDim2.new(0.5, 0, 0.5, 0)
+                        end
+                    end
                     local fold = new("TextButton", {
-                        Text = node.fold and "+" or "-", AutoButtonColor = false,
-                        FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Small,
-                        TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                        Text = "", AutoButtonColor = false,
+                        BackgroundTransparency = 1,
                         AnchorPoint = Vector2.new(1, 0.5),
-                        Position = UDim2.new(1, -21, 0.5, 0), Size = UDim2.new(0, 16, 0, 16),
+                        Position = UDim2.new(1, -22, 0.5, 0), Size = UDim2.new(0, 18, 0, 18),
                         ZIndex = 37, Parent = head,
                     })
+                    do
+                        local ic = Koffee.lucideIcon(fold, node.fold and "chevron-right" or "chevron-down",
+                            13, Theme.Palette.TextFaint, 38)
+                        if ic then
+                            ic.AnchorPoint = Vector2.new(0.5, 0.5)
+                            ic.Position = UDim2.new(0.5, 0, 0.5, 0)
+                        end
+                    end
                     fold.MouseButton1Click:Connect(function()
                         node.fold = not node.fold or nil
                         rebuildAll()
@@ -34722,10 +34826,17 @@ registerConfig("custom", Koffee.Custom)
                     Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -34, 1, 0), ZIndex = 37, Parent = rr,
                 })
                 local xb = new("TextButton", {
-                    Text = "X", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Danger,
-                    BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0),
-                    Size = UDim2.fromOffset(16, 16), ZIndex = 37, Parent = rr,
+                    Text = "", BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -5, 0.5, 0),
+                    Size = UDim2.fromOffset(18, 18), ZIndex = 37, Parent = rr,
                 })
+                do
+                    local ic = Koffee.lucideIcon(xb, "x", 11, Theme.Palette.Danger, 38)
+                    if ic then
+                        ic.AnchorPoint = Vector2.new(0.5, 0.5)
+                        ic.Position = UDim2.new(0.5, 0, 0.5, 0)
+                    end
+                end
                 xb.MouseButton1Click:Connect(function() table.remove(fields, i); refreshFields() end)
                 fieldRows[#fieldRows + 1] = rr
                 -- v0.48.0: labeled rows cascade in like Mods rows do; Lists
