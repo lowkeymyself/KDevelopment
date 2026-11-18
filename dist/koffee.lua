@@ -1,7 +1,7 @@
--- koffee v1.8.4
+-- koffee v1.8.5
 
 local Koffee = {}
-Koffee.Version = "1.8.4"
+Koffee.Version = "1.8.5"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -18558,7 +18558,7 @@ end)() end
 
     -- :: Object Offset settings popup :: Reused for BOTH "creating a new rule" (rule is a temp table) AND future "editing an existing rule". Live preview: temp rule is added to WorldRules.List while the popup is open so the render loop drives it; Cancel removes it, Submit keeps it.
     local function openObjectOffsetPopup(targetInst, targetPath, existingRule)
-        local m = openModal(360, 480)
+        local m = openModal(400, 500)
         local temp = existingRule or {
             type = "ObjectOffset", name = ("Offset: " .. targetInst.Name),
             targetPath = targetPath, _target = targetInst,
@@ -18572,16 +18572,39 @@ end)() end
         -- add early so the render loop drives live preview
         if not existingRule then Shared.addRule(temp) end
 
+        -- v1.8.5: same header language as the type picker: an icon badge, the title,
+        -- and the target under it. The body is grouped with section labels instead of
+        -- nine controls in one undifferentiated column.
+        local head = new("Frame", {
+            Position = UDim2.fromOffset(12, 10), Size = UDim2.new(1, -24, 0, 36),
+            BackgroundTransparency = 1, ZIndex = 202, Parent = m.box,
+        })
+        local badge = new("Frame", {
+            BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.2,
+            BorderSizePixel = 0, Position = UDim2.fromOffset(0, 2),
+            Size = UDim2.fromOffset(32, 32), ZIndex = 203, Parent = head,
+        }, { corner(6) })
+        local bic = Koffee.lucideIcon(badge, "rotate-3d", 17, Theme.Palette.TextMuted, 204)
+        if bic then
+            bic.AnchorPoint = Vector2.new(0.5, 0.5)
+            bic.Position = UDim2.new(0.5, 0, 0.5, 0)
+        end
         new("TextLabel", {
-            Text = "Object Offset: " .. targetInst.Name,
-            FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+            Text = "Object Offset", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
             TextXAlignment = Enum.TextXAlignment.Left,
-            Position = UDim2.new(0, 16, 0, 12), Size = UDim2.new(1, -32, 0, 18),
-            ZIndex = 202, Parent = m.box,
+            Position = UDim2.fromOffset(42, 0), Size = UDim2.new(1, -42, 0, 18),
+            ZIndex = 203, Parent = head,
+        })
+        new("TextLabel", {
+            Text = targetInst.Name, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            Position = UDim2.fromOffset(42, 19), Size = UDim2.new(1, -42, 0, 14),
+            ZIndex = 203, Parent = head,
         })
         local body = new("ScrollingFrame", {
-            Position = UDim2.new(0, 12, 0, 40), Size = UDim2.new(1, -24, 1, -90),
+            Position = UDim2.new(0, 12, 0, 50), Size = UDim2.new(1, -24, 1, -100),
             BackgroundTransparency = 1, BorderSizePixel = 0,
             CanvasSize = UDim2.new(0, 0, 0, 0),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
@@ -18589,22 +18612,34 @@ end)() end
             ZIndex = 202, Parent = m.box,
         }, { new("UIListLayout", { Padding = UDim.new(0, 6),
             SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local function section(text)
+            new("TextLabel", {
+                Text = text, FontFace = Theme.Fonts.Mono, TextSize = 10,
+                TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Size = UDim2.new(1, 0, 0, 12), ZIndex = 203, Parent = body,
+            })
+        end
 
         -- material override toggle + material dropdown
+        section("MATERIAL")
         configCheckbox(body, "Override Material", temp.settings.MaterialOverride,
             function(v) temp.settings.MaterialOverride = v end)
         dropdown(body, "Material", Shared._materials, temp.settings.Material,
             function(v) temp.settings.Material = v end)
 
         -- offsets
+        section("POSITION OFFSET")
         slider(body, "Offset X", -100, 100, temp.settings.OffsetX, 2, function(v) temp.settings.OffsetX = v end)
         slider(body, "Offset Y", -100, 100, temp.settings.OffsetY, 2, function(v) temp.settings.OffsetY = v end)
         slider(body, "Offset Z", -100, 100, temp.settings.OffsetZ, 2, function(v) temp.settings.OffsetZ = v end)
         -- rotations
+        section("ROTATION")
         slider(body, "Rotation X", -180, 180, temp.settings.RotX, 0, function(v) temp.settings.RotX = v end)
         slider(body, "Rotation Y", -180, 180, temp.settings.RotY, 0, function(v) temp.settings.RotY = v end)
         slider(body, "Rotation Z", -180, 180, temp.settings.RotZ, 0, function(v) temp.settings.RotZ = v end)
         -- spin
+        section("SPIN")
         configCheckbox(body, "Spin", temp.settings.Spin, function(v) temp.settings.Spin = v end)
         slider(body, "Spin Speed (deg/s)", 0, 720, temp.settings.SpinSpeed, 0, function(v) temp.settings.SpinSpeed = v end)
         dropdown(body, "Spin Axis", { "X", "Y", "Z" }, temp.settings.SpinAxis, function(v) temp.settings.SpinAxis = v end)
@@ -18625,6 +18660,8 @@ end)() end
             AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14),
             Size = UDim2.new(0, 88, 0, 28), ZIndex = 202, Parent = m.box,
         }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+        popFx(cancel)
+        popFx(submit)
         cancel.MouseButton1Click:Connect(function()
             m.close()
             if not existingRule then Shared.removeRule(temp.id) end
@@ -18748,7 +18785,7 @@ end)() end
         cancel.MouseButton1Click:Connect(function() m.close() end)
         popFx(cancel)
         popFx(submit)
-        submit.MouseButton1Click:Connect(function()
+        local function confirmPick()
             if not pick then return end
             m.close()
             if pick == "ObjectOffset" then
@@ -18763,6 +18800,23 @@ end)() end
                         Shared.addRule({ type = "AntiAnimation", name = "Anti-anim " .. num,
                             settings = { AnimId = num } })
                     end)
+            end
+        end
+        submit.MouseButton1Click:Connect(confirmPick)
+        -- v1.8.5: Enter submits once a type is picked, and Escape closes. Both unbind
+        -- themselves when the dialog goes away, so nothing is left listening.
+        local keyConn
+        keyConn = UserInputService.InputBegan:Connect(function(input, processed)
+            if not (m.box and m.box.Parent) then
+                if keyConn then keyConn:Disconnect(); keyConn = nil end
+                return
+            end
+            if processed then return end
+            local k = input.KeyCode
+            if k == Enum.KeyCode.Return or k == Enum.KeyCode.KeypadEnter then
+                confirmPick()
+            elseif k == Enum.KeyCode.Escape then
+                m.close()
             end
         end)
     end
@@ -24428,12 +24482,14 @@ addTab("World", function(root)
                 BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.3,
                 BorderSizePixel = 0, LayoutOrder = i, ZIndex = 34, Parent = rulesList,
             }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
-            -- type badge
+            -- type badge: hugs its own text. The 78px name gutter is the contract, so
+            -- a future type name that outgrows the gutter shows instead of clipping.
             new("TextLabel", {
                 Text = (rule.type == "AntiAnimation" and "Anti-Anim" or "Offset"),
                 FontFace = Theme.Fonts.Mono, TextSize = 10,
                 TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
-                Position = UDim2.new(0, 8, 0, 0), Size = UDim2.new(0, 64, 1, 0),
+                Position = UDim2.new(0, 8, 0, 0),
+                Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X,
                 TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = row,
             })
             -- name: clicking opens rename popup
@@ -24592,7 +24648,7 @@ function Deco.buildPanel(root)
         for _, c in ipairs(listBox:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
         if #Deco.Accessories == 0 then
             new("TextLabel", {
-                Text = "No accessories added.", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+                Text = "No accessories yet.", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
                 Size = UDim2.new(1, 0, 0, 16), Parent = listBox,
             })
@@ -34691,13 +34747,24 @@ registerConfig("custom", Koffee.Custom)
         }, { corner(6), stroke(Theme.Palette.BorderSubtle),
             new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
                 PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        -- v1.8.5: one status line that actually says what happened. Decode used to
+        -- fail silently unless you read the inspector header.
+        local status = new("TextLabel", {
+            Text = "waiting for bytes", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 21, ZIndex = 36, Parent = card,
+        })
+        local function setStatus(msg, ok)
+            status.Text = msg
+            status.TextColor3 = ok and Theme.Palette.TextMuted or (Theme.Palette.Danger or Color3.fromRGB(220, 90, 90))
+        end
+        -- v1.8.5: the sanity ceiling belongs with the decode button, not under it
+        local saneBox = inputBox(card, "auto-detect max |value| (default 50000)", UDim2.new(1, 0, 0, 24), 22)
         local pRow = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 21, ZIndex = 36, Parent = card,
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, LayoutOrder = 23, ZIndex = 36, Parent = card,
         }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
             VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
-        -- v0.39.0: customizable sanity ceiling: floats bigger than this are treated
-        -- as garbage by auto-detect (raise it for big-coordinate maps, lower to be strict).
-        local saneBox = inputBox(card, "auto-detect max |value| (default 50000)", UDim2.new(1, 0, 0, 24), 22)
 
         -- === inspector card ===
         local icard = panel(parent, "Inspector")
@@ -34721,30 +34788,50 @@ registerConfig("custom", Koffee.Custom)
             BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
             AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.fromScale(1, 0), LayoutOrder = 1, ZIndex = 36, Parent = ibody,
         })
-        local guess = new("TextLabel", {
-            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Accent,
+        -- v1.8.5: guesses are rows you can click, not a wall of text. Each row carries
+        -- the fields it would add, so a vec3 suggestion is one click, not three.
+        local guessBox = new("Frame", {
+            Size = UDim2.fromScale(1, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+            LayoutOrder = 2, ZIndex = 36, Parent = ibody,
+        }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 2),
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local guessHint = new("TextLabel", {
+            Text = "", FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextFaint,
             BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-            AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.fromScale(1, 0), LayoutOrder = 2, ZIndex = 36, Parent = ibody,
+            AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.fromScale(1, 0), LayoutOrder = 3, ZIndex = 36, Parent = ibody,
         })
+        local guessRows = {}
 
         local function inspect()
             local blen = #curBytes
             header.Text = (blen > 0) and (blen .. " bytes") or "Paste a buffer and hit Decode"
+            -- v1.8.5: 8 bytes a line with an ASCII gutter, so it reads like a real hex
+            -- editor instead of one undifferentiated run of numbers.
             local lines, shown = {}, math.min(blen, 256)
-            for off = 0, shown - 1, 16 do
-                local parts = {}
-                for j = 0, 15 do
+            local function ascii(s)
+                return (s:gsub("[^%g ]", "."))
+            end
+            for off = 0, shown - 1, 8 do
+                local parts, raw = {}, {}
+                for j = 0, 7 do
                     local k = off + j
-                    if k < shown then parts[#parts + 1] = ("%02X"):format(curBytes:byte(k + 1)) end
+                    if k < shown then
+                        local byte = curBytes:byte(k + 1)
+                        parts[#parts + 1] = ("%02X"):format(byte)
+                        raw[#raw + 1] = string.char(byte)
+                    else
+                        parts[#parts + 1] = "  "
+                    end
                 end
-                lines[#lines + 1] = ("%04X  %s"):format(off, table.concat(parts, " "))
+                lines[#lines + 1] = ("%04X  %s  |%s|"):format(off, table.concat(parts, " "), ascii(table.concat(raw)))
             end
             if blen > shown then lines[#lines + 1] = ("... (%d more bytes)"):format(blen - shown) end
             dump.Text = table.concat(lines, "\n")
+            ibody.CanvasPosition = Vector2.zero
             -- auto-detect: sane f32s (finite, not garbage-huge), Vector3 triplets first.
             -- This is the sanity check: 9e19 as an X, 0 as Y is NOT a position, so
             -- absurd floats are rejected instead of being suggested as fields.
-            local guesses = {}
+            local rows = {}
             lastGuesses = {}
             local ok, b = pcall(buffer.fromstring, curBytes)
             if ok and blen > 0 then
@@ -34755,34 +34842,67 @@ registerConfig("custom", Koffee.Custom)
                         and (f == 0 or (math.abs(f) >= 1e-3 and math.abs(f) < saneMax))
                 end
                 local off = 0
-                while off <= n - 4 and #guesses < 40 do
+                while off <= n - 4 and #rows < 40 do
                     if off <= n - 12 then
                         local x, y, z = rf(off), rf(off + 4), rf(off + 8)
                         if sane(x) and sane(y) and sane(z) and not (x == 0 and y == 0 and z == 0) then
-                            guesses[#guesses + 1] = ("off %-4d  vec3? (%.1f, %.1f, %.1f)"):format(off, x, y, z)
-                            lastGuesses[#lastGuesses + 1] = { off = off, type = "f32", name = "x@" .. off }
-                            lastGuesses[#lastGuesses + 1] = { off = off + 4, type = "f32", name = "y@" .. off }
-                            lastGuesses[#lastGuesses + 1] = { off = off + 8, type = "f32", name = "z@" .. off }
+                            rows[#rows + 1] = {
+                                text = ("off %-4d  vec3  (%.1f, %.1f, %.1f)"):format(off, x, y, z),
+                                fields = {
+                                    { off = off, type = "f32", name = "x@" .. off },
+                                    { off = off + 4, type = "f32", name = "y@" .. (off + 4) },
+                                    { off = off + 8, type = "f32", name = "z@" .. (off + 8) },
+                                },
+                            }
                             off = off + 12
                             continue
                         end
                     end
                     local x = rf(off)
                     if sane(x) and x ~= 0 then
-                        guesses[#guesses + 1] = ("off %-4d  f32 = %.3f"):format(off, x)
-                        lastGuesses[#lastGuesses + 1] = { off = off, type = "f32", name = "f32@" .. off }
+                        rows[#rows + 1] = {
+                            text = ("off %-4d  f32 = %.3f"):format(off, x),
+                            fields = { { off = off, type = "f32", name = "f32@" .. off } },
+                        }
                     else
                         local oku, u = pcall(buffer.readu32, b, off)
                         if oku and u > 0 and u < 100000 then
-                            guesses[#guesses + 1] = ("off %-4d  u32 = %d"):format(off, u)
-                            lastGuesses[#lastGuesses + 1] = { off = off, type = "u32", name = "u32@" .. off }
+                            rows[#rows + 1] = {
+                                text = ("off %-4d  u32 = %d"):format(off, u),
+                                fields = { { off = off, type = "u32", name = "u32@" .. off } },
+                            }
                         end
                     end
                     off = off + 4
                 end
             end
-            guess.Text = (#guesses > 0) and ("auto-detected (guesses):\n" .. table.concat(guesses, "\n"))
-                or "no obvious fields: add them by hand"
+            for _, r in ipairs(guessRows) do pcall(function() r:Destroy() end) end
+            table.clear(guessRows)
+            lastGuesses = {}
+            for i, row in ipairs(rows) do
+                for _, fd in ipairs(row.fields) do
+                    lastGuesses[#lastGuesses + 1] = { off = fd.off, type = fd.type, name = fd.name }
+                end
+                local b2 = new("TextButton", {
+                    Text = row.text, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+                    TextColor3 = Theme.Palette.TextMuted, BackgroundColor3 = Theme.Palette.Panel,
+                    BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+                    AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 16),
+                    LayoutOrder = i, ZIndex = 37, Parent = guessBox, ClipsDescendants = true,
+                }, { corner(3), new("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4) }) })
+                Koffee.attachBtnHover(b2, 0.35, 1)
+                b2.MouseButton1Click:Connect(function()
+                    for _, fd in ipairs(row.fields) do
+                        fields[#fields + 1] = { off = fd.off, type = fd.type, name = fd.name }
+                    end
+                    refreshFields()
+                    setStatus(#row.fields .. " field(s) added from the guess", true)
+                end)
+                guessRows[#guessRows + 1] = b2
+            end
+            guessHint.Text = (#rows == 0)
+                and "no obvious fields: add them by hand below"
+                or "click a line to add it as a field"
         end
 
         -- === fields / schema card (stage 2) ===
@@ -34796,11 +34916,15 @@ registerConfig("custom", Koffee.Custom)
         nameBox.LayoutOrder = 12
         mkBtn(fcard, "Add Field", 84, 13, function()
             local off = tonumber((offBox.Text or ""):match("%d+"))
-            if not off then return end
+            if not off then
+                setStatus("add field: give it an offset in bytes", false)
+                return
+            end
             local nm = (nameBox.Text ~= "" and nameBox.Text) or (addType .. "@" .. off)
             fields[#fields + 1] = { off = off, type = addType, name = nm }
             offBox.Text, nameBox.Text = "", ""
             refreshFields()
+            setStatus("added " .. nm .. " at " .. off, true)
         end).LayoutOrder = 13
 
         local fieldList = new("Frame", {
@@ -34819,12 +34943,28 @@ registerConfig("custom", Koffee.Custom)
                     Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.3,
                     LayoutOrder = i, ZIndex = 36, Parent = fieldList,
                 }, { corner(4) })
-                new("TextLabel", {
+                local nameBtn = new("TextButton", {
                     Text = ("%s   %s@%d = %s"):format(fd.name, fd.type, fd.off, vs),
                     FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
-                    BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                    BackgroundTransparency = 1, BorderSizePixel = 0, AutoButtonColor = false,
+                    TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
                     Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -34, 1, 0), ZIndex = 37, Parent = rr,
                 })
+                -- v1.8.5: clicking a field renames it, so the list is editable instead
+                -- of delete-and-retype.
+                nameBtn.MouseEnter:Connect(function()
+                    nameBtn.TextColor3 = Theme.Palette.Accent
+                end)
+                nameBtn.MouseLeave:Connect(function()
+                    nameBtn.TextColor3 = Theme.Palette.Text
+                end)
+                nameBtn.MouseButton1Click:Connect(function()
+                    if not Shared.openTextPopup then return end
+                    Shared.openTextPopup("rename field", fd.name, "name", function(v)
+                        if v ~= "" then fd.name = v:sub(1, 24) end
+                        refreshFields()
+                    end)
+                end)
                 local xb = new("TextButton", {
                     Text = "", BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5),
                     Position = UDim2.new(1, -5, 0.5, 0),
@@ -34871,7 +35011,8 @@ registerConfig("custom", Koffee.Custom)
 
         mkBtn(fcard, "Save Schema", 96, 31, function()
             local nm = (schemaBox.Text or ""):gsub("[^%w _%-]", ""):gsub("^%s+", ""):gsub("%s+$", "")
-            if nm == "" or not filesOk() then return end
+            if nm == "" then setStatus("save schema: type a name first", false) return end
+            if not filesOk() then setStatus("save schema: this executor has no file API", false) return end
             ensureDir()
             -- v0.39.0: store the pasted bytes as a hex TEMPLATE too, so Build Buffer
             -- can start from this known-good buffer and patch only the labeled fields.
@@ -34881,14 +35022,20 @@ registerConfig("custom", Koffee.Custom)
                 writefile(SDIR .. "/" .. nm .. ".json",
                     HttpService:JSONEncode({ fields = fields, template = table.concat(tmplHex) }))
             end)
-            if ok then pickSchema = nm; rebuildLoadDd() end
+            if ok then
+                pickSchema = nm
+                rebuildLoadDd()
+                setStatus(("saved schema '%s' (%d field(s))"):format(nm, #fields), true)
+            else
+                setStatus("save schema failed", false)
+            end
         end).LayoutOrder = 31
         mkBtn(sRow, "Load", 60, 1, function()
-            if not filesOk() or pickSchema == "" then return end
+            if not filesOk() or pickSchema == "" then setStatus("load: pick a schema first", false) return end
             local p = SDIR .. "/" .. pickSchema .. ".json"
-            if not isfile(p) then return end
+            if not isfile(p) then setStatus("load: that schema file is gone", false) return end
             local ok, txt = pcall(readfile, p)
-            if not ok then return end
+            if not ok then setStatus("load: read failed", false) return end
             local dok, data = pcall(function() return HttpService:JSONDecode(txt) end)
             if dok and type(data) == "table" then
                 -- v0.39.0: new format is { fields, template }; old was a bare fields array.
@@ -34900,34 +35047,70 @@ registerConfig("custom", Koffee.Custom)
                     end
                 end
                 refreshFields()
+                setStatus(("loaded '%s': %d field(s)"):format(pickSchema, #fields), true)
+            else
+                setStatus("load: that file is not a schema", false)
             end
         end)
         mkBtn(sRow, "Delete", 66, 2, function()
-            if not (filesOk() and delfile) or pickSchema == "" then return end
+            if not (filesOk() and delfile) or pickSchema == "" then setStatus("delete: pick a schema first", false) return end
             local p = SDIR .. "/" .. pickSchema .. ".json"
-            if isfile(p) then pcall(delfile, p) end
+            local had = isfile(p)
+            if had then pcall(delfile, p) end
+            setStatus(had and ("deleted '" .. pickSchema .. "'") or "that schema file is already gone", had)
             pickSchema = ""
             rebuildLoadDd()
         end)
 
         -- decode / clear in the paste card
-        mkBtn(pRow, "Decode", 84, 1, function()
+        local function doDecode()
             local bytes, err = parsePaste(box.Text)
-            if not bytes then header.Text = err or "Nothing to decode"; return end
+            if not bytes then
+                setStatus(err or "nothing to decode", false)
+                header.Text = "Paste a buffer and hit Decode"
+                return
+            end
             saneMax = tonumber((saneBox.Text or ""):match("[%d%.]+")) or 50000
             curBytes = bytes
             inspect()
             refreshFields()
-        end)
+            local n = 0
+            for _ in ipairs(lastGuesses) do n += 1 end
+            setStatus(("%d bytes decoded, %d field suggestion(s)"):format(#bytes, n), true)
+        end
+        mkBtn(pRow, "Decode", 84, 1, doDecode)
         mkBtn(pRow, "Auto Fields", 92, 2, function()
-            if #lastGuesses == 0 then return end
+            local n = 0
+            for _ in ipairs(lastGuesses) do n += 1 end
+            if n == 0 then setStatus("nothing suggested: decode first", false) return end
             fields = {}
             for _, g in ipairs(lastGuesses) do fields[#fields + 1] = { off = g.off, type = g.type, name = g.name } end
             refreshFields()
+            setStatus(n .. " suggestion(s) applied as fields", true)
         end)
         mkBtn(pRow, "Clear", 60, 3, function()
             box.Text = ""; curBytes = ""; inspect(); refreshFields()
+            setStatus("cleared", true)
         end)
+        -- v1.8.5: paste and it decodes itself, 0.45s after the last keystroke so a long
+        -- paste is not re-parsed on every character. The button stays for a re-read.
+        do
+            local pendingAt = 0
+            box:GetPropertyChangedSignal("Text"):Connect(function()
+                pendingAt = os.clock() + 0.45
+            end)
+            local conn
+            conn = RunService.RenderStepped:Connect(function()
+                if Koffee.dead() or not box.Parent then
+                    if conn then conn:Disconnect() end
+                    return
+                end
+                if pendingAt > 0 and os.clock() >= pendingAt then
+                    pendingAt = 0
+                    if (box.Text or "") ~= "" then doDecode() end
+                end
+            end)
+        end
 
         inspect()
         refreshFields()
@@ -38654,12 +38837,14 @@ addTab("Extra", function(epanel)
     -- v0.48.3: no card title: Combat/Custom cards are titleless so the
     -- secondary bar sits at the very top of the feature box. Same here.
     local card = panel(epanel)
-    local tabs = Koffee._isRivals and { "Mods", "Anticheats", "Hvh", "Rivals" } or { "Mods", "Anticheats", "Hvh" }
+    -- v1.8.5: "HvH", not "Hvh". The tab table key and the lookup below both carry it,
+    -- and subTabs builds keys from the labels verbatim.
+    local tabs = Koffee._isRivals and { "Mods", "Anticheats", "HvH", "Rivals" } or { "Mods", "Anticheats", "HvH" }
     local R = Shared.subTabs and Shared.subTabs(card, tabs) or nil
     if R and R["Rivals"] and Shared.RivalsAuto then Shared.RivalsAuto.buildPanel(R["Rivals"]) end
     local host = (R and R["Mods"]) or card
     if R and R["Anticheats"] and Shared.Anticheat then Shared.Anticheat.buildPanel(R["Anticheats"]) end
-    if R and R["Hvh"] and Shared.Hvh then Shared.Hvh.buildPanel(R["Hvh"]) end
+    if R and R["HvH"] and Shared.Hvh then Shared.Hvh.buildPanel(R["HvH"]) end
     -- pins live across rescans, keyed so a rebuild re-attaches, not dupes. { on, want, orig, kind } / kind = number|bool|string. v0.75.0: pins persist. ModSave mirrors {id, on, want, kind} (never orig, conns, or instances) at every mutation; reconcile re-seeds from it load.
     local ModSave = { Pins = {} }
     registerConfig("modpins", ModSave)
@@ -42749,7 +42934,7 @@ registerConfig("keybinds_ui", Koffee.KeybindsUI)
         local bi = Koffee.lucideIcon(badge, "keyboard", 15, Color3.fromRGB(20, 20, 24))
         bi.AnchorPoint = Vector2.new(0.5, 0.5); bi.Position = UDim2.fromScale(0.5, 0.5)
         if #bl == 0 then
-            new("TextLabel", { BackgroundTransparency = 1, Text = "No hotkeys set", FontFace = Theme.Fonts.Medium, TextSize = 13,
+            new("TextLabel", { BackgroundTransparency = 1, Text = "No hotkeys yet", FontFace = Theme.Fonts.Medium, TextSize = 13,
                 TextColor3 = Palette.TextFaint, TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, 0, 0, 18),
                 LayoutOrder = 1, Parent = cardF })
         end
