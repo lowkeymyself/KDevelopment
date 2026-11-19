@@ -1,7 +1,7 @@
--- koffee v1.8.6
+-- koffee v1.8.8
 
 local Koffee = {}
-Koffee.Version = "1.8.6"
+Koffee.Version = "1.8.8"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -3898,90 +3898,114 @@ function Koffee.attachBtnHover(b, hovered, resting)
 end
 
 -- v1.8.7 TYPING ANIMATION. Roblox gives us one TextBox and no per-glyph hooks, so the
--- effect is a pair of overlays: a ghost of the outgoing text that slides away from the
--- edit and fades, and a copy of the new text that arrives from the opposite side with a
--- short-lived stroke standing in for a blur. The box's own text hides for the ~0.1s the
--- pair is on screen so nothing double-prints. A jump of more than two characters (paste,
--- or a select-and-replace) throws further and fades slower. Display-only fields never
--- animate: the effect only runs while the field has focus.
+-- field is mirrored while it has focus: the unchanged head and tail are drawn as two
+-- static labels and only the RUN THAT CHANGED is animated, fading in with a short-lived
+-- stroke standing in for a blur. v1.8.8: the first version faded the whole string, which
+-- read as the field re-appearing; splitting prefix / changed / suffix means a keystroke
+-- moves nothing but itself. The three parts sit in a zero-padding horizontal layout, so
+-- the mirrored string measures exactly like the real one and the caret still lines up.
+-- Multiline fields are left alone: a three-part row cannot reproduce their wrapping.
 function Koffee.textFx(box)
     if not (box and box:IsA("TextBox")) then return box end
     if box:GetAttribute("KTextFx") then return box end
     box:SetAttribute("KTextFx", true)
-    local function mk(name, z)
+    local z = (box.ZIndex or 1) + 2
+    local row = new("Frame", {
+        Name = "KTextRow", BackgroundTransparency = 1, BorderSizePixel = 0,
+        Size = UDim2.new(0, 0, 0, box.TextSize + 2),
+        AutomaticSize = Enum.AutomaticSize.X,
+        AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+        Visible = false, ZIndex = z, Parent = box,
+    }, { new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 0), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local function part(order)
         return new("TextLabel", {
-            Name = name, BackgroundTransparency = 1, BorderSizePixel = 0,
-            Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 0),
-            Text = "", TextTransparency = 1, TextWrapped = false, RichText = false,
-            TextXAlignment = box.TextXAlignment, TextYAlignment = Enum.TextYAlignment.Center,
+            Name = "KTextP" .. order, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.X,
+            Text = "", TextTransparency = 0, TextWrapped = false, RichText = false,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
             FontFace = box.FontFace, TextSize = box.TextSize, TextColor3 = box.TextColor3,
-            ZIndex = (box.ZIndex or 1) + 2, Parent = box,
+            LayoutOrder = order, ZIndex = z, Parent = row,
         })
     end
-    local ghost, live = mk("KTextGhost", 2), mk("KTextLive", 3)
-    local blur = new("UIStroke", { Thickness = 0, Transparency = 1, Parent = live })
+    local pre, mid, post = part(1), part(2), part(3)
+    local blur = new("UIStroke", { Thickness = 0, Transparency = 1, Parent = mid })
+    -- motion confined to the changed run: a UIScale never disturbs the layout, so the
+    -- neighbours do not shift while the new characters settle
+    local pop = new("UIScale", { Scale = 1, Parent = mid })
     local gen, prev = 0, box.Text
-    local function clear()
-        ghost.Text, ghost.TextTransparency = "", 1
-        ghost.Position = UDim2.fromOffset(0, 0)
-        live.Text, live.TextTransparency = "", 1
-        live.Position = UDim2.fromOffset(0, 0)
-        blur.Thickness, blur.Transparency = 0, 1
-        box.TextTransparency = 0
-    end
-    local function sync()
-        for _, l in ipairs({ ghost, live }) do
-            l.FontFace = box.FontFace
-            l.TextSize = box.TextSize
-            l.TextColor3 = box.TextColor3
-            l.TextXAlignment = box.TextXAlignment
-            l.TextYAlignment = box.TextYAlignment
-            l.TextWrapped = box.TextWrapped
-            -- MultiLine is a TextBox property; TextLabel may not have it at all
-            pcall(function() l.MultiLine = box.MultiLine end)
+    local function align()
+        local a = box.TextXAlignment
+        if a == Enum.TextXAlignment.Center then
+            row.AnchorPoint = Vector2.new(0.5, 0.5)
+            row.Position = UDim2.new(0.5, 0, 0.5, 0)
+        elseif a == Enum.TextXAlignment.Right then
+            row.AnchorPoint = Vector2.new(1, 0.5)
+            row.Position = UDim2.new(1, 0, 0.5, 0)
+        else
+            row.AnchorPoint = Vector2.new(0, 0.5)
+            row.Position = UDim2.new(0, 0, 0.5, 0)
         end
+    end
+    local function clear()
+        row.Visible = false
+        box.TextTransparency = 0
     end
     box:GetPropertyChangedSignal("Text"):Connect(function()
         local text = box.Text
         if text == prev then return end
         local old = prev
         prev = text
-        if not box:IsFocused() then
-            -- not being typed into: a slider mirror or a programmatic set, leave it be
-            if ghost.Text ~= "" or live.Text ~= "" then clear() end
+        if box.MultiLine or not box:IsFocused() then
+            -- wrapped fields cannot be mirrored as one row, and an unfocused field is
+            -- a slider mirror or a programmatic set: neither should animate
+            if row.Visible then clear() end
             return
         end
-        sync()
+        -- longest common head and tail: only what sits between them is new
+        local n = math.min(#old, #text)
+        local head = 1
+        while head <= n and old:sub(head, head) == text:sub(head, head) do head = head + 1 end
+        local tail = 0
+        while tail < (n - head + 1)
+            and old:sub(#old - tail, #old - tail) == text:sub(#text - tail, #text - tail) do
+            tail = tail + 1
+        end
+        local prefix = text:sub(1, head - 1)
+        local suffix = tail > 0 and text:sub(#text - tail + 1) or ""
+        local changed = text:sub(head, #text - tail)
+        if changed == "" then
+            -- a pure deletion has nothing new to bring in
+            if row.Visible then clear() end
+            return
+        end
         gen = gen + 1
         local my = gen
-        -- where the edit landed decides which way the old text leaves
-        local n = math.min(#old, #text)
-        local i = 1
-        while i <= n and old:sub(i, i) == text:sub(i, i) do i = i + 1 end
-        local delta = #text - #old
-        local dir = delta >= 0 and 1 or -1
-        local paste = math.abs(delta) > 2
-        local slide = paste and 12 or 6
-        local lift = paste and 4 or 2
-        ghost.Text = old
-        ghost.Position = UDim2.fromOffset(0, 0)
-        ghost.TextTransparency = 0
-        tween(ghost, TweenInfo.new(paste and 0.18 or 0.11,
-            Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            { TextTransparency = 1, Position = UDim2.fromOffset(dir * slide, 0) })
-        live.Text = text
-        live.Position = UDim2.fromOffset(-dir * (paste and 10 or 4), lift)
-        live.TextTransparency = 1
-        blur.Thickness, blur.Transparency = paste and 5 or 2.5, 0.45
-        tween(live, TweenInfo.new(paste and 0.16 or 0.1,
-            Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            { TextTransparency = 0, Position = UDim2.fromOffset(0, 0) })
-        tween(blur, TweenInfo.new(paste and 0.24 or 0.16,
-            Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            { Thickness = 0, Transparency = 1 })
+        local big = #changed > 2
+        for _, l in ipairs({ pre, mid, post }) do
+            l.FontFace = box.FontFace
+            l.TextSize = box.TextSize
+            l.TextColor3 = box.TextColor3
+        end
+        align()
+        row.Size = UDim2.new(0, 0, 0, box.TextSize + 2)
+        pre.Text, post.Text = prefix, suffix
+        pre.TextTransparency, post.TextTransparency = 0, 0
+        mid.Text = changed
+        mid.TextTransparency = 1
+        blur.Thickness, blur.Transparency = big and 3.5 or 2, 0.55
+        pop.Scale = big and 0.94 or 0.97
+        row.Visible = true
         box.TextTransparency = 1
-        task.delay(paste and 0.26 or 0.2, function()
-            if gen == my and box.Parent then box.TextTransparency = 0 end
+        tween(mid, TweenInfo.new(big and 0.14 or 0.09,
+            Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { TextTransparency = 0 })
+        tween(blur, TweenInfo.new(big and 0.2 or 0.13,
+            Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Thickness = 0, Transparency = 1 })
+        tween(pop, TweenInfo.new(big and 0.16 or 0.1,
+            Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1 })
+        task.delay(big and 0.2 or 0.14, function()
+            if gen == my and box.Parent then clear() end
         end)
     end)
     box.FocusLost:Connect(function()
@@ -3990,7 +4014,6 @@ function Koffee.textFx(box)
     end)
     return box
 end
-
 -- CHECKBOX (visual primitive shared by module + config variants) v0.0.12 semantics per he: OFF -> ON = fill GROWS OUTWARD from middle (size 0 -> INNER, opaque throughout) ON -> OFF = fill SHRINKS INWARD to middle (size INNER -> 0) with a super-fast fade tail so it doesn't pop out of existence Also cancels any in-flight tweens on each state change so rapid clicking can't stack animations and desync the visual from the actual state.
 local CBOX = { h = 22, outer = 16, inner = 12, off = 26, reserve = 74 }
 
