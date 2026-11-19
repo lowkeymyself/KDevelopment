@@ -1,7 +1,7 @@
--- koffee v1.9.1
+-- koffee v1.9.2
 
 local Koffee = {}
-Koffee.Version = "1.9.1"
+Koffee.Version = "1.9.2"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -1055,10 +1055,15 @@ local Theme = {
         local UI = customFam or "rbxasset://fonts/families/BuilderSans.json"
         Koffee.UsingCustomFont = customFam ~= nil
         return {
-            Regular = Font.new(UI,   Enum.FontWeight.Regular),
-            Medium  = Font.new(UI,   Enum.FontWeight.Medium),
+            -- v1.9.2: reverted. The menu was already right, so every text weight is the
+            -- bold face again; the extra faces stay in the family for later.
+            Regular = Font.new(UI,   Enum.FontWeight.Bold),
+            Medium  = Font.new(UI,   Enum.FontWeight.Bold),
             Bold    = Font.new(UI,   Enum.FontWeight.Bold),
-            Title   = Font.new(UI,   Enum.FontWeight.ExtraBold),
+            Title   = Font.new(UI,   Enum.FontWeight.Bold),
+            -- editable fields: the same face at Medium, so a value box or a name field
+            -- reads as part of the window instead of thin monospace.
+            Input   = Font.new(UI,   Enum.FontWeight.Medium),
             Mono    = Font.new(MONO, Enum.FontWeight.Medium),
         }
     end)(),
@@ -5372,7 +5377,9 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     local valueBox = new("TextBox", {
         Text = (opts.infinite and current >= max) and "Infinite" or tostring(current),
         PlaceholderText = "",
-        FontFace = Theme.Fonts.Mono,
+        -- v1.9.2: the window face at Medium, not the mono it used to use. Roboto Mono at
+        -- 11px is what read as rough in every value field in the build.
+        FontFace = Theme.Fonts.Input,
         TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.Text,
         BackgroundColor3 = Theme.Palette.PanelElevated,
@@ -5708,7 +5715,7 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
             })
             local box = new("TextBox", {
                 Text = tostring(initial or ""), PlaceholderText = "", ClearTextOnFocus = false,
-                FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+                FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Small,
                 TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.PanelElevated,
                 BackgroundTransparency = 0.15, BorderSizePixel = 0,
                 Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 20),
@@ -18471,7 +18478,7 @@ end)() end
         })
         local tb = new("TextBox", {
             Text = initial or "", PlaceholderText = placeholder or "",
-            FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body,
+            FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Body,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
             BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.25,
             BorderSizePixel = 0, ClearTextOnFocus = false,
@@ -24800,7 +24807,7 @@ function Deco.buildPanel(root)
         VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
     local box = new("TextBox", {
         Text = "", PlaceholderText = "accessory asset id", ClearTextOnFocus = false,
-        FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+        FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
         PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
         BackgroundTransparency = 0.15, Size = UDim2.new(1, -70, 0, 26), TextXAlignment = Enum.TextXAlignment.Left,
         LayoutOrder = 0, Parent = row,
@@ -26276,7 +26283,7 @@ registerConfig("item_skins", Koffee.ItemSkins)
 
         -- left: search + tree
         local search = new("TextBox", { Text = "", PlaceholderText = "search by name (models, parts, tools, accessories)",
-            ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            ClearTextOnFocus = false, FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
             BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.15, Position = UDim2.fromOffset(12, 40),
             Size = UDim2.new(0, 360, 0, 26), TextXAlignment = Enum.TextXAlignment.Left, Parent = win },
@@ -28895,7 +28902,7 @@ end)()
             Theme.Text.Small - 2, Theme.Palette.TextMuted, Theme.Fonts.Regular, 201, true)
         -- v0.99.57: search + hide / show every part
         local srch = new("TextBox", { Text = "", PlaceholderText = "search parts", ClearTextOnFocus = false,
-            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+            FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
             PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
             BackgroundTransparency = 0.15, Size = UDim2.new(1, 0, 0, 24), TextXAlignment = Enum.TextXAlignment.Left,
             LayoutOrder = 201, ZIndex = 6, Parent = out },
@@ -29182,7 +29189,7 @@ end)()
         ED.grpRow = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 3, ZIndex = 6, Parent = gp })
         list(ED.grpRow, Enum.FillDirection.Horizontal, 6)
         ED.grpBox = new("TextBox", { Text = "", PlaceholderText = "group name", ClearTextOnFocus = false,
-            TextTruncate = Enum.TextTruncate.AtEnd, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            TextTruncate = Enum.TextTruncate.AtEnd, FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
             BackgroundColor3 = Theme.Palette.Background, BackgroundTransparency = 0.15, Size = UDim2.new(1, -140, 0, 26),
             TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, ZIndex = 6, Parent = ED.grpRow },
@@ -30218,7 +30225,7 @@ registerConfig("morph", Koffee.Morph)
                 VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
         local box = new("TextBox", {
             Text = MO.Target or "", PlaceholderText = "username or user id", ClearTextOnFocus = false,
-            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+            FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
             PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
             BackgroundTransparency = 0.15, Size = UDim2.new(1, -140, 0, 26), TextXAlignment = Enum.TextXAlignment.Left,
             LayoutOrder = 0, Parent = row,
@@ -34703,7 +34710,7 @@ registerConfig("custom", Koffee.Custom)
         local searchBox = new("TextBox", {
             Size = UDim2.new(0, 110, 0, 26),
             Text = "", PlaceholderText = "Search",
-            ClearTextOnFocus = false, FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            ClearTextOnFocus = false, FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Tiny,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             BorderSizePixel = 0, LayoutOrder = 0, ZIndex = 36, Parent = bar,
@@ -35429,7 +35436,7 @@ registerConfig("custom", Koffee.Custom)
         labelRow(scard, "save what it found as a schema, then use it in Build Buffer")
         local nameBox = new("TextBox", {
             Text = "", PlaceholderText = "schema name...", ClearTextOnFocus = false,
-            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Small,
+            FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
             BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
             Size = UDim2.new(1, 0, 0, 24), TextXAlignment = Enum.TextXAlignment.Left,
@@ -36011,7 +36018,7 @@ addTab("Configs", function(root)
         SortOrder = Enum.SortOrder.LayoutOrder }) })
     local idBox = new("TextBox", {
             Text = "", PlaceholderText = "Cloud ID (8 chars)...", ClearTextOnFocus = false,
-        FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Body,
+        FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Body,
         TextColor3 = Theme.Palette.Text, PlaceholderColor3 = Theme.Palette.TextFaint,
         BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
         BorderSizePixel = 0, Size = UDim2.new(1, -130, 1, 0),
@@ -37258,7 +37265,7 @@ local function buildPicker(host, onChange)
     local sRow = new("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, LayoutOrder = 0, Parent = left })
     local sBox = new("TextBox", {
         Text = "", PlaceholderText = "Search models and parts", ClearTextOnFocus = false,
-        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+        FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
         PlaceholderColor3 = Theme.Palette.TextFaint, BackgroundColor3 = Theme.Palette.Background,
         BackgroundTransparency = 0.15, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
         Size = UDim2.new(1, -34, 1, 0), ZIndex = 1, Parent = sRow,
@@ -50873,7 +50880,7 @@ end)()
             ZIndex = 302, Parent = box })
         PAL.res = new("Frame", { Position = UDim2.new(0, 8, 0, 62), Size = UDim2.new(1, -16, 1, -102), BackgroundTransparency = 1,
             ZIndex = 302, Parent = box }, { new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
-        label(box, { Text = "↑ ↓  move      Enter  jump      Esc  close", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Tiny,
+        label(box, { Text = "↑ ↓  move      Enter  jump      Esc  close", FontFace = Theme.Fonts.Input, TextSize = Theme.Text.Tiny,
             TextColor3 = P.TextMuted, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 14),
             ZIndex = 302 })
         tb:GetPropertyChangedSignal("Text"):Connect(function()
