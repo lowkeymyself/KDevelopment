@@ -1,7 +1,7 @@
--- koffee v1.8.8
+-- koffee v1.8.9
 
 local Koffee = {}
-Koffee.Version = "1.8.8"
+Koffee.Version = "1.8.9"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -3899,20 +3899,23 @@ end
 
 -- v1.8.7 TYPING ANIMATION. Roblox gives us one TextBox and no per-glyph hooks, so the
 -- field is mirrored while it has focus: the unchanged head and tail are drawn as two
--- static labels and only the RUN THAT CHANGED is animated, fading in with a short-lived
--- stroke standing in for a blur. v1.8.8: the first version faded the whole string, which
--- read as the field re-appearing; splitting prefix / changed / suffix means a keystroke
--- moves nothing but itself. The three parts sit in a zero-padding horizontal layout, so
--- the mirrored string measures exactly like the real one and the caret still lines up.
+-- static labels and only the RUN THAT CHANGED is animated.
+-- v1.8.8: split prefix / changed / suffix so a keystroke moves nothing but itself.
+-- v1.8.9: the parts were zero-height, so their centred text rendered on the row's top
+-- edge: glyphs sat above the field's own line (the "text jumps up then comes back"),
+-- and in short fields they landed outside the box entirely. Parts now fill the row and
+-- the row is placed by the field's own TextYAlignment. The scale pop is gone and the
+-- stroke is a 1.5px hint, so it reads as a clean fade rather than a bounce.
 -- Multiline fields are left alone: a three-part row cannot reproduce their wrapping.
 function Koffee.textFx(box)
     if not (box and box:IsA("TextBox")) then return box end
     if box:GetAttribute("KTextFx") then return box end
     box:SetAttribute("KTextFx", true)
     local z = (box.ZIndex or 1) + 2
+    local line = math.ceil((tonumber(box.TextSize) or 12) * 1.25) + 2
     local row = new("Frame", {
         Name = "KTextRow", BackgroundTransparency = 1, BorderSizePixel = 0,
-        Size = UDim2.new(0, 0, 0, box.TextSize + 2),
+        Size = UDim2.new(0, 0, 0, line),
         AutomaticSize = Enum.AutomaticSize.X,
         AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
         Visible = false, ZIndex = z, Parent = box,
@@ -3921,7 +3924,8 @@ function Koffee.textFx(box)
     local function part(order)
         return new("TextLabel", {
             Name = "KTextP" .. order, BackgroundTransparency = 1, BorderSizePixel = 0,
-            Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.X,
+            -- fill the row's height so the glyphs sit on the same baseline as the field
+            Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X,
             Text = "", TextTransparency = 0, TextWrapped = false, RichText = false,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Center,
@@ -3931,22 +3935,18 @@ function Koffee.textFx(box)
     end
     local pre, mid, post = part(1), part(2), part(3)
     local blur = new("UIStroke", { Thickness = 0, Transparency = 1, Parent = mid })
-    -- motion confined to the changed run: a UIScale never disturbs the layout, so the
-    -- neighbours do not shift while the new characters settle
-    local pop = new("UIScale", { Scale = 1, Parent = mid })
     local gen, prev = 0, box.Text
     local function align()
+        local ax = 0
         local a = box.TextXAlignment
-        if a == Enum.TextXAlignment.Center then
-            row.AnchorPoint = Vector2.new(0.5, 0.5)
-            row.Position = UDim2.new(0.5, 0, 0.5, 0)
-        elseif a == Enum.TextXAlignment.Right then
-            row.AnchorPoint = Vector2.new(1, 0.5)
-            row.Position = UDim2.new(1, 0, 0.5, 0)
-        else
-            row.AnchorPoint = Vector2.new(0, 0.5)
-            row.Position = UDim2.new(0, 0, 0.5, 0)
-        end
+        if a == Enum.TextXAlignment.Center then ax = 0.5
+        elseif a == Enum.TextXAlignment.Right then ax = 1 end
+        local ay, py = 0.5, 0.5
+        local v = box.TextYAlignment
+        if v == Enum.TextYAlignment.Top then ay, py = 0, 0
+        elseif v == Enum.TextYAlignment.Bottom then ay, py = 1, 1 end
+        row.AnchorPoint = Vector2.new(ax, ay)
+        row.Position = UDim2.new(ax, 0, py, 0)
     end
     local function clear()
         row.Visible = false
@@ -3987,24 +3987,23 @@ function Koffee.textFx(box)
             l.FontFace = box.FontFace
             l.TextSize = box.TextSize
             l.TextColor3 = box.TextColor3
+            l.TextYAlignment = box.TextYAlignment
         end
         align()
-        row.Size = UDim2.new(0, 0, 0, box.TextSize + 2)
+        row.Size = UDim2.new(0, 0, 0, line)
         pre.Text, post.Text = prefix, suffix
         pre.TextTransparency, post.TextTransparency = 0, 0
         mid.Text = changed
         mid.TextTransparency = 1
-        blur.Thickness, blur.Transparency = big and 3.5 or 2, 0.55
-        pop.Scale = big and 0.94 or 0.97
+        blur.Thickness, blur.Transparency = 1.5, 0.4
         row.Visible = true
         box.TextTransparency = 1
-        tween(mid, TweenInfo.new(big and 0.14 or 0.09,
-            Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { TextTransparency = 0 })
-        tween(blur, TweenInfo.new(big and 0.2 or 0.13,
-            Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Thickness = 0, Transparency = 1 })
-        tween(pop, TweenInfo.new(big and 0.16 or 0.1,
-            Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1 })
-        task.delay(big and 0.2 or 0.14, function()
+        -- a fade, not a bounce: opacity in, stroke out, both short
+        tween(mid, TweenInfo.new(big and 0.13 or 0.09,
+            Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { TextTransparency = 0 })
+        tween(blur, TweenInfo.new(big and 0.15 or 0.1,
+            Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Thickness = 0, Transparency = 1 })
+        task.delay(big and 0.18 or 0.13, function()
             if gen == my and box.Parent then clear() end
         end)
     end)
