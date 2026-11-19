@@ -1,7 +1,7 @@
--- koffee v1.8.9
+-- koffee v1.9.0
 
 local Koffee = {}
-Koffee.Version = "1.8.9"
+Koffee.Version = "1.9.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -1021,7 +1021,12 @@ local Theme = {
             end)
             return ok and res or nil
         end)()
-        local UI = customFam or "rbxasset://fonts/families/Nunito.json"
+        -- v1.9.0: the fallback used to be Nunito, whose family path no longer resolves
+        -- in current Roblox: a bogus family and Nunito measure identically (158/169 at
+        -- 24px), so every "Nunito" label was silently rendering Legacy Arial. Builder
+        -- Sans is the engine's own UI face, resolves properly, and has real weights
+        -- (169 regular / 183 bold), so a failed custom-font load still looks intentional.
+        local UI = customFam or "rbxasset://fonts/families/BuilderSans.json"
         Koffee.UsingCustomFont = customFam ~= nil
         return {
             Regular = Font.new(UI,   Enum.FontWeight.SemiBold),
