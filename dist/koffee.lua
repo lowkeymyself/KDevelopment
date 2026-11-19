@@ -1371,6 +1371,8 @@ local function new(class, props, children)
         pcall(function() inst.BorderSizePixel = 0 end)
     end
     if children then for _, c in ipairs(children) do c.Parent = inst end end
+    -- v1.8.7: every text field gets the typing animation, wherever it is created
+    if class == "TextBox" and Koffee.textFx then Koffee.textFx(inst) end
     return inst
 end
 
@@ -3893,6 +3895,100 @@ function Koffee.attachBtnHover(b, hovered, resting)
             b.BackgroundTransparency = resting
         end
     end)
+end
+
+-- v1.8.7 TYPING ANIMATION. Roblox gives us one TextBox and no per-glyph hooks, so the
+-- effect is a pair of overlays: a ghost of the outgoing text that slides away from the
+-- edit and fades, and a copy of the new text that arrives from the opposite side with a
+-- short-lived stroke standing in for a blur. The box's own text hides for the ~0.1s the
+-- pair is on screen so nothing double-prints. A jump of more than two characters (paste,
+-- or a select-and-replace) throws further and fades slower. Display-only fields never
+-- animate: the effect only runs while the field has focus.
+function Koffee.textFx(box)
+    if not (box and box:IsA("TextBox")) then return box end
+    if box:GetAttribute("KTextFx") then return box end
+    box:SetAttribute("KTextFx", true)
+    local function mk(name, z)
+        return new("TextLabel", {
+            Name = name, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 0),
+            Text = "", TextTransparency = 1, TextWrapped = false, RichText = false,
+            TextXAlignment = box.TextXAlignment, TextYAlignment = Enum.TextYAlignment.Center,
+            FontFace = box.FontFace, TextSize = box.TextSize, TextColor3 = box.TextColor3,
+            ZIndex = (box.ZIndex or 1) + 2, Parent = box,
+        })
+    end
+    local ghost, live = mk("KTextGhost", 2), mk("KTextLive", 3)
+    local blur = new("UIStroke", { Thickness = 0, Transparency = 1, Parent = live })
+    local gen, prev = 0, box.Text
+    local function clear()
+        ghost.Text, ghost.TextTransparency = "", 1
+        ghost.Position = UDim2.fromOffset(0, 0)
+        live.Text, live.TextTransparency = "", 1
+        live.Position = UDim2.fromOffset(0, 0)
+        blur.Thickness, blur.Transparency = 0, 1
+        box.TextTransparency = 0
+    end
+    local function sync()
+        for _, l in ipairs({ ghost, live }) do
+            l.FontFace = box.FontFace
+            l.TextSize = box.TextSize
+            l.TextColor3 = box.TextColor3
+            l.TextXAlignment = box.TextXAlignment
+            l.TextYAlignment = box.TextYAlignment
+            l.TextWrapped = box.TextWrapped
+            -- MultiLine is a TextBox property; TextLabel may not have it at all
+            pcall(function() l.MultiLine = box.MultiLine end)
+        end
+    end
+    box:GetPropertyChangedSignal("Text"):Connect(function()
+        local text = box.Text
+        if text == prev then return end
+        local old = prev
+        prev = text
+        if not box:IsFocused() then
+            -- not being typed into: a slider mirror or a programmatic set, leave it be
+            if ghost.Text ~= "" or live.Text ~= "" then clear() end
+            return
+        end
+        sync()
+        gen = gen + 1
+        local my = gen
+        -- where the edit landed decides which way the old text leaves
+        local n = math.min(#old, #text)
+        local i = 1
+        while i <= n and old:sub(i, i) == text:sub(i, i) do i = i + 1 end
+        local delta = #text - #old
+        local dir = delta >= 0 and 1 or -1
+        local paste = math.abs(delta) > 2
+        local slide = paste and 12 or 6
+        local lift = paste and 4 or 2
+        ghost.Text = old
+        ghost.Position = UDim2.fromOffset(0, 0)
+        ghost.TextTransparency = 0
+        tween(ghost, TweenInfo.new(paste and 0.18 or 0.11,
+            Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            { TextTransparency = 1, Position = UDim2.fromOffset(dir * slide, 0) })
+        live.Text = text
+        live.Position = UDim2.fromOffset(-dir * (paste and 10 or 4), lift)
+        live.TextTransparency = 1
+        blur.Thickness, blur.Transparency = paste and 5 or 2.5, 0.45
+        tween(live, TweenInfo.new(paste and 0.16 or 0.1,
+            Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            { TextTransparency = 0, Position = UDim2.fromOffset(0, 0) })
+        tween(blur, TweenInfo.new(paste and 0.24 or 0.16,
+            Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            { Thickness = 0, Transparency = 1 })
+        box.TextTransparency = 1
+        task.delay(paste and 0.26 or 0.2, function()
+            if gen == my and box.Parent then box.TextTransparency = 0 end
+        end)
+    end)
+    box.FocusLost:Connect(function()
+        gen = gen + 1
+        clear()
+    end)
+    return box
 end
 
 -- CHECKBOX (visual primitive shared by module + config variants) v0.0.12 semantics per he: OFF -> ON = fill GROWS OUTWARD from middle (size 0 -> INNER, opaque throughout) ON -> OFF = fill SHRINKS INWARD to middle (size INNER -> 0) with a super-fast fade tail so it doesn't pop out of existence Also cancels any in-flight tweens on each state change so rapid clicking can't stack animations and desync the visual from the actual state.
