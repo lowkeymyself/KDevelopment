@@ -1,7 +1,7 @@
--- koffee v1.9.0
+-- koffee v1.9.1
 
 local Koffee = {}
-Koffee.Version = "1.9.0"
+Koffee.Version = "1.9.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -373,7 +373,9 @@ do
         "globe", "settings", "bot", "sparkles", "koffee-k", "koffee-steam",   -- v1.1.0: Glass sidebar + logo
     }
     local MANIFEST = {
-        { name = "proxima soft",           path = "koffee_proximasoft.ttf",             url = BASE .. "ProximaSoft-Bold.ttf", min = 4096 },
+        -- v1.9.1: the Proxima Soft family is fetched by the font block itself (one file
+        -- per weight, into Koffee/fonts). The old flat "koffee_proximasoft.ttf" entry
+        -- downloaded a single bold file every session that the font block then deleted.
         { name = "font: minecraft bold",   path = "Koffee/fonts/MinecraftBold.otf",     url = BASE .. "MinecraftBold.otf",     min = 512 },
         { name = "font: minecraft regular",path = "Koffee/fonts/MinecraftRegular.otf",  url = BASE .. "MinecraftRegular.otf",  min = 512 },
         { name = "font: imgui",            path = "Koffee/fonts/ProggyClean.ttf",       url = BASE .. "ProggyClean.ttf",       min = 512 },
@@ -961,61 +963,85 @@ local Theme = {
     },
     Fonts = (function()
         local MONO  = "rbxasset://fonts/families/RobotoMono.json"
-        -- v0.0.29: Matcha's ACTUAL face is Proxima Soft Bold. We auto-download the .ttf once (cached to executor workspace), wrap it in a font-family JSON for getcustomasset. Everything is pcall'd with a Nunito fallback: locked-down executors still render. Font is a nicety, never a hard dep. v0.1.1: SYNC path is CACHE-ONLY. If the cached ttf+json are already on disk, we register them synchronously. If NOT, we return nil (Nunito fallback) and kick off the download in a background task so the NEXT session finds the cache. This kills a ~700KB HTTP-download-on-main- thread that friend's game froze on when a first-run happened after a fresh executor cache wipe.
-        local FONT_URL  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ProximaSoft-Bold.ttf"
-        local FONT_FILE = "koffee_proximasoft.ttf"
-        -- v0.2.1: versioned filename + always-rebuild. The OLD `koffee_proximasoft.json` cached across sessions was the source of the "font shows as Nunito" bug: `getcustomasset()` produces a per-session asset URL for the ttf, but the JSON on disk still held the PRIOR session's URL, which Roblox couldn't resolve this session, silently falling back to the engine default (Nunito). Bumping the filename ignores every stale cache in the wild; regenerating unconditionally on every load keeps the assetId inside the JSON fresh.
-        local FONT_JSON = "koffee_proximasoft_v2.json"
-        local FONT_JSON_OLD = "koffee_proximasoft.json"
+        -- v0.0.29: Matcha's ACTUAL face is Proxima Soft. We download the files once
+        -- (cached in the executor workspace), wrap them in a font-family JSON for
+        -- getcustomasset. Everything is pcall'd with a fallback: locked-down executors
+        -- still render. v0.1.1: the SYNC path is CACHE-ONLY. If the files are already on
+        -- disk, register them synchronously; if not, return nil (fallback) and fetch in
+        -- a background task so the NEXT session finds them. That kills the HTTP-on-main
+        -- thread that froze a first run after a cache wipe.
+        -- v1.9.1: the whole family ships, one file per weight. Before this there was a
+        -- single bold file declared as all four weights, so every label in the build was
+        -- bold: body text read heavy next to headings that were also bold. Weights now
+        -- map to their real faces (400 Regular, 500 Medium, 600 SemiBold, 700 Bold,
+        -- 800 Black), which is where type hierarchy comes from.
+        local FONT_DIR = "Koffee/fonts"
+        local ASSET = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/"
+        local FACES = {
+            { name = "Regular",  weight = 400, file = "ProximaSoft-Regular.otf",
+              url = ASSET .. "ProximaSoft-Regular.otf" },
+            { name = "Medium",   weight = 500, file = "ProximaSoft-Medium.otf",
+              url = ASSET .. "ProximaSoft-Medium.otf" },
+            { name = "SemiBold", weight = 600, file = "ProximaSoft-SemiBold.otf",
+              url = ASSET .. "ProximaSoft-SemiBold.otf" },
+            { name = "Bold",     weight = 700, file = "ProximaSoft-Bold.otf",
+              url = ASSET .. "ProximaSoft-Bold.otf" },
+            { name = "Black",    weight = 800, file = "ProximaSoft-Black.otf",
+              url = ASSET .. "ProximaSoft-Black.otf" },
+        }
+        -- v0.2.1 rule, still true: the family JSON embeds per-session getcustomasset
+        -- URLs, so it must be rebuilt every load or it resolves to a dead asset and the
+        -- whole build silently falls back. Bumped to v3 for the multi-weight layout.
+        local FONT_JSON = "koffee_proximasoft_v3.json"
         local customFam = (function()
             local ok, res = pcall(function()
                 local getasset = getcustomasset or getsynasset
                     or (syn and syn.getcustomasset)
                 local isf, wf = isfile, writefile
                 if not (getasset and isf and wf) then return nil end
-
-                -- honour a manual drop first (any local proxima/koffee_font file),
-                -- otherwise register the hosted ttf if already cached.
-                local target
-                for _, name in ipairs({
-                    FONT_FILE, "koffee_font.ttf", "koffee_font.otf",
-                    "ProximaSoft-Bold.ttf", "ProximaSoft-Bold.otf",
-                }) do
-                    if not target and isf(name) then target = name end
+                if makefolder then
+                    pcall(makefolder, "Koffee")
+                    pcall(makefolder, FONT_DIR)
                 end
-                if not target then
-                    -- CACHE MISS: background-download for next session, return nil now.
+
+                local faces, missing = {}, {}
+                for _, f in ipairs(FACES) do
+                    local path = FONT_DIR .. "/" .. f.file
+                    if isf(path) then
+                        faces[#faces + 1] = { name = f.name, weight = f.weight,
+                            style = "normal", assetId = getasset(path) }
+                    else
+                        missing[#missing + 1] = f
+                    end
+                end
+                if #missing > 0 then
+                    -- CACHE MISS: fetch the missing weights for next session, render with
+                    -- the fallback now rather than blocking the load on half a megabyte.
                     task.spawn(function()
-                        local body
                         local req = (syn and syn.request) or (http and http.request)
                             or http_request or request
-                        if req then
-                            local rok, r = pcall(req, { Url = FONT_URL, Method = "GET" })
-                            if rok and r and r.Body and #r.Body > 4096 then body = r.Body end
+                        for _, f in ipairs(missing) do
+                            local body
+                            if req then
+                                local rok, r = pcall(req, { Url = f.url, Method = "GET" })
+                                if rok and r and r.Body and #r.Body > 4096 then body = r.Body end
+                            end
+                            if not body then
+                                local hok, h = pcall(function() return game:HttpGetAsync(f.url) end)
+                                if hok and h and #h > 4096 then body = h end
+                            end
+                            if body then pcall(wf, FONT_DIR .. "/" .. f.file, body) end
                         end
-                        if not body then
-                            local hok, h = pcall(function() return game:HttpGetAsync(FONT_URL) end)
-                            if hok and h and #h > 4096 then body = h end
-                        end
-                        if body then pcall(wf, FONT_FILE, body) end
                     end)
                     return nil
                 end
 
-                -- v0.2.1: nuke the v1 cache from prior sessions: if it survived to
-                -- disk here, its embedded ttf assetId is guaranteed stale by now.
-                if delfile and isf(FONT_JSON_OLD) then pcall(delfile, FONT_JSON_OLD) end
-                -- CACHE HIT: rebuild the family JSON synchronously every load. The ttfId embedded below MUST come from THIS session's getasset() call: caching the JSON across sessions was the "font renders as Nunito" bug (see comment above FONT_JSON). Cheap: one getasset + JSONEncode + writefile per load. No HTTP, all local.
-                local ttfId = getasset(target)
-                local fam = {
-                    name  = "ProximaSoft",
-                    faces = {
-                        { name = "Regular",   weight = 400, style = "normal", assetId = ttfId },
-                        { name = "SemiBold",  weight = 600, style = "normal", assetId = ttfId },
-                        { name = "Bold",      weight = 700, style = "normal", assetId = ttfId },
-                        { name = "ExtraBold", weight = 800, style = "normal", assetId = ttfId },
-                    },
-                }
+                -- leftovers from the single-weight era: one flat bold ttf and two JSONs
+                for _, old in ipairs({ "koffee_proximasoft.ttf", "koffee_proximasoft.json",
+                    "koffee_proximasoft_v2.json" }) do
+                    if delfile and isf(old) then pcall(delfile, old) end
+                end
+                local fam = { name = "ProximaSoft", faces = faces }
                 wf(FONT_JSON, game:GetService("HttpService"):JSONEncode(fam))
                 return getasset(FONT_JSON)
             end)
@@ -1029,8 +1055,8 @@ local Theme = {
         local UI = customFam or "rbxasset://fonts/families/BuilderSans.json"
         Koffee.UsingCustomFont = customFam ~= nil
         return {
-            Regular = Font.new(UI,   Enum.FontWeight.SemiBold),
-            Medium  = Font.new(UI,   Enum.FontWeight.Bold),
+            Regular = Font.new(UI,   Enum.FontWeight.Regular),
+            Medium  = Font.new(UI,   Enum.FontWeight.Medium),
             Bold    = Font.new(UI,   Enum.FontWeight.Bold),
             Title   = Font.new(UI,   Enum.FontWeight.ExtraBold),
             Mono    = Font.new(MONO, Enum.FontWeight.Medium),
