@@ -1,7 +1,7 @@
--- koffee v1.9.3
+-- koffee v1.9.4
 
 local Koffee = {}
-Koffee.Version = "1.9.3"
+Koffee.Version = "1.9.4"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2142,7 +2142,7 @@ RunService.RenderStepped:Connect(function()
         -- v1.8.0: the Time slot is a real clock now, and 12 or 24 hour is a
         -- right-click setting on the bar. Half a second is plenty for seconds.
         local d = Koffee.Details
-        local twelve = d and d.Clock24 == false
+        local twelve = d and d.Time24 == false
         local txt = os.date(twelve and "%I:%M:%S %p" or "%H:%M:%S")
         if twelve then txt = (txt:gsub("^0", "")) end
         timeLabel.Text = txt
@@ -2225,10 +2225,22 @@ end)()
 -- v1.8.0: right-click it for time style, per-part toggles, drag smoothness and a
 -- session-only delete. The parts live in the config, the delete flag does not.
 Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3,
-    Clock24 = true, DragSmooth = 16,
-    FPS = true, Ping = true, Clock = true, Region = true, User = true, Avatar = true }
+    -- v1.9.4: Time/Time24, not Clock/Clock24. The menu row always said "Time", so the
+    -- config key disagreed with the label; old configs are folded over on load below.
+    Time24 = true, DragSmooth = 16,
+    FPS = true, Ping = true, Time = true, Region = true, User = true, Avatar = true }
 ;(function()
     local D = Koffee.Details
+    -- v1.9.4: fold the old Clock/Clock24 keys over, then drop them so the config only
+    -- carries the names the menu actually uses.
+    if D.Clock24 ~= nil then
+        if D.Time24 == nil then D.Time24 = D.Clock24 end
+        D.Clock24 = nil
+    end
+    if D.Clock ~= nil then
+        if D.Time == nil then D.Time = D.Clock end
+        D.Clock = nil
+    end
     local W = statsWidget
     local home = W.Parent
     local homeOrder = W.LayoutOrder
@@ -2310,7 +2322,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3,
     function Koffee._detailsApply()
         local o = Koffee.Details
         for _, e in ipairs({
-            { "stat_fps", o.FPS }, { "stat_ping", o.Ping }, { "stat_time", o.Clock },
+            { "stat_fps", o.FPS }, { "stat_ping", o.Ping }, { "stat_time", o.Time },
             { "stat_region", o.Region }, { "stat_user", o.User },
         }) do
             local g = W:FindFirstChild(e[1])
@@ -3457,6 +3469,11 @@ end
 function Koffee.UI.holdTabBtn(name, btn)
     local l = Koffee.UI.tabBtns[name]
     if not l then l = {}; Koffee.UI.tabBtns[name] = l end
+    -- v1.9.4: a shell rebuild registers its buttons again. Sweep the dead ones out first,
+    -- or the list keeps every button ever built for the life of the session.
+    for i = #l, 1, -1 do
+        if not (l[i] and l[i].Parent) then table.remove(l, i) end
+    end
     l[#l + 1] = btn
     btn.Visible = not Koffee.UI.tabHeld(name)
 end
@@ -4004,6 +4021,12 @@ function Koffee.textFx(box)
         if box.MultiLine or not box:IsFocused() then
             -- wrapped fields cannot be mirrored as one row, and an unfocused field is
             -- a slider mirror or a programmatic set: neither should animate
+            if row.Visible then clear() end
+            return
+        end
+        -- v1.9.4: the box's own text is what ellipsises. Once it no longer fits, leave it
+        -- visible so the "..." shows instead of a mirror that just clips at the edge.
+        if box.TextBounds.X > box.AbsoluteSize.X - 6 then
             if row.Visible then clear() end
             return
         end
@@ -5691,6 +5714,11 @@ local function rightClickSettings(row, title, buildFn, alsoLeft, dynamic)
         bl:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
             body.Size = UDim2.new(1, 0, 0, math.min(bl.AbsoluteContentSize.Y, BODY_MAX))
         end)
+        -- v1.9.4: a popup can go away without a clean close (unload, mode rebuild). The
+        -- child-of map is keyed by this frame, so clear it when the frame dies.
+        popupFrame.Destroying:Connect(function()
+            Koffee.UI.popupParent[popupFrame] = nil
+        end)
     end
 
     -- dropdowns park their option list on popupScreen, NOT under the popup, so a
@@ -7020,10 +7048,10 @@ local Crosshair = {
     -- v1.8.0: text stamped on the crosshair. Each row is an independent label; Pos is
     -- one of Top/Bottom/Left/Right/Middle, Offset is percent of the crosshair's reach
     -- so a big crosshair pushes its own words further out.
+    -- v1.9.4: the v1.8.0 crosshair-wide spin keys are gone. Per-row spin replaced them;
+    -- a config that still has them gets them folded into its rows when the card builds.
     Text = {
         Enabled = false,
-        Spin = false, SpinSpeed = 45, SpinDir = "CW",
-        OriginX = 0, OriginY = 0,
         Items = {
             { Text = "KOFFEE", Pos = "Bottom", Offset = 0, Size = 13, Rotation = 0,
               Font = "None", Color = Color3.new(1, 1, 1), Opacity = 1, Outline = true },
@@ -12094,7 +12122,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
             return
         end
         local bind
-        if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then bind = input.KeyCode
+        if it == Enum.UserInputType.Keyboard and input.KeyCode.Name ~= "Unknown" then bind = input.KeyCode
         elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
            and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
            and it ~= Enum.UserInputType.TextInput and it ~= Enum.UserInputType.InputMethod then bind = it end
@@ -15358,7 +15386,7 @@ local Combat = {
             end
             -- v0.27.0: bind mouse buttons even over the koffee UI. The pill is armed ("...") so the next press is the intended bind, and the arming click's edge already fired. (gpe-gating this read as "can't bind mouse buttons".) v0.0.36: accept ANY key + ANY button-like input (mouse 1/2/3 and whatever else the runtime surfaces through InputBegan, e.g. XButton1/2 on executors that deliver them). Only movement/wheel/focus are ignored.
             local bind
-            if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+            if it == Enum.UserInputType.Keyboard and input.KeyCode.Name ~= "Unknown" then
                 bind = input.KeyCode
             elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
                and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
@@ -17277,10 +17305,9 @@ end
         xhFaceCache[name] = ((ok and got) and got) or false
         return (ok and got) or nil
     end
-    -- a row's own value, else the old crosshair-wide one, else the default
-    local function rowSpin(it, T, key, default)
+    -- a row's own value, else the default
+    local function rowSpin(it, key, default)
         local v = it[key]
-        if v == nil then v = T and T[key] end
         if v == nil then return default end
         return v
     end
@@ -17349,16 +17376,16 @@ end
                 l.Position = UDim2.fromOffset(0, off)
             end
             -- v1.8.2: this row's own orbit
-            local spinOn = rowSpin(it, T, "Spin", false)
+            local spinOn = rowSpin(it, "Spin", false)
             if spinOn then
-                local speed = (tonumber(rowSpin(it, T, "SpinSpeed", 45)) or 45)
-                    * ((rowSpin(it, T, "SpinDir", "CW") == "CCW") and -1 or 1)
+                local speed = (tonumber(rowSpin(it, "SpinSpeed", 45)) or 45)
+                    * ((rowSpin(it, "SpinDir", "CW") == "CCW") and -1 or 1)
                 row.spin = (row.spin + speed * dt) % 360
             else
                 row.spin = 0
             end
-            local px = (tonumber(rowSpin(it, T, "OriginX", 0)) or 0) / 100 * reach
-            local py = (tonumber(rowSpin(it, T, "OriginY", 0)) or 0) / 100 * reach
+            local px = (tonumber(rowSpin(it, "OriginX", 0)) or 0) / 100 * reach
+            local py = (tonumber(rowSpin(it, "OriginY", 0)) or 0) / 100 * reach
             root.Size = g.canvas.Size
             root.Position = UDim2.fromOffset(math.floor(cx + 0.5), math.floor(cy + 0.5))
             root.Rotation = row.spin
@@ -17836,8 +17863,12 @@ end)()
                 e.t0 = os.clock()
                 pcall(function()
                     local col = cfg.KillColor
-                    e.card:FindFirstChildOfClass("TextLabel").Text = render(e.info, col)
-                    e.card:FindFirstChildOfClass("UIStroke").Color = col
+                    -- v1.9.4: guard the lookups. A renamed child used to turn a colour
+                    -- update into a runtime error instead of a skipped line.
+                    local lbl = e.card:FindFirstChildOfClass("TextLabel")
+                    if lbl then lbl.Text = render(e.info, col) end
+                    local st = e.card:FindFirstChildOfClass("UIStroke")
+                    if st then st.Color = col end
                     for _, c in ipairs(e.card:GetChildren()) do
                         if c:IsA("Frame") then c.BackgroundColor3 = col end
                     end
@@ -21610,7 +21641,10 @@ end
             mk.ring1, mk.img1 = h.flat("fx_rune", cfg.Color)
             mk.ring2, mk.img2 = h.flat("fx_ring", cfg.Color)
             mk.parts = { mk.ring1, mk.ring2 }
-            for _, g in ipairs({ mk.ring1, mk.ring2 }) do g:FindFirstChildOfClass("SurfaceGui").AlwaysOnTop = cfg.ThroughWalls end
+            for _, g in ipairs({ mk.ring1, mk.ring2 }) do
+                local sg = g:FindFirstChildOfClass("SurfaceGui")
+                if sg then sg.AlwaysOnTop = cfg.ThroughWalls end
+            end
         else
             for i = 1, 4 do
                 local p, il, bb = h.bill(i % 2 == 0 and "fx_twinkle" or "fx_glow", cfg.Color)
@@ -24228,6 +24262,24 @@ addTab("Visuals", function(root)
         -- every stamp, and the S crosshair gets its own copy of the whole set.
         if type(cfg.Text) ~= "table" then cfg.Text = { Enabled = false, Items = {} } end
         if type(cfg.Text.Items) ~= "table" then cfg.Text.Items = {} end
+        -- v1.9.4: fold the old crosshair-wide spin into the rows that never got their
+        -- own, then drop the globals. They were invisible in the UI and confusing in the
+        -- config; per-row values are the only thing the renderer reads now.
+        do
+            local TX = cfg.Text
+            local legacy = { Spin = TX.Spin, SpinSpeed = TX.SpinSpeed, SpinDir = TX.SpinDir,
+                OriginX = TX.OriginX, OriginY = TX.OriginY }
+            if legacy.Spin ~= nil or legacy.SpinSpeed ~= nil or legacy.SpinDir ~= nil
+                or legacy.OriginX ~= nil or legacy.OriginY ~= nil then
+                for _, it in ipairs(TX.Items) do
+                    for k, v in pairs(legacy) do
+                        if it[k] == nil and v ~= nil then it[k] = v end
+                    end
+                end
+                TX.Spin, TX.SpinSpeed, TX.SpinDir = nil, nil, nil
+                TX.OriginX, TX.OriginY = nil, nil
+            end
+        end
         local function textItemPanel(popup, index)
             local it = cfg.Text.Items[index]
             if not it then return end
@@ -34826,10 +34878,74 @@ registerConfig("custom", Koffee.Custom)
     -- v0.37.0 BUFFER LAB (paste + inspect + schema): grab a buffer from an external
     -- spy (Turtle Spy / Cobalt), paste it, decode it, then label its fields into a
     -- reusable schema. Stage 3 (build + fire from a schema) is still to come.
+    -- v1.9.4: the Buffer Lab's parsing and schema plumbing, shared by both styles. These
+    -- were duplicated in the Simple and Detailed builders, so every fix had to be made
+    -- twice and the two copies could drift.
+    local SDIR = "Koffee/buffers"
+    local HttpService = game:GetService("HttpService")
+    local function filesOk() return writefile and readfile and isfile and listfiles end
+    local function ensureDir()
+        if isfolder and makefolder then
+            if not isfolder("Koffee") then pcall(makefolder, "Koffee") end
+            if not isfolder(SDIR) then pcall(makefolder, SDIR) end
+        end
+    end
+    local function listSchemas()
+        local out = {}
+        if not filesOk() then return out end
+        ensureDir()
+        local ok, files = pcall(listfiles, SDIR)
+        if ok and type(files) == "table" then
+            for _, p in ipairs(files) do
+                local nm = tostring(p):match("([^/\\]+)%.json$")
+                if nm then out[#out + 1] = nm end
+            end
+        end
+        table.sort(out)
+        return out
+    end
+    local function unescape(s)
+        s = s:gsub("\\x(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+        s = s:gsub("\\(%d%d?%d?)", function(d) local n = tonumber(d); return (n and n < 256) and string.char(n) or "" end)
+        s = s:gsub("\\n", "\n"):gsub("\\t", "\t"):gsub("\\r", "\r")
+        s = s:gsub('\\"', '"'):gsub("\\\\", "\\")
+        return s
+    end
+    local function parsePaste(txt)
+        if not txt or txt == "" then return nil, "nothing pasted" end
+        local lit = txt:match('fromstring%s*%(%s*"(.-)"') or txt:match("fromstring%s*%(%s*'(.-)'")
+        if lit then return unescape(lit) end
+        local stripped = txt:gsub("0[xX]", ""):gsub("[%s,]", "")
+        if #stripped >= 2 and stripped:match("^%x+$") then
+            if #stripped % 2 ~= 0 then stripped = stripped:sub(1, #stripped - 1) end
+            local out = {}
+            for h in stripped:gmatch("..") do out[#out + 1] = string.char(tonumber(h, 16)) end
+            return table.concat(out)
+        end
+        return txt
+    end
+    -- bytes are passed in: each builder keeps its own current buffer
+    local function readField(bytes, off, ty)
+        if bytes == "" then return nil end
+        local ok, b = pcall(buffer.fromstring, bytes)
+        if not ok then return nil end
+        local n = buffer.len(b)
+        local ok2, v = pcall(function()
+            if ty == "u8" then return buffer.readu8(b, off) end
+            if ty == "i8" then return buffer.readi8(b, off) end
+            if ty == "u16" then return buffer.readu16(b, off) end
+            if ty == "i16" then return buffer.readi16(b, off) end
+            if ty == "u32" then return buffer.readu32(b, off) end
+            if ty == "i32" then return buffer.readi32(b, off) end
+            if ty == "f32" then return buffer.readf32(b, off) end
+            if ty == "f64" then return buffer.readf64(b, off) end
+            if ty == "string" then return buffer.readstring(b, off, math.max(0, math.min(16, n - off))) end
+        end)
+        return ok2 and v or nil
+    end
+
     local function buildBufferLabFull(parent)
         local RTYPES = { "u8", "i8", "u16", "i16", "u32", "i32", "f32", "f64", "string" }
-        local SDIR = "Koffee/buffers"
-        local HttpService = game:GetService("HttpService")
         local curBytes = ""
         local fields = {}   -- { { off, type, name } }
         local addType = "f32"
@@ -34859,68 +34975,6 @@ registerConfig("custom", Koffee.Custom)
                 Size = w, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = order, ZIndex = 36, Parent = p,
             }, { corner(5), stroke(Theme.Palette.BorderSubtle),
                 new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
-        end
-
-        local function unescape(s)
-            s = s:gsub("\\x(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
-            s = s:gsub("\\(%d%d?%d?)", function(d) local n = tonumber(d); return (n and n < 256) and string.char(n) or "" end)
-            s = s:gsub("\\n", "\n"):gsub("\\t", "\t"):gsub("\\r", "\r")
-            s = s:gsub('\\"', '"'):gsub("\\\\", "\\")
-            return s
-        end
-        local function parsePaste(txt)
-            if not txt or txt == "" then return nil, "nothing pasted" end
-            local lit = txt:match('fromstring%s*%(%s*"(.-)"') or txt:match("fromstring%s*%(%s*'(.-)'")
-            if lit then return unescape(lit) end
-            local stripped = txt:gsub("0[xX]", ""):gsub("[%s,]", "")
-            if #stripped >= 2 and stripped:match("^%x+$") then
-                if #stripped % 2 ~= 0 then stripped = stripped:sub(1, #stripped - 1) end
-                local out = {}
-                for h in stripped:gmatch("..") do out[#out + 1] = string.char(tonumber(h, 16)) end
-                return table.concat(out)
-            end
-            return txt
-        end
-        local function readField(off, ty)
-            if curBytes == "" then return nil end
-            local ok, b = pcall(buffer.fromstring, curBytes)
-            if not ok then return nil end
-            local n = buffer.len(b)
-            local ok2, v = pcall(function()
-                if ty == "u8" then return buffer.readu8(b, off) end
-                if ty == "i8" then return buffer.readi8(b, off) end
-                if ty == "u16" then return buffer.readu16(b, off) end
-                if ty == "i16" then return buffer.readi16(b, off) end
-                if ty == "u32" then return buffer.readu32(b, off) end
-                if ty == "i32" then return buffer.readi32(b, off) end
-                if ty == "f32" then return buffer.readf32(b, off) end
-                if ty == "f64" then return buffer.readf64(b, off) end
-                if ty == "string" then return buffer.readstring(b, off, math.max(0, math.min(16, n - off))) end
-            end)
-            return ok2 and v or nil
-        end
-
-        -- schema files (guarded)
-        local function filesOk() return writefile and readfile and isfile and listfiles end
-        local function ensureDir()
-            if isfolder and makefolder then
-                if not isfolder("Koffee") then pcall(makefolder, "Koffee") end
-                if not isfolder(SDIR) then pcall(makefolder, SDIR) end
-            end
-        end
-        local function listSchemas()
-            local out = {}
-            if not filesOk() then return out end
-            ensureDir()
-            local ok, files = pcall(listfiles, SDIR)
-            if ok and type(files) == "table" then
-                for _, p in ipairs(files) do
-                    local nm = tostring(p):match("([^/\\]+)%.json$")
-                    if nm then out[#out + 1] = nm end
-                end
-            end
-            table.sort(out)
-            return out
         end
 
         -- === paste card ===
@@ -35128,7 +35182,7 @@ registerConfig("custom", Koffee.Custom)
             for _, r in ipairs(fieldRows) do pcall(function() r:Destroy() end) end
             table.clear(fieldRows)
             for i, fd in ipairs(fields) do
-                local v = readField(fd.off, fd.type)
+                local v = readField(curBytes, fd.off, fd.type)
                 local vs = (v == nil) and "?" or (type(v) == "number" and (fd.type == "f32" or fd.type == "f64") and ("%.3f"):format(v) or tostring(v))
                 local rr = new("Frame", {
                     Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.3,
@@ -35312,8 +35366,6 @@ registerConfig("custom", Koffee.Custom)
     -- hex anatomy: it reads the buffer, shows what it found in plain words, and saves
     -- those values as a schema. The detailed view is one setting away.
     local function buildBufferLabSimple(parent)
-        local SDIR = "Koffee/buffers"
-        local HttpService = game:GetService("HttpService")
         local curBytes, fields, pickSchema = "", {}, ""
 
         local function filesOk() return writefile and readfile and isfile and listfiles end
@@ -35337,44 +35389,6 @@ registerConfig("custom", Koffee.Custom)
             table.sort(out)
             return out
         end
-        local function unescape(s)
-            s = s:gsub("\\x(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
-            s = s:gsub("\\n", "\n"):gsub("\\r", "\r"):gsub("\\t", "\t")
-            s = s:gsub("\\\\(.)", "%1")
-            return s
-        end
-        local function parsePaste(txt)
-            if not txt or txt == "" then return nil, "paste something first" end
-            local lit = txt:match('fromstring%s*%(%s*"(.-)"') or txt:match("fromstring%s*%(%s*'(.-)'")
-            if lit then return unescape(lit) end
-            local stripped = txt:gsub("0[xX]", ""):gsub("[%s,]", "")
-            if #stripped >= 2 and stripped:match("^%x+$") then
-                if #stripped % 2 ~= 0 then stripped = stripped:sub(1, #stripped - 1) end
-                local out = {}
-                for h in stripped:gmatch("..") do out[#out + 1] = string.char(tonumber(h, 16)) end
-                return table.concat(out)
-            end
-            return txt
-        end
-        local function readField(off, ty)
-            if curBytes == "" then return nil end
-            local ok, b = pcall(buffer.fromstring, curBytes)
-            if not ok then return nil end
-            local n = buffer.len(b)
-            local ok2, v = pcall(function()
-                if ty == "u8" then return buffer.readu8(b, off) end
-                if ty == "i8" then return buffer.readi8(b, off) end
-                if ty == "u16" then return buffer.readu16(b, off) end
-                if ty == "i16" then return buffer.readi16(b, off) end
-                if ty == "u32" then return buffer.readu32(b, off) end
-                if ty == "i32" then return buffer.readi32(b, off) end
-                if ty == "f32" then return buffer.readf32(b, off) end
-                if ty == "f64" then return buffer.readf64(b, off) end
-                if ty == "string" then return buffer.readstring(b, off, math.max(0, math.min(16, n - off))) end
-            end)
-            return ok2 and v or nil
-        end
-
         local card = panel(parent, "Buffer Lab")
         labelRow(card, "paste a buffer from a spy tool: Koffee reads it and tells you what is in it")
         labelRow(card, "hex, a buffer.fromstring(\"...\") snippet, or raw bytes all work")
@@ -35585,7 +35599,7 @@ registerConfig("custom", Koffee.Custom)
             end
             local rows = {}
             for _, fd in ipairs(fields) do
-                local v = readField(fd.off, fd.type)
+                local v = readField(curBytes, fd.off, fd.type)
                 local vs = (v == nil) and "?" or (type(v) == "number" and ("%.3f"):format(v) or tostring(v))
                 rows[#rows + 1] = ("%s = %s"):format(fd.name, vs)
             end
@@ -35738,8 +35752,8 @@ end
     })
     local menu = rightClickSettings(hitch, "Details Bar", function(popup)
         popup:dropdown("Time Style", { "24 Hour", "12 Hour" },
-            (D.Clock24 == false) and "12 Hour" or "24 Hour",
-            function(v) D.Clock24 = (v ~= "12 Hour") end)
+            (D.Time24 == false) and "12 Hour" or "24 Hour",
+            function(v) D.Time24 = (v ~= "12 Hour") end)
         local function partRow(label, key)
             popup:toggle(label, D[key] ~= false, function(v)
                 D[key] = v
@@ -35748,7 +35762,7 @@ end
         end
         partRow("FPS", "FPS")
         partRow("Ping", "Ping")
-        partRow("Time", "Clock")
+        partRow("Time", "Time")
         partRow("Region", "Region")
         partRow("User", "User")
         partRow("Avatar", "Avatar")
@@ -37896,7 +37910,8 @@ local function buildManager(host)
                 local card = vlist(ruleBox, 3, 0)
                 card.BackgroundColor3 = Theme.Palette.PanelElevated
                 card.BackgroundTransparency = 0.5
-                card:FindFirstChildOfClass("UIListLayout").Padding = UDim.new(0, 4)
+                local lay = card:FindFirstChildOfClass("UIListLayout")
+                if lay then lay.Padding = UDim.new(0, 4) end
                 new("UICorner", { CornerRadius = UDim.new(0, 6), Parent = card })
                 new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5),
                     PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6), Parent = card })
@@ -38438,7 +38453,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
             return
         end
         local bind
-        if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then bind = input.KeyCode
+        if it == Enum.UserInputType.Keyboard and input.KeyCode.Name ~= "Unknown" then bind = input.KeyCode
         elseif it ~= Enum.UserInputType.Focus and it ~= Enum.UserInputType.MouseMovement
            and it ~= Enum.UserInputType.MouseWheel and it ~= Enum.UserInputType.None
            and it ~= Enum.UserInputType.TextInput and it ~= Enum.UserInputType.InputMethod then bind = it end
@@ -44449,7 +44464,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
             end
         end
         local bind
-        if it == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+        if it == Enum.UserInputType.Keyboard and input.KeyCode.Name ~= "Unknown" then
             -- v0.0.94: capture combo if any modifier is currently held.
             local heldMod
             if     UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)   then heldMod = Enum.KeyCode.LeftShift
