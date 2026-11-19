@@ -1,7 +1,7 @@
--- koffee v1.9.2
+-- koffee v1.9.3
 
 local Koffee = {}
-Koffee.Version = "1.9.2"
+Koffee.Version = "1.9.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -1407,8 +1407,16 @@ local function new(class, props, children)
         pcall(function() inst.BorderSizePixel = 0 end)
     end
     if children then for _, c in ipairs(children) do c.Parent = inst end end
-    -- v1.8.7: every text field gets the typing animation, wherever it is created
-    if class == "TextBox" and Koffee.textFx then Koffee.textFx(inst) end
+    if class == "TextBox" then
+        -- v1.9.3: single-line fields ellipsise instead of spilling out of the box. Fields
+        -- that are meant to hold several lines keep their own layout.
+        if not (props and props.MultiLine) then
+            pcall(function() inst.TextTruncate = Enum.TextTruncate.AtEnd end)
+            inst.ClipsDescendants = true
+        end
+        -- v1.8.7: every text field gets the typing animation, wherever it is created
+        if Koffee.textFx then Koffee.textFx(inst) end
+    end
     return inst
 end
 
@@ -41235,14 +41243,52 @@ addTab("AI", function(root)
         BorderSizePixel = 0, ZIndex = 35, Parent = comp,
     }, { corner(8), stroke(P.Border) })
     local inputStroke = inputWrap:FindFirstChildOfClass("UIStroke")
+    -- v1.9.3: the composer grows with what you type, up to six lines, then scrolls.
+    -- A TextBox never reports its wrapped height, so a hidden label with the same font
+    -- and width measures the text for us and the scroller is sized from that.
+    local LINE, MAX_LINES = 16, 6
+    local measure = new("TextLabel", {
+        Text = " ", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body,
+        -- invisible via transparency, not Visible: Roblox does not lay out a hidden
+        -- label, and the wrapped height is the whole point of this one
+        TextWrapped = true, BackgroundTransparency = 1, TextTransparency = 1,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, -60, 0, LINE),
+        ZIndex = 0, Parent = inputWrap,
+    })
+    local inputScroll = new("ScrollingFrame", {
+        Position = UDim2.fromOffset(10, 8), Size = UDim2.new(1, -56, 0, LINE),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
+        ScrollBarImageColor3 = P.TextFaint, ScrollBarImageTransparency = 0.4,
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 36, Parent = inputWrap,
+    })
     local box = new("TextBox", {
         Text = "", PlaceholderText = "Ask it to change something, or just ask",
         PlaceholderColor3 = P.TextFaint, ClearTextOnFocus = false,
         FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Body, TextColor3 = P.Text,
-        BackgroundTransparency = 1, Position = UDim2.new(0, 10, 0, 0),
-        Size = UDim2.new(1, -56, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 36, Parent = inputWrap,
+        BackgroundTransparency = 1, Size = UDim2.new(1, -4, 0, LINE),
+        TextWrapped = true, MultiLine = true, TextYAlignment = Enum.TextYAlignment.Top,
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 36, Parent = inputScroll,
     })
+    local function fitComposer()
+        local content = math.max(measure.AbsoluteSize.Y, LINE)
+        box.Size = UDim2.new(1, -4, 0, content)
+        local h = math.min(content, LINE * MAX_LINES)
+        local extra = h - LINE
+        inputScroll.Size = UDim2.new(1, -56, 0, h)
+        inputWrap.Size = UDim2.new(1, -28, 0, 32 + extra)
+        comp.Size = UDim2.new(1, 0, 0, 60 + extra)
+        feed.Size = UDim2.new(1, 0, 1, -44 - (60 + extra))
+        if box:IsFocused() and content > h then
+            inputScroll.CanvasPosition = Vector2.new(0, content - h)
+        end
+    end
+    -- measurement lands one frame after the text does, so the sizing rides the
+    -- measurer's own size change instead of being read straight after the write
+    box:GetPropertyChangedSignal("Text"):Connect(function()
+        measure.Text = (box.Text ~= "" and box.Text) or " "
+    end)
+    measure:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitComposer)
     local send = new("TextButton", {
         Text = "", AutoButtonColor = false,
         AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -5, 0.5, 0),
