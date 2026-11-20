@@ -1,7 +1,7 @@
--- koffee v1.9.4
+-- koffee v1.9.5
 
 local Koffee = {}
-Koffee.Version = "1.9.4"
+Koffee.Version = "1.9.5"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -962,7 +962,9 @@ local Theme = {
         Snow          = Color3.fromRGB(255, 253, 248),
     },
     Fonts = (function()
-        local MONO  = "rbxasset://fonts/families/RobotoMono.json"
+        -- v1.9.5: the families JSON path never resolved in current clients, so Mono
+        -- rendered as the default face. Resolve it from the enum instead.
+        local MONO  = Font.fromEnum(Enum.Font.RobotoMono)
         -- v0.0.29: Matcha's ACTUAL face is Proxima Soft. We download the files once
         -- (cached in the executor workspace), wrap them in a font-family JSON for
         -- getcustomasset. Everything is pcall'd with a fallback: locked-down executors
@@ -1064,7 +1066,7 @@ local Theme = {
             -- editable fields: the same face at Medium, so a value box or a name field
             -- reads as part of the window instead of thin monospace.
             Input   = Font.new(UI,   Enum.FontWeight.Medium),
-            Mono    = Font.new(MONO, Enum.FontWeight.Medium),
+            Mono    = MONO,
         }
     end)(),
     -- v0.0.97 FEATURE-INTERFACE FONT SYSTEM (custom font for everything outside the main Koffee window). The main interface (the window you open with Delete) keeps using Theme.Fonts (ProximaSoft). Feature interface things: arraylist, ESP name/distance/health tags, HUD stats labels, etc.: register their TextLabels via Theme.fei(label, fontKey, baseSize) so when the user picks a custom font + size in Options we hot-swap FontFace + scale TextSize across all of them at once without touching each call site. Defaults to FontTable: the system is a no-op while FeiOn is false, so feature elements look exactly like before.
@@ -1199,21 +1201,57 @@ do
             url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/BurbankBigCondensed-Black.otf",
             file = "Koffee/fonts/BurbankBigCondensed-Black.otf",
         },
-        -- v0.4.0: built-in roblox font families: zero download, register a single Font.new pointing at the rbxasset family JSON. Roblox ships all of these. Curated for a real range: aaa game (Sarpanch), clean chrome (Ubuntu / Roboto), rounded sans (Nunito / Fredoka), serif (Merriweather), display (Luckiest Guy / Bangers / Permanent Marker / Creepster / Indie Flower), technical (Michroma), default roblox (Source Sans Pro), + the two monos.
-        ["Sarpanch"]         = { builtin = "rbxasset://fonts/families/Sarpanch.json" },
-        ["Ubuntu"]           = { builtin = "rbxasset://fonts/families/Ubuntu.json" },
-        ["Roboto"]           = { builtin = "rbxasset://fonts/families/Roboto.json" },
-        ["Roboto Mono"]      = { builtin = "rbxasset://fonts/families/RobotoMono.json" },
-        ["Nunito"]           = { builtin = "rbxasset://fonts/families/Nunito.json" },
-        ["Source Sans Pro"]  = { builtin = "rbxasset://fonts/families/SourceSansPro.json" },
-        ["Merriweather"]     = { builtin = "rbxasset://fonts/families/Merriweather.json" },
-        ["Fredoka One"]      = { builtin = "rbxasset://fonts/families/FredokaOne.json" },
-        ["Luckiest Guy"]     = { builtin = "rbxasset://fonts/families/LuckiestGuy.json" },
-        ["Bangers"]          = { builtin = "rbxasset://fonts/families/Bangers.json" },
-        ["Permanent Marker"] = { builtin = "rbxasset://fonts/families/PermanentMarker.json" },
-        ["Michroma"]         = { builtin = "rbxasset://fonts/families/Michroma.json" },
-        ["Creepster"]        = { builtin = "rbxasset://fonts/families/Creepster.json" },
-        ["Indie Flower"]     = { builtin = "rbxasset://fonts/families/IndieFlower.json" },
+        -- v1.9.5: the common cheat-menu faces, hosted on the same repo. One file per
+        -- face, same single-weight family as the entries above.
+        ["Noto Sans"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/NotoSans-Regular.ttf",
+            file = "Koffee/fonts/NotoSans-Regular.ttf",
+        },
+        ["Inter"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/Inter.ttf",
+            file = "Koffee/fonts/Inter.ttf",
+        },
+        ["JetBrains Mono"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/JetBrainsMono-Regular.ttf",
+            file = "Koffee/fonts/JetBrainsMono-Regular.ttf",
+        },
+        ["Rajdhani"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/Rajdhani-Regular.ttf",
+            file = "Koffee/fonts/Rajdhani-Regular.ttf",
+        },
+        ["Chakra Petch"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/ChakraPetch-Regular.ttf",
+            file = "Koffee/fonts/ChakraPetch-Regular.ttf",
+        },
+        ["Bebas Neue"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/BebasNeue-Regular.ttf",
+            file = "Koffee/fonts/BebasNeue-Regular.ttf",
+        },
+        ["Orbitron"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/Orbitron.ttf",
+            file = "Koffee/fonts/Orbitron.ttf",
+        },
+        -- v1.9.5: Verdana is Microsoft-licensed, so it is never downloaded. The entry
+        -- exists so it shows up in the pickers, and it only renders if the user drops
+        -- his own Verdana.ttf into Koffee/fonts. No url means nothing to fetch.
+        ["Verdana"] = { file = "Koffee/fonts/Verdana.ttf" },
+        -- v1.9.5: built-ins resolve through Enum.Font and Font.fromEnum. The
+        -- rbxasset://fonts/families/*.json paths these used to point at are not shipped
+        -- by current clients, so all of them quietly rendered as the default face.
+        ["Sarpanch"]         = { enum = "Sarpanch" },
+        ["Ubuntu"]           = { enum = "Ubuntu" },
+        ["Roboto"]           = { enum = "Roboto" },
+        ["Roboto Mono"]      = { enum = "RobotoMono" },
+        ["Nunito"]           = { enum = "Nunito" },
+        ["Source Sans Pro"]  = { enum = "SourceSans" },
+        ["Merriweather"]     = { enum = "Merriweather" },
+        ["Fredoka One"]      = { enum = "FredokaOne" },
+        ["Luckiest Guy"]     = { enum = "LuckiestGuy" },
+        ["Bangers"]          = { enum = "Bangers" },
+        ["Permanent Marker"] = { enum = "PermanentMarker" },
+        ["Michroma"]         = { enum = "Michroma" },
+        ["Creepster"]        = { enum = "Creepster" },
+        ["Indie Flower"]     = { enum = "IndieFlower" },
     }
 
     -- v0.9.0: one ordered name list for every font dropdown in the suite. Explicit
@@ -1222,9 +1260,12 @@ do
     Theme.FontNames = {
         "None",
         "Minecraft Bold", "Minecraft Regular", "ImGui", "Fortnite",
-        "Sarpanch", "Ubuntu", "Roboto", "Roboto Mono", "Nunito",
-        "Source Sans Pro", "Merriweather", "Fredoka One", "Luckiest Guy",
-        "Bangers", "Permanent Marker", "Michroma", "Creepster", "Indie Flower",
+        -- v1.9.5: hosted faces first, then the built-in families
+        "Noto Sans", "Inter", "Verdana", "Rajdhani", "Chakra Petch",
+        "Bebas Neue", "Orbitron", "JetBrains Mono", "Roboto Mono",
+        "Sarpanch", "Ubuntu", "Roboto", "Nunito", "Source Sans Pro",
+        "Merriweather", "Fredoka One", "Luckiest Guy", "Bangers",
+        "Permanent Marker", "Michroma", "Creepster", "Indie Flower",
     }
 
     -- cached Font.new handles so re-selecting a font doesn't re-download / re-register.
@@ -1234,11 +1275,10 @@ do
         if feiFontCache[name] then return feiFontCache[name] end
         local spec = FONTS_CATALOG[name]
         if not spec then return nil end
-        -- v0.4.0: built-in roblox families (rbxasset://fonts/families/*.json) skip
-        -- the download + family-json build flow entirely. One Font.new, cache, done.
-        if spec.builtin then
+        -- v1.9.5: built-in faces resolve from the enum, so they actually render.
+        if spec.enum then
             local ok, f = pcall(function()
-                return Font.new(spec.builtin, Enum.FontWeight.Regular)
+                return Font.fromEnum(Enum.Font[spec.enum])
             end)
             if ok and f then feiFontCache[name] = f; return f end
             return nil
@@ -1257,6 +1297,9 @@ do
             -- download the otf once and cache it under spec.file (flat fallback below).
             local usedFile = spec.file
             if not isf(spec.file) then
+                -- v1.9.5: an entry with no url is bring-your-own (Verdana). Never fetch
+                -- for it, just report the missing file so the caller falls back.
+                if not spec.url then return nil end
                 local body
                 local req = (syn and syn.request) or (http and http.request)
                     or http_request or request
@@ -2732,8 +2775,13 @@ function extras.pressWave(button, visual, hover)
         local step = math.max(1, math.ceil(size.Y / 48))
         local bands = {}
         local top = 0
-        while top < math.ceil(size.Y) do
+        -- v1.9.5: walk to size.Y, not to its ceiling. A fractional height (any button
+        -- inside a scaled parent, like the expanded window mid-close) clamped the last
+        -- band back onto itself, so top never advanced and the loop allocated a frame
+        -- per pass until the client died. That was the double-click-Close hang.
+        while top < size.Y do
             local bottom = math.min(top + step, size.Y)
+            if bottom <= top then break end
             local left, right = roundedSpan(size.X, size.Y, radius, top, bottom)
             local band = new("Frame", { Name = "WaveBand", BackgroundColor3 = waveColor,
                 BackgroundTransparency = 1, Visible = false, ZIndex = host.ZIndex, Parent = host }, {
@@ -30732,7 +30780,7 @@ addTab("Options", function(root)
         end)
     end)
 
-    -- v0.0.97 CUSTOM FONT: applies a user-chosen font to everything that isn't the main Koffee window (arraylist, ESP name / distance / health text, HUD stats, etc.). The dropdown lists the fonts hosted on koffee-assets (see FONTS_CATALOG); right-click the row to tune the global text size used while the custom font is on: so the pixel fonts don't render too big / small. Default off + "None": feature interface looks exactly like before. v0.4.0: expanded font catalog. "None" reverts to Theme.Fonts. The rest split into: external assets (downloaded via koffee-assets) + roblox stock families (zero-cost, resolved via rbxasset://fonts/families/*.json inside loadFeiFont). v0.9.0: shared catalog list (see Theme.FontNames) instead of a second literal.
+    -- v0.0.97 CUSTOM FONT: applies a user-chosen font to everything that isn't the main Koffee window (arraylist, ESP name / distance / health text, HUD stats, etc.). The dropdown lists the fonts hosted on koffee-assets (see FONTS_CATALOG); right-click the row to tune the global text size used while the custom font is on: so the pixel fonts don't render too big / small. Default off + "None": feature interface looks exactly like before. "None" reverts to Theme.Fonts. The rest split into: external assets (downloaded via koffee-assets) + roblox stock faces (zero-cost, resolved from Enum.Font inside loadFeiFont) + Verdana, which is bring-your-own. v0.9.0: shared catalog list (see Theme.FontNames) instead of a second literal, so every font picker in the build reads one list.
     local fontOptions = Theme.FontNames
     -- user-dropped fonts land in the workspace as koffee_<name>.otf; surface any
     -- extra cached entries the catalog doesn't know so they're selectable too.
@@ -35682,7 +35730,12 @@ registerConfig("custom", Koffee.Custom)
             if not Shared.openModal then return end
             local m = Shared.openModal(math.max(620, vp.X - 80), math.max(460, vp.Y - 80))
             local mConns = {}
+            local closing = false
             makeEditor(m.box, mConns, { text = "Close", fn = function()
+                -- v1.9.5: one close per window. A second click used to rebuild the
+                -- small editor again while the first rebuild was still landing.
+                if closing then return end
+                closing = true
                 for _, c in ipairs(mConns) do pcall(function() c:Disconnect() end) end
                 m.close()
                 refresh()          -- pick up whatever was edited in the big view
