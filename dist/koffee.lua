@@ -1,7 +1,7 @@
--- koffee v1.9.6
+-- koffee v2.0.0
 
 local Koffee = {}
-Koffee.Version = "1.9.6"
+Koffee.Version = "2.0.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2191,6 +2191,13 @@ RunService.RenderStepped:Connect(function()
         local txt = os.date(twelve and "%I:%M:%S %p" or "%H:%M:%S")
         if twelve then txt = (txt:gsub("^0", "")) end
         timeLabel.Text = txt
+        -- v2.0.0: K/D and accuracy ride the same half-second sample
+        local st = Koffee.Stats
+        if st and Koffee._kdLabel then
+            local acc = st.acc()
+            Koffee._kdLabel.Text = string.format("%d/%d", st.kills, st.deaths)
+                .. (acc and string.format(" · %d%%", math.floor(acc + 0.5)) or "")
+        end
     end
 end)
 
@@ -2262,6 +2269,11 @@ end)
             Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
         if ok2 then av.Image = img end
     end)
+    -- v2.0.0: session K/D and accuracy, kept on Koffee because the chunk is at the
+    -- register ceiling and the FPS loop above needs to reach it.
+    local kd = textLike("0/0")
+    named(group(6, "crosshair", kd), "stat_kd")
+    Koffee._kdLabel = kd
 end)()
 
 -- v0.85.0 DETAILS WIDGET: drag the details bar out of the strip (menu open) and it
@@ -2273,7 +2285,9 @@ Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3,
     -- v1.9.4: Time/Time24, not Clock/Clock24. The menu row always said "Time", so the
     -- config key disagreed with the label; old configs are folded over on load below.
     Time24 = true, DragSmooth = 16,
-    FPS = true, Ping = true, Time = true, Region = true, User = true, Avatar = true }
+    FPS = true, Ping = true, Time = true, Region = true, User = true, Avatar = true,
+    -- v2.0.0: session K/D and accuracy as their own part
+    Stats = true }
 ;(function()
     local D = Koffee.Details
     -- v1.9.4: fold the old Clock/Clock24 keys over, then drop them so the config only
@@ -2368,7 +2382,7 @@ Koffee.Details = { Docked = true, X = 40, Y = 90, Scale = 1.3,
         local o = Koffee.Details
         for _, e in ipairs({
             { "stat_fps", o.FPS }, { "stat_ping", o.Ping }, { "stat_time", o.Time },
-            { "stat_region", o.Region }, { "stat_user", o.User },
+            { "stat_region", o.Region }, { "stat_user", o.User }, { "stat_kd", o.Stats },
         }) do
             local g = W:FindFirstChild(e[1])
             if g then g.Visible = e[2] ~= false end
@@ -2615,7 +2629,7 @@ KoffeeOptions = {
     },
     -- v0.90.0: UI sounds (Options > Sounds). Groups: Load + Menu, Controls, Configs +
     -- Toasts, Hotkeys (blips when a bind toggles a module with the menu closed).
-    SfxOn = true, SfxVolume = 0.5, SfxPack = "Crisp",
+    SfxOn = true, SfxVolume = 0.35, SfxPack = "Crisp",
     SfxMenu = true, SfxControls = false, SfxConfigs = true, SfxHotkeys = true,
 }
 -- v1.7.0: helpers defined ABOVE the options table (draggable, the widget builders)
@@ -2664,7 +2678,8 @@ Koffee.Sfx = (function()
             local snd = Instance.new("Sound")
             snd.Name = "KUiSfx"
             snd.SoundId = id
-            snd.Volume = math.clamp(o.SfxVolume or 0.5, 0, 1) * (name == "slider" and 0.6 or 1)
+            snd.Volume = math.clamp(o.SfxVolume or 0.35, 0, 1) * 0.6
+                * (name == "slider" and 0.6 or 1)
             snd.PlaybackSpeed = 1 + (math.random() - 0.5) * 0.04
             snd.Parent = SS
             snd.Ended:Once(function() snd:Destroy() end)
@@ -3958,7 +3973,10 @@ local function attachHover(row, hoverBtn)
         Name = "HoverBg",
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = UDim2.new(1, 8, 1, 4),
+        -- v2.0.0: flush with the row. It used to overhang 4px sideways and 2px
+        -- vertically for a soft halo, and every sub-tab page is a CanvasGroup, so the
+        -- wash came out cut on hover.
+        Size = UDim2.new(1, 0, 1, 0),
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
@@ -4215,8 +4233,11 @@ local function checkboxVisual(parent, label, initialOn)
         local g = mode ~= "Classic"
         if g and not sw then
             sw = {}
+            -- v2.0.0: the glow used to be 64 wide centred on x=15, so 17px of it sat
+            -- outside the row and the sub-tab CanvasGroup clipped it. It now fits the
+            -- switch it is glowing behind.
             sw.glow = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 15, 0.5, 0),
-                Size = UDim2.new(0, 64, 0, 40), BackgroundTransparency = 1, Image = Koffee.UI.tex("fx_glow"),
+                Size = UDim2.new(0, 30, 0, 30), BackgroundTransparency = 1, Image = Koffee.UI.tex("fx_glow"),
                 ImageColor3 = Theme.Palette.Accent, ImageTransparency = 1, ZIndex = 34, Parent = row })
             sw.track = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
                 Size = UDim2.new(0, 30, 0, 17), BorderSizePixel = 0, ZIndex = 35, Parent = row }, { pillCorner() })
@@ -5283,6 +5304,15 @@ local function dropdown(parent, label, options, initial, onChange, controlOption
                     closeList()
                     if onChange then onChange(option) end
                 end)
+                -- v2.0.0: a row can answer a right-click too. The configs dropdown uses
+                -- it to offer a partial load instead of the whole file.
+                item.MouseButton2Click:Connect(function()
+                    if locked or not isOpen then return end
+                    if controlOptions.OnRowRightClick then
+                        closeList()
+                        controlOptions.OnRowRightClick(option)
+                    end
+                end)
                 rowCount += 1
             end
         end
@@ -5383,6 +5413,233 @@ local function dropdown(parent, label, options, initial, onChange, controlOption
         end,
     }
 end
+
+-- v2.0.0 MULTI-SELECT: the dropdown's own row markup, but a pick highlights instead of
+-- closing, so several can be on at once. The value line is a comma list of what is on
+-- and truncates with an ellipsis. All and None sit in the header.
+Koffee.UI.multiSelect = (function()
+    local function join(names)
+        if #names == 0 then return "None" end
+        return table.concat(names, ", ")
+    end
+
+    return function(parent, label, options, isOn, onToggle)
+        options = options or {}
+        local wrap = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1,
+            ZIndex = 34, Parent = parent,
+        })
+        new("TextLabel", {
+            Text = label, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 14),
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 35, Parent = wrap,
+        })
+        local btn = new("TextButton", {
+            Text = "", AutoButtonColor = false, Position = UDim2.fromOffset(0, 22),
+            Size = UDim2.new(1, 0, 0, 26), BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = 0.15, BorderSizePixel = 0, ZIndex = 35, Parent = wrap,
+        }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+        local valueLbl = new("TextLabel", {
+            Name = "SelectedValue", Text = "", FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+            BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 0),
+            Size = UDim2.new(1, -34, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 36, Parent = btn,
+        })
+        local caret = chevron(btn, 10)
+        local dCr, dSt = btn:FindFirstChildOfClass("UICorner"), btn:FindFirstChildOfClass("UIStroke")
+
+        local list = new("CanvasGroup", {
+            Name = "MultiSelectPopup", Visible = false, GroupTransparency = 1,
+            Size = UDim2.fromOffset(100, 0), BackgroundColor3 = Theme.Palette.Panel,
+            BackgroundTransparency = 0.05, BorderSizePixel = 0, ZIndex = 260,
+            Parent = popupScreen,
+        }, { corner(6), stroke(Theme.Palette.Border) })
+        local head = new("Frame", {
+            Name = "Actions", BackgroundTransparency = 1, Position = UDim2.fromOffset(4, 4),
+            Size = UDim2.new(1, -8, 0, 22), ZIndex = 261, Parent = list,
+        })
+        local rows = new("ScrollingFrame", {
+            Name = "DropdownOptions", BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 3, ScrollBarImageColor3 = Theme.Palette.TextFaint,
+            ScrollingDirection = Enum.ScrollingDirection.Y, CanvasSize = UDim2.new(),
+            ZIndex = 261, Parent = list,
+        })
+        local isOpen, destroyed, positionConn, groupTween, rowCount = false, false, nil, nil, 0
+        local rowFrames = {}
+
+        local function enabledNames()
+            local out = {}
+            for _, name in ipairs(options) do
+                if isOn(name) then out[#out + 1] = name end
+            end
+            return out
+        end
+        local function paintValue()
+            valueLbl.Text = join(enabledNames())
+        end
+        -- repaint one row in place: no rebuild, so the list never jumps mid-pick
+        local function paintRow(name)
+            local r = rowFrames[name]
+            if not r then return end
+            local on = isOn(name)
+            local txt = r:FindFirstChild("OptionText")
+            if txt then txt.TextColor3 = on and Theme.Palette.Accent or Theme.Palette.Text end
+            r.BackgroundColor3 = on and Theme.Palette.Accent or Theme.Palette.PanelElevated
+            r.BackgroundTransparency = on and 0.9 or 1
+        end
+        local function place()
+            if destroyed or not (btn.Parent and list.Parent) then return end
+            local abs, size, vp = btn.AbsolutePosition, btn.AbsoluteSize, viewport()
+            local width = math.max(size.X, 1)
+            local x = math.clamp(abs.X, 0, math.max(0, vp.X - width))
+            -- v2.0.0: fit inside the viewport in both directions. Below if there is room,
+            -- else above, else shrink the row area to whatever is left. A list that runs
+            -- off the bottom is a cut list.
+            local below = vp.Y - (abs.Y + size.Y) - 10
+            local above = abs.Y - 10
+            local avail = math.max(below, above)
+            local body = math.min(rowCount * 26, 264, math.max(avail - 30, 52))
+            local height = body + 30
+            local y = abs.Y + size.Y + 6
+            if below < height and above > below then y = abs.Y - height - 6 end
+            y = math.clamp(y, 0, math.max(0, vp.Y - height))
+            rows.Position = UDim2.fromOffset(4, 28)
+            rows.Size = UDim2.fromOffset(math.max(0, width - 8), body)
+            list.Size = UDim2.fromOffset(width, height)
+            local ox, oy = popupOffsetFor(list, x, y)
+            list.Position = UDim2.fromOffset(ox, oy)
+        end
+        local function actionBtn(text, x)
+            return new("TextButton", {
+                Text = text, AutoButtonColor = false, FontFace = Theme.Fonts.Medium,
+                TextSize = Theme.Text.Tiny, TextColor3 = Theme.Palette.TextMuted,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0),
+                Position = UDim2.new(1, x, 0, 0), Size = UDim2.fromOffset(38, 22),
+                ZIndex = 262, Parent = head,
+            }, { corner(4), stroke(Theme.Palette.BorderSubtle) })
+        end
+        local allBtn, noneBtn = actionBtn("All", -44), actionBtn("None", 0)
+        new("TextLabel", {
+            Text = label, FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Tiny,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(4, 0), Size = UDim2.new(1, -96, 0, 22),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 262, Parent = head,
+        })
+
+        local build, closeList
+        closeList = function()
+            if not isOpen then return end
+            isOpen = false
+            openDropdowns[list] = nil
+            if positionConn then positionConn:Disconnect(); positionConn = nil end
+            if groupTween then groupTween:Cancel() end
+            tween(caret, Theme.Animation.Menu, { Rotation = 0 })
+            if not Koffee.Anim.spot("AnimPopups") then
+                list.Visible = false
+                return
+            end
+            groupTween = tween(list, Theme.Animation.Menu, { GroupTransparency = 1 })
+            task.delay(Koffee.Anim.wait(0.2), function()
+                if not isOpen and not destroyed then list.Visible = false end
+            end)
+        end
+        build = function()
+            for _, child in ipairs(rows:GetChildren()) do child:Destroy() end
+            rowFrames = {}
+            rowCount = 0
+            for _, name in ipairs(options) do
+                local item = new("TextButton", {
+                    Name = "DropdownOption", Text = "", AutoButtonColor = false,
+                    Position = UDim2.fromOffset(0, rowCount * 26), Size = UDim2.new(1, 0, 0, 26),
+                    BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 1,
+                    BorderSizePixel = 0, ZIndex = 262, Parent = rows,
+                }, { corner(5) })
+                new("TextLabel", {
+                    Name = "OptionText", Text = name, FontFace = Theme.Fonts.Medium,
+                    TextSize = Theme.Text.Small,
+                    TextColor3 = isOn(name) and Theme.Palette.Accent or Theme.Palette.Text,
+                    BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 0),
+                    Size = UDim2.new(1, -24, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 263, Parent = item,
+                })
+                item.MouseEnter:Connect(function()
+                    if isOn(name) then return end
+                    tween(item, Theme.Animation.Fast, { BackgroundTransparency = 0.65 })
+                end)
+                item.MouseLeave:Connect(function()
+                    if isOn(name) then return end
+                    tween(item, Theme.Animation.Fast, { BackgroundTransparency = 1 })
+                end)
+                item.MouseButton1Click:Connect(function()
+                    if destroyed or not isOpen then return end
+                    if onToggle then onToggle(name, not isOn(name)) end
+                    paintRow(name)
+                    paintValue()
+                    Koffee.Sfx.play("select")
+                end)
+                rowFrames[name] = item
+                paintRow(name)
+                rowCount += 1
+            end
+            rows.CanvasSize = UDim2.fromOffset(0, rowCount * 26)
+        end
+        local function setAll(state)
+            for _, name in ipairs(options) do
+                if isOn(name) ~= state and onToggle then onToggle(name, state) end
+            end
+            build()
+            paintValue()
+        end
+        allBtn.MouseButton1Click:Connect(function() setAll(true) end)
+        noneBtn.MouseButton1Click:Connect(function() setAll(false) end)
+
+        local function openList()
+            if isOpen or destroyed then return end
+            for _, entry in pairs(openDropdowns) do entry.close() end
+            isOpen = true
+            build()
+            paintValue()
+            if not list.Visible then list.GroupTransparency = 1 end
+            list.Visible = true
+            place()
+            openDropdowns[list] = { btn = btn, close = closeList }
+            if positionConn then positionConn:Disconnect() end
+            positionConn = RunService.RenderStepped:Connect(function()
+                if not btn.Parent then closeList(); return end
+                place()
+            end)
+            groupTween = tween(list, Theme.Animation.Menu, { GroupTransparency = 0 })
+            tween(caret, Theme.Animation.Menu, { Rotation = 180 })
+        end
+        btn.MouseButton1Click:Connect(function()
+            if isOpen then closeList() else openList() end
+        end)
+        popFx(btn)
+        Koffee.UI.items[wrap] = label
+        Koffee.UI.skin(wrap, function(mode)
+            local g = mode ~= "Classic"
+            btn.BackgroundTransparency = g and 0.5 or 0.15
+            dCr.CornerRadius = UDim.new(0, g and 9 or 4)
+            dSt.Color, dSt.Transparency = g and Theme.Palette.Snow or Theme.Palette.BorderSubtle, g and 0.88 or 0
+        end)
+        paintValue()
+        return {
+            frame = wrap,
+            refresh = paintValue,
+            close = closeList,
+            destroy = function()
+                closeList()
+                destroyed = true
+                list:Destroy()
+                wrap:Destroy()
+            end,
+        }
+    end
+end)()
 
 -- outside-click closer: closes any open dropdown OR color picker if click missed
 UserInputService.InputBegan:Connect(function(input, processed)
@@ -5487,8 +5744,11 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     -- v1.7.0: typing into a value box now shows a focus underline
     if Koffee.MotionExtras then Koffee.MotionExtras.focus(valueBox) end
     local track = new("Frame", {
-        Position = UDim2.new(0, 0, 0, 30),
-        Size = UDim2.new(1, 0, 0, 6),                     -- v0.0.32: thicker track
+        -- v2.0.0: inset by half the knob. The knob is centred on the fill tip, so a
+        -- full-width track let it hang 6px past the row and a CanvasGroup (every
+        -- sub-tab page) clipped it. Same reason the fill no longer reaches the edge.
+        Position = UDim2.new(0, 6, 0, 30),
+        Size = UDim2.new(1, -12, 0, 6),                   -- v0.0.32: thicker track
         BackgroundColor3 = Theme.Palette.PanelElevated,
         BorderSizePixel = 0,
         ZIndex = 34,
@@ -5529,8 +5789,12 @@ local function slider(parent, label, min, max, initial, precision, onChange, opt
     Koffee.UI.items[row] = label
     Koffee.UI.skin(row, function(mode)
         local g = mode ~= "Classic"
-        track.Size = UDim2.new(1, 0, 0, g and 4 or 6)
-        track.Position = UDim2.new(0, 0, 0, g and 31 or 30)
+        -- v2.0.0: inset by half the knob in BOTH skins. The glass branch used to reset
+        -- the track to full width, which put the knob back outside the row, and every
+        -- sub-tab page is a CanvasGroup that slices whatever crosses its edge.
+        local half = g and 7 or 6
+        track.Size = UDim2.new(1, -half * 2, 0, g and 4 or 6)
+        track.Position = UDim2.new(0, half, 0, g and 31 or 30)
         track.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.PanelElevated
         track.BackgroundTransparency = g and 0.84 or 0
         knob.BackgroundColor3 = g and Theme.Palette.Snow or Theme.Palette.Accent
@@ -6230,9 +6494,14 @@ end
 -- loadSnapshot applies a decoded config and then rebuilds the config-driven
 -- tabs (rebuildConfigTabs is a main-chunk upvalue set near addTab) so sliders /
 -- dropdowns / checkboxes / keybind pills re-read the freshly loaded state.
-local function loadSnapshot(data)
+local function loadSnapshot(data, parts)
     if type(data) ~= "table" then return false end
-    if data.registry then
+    -- v2.0.0: selective load. `parts` names the slices to take; nil means all of it,
+    -- which is what every existing caller passes. A scalar in a registered table is a
+    -- "value" (a row on a tab); a nested table is "rightclick" (what its popup owns).
+    local all = type(parts) ~= "table"
+    local function want(k) return all or parts[k] == true end
+    if data.registry and (want("values") or want("rightclick")) then
         for name, tbl in pairs(data.registry) do
             local target = ConfigRegistry[name]
             if target and type(tbl) == "table" then
@@ -6240,7 +6509,15 @@ local function loadSnapshot(data)
                 if skip then
                     for k in pairs(skip) do tbl[k] = nil end
                 end
-                applyInto(target, tbl)
+                local slice = {}
+                for k, v in pairs(tbl) do
+                    if type(v) == "table" then
+                        if want("rightclick") then slice[k] = v end
+                    elseif want("values") then
+                        slice[k] = v
+                    end
+                end
+                applyInto(target, slice)
             end
         end
     end
@@ -6260,7 +6537,7 @@ local function loadSnapshot(data)
             ca.Name = (opts and opts[1]) or "Orbit 1"
         end
     end
-    if data.keybinds then
+    if data.keybinds and want("keybinds") then
         for k in pairs(Keybinds) do Keybinds[k] = nil end
         for id, key in pairs(data.keybinds) do
             -- v0.66.1: combat has no toggle bind. v0.69.1: the HvH box is Blink alone now. Skip stale entries from old saves. v0.96.0: flickbot plus the folded native rows left the same way. v0.96.11: rivals binds never load outside rivals. A global auto-load could otherwise arm them where no engine reads them.
@@ -6277,7 +6554,7 @@ local function loadSnapshot(data)
             end
         end
     end
-    if data.modules then
+    if data.modules and want("modules") then
         for id, state in pairs(data.modules) do
             -- v0.67.0: npc_* rows are owned by reconcile (fresh ids per load with saved on/off already applied); the old ids below no longer exist. v0.96.11: rivals modules never restore outside rivals, same reason as the keybind guard above.
             if not (type(id) == "string" and id:sub(1, 4) == "npc_")
@@ -6349,7 +6626,7 @@ function ConfigIO.save(name)
     if not wok then return false, "write failed" end
     return true, name
 end
-function ConfigIO.load(name)
+function ConfigIO.load(name, parts)
     if not filesReady() then return false, "no file access" end
     local path = CFG_DIR .. "/" .. name .. ".koffee"
     if not fileAPI.isfile(path) then return false, "not found" end
@@ -6364,7 +6641,7 @@ function ConfigIO.load(name)
     -- v0.0.50 fix: `return loadSnapshot(data), name` handed the CONFIG NAME back as
     -- the second return on failure, so the UI printed "load failed: <name>" instead
     -- of a reason. Split the two paths so the error slot always carries an error.
-    if not loadSnapshot(data) then return false, "bad config data" end
+    if not loadSnapshot(data, parts) then return false, "bad config data" end
     return true, name
 end
 function ConfigIO.delete(name)
@@ -6455,9 +6732,9 @@ end
         Koffee.Sfx.play(ok and "save" or "error")
         return ok, r
     end
-    function ConfigIO.load(name)
+    function ConfigIO.load(name, parts)
         Koffee.Sfx.mute(0.6)
-        local ok, r = ld(name)
+        local ok, r = ld(name, parts)
         if os.clock() - Koffee.Sfx.bootAt > 2 then
             Koffee.Sfx.mutedUntil = 0
             Koffee.Sfx.play(ok and "cfg_load" or "error")
@@ -13008,7 +13285,13 @@ local Combat = {
         Smooth        = { Enabled = false, X = 1.0, Y = 1.0 },
         -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
         -- v0.51.0: Deadzone holds the mouse while the point sits close.
-        Legit         = { Enabled = false, Jitter = 0, Overshoot = 0, Reaction = 0, Deadzone = 0, PartMode = "Single Part", Parts = {} },
+        -- v2.0.0: curve shapes the pull over the engagement, ReactionRamp stretches
+        -- reaction with range, Fatigue wobbles the jitter, OvershootTravel flicks along
+        -- the travel vector instead of a random heading.
+        Legit         = { Enabled = false, Jitter = 0, Overshoot = 0, Reaction = 0, Deadzone = 0,
+            PartMode = "Single Part", Parts = {},
+            Curve = "Linear", CurveTime = 220, ReactionRamp = 0, Fatigue = 0,
+            OvershootTravel = true },
         _target       = nil,
         _rageLock     = nil,   -- locked ragebot victim (held for the key duration)
     },
@@ -13064,7 +13347,8 @@ local Combat = {
         -- v0.50.0 legit kit. Underscore keys skip the serializer like the rest.
         -- v0.51.0: PartMode picks from the enabled Parts pool; Spread sprays
         -- the redirect in a disc. Empty pool means everything enabled.
-        Legit         = { Jitter = 0, HitChance = 100, PartMode = "Single Part", Parts = {}, Spread = 0, SpreadUnit = "Studs", Bloom = 0, ForceMiss = false },
+        Legit         = { Jitter = 0, HitChance = 100, PartMode = "Single Part", Parts = {}, Spread = 0, SpreadUnit = "Studs", Bloom = 0, ForceMiss = false,
+            SpreadPattern = "Cone", HitChanceFalloff = 0, HeadshotCap = 100 },
         -- v0.0.39: Forced Magic-Bullet is UNIVERSAL by default: fire-read is always on. The ~90% of games that don't read mouse.Hit build their shot from Camera.CFrame / the cursor; we spoof those reads the instant the WEAPON SCRIPT makes them, scoped by getcallingscript so the real camera (renderer/ Popper) is never touched and the view never moves. SpoofScope is the caller- identification strategy (both exclude the PlayerModule camera).
         SpoofScope    = "Auto (Learn)",
         _hooked       = false,
@@ -14436,15 +14720,48 @@ local Combat = {
         -- v0.50.0 legit kit. Reaction holds fire on fresh locks; jitter offsets
         -- the aim point by true angle (range independent); overshoot starts off
         -- in a fixed random direction and glides on. All paths share tpos.
+        -- v2.0.0: overshoot follows the travel vector, reaction stretches with range,
+        -- fatigue wobbles the jitter, and the pull follows a curve.
         local LG = Combat.Aim.Legit
         local now = os.clock()
         if LG._acqPlr ~= plr then
             LG._acqPlr, LG._acqAt = plr, now
-            local a = math.random() * math.pi * 2
-            LG._osPlr, LG._osX, LG._osY, LG._osAt = plr, math.cos(a), math.sin(a), now
+            local ox, oy = nil, nil
+            if LG.OvershootTravel ~= false and cam then
+                local sp = cam:WorldToViewportPoint(tpos)
+                local d = Vector2.new(sp.X, sp.Y) - aimCenter
+                if sp.Z > 0 and d.Magnitude > 1e-3 then
+                    d = d.Unit
+                    ox, oy = d.X, -d.Y   -- screen Y runs down, UpVector runs up
+                end
+            end
+            if not ox then
+                local a = math.random() * math.pi * 2
+                ox, oy = math.cos(a), math.sin(a)
+            end
+            LG._osPlr, LG._osX, LG._osY, LG._osAt = plr, ox, oy, now
+        end
+        -- v2.0.0: fatigue is a slow random walk on the jitter, so the same
+        -- engagement does not feel identical twice.
+        local fatigue = 1
+        if LG.Enabled and (LG.Fatigue or 0) > 0 then
+            if now >= (LG._fatAt or 0) then
+                LG._fatAt = now + 0.5 + math.random() * 1.5
+                LG._fat = 1 + (math.random() * 2 - 1) * (LG.Fatigue / 100)
+            end
+            fatigue = LG._fat or 1
         end
         -- v0.52.0: the whole legit kit is gated behind the Legit master toggle.
-        if LG.Enabled and (LG.Reaction or 0) > 0 and (now - (LG._acqAt or now)) * 1000 < LG.Reaction then return end
+        local react = LG.Reaction or 0
+        if LG.Enabled and react > 0 then
+            local ramp = LG.ReactionRamp or 0
+            if ramp > 0 and cam then
+                local d = (tpos - cam.CFrame.Position).Magnitude
+                react = react * (1 + (ramp / 100)
+                    * math.clamp(d / math.max(Combat.Aim.Distance or 1500, 1), 0, 1))
+            end
+            if (now - (LG._acqAt or now)) * 1000 < react then return end
+        end
         if LG.Enabled and ((LG.Jitter or 0) > 0 or (LG.Overshoot or 0) > 0) and cam then
             local toT = tpos - cam.CFrame.Position
             local dist = toT.Magnitude
@@ -14452,7 +14769,7 @@ local Combat = {
                 local cf = cam.CFrame
                 local ox, oy = 0, 0
                 if (LG.Jitter or 0) > 0 then
-                    local m = dist * math.tan(math.rad(LG.Jitter))
+                    local m = dist * math.tan(math.rad(LG.Jitter)) * fatigue
                     ox = ox + (math.random() * 2 - 1) * m
                     oy = oy + (math.random() * 2 - 1) * m
                 end
@@ -14484,6 +14801,23 @@ local Combat = {
         if Combat.Aim.Smooth.Enabled then
             aX = math.clamp(sens / math.max(Combat.Aim.Smooth.X, 0.01), 0, 1)
             aY = math.clamp(sens / math.max(Combat.Aim.Smooth.Y, 0.01), 0, 1)
+        end
+        -- v2.0.0: pull curve. Sensitivity says how hard the aim pulls; the curve says
+        -- whether that pull arrives at once or eases in over the engagement. Snap is
+        -- the old constant behaviour, and the whole block is gated behind Legit.
+        if LG.Enabled and (LG.Curve or "Linear") ~= "Snap" then
+            local span = math.max((LG.CurveTime or 220) / 1000, 0.02)
+            local p = math.clamp((now - (LG._acqAt or now)) / span, 0, 1)
+            local curve = LG.Curve or "Linear"
+            local f
+            if curve == "Ease In" then f = p * p
+            elseif curve == "Ease Out" then f = 1 - (1 - p) * (1 - p)
+            elseif curve == "Ease In-Out" then
+                f = p < 0.5 and (2 * p * p) or (1 - ((-2 * p + 2) ^ 2) / 2)
+            else f = p end   -- Linear
+            -- floor it so the first frame of a fresh lock still moves something
+            f = 0.15 + 0.85 * f
+            aX, aY = aX * f, aY * f
         end
 
         if Combat.Aim.PerfectLock then
@@ -14948,11 +15282,14 @@ local Combat = {
         if (now - lastRef) * 1000 < cfg.Cooldown then return lastRef end
         local id = resolveSoundId(cfg)
         if not id then return lastRef end
+        -- v2.0.0: the pack is mastered hot, so every hit/kill sound is trimmed at
+        -- playback. The slider still goes to 5 for anyone who wants it back.
+        local vol = cfg.Volume * 0.6
         -- v0.0.91 REAL Overlap. v0.0.89's `:Play()` on the same Sound didn't overlap: Roblox restarts the sound from TimePosition instead of layering. Overlap ON now clones the Sound per play (parallel playback stacks), Ended:Once cleans the clone up. Overlap OFF stops+replays the shared instance (single-track, no layering).
         if Combat.HitSounds.Overlap then
             local clone = snd:Clone()
             clone.SoundId       = id
-            clone.Volume        = cfg.Volume
+            clone.Volume        = vol
             clone.PlaybackSpeed = cfg.Pitch
             clone.TimePosition  = 0
             clone.Parent        = SoundService
@@ -14961,7 +15298,7 @@ local Combat = {
         else
             pcall(function() snd:Stop() end)
             snd.SoundId       = id
-            snd.Volume        = cfg.Volume
+            snd.Volume        = vol
             snd.PlaybackSpeed = cfg.Pitch
             snd.TimePosition  = 0
             pcall(function() snd:Play() end)
@@ -15044,10 +15381,117 @@ local Combat = {
         if plr.Character then SR.recentDamage[plr.Character] = nil end
         plrHP[plr] = nil
     end
+    -- v2.0.0 SESSION STATS. Hits come from Shared.landHit, the single landing every
+    -- confirmed hit already passes through, so they are exact. Shots come from the best
+    -- source the game exposes: its own shoot signal, an ammo value on the equipped tool,
+    -- or LMB edges, and the card names the one in use.
+    Koffee.Stats = (function()
+        local S = { shots = 0, hits = 0, kills = 0, heads = 0, deaths = 0, damage = 0,
+            weapons = {}, source = "none", since = os.clock() }
+        local lastShotAt = 0
+        local ammoPrev = setmetatable({}, { __mode = "k" })
+        local function bump(k, n) S[k] = (S[k] or 0) + (n or 1) end
+        local function weaponName()
+            local ch = LocalPlayer.Character
+            local t = ch and ch:FindFirstChildOfClass("Tool")
+            return t and t.Name or "Unarmed"
+        end
+        local function wrow(name)
+            local w = S.weapons[name]
+            if not w then
+                w = { shots = 0, hits = 0, kills = 0, heads = 0, damage = 0 }
+                S.weapons[name] = w
+            end
+            return w
+        end
+        function S.shot(src)
+            local now = os.clock()
+            if now - lastShotAt < 0.03 then return end   -- one event per shot
+            lastShotAt = now
+            if src and src ~= "none" then S.source = src end
+            bump("shots")
+            local w = wrow(weaponName())
+            w.shots += 1
+        end
+        function S.hit(_char, dropped, nowZero, o)
+            local dmg = tonumber(dropped) or 0
+            bump("hits"); bump("damage", dmg)
+            if nowZero then bump("kills") end
+            local part = o and o.part and tostring(o.part):lower() or ""
+            local head = part:find("head") ~= nil
+            if head then bump("heads") end
+            local w = wrow(weaponName())
+            w.hits += 1; w.damage += dmg
+            if nowZero then w.kills += 1 end
+            if head then w.heads += 1 end
+        end
+        function S.acc()
+            if S.shots <= 0 then return nil end
+            return math.clamp(S.hits / S.shots, 0, 1) * 100
+        end
+        function S.kd()
+            if S.deaths <= 0 then return S.kills > 0 and S.kills or 0 end
+            return S.kills / S.deaths
+        end
+        function S.reset()
+            S.shots, S.hits, S.kills, S.heads, S.deaths, S.damage = 0, 0, 0, 0, 0, 0
+            S.weapons, S.since = {}, os.clock()
+        end
+        -- ammo watcher: one decrement on the equipped tool's ammo value is one shot.
+        -- Connected per value rather than polled, so an automatic weapon's burst is
+        -- counted at the rate it actually fires.
+        local function watchValue(v)
+            if not v:IsA("ValueBase") then return end
+            if not tostring(v.Name):lower():find("ammo") then return end
+            if ammoPrev[v] ~= nil then return end
+            ammoPrev[v] = tonumber(v.Value)
+            v:GetPropertyChangedSignal("Value"):Connect(function()
+                if Koffee.dead() then return end
+                local n = tonumber(v.Value)
+                local prev = ammoPrev[v]
+                ammoPrev[v] = n
+                if n and prev and n < prev then S.shot("ammo") end
+            end)
+        end
+        local function watchTool(tool)
+            if not tool then return end
+            for _, d in ipairs(tool:GetDescendants()) do watchValue(d) end
+            tool.DescendantAdded:Connect(function(d) task.defer(watchValue, d) end)
+        end
+        task.spawn(function()
+            while not Koffee.dead() do
+                local ch = LocalPlayer.Character
+                if ch then watchTool(ch:FindFirstChildOfClass("Tool")) end
+                local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+                if bp then watchTool(bp:FindFirstChildOfClass("Tool")) end
+                task.wait(1)
+            end
+        end)
+        LocalPlayer.CharacterAdded:Connect(function(ch)
+            task.wait(0.5)
+            local hum = ch:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.Died:Connect(function()
+                    if not Koffee.dead() then bump("deaths") end
+                end)
+            end
+        end)
+        -- LMB fallback: claims the shot only when nothing better reported one
+        UserInputService.InputBegan:Connect(function(i, gp)
+            if Koffee.dead() or gp then return end
+            if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            task.delay(0.12, function()
+                if not Koffee.dead() and os.clock() - lastShotAt > 0.15 then S.shot("mouse") end
+            end)
+        end)
+        return S
+    end)()
+
     -- v0.98.0: one landing for every confirmed hit. The rivals native event and
     -- the health-drop guess both end here; o carries crit / part / weapon if known.
     local function landHit(char, dropped, nowZero, o)
         o = o or {}
+        if Koffee.Stats then pcall(Koffee.Stats.hit, char, dropped, nowZero, o) end
         Koffee.UI.stats.hits += 1
         if nowZero then Koffee.UI.stats.kills += 1 end
         if nowZero then lastKillAt = playSound(killSnd, Combat.HitSounds.Kill, lastKillAt)
@@ -15295,6 +15739,17 @@ local Combat = {
             local L = Combat.Silent.Legit
             local missed = false
             local hc = L.HitChance or 100
+            -- v2.0.0: chance falls off toward the distance cap, so long shots miss more
+            -- often than point blank ones instead of every roll being range blind.
+            local hcf = L.HitChanceFalloff or 0
+            if hcf > 0 and hc < 100 and part then
+                local camS = Workspace.CurrentCamera
+                if camS then
+                    local d = (part.Position - camS.CFrame.Position).Magnitude
+                    local cap = math.max(Combat.Silent.Distance or 1500, 1)
+                    hc = hc * (1 - (hcf / 100) * math.clamp(d / cap, 0, 1))
+                end
+            end
             if hc < 100 and math.random(100) > hc then
                 if L.ForceMiss then
                     missed = true
@@ -15308,6 +15763,21 @@ local Combat = {
                 end
             end
             if not missed then
+                -- v2.0.0: headshot cap. Rolling a body part on a share of shots keeps the
+                -- headshot ratio in a range a real player produces instead of every kill
+                -- landing on the head.
+                local capPct = L.HeadshotCap or 100
+                if capPct < 100 and part and (part.Name == "Head" or part.Name == "HitboxHead"
+                    or part.Name == "HitboxHeadSmall") and math.random(100) > capPct then
+                    local names = {}
+                    for _, n in ipairs(HITPARTS) do
+                        if n ~= "Head" and L.Parts[n] ~= false then names[#names + 1] = n end
+                    end
+                    if #names > 0 and plr.Character then
+                        local alt = aimPart(plr.Character, names[math.random(#names)])
+                        if alt then part = alt end
+                    end
+                end
                 silentTarget = part
                 -- prediction shifts the redirect point for lead; the hooks read silentPos
                 silentPos = predicted(plr, part, Combat.Silent.Predict)
@@ -15335,10 +15805,26 @@ local Combat = {
                         local dist = (silentPos - cf.Position).Magnitude
                         spread = math.tan(math.rad(spread)) * dist
                     end
-                    local a = math.random() * math.pi * 2
-                    local rr = math.sqrt(math.random()) * spread
-                    silentPos = silentPos
-                        + (cf.RightVector * math.cos(a) + cf.UpVector * math.sin(a)) * rr
+                    -- v2.0.0: pattern. Cone stays a uniform disc; the axis modes walk a
+                    -- line, so bursts read as horizontal or vertical climb.
+                    local pat = Combat.Silent.Legit.SpreadPattern or "Cone"
+                    local ox, oy, rr
+                    if pat == "Horizontal" then
+                        ox, oy, rr = math.random() * 2 - 1, 0, spread
+                    elseif pat == "Vertical" then
+                        ox, oy, rr = 0, math.random() * 2 - 1, spread
+                    elseif pat == "Cross" then
+                        if math.random() < 0.5 then
+                            ox, oy = math.random() * 2 - 1, 0
+                        else
+                            ox, oy = 0, math.random() * 2 - 1
+                        end
+                        rr = spread
+                    else
+                        local a = math.random() * math.pi * 2
+                        ox, oy, rr = math.cos(a), math.sin(a), math.sqrt(math.random()) * spread
+                    end
+                    silentPos = silentPos + (cf.RightVector * ox + cf.UpVector * oy) * rr
                 end
             end
             end
@@ -16020,22 +16506,29 @@ local Combat = {
         -- v0.52.0 Legit tab. Master toggle gates the frailty kit + the part pool,
         -- so the Aimbot tab's single Hit Part and this tab's multi-part pool never
         -- both apply. Smoothness moved here (its own enable) as a legit behaviour.
-        configCheckbox(L.Legit, "Enabled", Combat.Aim.Legit.Enabled, function(v) Combat.Aim.Legit.Enabled = v end)
-        slider(L.Legit, "Jitter (deg)", 0, 5, Combat.Aim.Legit.Jitter, 1, function(v) Combat.Aim.Legit.Jitter = v end)
-        slider(L.Legit, "Overshoot (deg)", 0, 10, Combat.Aim.Legit.Overshoot, 1, function(v) Combat.Aim.Legit.Overshoot = v end)
-        slider(L.Legit, "Reaction (ms)", 0, 500, Combat.Aim.Legit.Reaction, 0, function(v) Combat.Aim.Legit.Reaction = v end)
-        slider(L.Legit, "Deadzone (px)", 0, 50, Combat.Aim.Legit.Deadzone, 0, function(v) Combat.Aim.Legit.Deadzone = v end)
+        -- v2.0.0: the kit grew a pull curve, a range-scaled reaction, fatigue and a
+        -- flick-direction overshoot, and the eleven part toggles became one row.
+        local AL = Combat.Aim.Legit
+        configCheckbox(L.Legit, "Enabled", AL.Enabled, function(v) AL.Enabled = v end)
+        slider(L.Legit, "Reaction (ms)", 0, 500, AL.Reaction, 0, function(v) AL.Reaction = v end)
+        slider(L.Legit, "Reaction Ramp (%)", 0, 300, AL.ReactionRamp, 0, function(v) AL.ReactionRamp = v end)
+        dropdown(L.Legit, "Curve", { "Snap", "Linear", "Ease In", "Ease Out", "Ease In-Out" }, AL.Curve,
+            function(v) AL.Curve = v end)
+        slider(L.Legit, "Curve Time (ms)", 40, 600, AL.CurveTime, 0, function(v) AL.CurveTime = v end)
+        slider(L.Legit, "Jitter (deg)", 0, 5, AL.Jitter, 1, function(v) AL.Jitter = v end)
+        slider(L.Legit, "Fatigue (%)", 0, 100, AL.Fatigue, 0, function(v) AL.Fatigue = v end)
+        slider(L.Legit, "Overshoot (deg)", 0, 10, AL.Overshoot, 1, function(v) AL.Overshoot = v end)
+        configCheckbox(L.Legit, "Overshoot Along Flick", AL.OvershootTravel ~= false,
+            function(v) AL.OvershootTravel = v end)
+        slider(L.Legit, "Deadzone (px)", 0, 50, AL.Deadzone, 0, function(v) AL.Deadzone = v end)
         configCheckbox(L.Legit, "Smoothing", Combat.Aim.Smooth.Enabled, function(v) Combat.Aim.Smooth.Enabled = v end)
         slider(L.Legit, "Smoothness X", 0.1, 20, Combat.Aim.Smooth.X, 1, function(v) Combat.Aim.Smooth.X = v end)
         slider(L.Legit, "Smoothness Y", 0.1, 20, Combat.Aim.Smooth.Y, 1, function(v) Combat.Aim.Smooth.Y = v end)
-        dropdown(L.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, Combat.Aim.Legit.PartMode,
-            function(v) Combat.Aim.Legit.PartMode = v end)
-        for _, pname in ipairs(HITPARTS) do
-            local nm = pname
-            configCheckbox(L.Legit, nm, Combat.Aim.Legit.Parts[nm] ~= false, function(v)
-                Combat.Aim.Legit.Parts[nm] = v
-            end)
-        end
+        dropdown(L.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, AL.PartMode,
+            function(v) AL.PartMode = v end)
+        Koffee.UI.multiSelect(L.Legit, "Part Pool", HITPARTS, function(n)
+            return AL.Parts[n] ~= false
+        end, function(n, on) AL.Parts[n] = on end)
 
         -- FOV (shared control set)
         buildFovTab(L.FOV, Combat.Aim.FOV, Combat.Aim)
@@ -16205,6 +16698,44 @@ local Combat = {
                 function(v) Combat.HitEffects.Kill.Flash = v end)
         end)
 
+        -- v2.0.0: session stats card. Every number comes from a real event, so the card
+        -- also names where shots are being counted from.
+        local statCard = panel(leftCol, "Session Stats")
+        local statText = new("TextLabel", {
+            Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left, AutomaticSize = Enum.AutomaticSize.Y,
+            Size = UDim2.new(1, 0, 0, 16), Parent = statCard,
+        })
+        local statBtn = new("TextButton", {
+            Text = "Reset Session", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill,
+            AutoButtonColor = true, Size = UDim2.new(1, 0, 0, 26), Parent = statCard,
+        }, { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        statBtn.MouseButton1Click:Connect(function()
+            if Koffee.Stats then Koffee.Stats.reset() end
+            Koffee.Sfx.play("delete")
+        end)
+        task.spawn(function()
+            while statText.Parent and not Koffee.dead() do
+                local S = Koffee.Stats
+                if S then
+                    local acc = S.acc()
+                    local src = S.source
+                    if src == "none" then src = "nothing yet" end
+                    statText.Text = table.concat({
+                        string.format("Shots %d   Hits %d   Accuracy %s", S.shots, S.hits,
+                            acc and string.format("%d%%", math.floor(acc + 0.5)) or "--"),
+                        string.format("Kills %d   Deaths %d   K/D %.2f", S.kills, S.deaths, S.kd()),
+                        string.format("Headshots %d   Damage %d", S.heads,
+                            math.floor(S.damage + 0.5)),
+                        "shots counted from: " .. tostring(src),
+                    }, "\n")
+                end
+                task.wait(0.5)
+            end
+        end)
+
         -- :: RIGHT COLUMN ::
         local rightCard = panel(rightCol)
         local R = subTabs(rightCard, { "Silent Aim", "Prediction", "Legit", "FOV" })
@@ -16250,28 +16781,32 @@ local Combat = {
 
         -- v0.50.0 legit kit for silent. Jitter scatters the redirect point in
         -- studs; Hit Chance fires a clean shot on failed rolls. Both calm.
-        slider(R.Legit, "Jitter (studs)", 0, 5, Combat.Silent.Legit.Jitter, 1, function(v) Combat.Silent.Legit.Jitter = v end)
-        slider(R.Legit, "Hit Chance (%)", 1, 100, Combat.Silent.Legit.HitChance, 0, function(v) Combat.Silent.Legit.HitChance = v end)
+        -- v2.0.0: chance falls off with range, spread gained a pattern, headshots can
+        -- be capped, and the eleven part toggles became one row.
+        local SL = Combat.Silent.Legit
+        slider(R.Legit, "Hit Chance (%)", 1, 100, SL.HitChance, 0, function(v) SL.HitChance = v end)
+        slider(R.Legit, "Chance Falloff (%)", 0, 100, SL.HitChanceFalloff, 0, function(v) SL.HitChanceFalloff = v end)
         -- v0.51.1 Force Miss: failed Hit Chance rolls hold the lock and throw
         -- the redirect wide instead of firing clean.
-        configCheckbox(R.Legit, "Force Miss", Combat.Silent.Legit.ForceMiss, function(v) Combat.Silent.Legit.ForceMiss = v end)
+        configCheckbox(R.Legit, "Force Miss", SL.ForceMiss, function(v) SL.ForceMiss = v end)
+        slider(R.Legit, "Headshot Cap (%)", 1, 100, SL.HeadshotCap, 0, function(v) SL.HeadshotCap = v end)
+        slider(R.Legit, "Jitter (studs)", 0, 5, SL.Jitter, 1, function(v) SL.Jitter = v end)
+        slider(R.Legit, "Spread (studs)", 0, 5, SL.Spread, 1, function(v) SL.Spread = v end)
+        -- v0.79.2: hit-position killcams read group shape. Degrees mode makes
+        -- error angular (human), Bloom grows it with beam time (fatigue).
+        dropdown(R.Legit, "Spread Unit", { "Studs", "Degrees" }, SL.SpreadUnit or "Studs",
+            function(v) SL.SpreadUnit = v end)
+        dropdown(R.Legit, "Spread Pattern", { "Cone", "Horizontal", "Vertical", "Cross" }, SL.SpreadPattern,
+            function(v) SL.SpreadPattern = v end)
+        slider(R.Legit, "Bloom (%)", 0, 200, SL.Bloom or 0, 0, function(v) SL.Bloom = v end)
         -- v0.51.0 hit part pool. Single Part keeps the Hit Part dropdown;
         -- Closest and Random draw from the ticked pool below (unticked parts
         -- never picked).
-        dropdown(R.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, Combat.Silent.Legit.PartMode,
-            function(v) Combat.Silent.Legit.PartMode = v end)
-        for _, pname in ipairs(HITPARTS) do
-            local nm = pname
-            configCheckbox(R.Legit, nm, Combat.Silent.Legit.Parts[nm] ~= false, function(v)
-                Combat.Silent.Legit.Parts[nm] = v
-            end)
-        end
-        slider(R.Legit, "Spread (studs)", 0, 5, Combat.Silent.Legit.Spread, 1, function(v) Combat.Silent.Legit.Spread = v end)
-        -- v0.79.2: hit-position killcams read group shape. Degrees mode makes
-        -- error angular (human), Bloom grows it with beam time (fatigue).
-        dropdown(R.Legit, "Spread Unit", { "Studs", "Degrees" }, Combat.Silent.Legit.SpreadUnit or "Studs",
-            function(v) Combat.Silent.Legit.SpreadUnit = v end)
-        slider(R.Legit, "Bloom (%)", 0, 200, Combat.Silent.Legit.Bloom or 0, 0, function(v) Combat.Silent.Legit.Bloom = v end)
+        dropdown(R.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, SL.PartMode,
+            function(v) SL.PartMode = v end)
+        Koffee.UI.multiSelect(R.Legit, "Part Pool", HITPARTS, function(n)
+            return SL.Parts[n] ~= false
+        end, function(n, on) SL.Parts[n] = on end)
 
         -- FOV (same shared control set as the aimbot side)
         buildFovTab(R.FOV, Combat.Silent.FOV, Combat.Silent)
@@ -30622,7 +31157,14 @@ addTab("Options", function(root)
         end)
         local sp = panel(root, "Startup")
         -- v1.3.1: replay the 1.0 celebration
-        local celBtn = new("TextButton", { Text = "View 1.0 Celebration", FontFace = Theme.Fonts.Medium,
+        local cel1Btn = new("TextButton", { Text = "View 1.0 Celebration", FontFace = Theme.Fonts.Medium,
+            TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill,
+            AutoButtonColor = true, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 101, Parent = sp },
+            { corner(6), stroke(Theme.Palette.BorderSubtle) })
+        cel1Btn.MouseButton1Click:Connect(function()
+            if Shared.showCelebration1 then Shared.showCelebration1() end
+        end)
+        local celBtn = new("TextButton", { Text = "View 2.0 Celebration", FontFace = Theme.Fonts.Medium,
             TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text, BackgroundColor3 = Theme.Palette.Pill,
             AutoButtonColor = true, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = 100, Parent = sp },
             { corner(6), stroke(Theme.Palette.BorderSubtle) })
@@ -30641,6 +31183,136 @@ addTab("Options", function(root)
                 d.SkipLoading = SP.SkipLoading
                 writefile("Koffee/startup.json", HS:JSONEncode(d))
             end)
+        end)
+        -- v2.0.0 ANTI-AFK: Roblox kicks you for idling. This is Infinite Yield's trick,
+        -- which is the one that survives: mute every other Idled handler so nothing else
+        -- reacts, then answer Idled with a real click through VirtualInputManager.
+        local AAF = { on = false, conn = nil }
+        pcall(function()
+            if isfile and readfile and isfile("Koffee/startup.json") then
+                local d = HS:JSONDecode(readfile("Koffee/startup.json"))
+                if type(d) == "table" and d.AntiAFK == true then AAF.on = true end
+            end
+        end)
+        local function saveAAF()
+            pcall(function()
+                local d = {}
+                if isfile("Koffee/startup.json") then
+                    local ok, t = pcall(HS.JSONDecode, HS, readfile("Koffee/startup.json"))
+                    if ok and type(t) == "table" then d = t end
+                end
+                d.AntiAFK = AAF.on
+                writefile("Koffee/startup.json", HS:JSONEncode(d))
+            end)
+        end
+        local function applyAAF()
+            if AAF.conn then pcall(function() AAF.conn:Disconnect() end); AAF.conn = nil end
+            if not AAF.on then return end
+            if getconnections then
+                pcall(function()
+                    for _, c in ipairs(getconnections(LocalPlayer.Idled)) do
+                        pcall(function() c:Disable() end)
+                        pcall(function() c:Disconnect() end)
+                    end
+                end)
+            end
+            AAF.conn = LocalPlayer.Idled:Connect(function()
+                if Koffee.dead() then return end
+                local vim = Instance.new("VirtualInputManager")
+                pcall(function()
+                    vim:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+                    vim:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+                end)
+                vim:Destroy()
+            end)
+        end
+        applyAAF()
+        configCheckbox(sp, "Anti-AFK", AAF.on, function(v)
+            AAF.on = v
+            applyAAF()
+            saveAAF()
+        end)
+        -- v2.0.0 SERVER: rejoin this place, or hop to a public server that is not full.
+        -- Both confirm first: a teleport throws away whatever is only in memory.
+        local sv = panel(root, "Server")
+        local svStatus = new("TextLabel", {
+            Text = "", FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
+            TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1, TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left, AutomaticSize = Enum.AutomaticSize.Y,
+            Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 9, Parent = sv,
+        })
+        local function svGetJson(url)
+            local req = (syn and syn.request) or (http and http.request) or http_request or request
+            if req then
+                local ok, r = pcall(req, { Url = url, Method = "GET" })
+                if ok and r and type(r.Body) == "string" then
+                    local ok2, d = pcall(HS.JSONDecode, HS, r.Body)
+                    if ok2 and type(d) == "table" then return d end
+                end
+            end
+            local ok3, body = pcall(function() return game:HttpGetAsync(url) end)
+            if ok3 and type(body) == "string" then
+                local ok4, d = pcall(HS.JSONDecode, HS, body)
+                if ok4 and type(d) == "table" then return d end
+            end
+            return nil
+        end
+        local function svOpenServers()
+            local list, cursor, pages = {}, nil, 0
+            repeat
+                local url = "https://games.roblox.com/v1/games/" .. game.PlaceId
+                    .. "/servers/Public?sortOrder=Asc&limit=100"
+                    .. (cursor and ("&cursor=" .. tostring(cursor)) or "")
+                local d = svGetJson(url)
+                if not d then break end
+                for _, s in ipairs(d.data or {}) do
+                    -- full servers are the whole reason a hop lands on "server full"
+                    if s.id and s.id ~= game.JobId and (s.playing or 0) < (s.maxPlayers or 0) then
+                        list[#list + 1] = s
+                    end
+                end
+                cursor = d.nextPageCursor
+                pages = pages + 1
+            until not cursor or pages >= 3
+            return list
+        end
+        local function svRejoin()
+            local ok = pcall(function()
+                game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
+            end)
+            if not ok then svStatus.Text = "Rejoin failed" end
+        end
+        local function svHop()
+            svStatus.Text = "Looking for a server..."
+            local list = svOpenServers()
+            if #list == 0 then
+                svStatus.Text = "No open servers found. Try again in a moment."
+                return
+            end
+            local pick = list[math.random(#list)]
+            svStatus.Text = string.format("Hopping to %s/%s",
+                tostring(pick.playing or "?"), tostring(pick.maxPlayers or "?"))
+            local ok = pcall(function()
+                game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, pick.id, LocalPlayer)
+            end)
+            if not ok then svStatus.Text = "Hop failed" end
+        end
+        local function svBtn(text, order, fn)
+            local b = new("TextButton", { Text = text, FontFace = Theme.Fonts.Medium,
+                TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+                BackgroundColor3 = Theme.Palette.Pill, AutoButtonColor = true,
+                Size = UDim2.new(1, 0, 0, 28), LayoutOrder = order, Parent = sv },
+                { corner(6), stroke(Theme.Palette.BorderSubtle) })
+            b.MouseButton1Click:Connect(fn)
+            return b
+        end
+        svBtn("Rejoin Server", 1, function()
+            Shared.confirm("Rejoin", "Leave this server and rejoin place " .. tostring(game.PlaceId) .. "?",
+                "Rejoin", svRejoin)
+        end)
+        svBtn("Server Hop", 2, function()
+            Shared.confirm("Server Hop", "Hop to another public server? Servers that are full are skipped.",
+                "Hop", svHop)
         end)
         local tp = panel(root, "Koffee Team")
         configCheckbox(tp, "Koffee Team", TP.On, function(v) TP.On = v; TP.save() end)
@@ -35792,6 +36464,88 @@ function Shared.confirm(title, body, confirmText, onConfirm)
     end)
 end
 
+-- v2.0.0: partial config load. Right-clicking a config opens this instead of loading
+-- the whole file. "Values" are the rows on a tab; "Right-click Settings" are the nested
+-- groups their popups own; keybinds and module on/off are the other two slices.
+function Shared.loadConfigParts(name)
+    if not (name and name ~= "") then return end
+    local pS = popupScreen
+    if not (pS and pS.Parent) then return end
+    local dim = new("Frame", {
+        Name = KID.name("lcp"), Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 0.55, BorderSizePixel = 0, ZIndex = 100, Parent = pS,
+    })
+    dim:SetAttribute("KUserColor", true)
+    local box = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 320, 0, 224), BackgroundColor3 = Theme.Palette.Panel,
+        BorderSizePixel = 0, ZIndex = 101, Parent = dim,
+    }, { corner(Theme.Radius.Medium), stroke(Theme.Palette.BorderSubtle) })
+    -- v2.0.0: it used to appear fully formed. Dim fades in, the card scales up under
+    -- it, so a right-click reads as a popup opening rather than a panel swapping.
+    dim.BackgroundTransparency = 1
+    tween(dim, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        { BackgroundTransparency = 0.55 })
+    local uscale = new("UIScale", { Scale = 0.92, Parent = box })
+    if Koffee.Anim.spot("AnimPopups") then
+        tween(uscale, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+            { Scale = 1 })
+    else
+        uscale.Scale = 1
+    end
+    new("TextLabel", {
+        Text = "Load " .. name, FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Header,
+        TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(16, 12), Size = UDim2.new(1, -32, 0, 18),
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 102, Parent = box,
+    })
+    new("TextLabel", {
+        Text = "Pick what comes back from this config.", FontFace = Theme.Fonts.Regular,
+        TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(16, 34),
+        Size = UDim2.new(1, -32, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 102, Parent = box,
+    })
+    local list = new("Frame", {
+        Position = UDim2.fromOffset(16, 56), Size = UDim2.new(1, -32, 0, 108),
+        BackgroundTransparency = 1, ZIndex = 102, Parent = box,
+    }, { new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local picks = { values = true, rightclick = true, keybinds = true, modules = true }
+    local function addPick(key, label, order)
+        local c = checkboxVisual(list, label, true)
+        c.row.LayoutOrder = order
+        c.row.ZIndex = 102
+        c.button.ZIndex = 103
+        c.button.MouseButton1Click:Connect(function()
+            local s = not c.getState()
+            c.setState(s)
+            picks[key] = s
+            Koffee.Sfx.play(s and "toggle_on" or "toggle_off")
+        end)
+    end
+    addPick("values", "Values", 1)
+    addPick("rightclick", "Right-click Settings", 2)
+    addPick("keybinds", "Keybinds", 3)
+    addPick("modules", "Enabled Modules", 4)
+    local function btn(text, x, color, font)
+        return new("TextButton", {
+            Text = text, FontFace = font, TextSize = Theme.Text.Small, AutoButtonColor = false,
+            TextColor3 = color, BackgroundColor3 = Theme.Palette.PanelElevated,
+            BackgroundTransparency = 0.2, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, x, 1, -14),
+            Size = UDim2.new(0, 88, 0, 28), ZIndex = 102, Parent = box,
+        }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+    end
+    local cancel = btn("Cancel", -108, Theme.Palette.TextMuted, Theme.Fonts.Medium)
+    local ok = btn("Load", -14, Theme.Palette.Accent, Theme.Fonts.Bold)
+    cancel.MouseButton1Click:Connect(function() dim:Destroy() end)
+    ok.MouseButton1Click:Connect(function()
+        dim:Destroy()
+        pcall(function() Koffee.Config.load(name, picks) end)
+    end)
+end
+
 -- v1.8.0: the details bar's right-click menu. Time style, per-part toggles, drag
 -- smoothness, and a delete that lives for this session only.
 ;(function()
@@ -35821,6 +36575,7 @@ end
         partRow("Region", "Region")
         partRow("User", "User")
         partRow("Avatar", "Avatar")
+        partRow("Stats", "Stats")
         popup:slider("Drag Smoothness", 4, 40, tonumber(D.DragSmooth) or 16, 0,
             function(v) D.DragSmooth = v end)
         popup:action("Delete Details Bar", function()
@@ -35937,12 +36692,18 @@ addTab("Configs", function(root)
     end
 
     -- selected-config actions (read selectedName live)
-    mkBtn(actionRow, "Load", 60, function()
+    local loadBtn = mkBtn(actionRow, "Load", 60, function()
         if not needSel() then return end
         local ok, msg = CIO.load(selectedName)
             if ok then setStatus("Loaded: " .. tostring(selectedName), true)
             else setStatus("Load failed: " .. tostring(msg), false) end
-    end, true).LayoutOrder = 1
+    end, true)
+    loadBtn.LayoutOrder = 1
+    -- v2.0.0: right-click Load for a partial load
+    loadBtn.MouseButton2Click:Connect(function()
+        if not needSel() then return end
+        if Shared.loadConfigParts then Shared.loadConfigParts(selectedName) end
+    end)
     mkBtn(actionRow, "Overwrite", 90, function()
         if not needSel() then return end
         local nm = selectedName
@@ -36066,7 +36827,13 @@ addTab("Configs", function(root)
             currentDD = dropdown(ddHolder, "Saved Configs", options,
             selectedName or "no saved configs", function(v)
                 if hasConfigs then selectedName = v; refreshAutoLabel(); if refreshCloud then refreshCloud() end; if refreshAuto then refreshAuto() end end
-            end)
+            end, { OnRowRightClick = function(v)
+                -- v2.0.0: right-click a saved config for the partial-load picker
+                if hasConfigs and v ~= "no saved configs" and Shared.loadConfigParts then
+                    selectedName = v
+                    Shared.loadConfigParts(v)
+                end
+            end })
         refreshAutoLabel()
         if refreshCloud then refreshCloud() end
         if refreshAuto then refreshAuto() end
@@ -37226,10 +37993,15 @@ local function iconTextBtn(parent, icon, label, cb, order, size)
             VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }) })
     local ic = Koffee.lucideIcon(b, icon, 13, Theme.Palette.TextMuted)
     ic.AnchorPoint = Vector2.new(0, 0); ic.LayoutOrder = 0   -- layout child: top-left anchor
+    -- v2.0.0: a fixed-size button truncates its label instead of letting the text push
+    -- the pair past the column. The NPC picker's two Learn buttons did exactly that.
     local lbl = new("TextLabel", {
         Text = label, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
         TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
-        AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0), LayoutOrder = 1, Parent = b,
+        AutomaticSize = size and Enum.AutomaticSize.None or Enum.AutomaticSize.X,
+        Size = size and UDim2.new(1, -40, 1, 0) or UDim2.new(0, 0, 1, 0),
+        TextTruncate = size and Enum.TextTruncate.AtEnd or Enum.TextTruncate.None,
+        LayoutOrder = 1, Parent = b,
     })
     b.MouseButton1Click:Connect(cb)
     return { btn = b, ic = ic, lbl = lbl }
@@ -37564,8 +38336,10 @@ local function buildPicker(host, onChange)
     end
     NPC._learnInst = learnInst
     local addRow = hrow(right, 26, 5)
-    local addBtn = iconTextBtn(addRow, "user-plus", "Learn as NPC", function() learnInst(PICK.sel, "model") end, 0)
-    local addDirBtn = iconTextBtn(addRow, "folder-plus", "Learn as Directory", function() learnInst(PICK.sel, "dir") end, 1)
+    local addBtn = iconTextBtn(addRow, "user-plus", "Learn as NPC", function() learnInst(PICK.sel, "model") end, 0,
+        UDim2.new(0.5, -3, 0, 26))
+    local addDirBtn = iconTextBtn(addRow, "folder-plus", "Learn as Directory", function() learnInst(PICK.sel, "dir") end, 1,
+        UDim2.new(0.5, -3, 0, 26))
 
     new("TextLabel", {
         Text = "Mouse Select", FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
@@ -44375,7 +45149,9 @@ local SEV = {
 local root = new("CanvasGroup", {
     Name = KID.name("toasts"), Active = false, BackgroundTransparency = 1,
     BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 1),
-    Position = UDim2.new(1, -16, 1, -16), Size = UDim2.new(0, 300, 0, 0),
+    -- v2.0.0: 320 so the card is not clipped, same structure as before otherwise: this
+    -- is the shape that rendered, and the card only got a new face.
+    Position = UDim2.new(1, -16, 1, -16), Size = UDim2.new(0, 320, 0, 0),
     AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 60, Parent = screen,
 }, {
     new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 8),
@@ -44392,11 +45168,9 @@ local function dismiss(rec, instant)
     for i, r in ipairs(live) do if r == rec then table.remove(live, i); break end end
     rec.done = true
     pcall(function()
-        if instant then rec.wrap:Destroy()
-        else
-            tween(rec.wrap, Theme.Animation.Menu, { GroupTransparency = 1 })
-            task.delay(Koffee.Anim.wait(0.22), function() pcall(function() rec.wrap:Destroy() end) end)
-        end
+        if instant then rec.wrap:Destroy(); return end
+        tween(rec.wrap, Theme.Animation.Menu, { GroupTransparency = 1 })
+        task.delay(Koffee.Anim.wait(0.22), function() pcall(function() rec.wrap:Destroy() end) end)
     end)
     pump()
 end
@@ -44421,41 +45195,50 @@ function Koffee.notify(title, msg, opts)
         local wrap = new("CanvasGroup", {
             Name = KID.name("toast"), Active = false, BackgroundTransparency = 1,
             BorderSizePixel = 0, AutomaticSize = Enum.AutomaticSize.XY,
-            Size = UDim2.new(0, 300, 0, 0), GroupTransparency = 1,
-            LayoutOrder = order, Parent = root,
+            Size = UDim2.new(0, 320, 0, 0), GroupTransparency = 1,
+            LayoutOrder = order, ZIndex = 61, Parent = root,
         })
-        local scale = new("UIScale", { Scale = 0.96, Parent = wrap })
+        local scale = new("UIScale", { Scale = 0.92, Parent = wrap })
         local card = new("Frame", {
-            BackgroundColor3 = Theme.Palette.Panel, BackgroundTransparency = 0.35,
+            BackgroundColor3 = Theme.Palette.PanelElevated:Lerp(sev.color, 0.08),
+            BackgroundTransparency = 0.04,
             BorderSizePixel = 0, AutomaticSize = Enum.AutomaticSize.Y,
-            Size = UDim2.new(0, 300, 0, 0), Parent = wrap,
-        }, { corner(10), stroke(Theme.Palette.BorderSubtle) })
-        new("Frame", {
-            BackgroundColor3 = sev.color, BorderSizePixel = 0,
-            Position = UDim2.new(0, 0, 0, 10), Size = UDim2.new(0, 2, 1, -20),
-            Parent = card,
-        }, { pillCorner() })
-        Koffee.lucideIcon(card, sev.icon, 15, sev.color, 2).Position = UDim2.new(0, 12, 0, 12)
-        new("TextLabel", {
+            Size = UDim2.new(0, 320, 0, 0), ZIndex = 62, Parent = wrap,
+        }, { corner(12), stroke(Theme.Palette.Border, 1) })
+        local chip = new("Frame", {
+            BackgroundColor3 = sev.color, BackgroundTransparency = 0.84,
+            BorderSizePixel = 0, Position = UDim2.fromOffset(12, 12),
+            Size = UDim2.fromOffset(30, 30), ZIndex = 63, Parent = card,
+        }, { corner(9), stroke(sev.color, 1) })
+        local chipStroke = chip:FindFirstChildOfClass("UIStroke")
+        if chipStroke then chipStroke.Transparency = 0.55 end
+        local ic = Koffee.lucideIcon(chip, sev.icon, 15, sev.color, 64)
+        ic.AnchorPoint = Vector2.new(0.5, 0.5)
+        ic.Position = UDim2.new(0.5, 0, 0.5, 0)
+        local titleLbl = new("TextLabel", {
             Text = tostring(title or ""), FontFace = Theme.Fonts.Bold, TextSize = Theme.Text.Body,
             TextColor3 = Theme.Palette.Text, BackgroundTransparency = 1,
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-            Position = UDim2.new(0, 34, 0, 8), Size = UDim2.new(1, -44, 0, 16), Parent = card,
+            Position = UDim2.new(0, 52, 0, 13), Size = UDim2.new(1, -66, 0, 16),
+            ZIndex = 63, Parent = card,
         })
-        local body = new("TextLabel", {
+        local bodyLbl = new("TextLabel", {
             Text = tostring(msg or ""), FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small,
             TextColor3 = Theme.Palette.TextMuted, BackgroundTransparency = 1,
-            TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
-            AutomaticSize = Enum.AutomaticSize.Y,
-            Position = UDim2.new(0, 34, 0, 26), Size = UDim2.new(1, -44, 0, 14), Parent = card,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+            TextWrapped = true, AutomaticSize = Enum.AutomaticSize.Y,
+            Position = UDim2.new(0, 52, 0, 31), Size = UDim2.new(1, -66, 0, 14),
+            ZIndex = 63, Parent = card,
         })
-        -- v0.72.4: lifetime bar removed (read as clutter). Dwell time still
-        -- scales with content length; hover still pauses, click still dismisses.
-        new("UIPadding", { PaddingBottom = UDim.new(0, 10), Parent = card })
+        new("UIPadding", { PaddingBottom = UDim.new(0, 13), Parent = card })
+        rec.card, rec.chip = card, chip
+        rec.texts = { titleLbl, bodyLbl }
         rec.wrap = wrap
         live[#live + 1] = rec
-        tween(wrap, Theme.Animation.Menu, { GroupTransparency = 0 })
-        tween(scale, Theme.Animation.Menu, { Scale = 1 })
+        tween(wrap, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            { GroupTransparency = 0 })
+        tween(scale, TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+            { Scale = 1 })
         local paused = false
         card.MouseEnter:Connect(function() paused = true end)
         card.MouseLeave:Connect(function() paused = false end)
@@ -50302,6 +51085,11 @@ task.delay(0.15, function() if not Koffee.dead() then Koffee.Sfx.play("load") en
                 U.closeConfigMenu()
                 pcall(function() Koffee.Config.load(n) end)
             end)
+            -- v2.0.0: right-click for a partial load
+            r.MouseButton2Click:Connect(function()
+                U.closeConfigMenu()
+                if Shared.loadConfigParts then pcall(Shared.loadConfigParts, n) end
+            end)
         end
     end
 
@@ -51713,12 +52501,14 @@ end)()
     if isBento() then U.shells.Bento.enter() end
 end)()
 
--- v1.0.0: one-time celebration after the first 1.0 load (confetti, fanfare, the road
--- here, what's new). Seen flag in Koffee/milestones.json, never a config.
+-- v2.0.0 "THE MACHINE": the 2.0 celebration. The window folds away, an espresso machine
+-- pulls a shot, the purge floods the frame and the K stamps out of it. One timeline drives
+-- every element, so skipping is moving the clock and seeking is freezing it (published on
+-- getgenv for the screenshot pass). Seen flag in Koffee/milestones.json, never a config.
 -- getgenv().KoffeeCelebrate = true shows it again on the next load.
 ;(function()
     local HS = game:GetService("HttpService")
-    local FLAG, PATH = "1.0", "Koffee/milestones.json"
+    local FLAG, PATH = "2.0", "Koffee/milestones.json"
     local force = getgenv and getgenv().KoffeeCelebrate == true
     local seen = {}
     pcall(function()
@@ -51728,9 +52518,568 @@ end)()
         end
     end)
     local major = tonumber(tostring(Koffee.Version):match("^(%d+)")) or 0
+    local auto = force or not (major < 2 or seen[FLAG] == true or (getgenv and getgenv()["\6_rt_cel20"]))
+    if auto and getgenv then getgenv()["\6_rt_cel20"] = true; getgenv().KoffeeCelebrate = nil end
+
+    local P = Theme.Palette
+    local DUR = 7.0
+    local SS = game:GetService("SoundService")
+    local live = nil
+
+    local function clamp01(x) if x < 0 then return 0 elseif x > 1 then return 1 end return x end
+    local function seg(t, a, b) return clamp01((t - a) / math.max(b - a, 0.0001)) end
+    local function eOut(x) return 1 - (1 - x) ^ 3 end
+    local function eIn(x) return x * x * x end
+    local function eInOut(x) if x < 0.5 then return 4 * x * x * x end return 1 - ((-2 * x + 2) ^ 3) / 2 end
+    local function eBack(x)
+        local c1 = 1.70158
+        return 1 + (c1 + 1) * (x - 1) ^ 3 + c1 * (x - 1) ^ 2
+    end
+
+    -- one cue per beat, all off the same clock. Files come from the preloaded pack.
+    local function sfx(file, vol, speed, at, dir)
+        task.delay(at or 0, function()
+            if Koffee.dead() then return end
+            local id
+            pcall(function()
+                local path = (dir or "Koffee/sounds/") .. file
+                if getcustomasset and isfile and isfile(path) then id = getcustomasset(path) end
+            end)
+            if not id then return end
+            pcall(function()
+                local s = Instance.new("Sound")
+                s.SoundId = id
+                s.Volume = vol or 0.4
+                s.PlaybackSpeed = speed or 1
+                s.Parent = SS
+                s.Ended:Once(function() s:Destroy() end)
+                task.delay(9, function() if s.Parent then s:Destroy() end end)
+                s:Play()
+            end)
+        end)
+    end
+
+    local function build()
+        local pS = popupScreen
+        if not (pS and pS.Parent) then return nil end
+
+        -- the window has to come back exactly as it was, whatever frame we stop on
+        local winScale = window:FindFirstChildOfClass("UIScale")
+        local addedScale = false
+        if not winScale then
+            winScale = new("UIScale", { Scale = 1, Parent = window })
+            addedScale = true
+        end
+        local winBase, winAlpha = winScale.Scale, window.GroupTransparency
+
+        local stage = new("Frame", {
+            Name = KID.name("cel"), Size = UDim2.new(1, 0, 1, 0),
+            BackgroundColor3 = Color3.fromRGB(9, 7, 6), BackgroundTransparency = 1,
+            BorderSizePixel = 0, Active = true, ZIndex = 110, Parent = pS,
+        })
+        stage:SetAttribute("KUserColor", true)
+
+        local BAR = 54
+        local barT = new("Frame", { Size = UDim2.new(1, 0, 0, BAR), Position = UDim2.fromOffset(0, -BAR),
+            BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, ZIndex = 111, Parent = stage })
+        local barB = new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, BAR),
+            Size = UDim2.new(1, 0, 0, BAR), BackgroundColor3 = Color3.new(0, 0, 0),
+            BorderSizePixel = 0, ZIndex = 111, Parent = stage })
+
+        -- fixed composition box, sized so the machine fills the middle of any screen
+        local SW, SH = 720, 600
+        local scene = new("CanvasGroup", {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(SW, SH), BackgroundTransparency = 1,
+            GroupTransparency = 0, ZIndex = 112, Parent = stage,
+        })
+        local sceneScale = new("UIScale", { Scale = 1, Parent = scene })
+
+        local CERAMIC = P.Snow
+        local CREMA   = P.Accent
+        local STEEL   = Color3.fromRGB(48, 41, 36)
+        local STEEL_D = Color3.fromRGB(30, 25, 21)
+        local CUPW, CUPH, CUPY = 300, 220, 274
+        local IN_X, IN_Y, IN_W, IN_H = 16, 34, 268, 156
+
+        local fadeList = {}
+        local function reg(inst, base) fadeList[#fadeList + 1] = { i = inst, b = base or 0, s = false } end
+        local function regStroke(inst, base) fadeList[#fadeList + 1] = { i = inst, b = base or 0, s = true } end
+
+        -- :: machine head :: the gauge is mounted ON its face, so nothing floats alone
+        local head = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 26),
+            Size = UDim2.fromOffset(440, 116), BackgroundColor3 = STEEL, BackgroundTransparency = 1,
+            BorderSizePixel = 0, ZIndex = 112, Parent = scene },
+            { new("UICorner", { CornerRadius = UDim.new(0, 16) }),
+              new("UIStroke", { Color = Color3.fromRGB(84, 72, 62), Thickness = 1, Transparency = 1 }),
+              new("UIGradient", { Rotation = 90,
+                  Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(206, 206, 206)) }) })
+        local headFace = new("Frame", { Position = UDim2.fromOffset(114, 26), Size = UDim2.new(1, -136, 0, 64),
+            BackgroundColor3 = STEEL_D, BackgroundTransparency = 1, BorderSizePixel = 0,
+            ZIndex = 113, Parent = head }, { new("UICorner", { CornerRadius = UDim.new(0, 8) }) })
+        local headK = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 54, 0.5, 0), Size = UDim2.fromOffset(58, 58),
+            BackgroundTransparency = 1, Image = Koffee.icon("koffee-k"), ImageColor3 = P.TextMuted,
+            ImageTransparency = 1, ZIndex = 114, Parent = headFace })
+        local dots = {}
+        for i = 1, 2 do
+            dots[#dots + 1] = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(1, -26 - (i - 1) * 16, 0.5, 0), Size = UDim2.fromOffset(8, 8),
+                BackgroundColor3 = CREMA, BackgroundTransparency = 1, BorderSizePixel = 0,
+                ZIndex = 114, Parent = headFace },
+                { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        end
+        local rails = {}
+        for i = -1, 1, 2 do
+            rails[#rails + 1] = new("Frame", { AnchorPoint = Vector2.new(0.5, 0),
+                Position = UDim2.new(0.5, i * 158, 0, -80), Size = UDim2.fromOffset(14, 112),
+                BackgroundColor3 = Color3.fromRGB(42, 35, 30), BackgroundTransparency = 1,
+                BorderSizePixel = 0, ZIndex = 111, Parent = scene },
+                { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        end
+
+        -- :: gauge, on the head face ::
+        local gauge = new("Frame", { Position = UDim2.fromOffset(18, 14), Size = UDim2.fromOffset(84, 84),
+            BackgroundColor3 = Color3.fromRGB(22, 18, 15), BackgroundTransparency = 1,
+            BorderSizePixel = 0, ZIndex = 114, Parent = head },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
+              new("UIStroke", { Color = Color3.fromRGB(70, 59, 50), Thickness = 2, Transparency = 0.2 }) })
+        new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(71, 71), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ZIndex = 114, Parent = gauge },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
+              new("UIStroke", { Color = Color3.fromRGB(44, 37, 32), Thickness = 1, Transparency = 0.3 }) })
+        local ticks = {}
+        for i = 0, 8 do
+            local a = math.rad(-120 + i * 30)
+            ticks[#ticks + 1] = new("Frame", {
+                AnchorPoint = Vector2.new(0.5, 1),
+                Position = UDim2.new(0.5, math.sin(a) * 28, 0.5, -math.cos(a) * 28),
+                Size = UDim2.fromOffset(2, (i == 0 or i == 8) and 8 or 5),
+                BackgroundColor3 = P.TextMuted, BackgroundTransparency = 0.3,
+                BorderSizePixel = 0, Rotation = math.deg(a), ZIndex = 115, Parent = gauge,
+            })
+        end
+        -- pivot AT the hub, pointer + counterweight, so it swings like it is mounted
+        local needle = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+            Rotation = -120, ZIndex = 116, Parent = gauge,
+        })
+        local pointer = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(3, 28), BackgroundColor3 = CREMA, BorderSizePixel = 0,
+            ZIndex = 116, Parent = needle,
+        }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local tail = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(3, 7), BackgroundColor3 = CREMA, BackgroundTransparency = 0.45,
+            BorderSizePixel = 0, ZIndex = 116, Parent = needle,
+        }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local hub = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.fromOffset(10, 10), BackgroundColor3 = CERAMIC, BorderSizePixel = 0,
+            ZIndex = 117, Parent = gauge }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local barLbl = new("TextLabel", { Text = "BAR", FontFace = Theme.Fonts.Medium, TextSize = 9,
+            TextColor3 = P.TextFaint, BackgroundTransparency = 1, Position = UDim2.new(0, 0, 1, -20),
+            Size = UDim2.new(1, 0, 0, 10), TextTransparency = 1, ZIndex = 115, Parent = gauge })
+
+        -- :: portafilter :: locked under the head
+        local pf = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 154),
+            Size = UDim2.fromOffset(236, 26), BackgroundColor3 = Color3.fromRGB(72, 61, 53), BackgroundTransparency = 1,
+            BorderSizePixel = 0, ZIndex = 113, Parent = scene },
+            { new("UICorner", { CornerRadius = UDim.new(0, 9) }),
+              new("UIStroke", { Color = Color3.fromRGB(92, 79, 68), Thickness = 1, Transparency = 1 }) })
+        local seam = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 140),
+            Size = UDim2.fromOffset(268, 6), BackgroundColor3 = Color3.fromRGB(12, 9, 8),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 112, Parent = scene },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local pfTop = new("Frame", { Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 5),
+            BackgroundColor3 = Color3.fromRGB(88, 76, 66), BackgroundTransparency = 1,
+            BorderSizePixel = 0, ZIndex = 114, Parent = pf }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local pfLip = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 1, -5),
+            Size = UDim2.fromOffset(252, 9), BackgroundColor3 = STEEL_D, BackgroundTransparency = 1,
+            BorderSizePixel = 0, ZIndex = 114, Parent = pf }, { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local pfHandle = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(1, -16, 0.5, 0),
+            Size = UDim2.fromOffset(74, 14), BackgroundColor3 = Color3.fromRGB(28, 23, 20),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 112, Parent = pf },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local spoutL = new("Frame", { Position = UDim2.new(0.5, -46, 0, 170), Size = UDim2.fromOffset(12, 15),
+            BackgroundColor3 = STEEL, BackgroundTransparency = 1, BorderSizePixel = 0,
+            ZIndex = 113, Parent = scene }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }) })
+        local spoutR = new("Frame", { Position = UDim2.new(0.5, 34, 0, 170), Size = UDim2.fromOffset(12, 15),
+            BackgroundColor3 = STEEL, BackgroundTransparency = 1, BorderSizePixel = 0,
+            ZIndex = 113, Parent = scene }, { new("UICorner", { CornerRadius = UDim.new(0, 4) }) })
+        local streamL = new("Frame", { Position = UDim2.new(0.5, -40, 0, 186), Size = UDim2.new(0, 4, 0, 0),
+            BackgroundColor3 = CREMA, BackgroundTransparency = 0.1, BorderSizePixel = 0,
+            Visible = false, ZIndex = 113, Parent = scene },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
+              new("UIGradient", { Rotation = 90,
+                  Color = ColorSequence.new(Color3.fromRGB(250, 208, 162), Color3.fromRGB(198, 132, 78)) }) })
+        local streamR = new("Frame", { Position = UDim2.new(0.5, 40, 0, 186), Size = UDim2.new(0, 4, 0, 0),
+            BackgroundColor3 = CREMA, BackgroundTransparency = 0.1, BorderSizePixel = 0,
+            Visible = false, ZIndex = 113, Parent = scene },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
+              new("UIGradient", { Rotation = 90,
+                  Color = ColorSequence.new(Color3.fromRGB(250, 208, 162), Color3.fromRGB(198, 132, 78)) }) })
+
+        -- :: cup ::
+        local cup = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, CUPY),
+            Size = UDim2.fromOffset(CUPW, CUPH), BackgroundTransparency = 1, ZIndex = 113, Parent = scene })
+        local body = new("Frame", { Size = UDim2.fromOffset(CUPW, CUPH), BackgroundColor3 = CERAMIC,
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 113, Parent = cup },
+            { new("UICorner", { CornerRadius = UDim.new(0, 34) }),
+              new("UIStroke", { Color = Color3.fromRGB(196, 180, 164), Thickness = 1, Transparency = 1 }),
+              new("UIGradient", { Rotation = 90,
+                  Color = ColorSequence.new(Color3.fromRGB(255, 252, 246), Color3.fromRGB(226, 212, 197)) }) })
+        local inner = new("Frame", { Position = UDim2.fromOffset(IN_X, IN_Y),
+            Size = UDim2.fromOffset(IN_W, IN_H), BackgroundColor3 = Color3.fromRGB(34, 23, 17),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 114, Parent = cup },
+            { new("UICorner", { CornerRadius = UDim.new(0, 26) }),
+              new("UIGradient", { Rotation = 90,
+                  Color = ColorSequence.new(Color3.fromRGB(26, 17, 12), Color3.fromRGB(58, 40, 31)) }) })
+        local crema = new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0),
+            Size = UDim2.new(1, 0, 0, 0), BackgroundColor3 = CREMA, BackgroundTransparency = 1,
+            BorderSizePixel = 0, ZIndex = 115, Parent = inner },
+            { new("UICorner", { CornerRadius = UDim.new(0, 14) }),
+              new("UIGradient", { Rotation = 90,
+                  Color = ColorSequence.new(Color3.fromRGB(232, 168, 112), Color3.fromRGB(178, 112, 62)) }) })
+        local cremaTop = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 0),
+            Size = UDim2.new(1, -16, 0, 8), BackgroundColor3 = Color3.fromRGB(246, 206, 162),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 116, Parent = crema },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local rim = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, -7),
+            Size = UDim2.fromOffset(CUPW + 10, 26), BackgroundColor3 = CERAMIC,
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 117, Parent = cup },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local handle = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(1, -30, 0.44, 0),
+            Size = UDim2.fromOffset(104, 104), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ZIndex = 112, Parent = cup },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }),
+              new("UIStroke", { Color = CERAMIC, Thickness = 10, Transparency = 1 }) })
+        local tray = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 518),
+            Size = UDim2.fromOffset(380, 10), BackgroundColor3 = Color3.fromRGB(38, 31, 27),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 111, Parent = scene },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+
+        -- :: drips + ripples ::
+        local drips = {}
+        for i, at in ipairs({ 2.18, 2.52, 2.86 }) do
+            local x = (i % 2 == 1) and -40 or 40
+            drips[#drips + 1] = {
+                at = at, x = x,
+                f = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, x, 0, 186),
+                    Size = UDim2.fromOffset(7, 9), BackgroundColor3 = CREMA, BackgroundTransparency = 0.1,
+                    BorderSizePixel = 0, Visible = false, ZIndex = 116, Parent = scene },
+                    { new("UICorner", { CornerRadius = UDim.new(1, 0) }) }),
+                r = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, x, 0, 186),
+                    Size = UDim2.fromOffset(8, 8), BackgroundTransparency = 1, Image = Koffee.UI.tex("fx_ring"),
+                    ImageColor3 = CREMA, ImageTransparency = 1, Visible = false, ZIndex = 116, Parent = scene }),
+            }
+        end
+
+        -- :: steam ::
+        local steam = {}
+        for i = 1, 2 do
+            steam[#steam + 1] = new("ImageLabel", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, (i == 1 and -52 or 46), 0, 224),
+                Size = UDim2.fromOffset(130, 170), BackgroundTransparency = 1,
+                Image = Koffee.icon("koffee-steam"), ImageColor3 = CERAMIC, ImageTransparency = 1,
+                ZIndex = 112, Parent = scene,
+            })
+        end
+
+        -- :: stamp ::
+        -- a warm bloom behind the mark, so the climax is lit instead of a logo on black
+        local bloom = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0, 330), Size = UDim2.fromOffset(500, 500),
+            BackgroundTransparency = 1, Image = Koffee.UI.tex("fx_glow"), ImageColor3 = CREMA,
+            ImageTransparency = 1, ZIndex = 115, Parent = scene })
+        local bloomScale = new("UIScale", { Scale = 0.7, Parent = bloom })
+        local kMark = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 322),
+            Size = UDim2.fromOffset(190, 190), BackgroundTransparency = 1, Image = Koffee.icon("koffee-k"),
+            ImageColor3 = P.Text, ImageTransparency = 1, ZIndex = 118, Parent = scene })
+        local kScale = new("UIScale", { Scale = 1.18, Parent = kMark })
+        local shock = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 322),
+            Size = UDim2.fromOffset(190, 190), BackgroundTransparency = 1, Image = Koffee.UI.tex("fx_ring"),
+            ImageColor3 = CREMA, ImageTransparency = 1, Visible = false, ZIndex = 117, Parent = scene })
+        local verLbl = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Bold, TextSize = 48,
+            TextColor3 = P.Text, BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 432),
+            Size = UDim2.new(1, 0, 0, 56), TextTransparency = 1, ZIndex = 118, Parent = scene })
+
+        -- :: embers ::
+        local embers = {}
+        for _ = 1, 18 do
+            embers[#embers + 1] = {
+                at = 4.2 + math.random() * 0.9,
+                x = (math.random() * 2 - 1) * 170,
+                y = 414 + math.random() * 80,
+                f = new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = UDim2.new(0.5, 0, 0, 444), Size = UDim2.fromOffset(18, 18),
+                    BackgroundTransparency = 1, Image = Koffee.UI.tex("fx_twinkle"),
+                    ImageColor3 = CREMA, ImageTransparency = 1, Visible = false, ZIndex = 116, Parent = scene }),
+            }
+        end
+
+        local flash = new("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 130, Parent = stage })
+
+        reg(head) reg(headFace) reg(tray) reg(seam) reg(pf) reg(headK, 0.55)
+        for _, d in ipairs(dots) do reg(d, 0.6) end reg(pfTop) reg(pfLip) reg(pfHandle)
+        reg(spoutL) reg(spoutR) reg(body) reg(inner) reg(rim) reg(pointer) reg(tail) reg(hub) reg(barLbl)
+        regStroke(handle)
+        for _, r in ipairs(rails) do reg(r) end
+        for _, tk in ipairs(ticks) do reg(tk, 0.3) end
+        local function applyFade(inst, base, a)
+            local v = 1 - a * (1 - base)
+            if inst:IsA("Frame") then inst.BackgroundTransparency = v
+            elseif inst:IsA("ImageLabel") then inst.ImageTransparency = v
+            elseif inst:IsA("TextLabel") then inst.TextTransparency = v end
+            local st = inst:FindFirstChildOfClass("UIStroke")
+            if st then st.Transparency = v end
+        end
+        local function applyStroke(inst, base, a)
+            local st = inst:FindFirstChildOfClass("UIStroke")
+            if st then st.Transparency = 1 - a * (1 - base) end
+        end
+
+        local function seek(t)
+            local foldA = eOut(seg(t, 0.0, 0.45))
+            local unfA = eOut(seg(t, 6.3, 6.95))
+            if t < 6.3 then
+                window.GroupTransparency = winAlpha + (1 - winAlpha) * foldA
+                winScale.Scale = winBase * (1 - 0.06 * foldA)
+            else
+                window.GroupTransparency = winAlpha + (1 - winAlpha) * (1 - unfA)
+                winScale.Scale = winBase * (0.98 + 0.02 * unfA)
+            end
+            stage.BackgroundTransparency = 1 - 0.94 * foldA * (1 - unfA)
+            barT.Position = UDim2.fromOffset(0, -BAR + BAR * foldA * (1 - unfA))
+            barB.Position = UDim2.new(0, 0, 1, BAR - BAR * foldA * (1 - unfA))
+
+            -- 0.60-0.78 the portafilter locks in under the head, frame jolts
+            local slam = seg(t, 0.60, 0.78)
+            pf.Position = UDim2.new(0.5, 0, 0, 154 - 34 * (1 - eBack(slam)))
+            pfLip.Position = UDim2.new(0.5, 0, 1, -5)
+            local jolt = 0
+            if t > 0.78 then
+                jolt = math.sin((t - 0.78) * 46) * math.exp(-(t - 0.78) * 12) * 2.6
+            end
+            scene.Position = UDim2.new(0.5, 0, 0.5, jolt)
+
+            -- 0.78-1.55 gauge sweeps to 9 bar, overshoots, settles
+            local gv = eBack(seg(t, 0.78, 1.55))
+            needle.Rotation = -120 + 240 * gv
+
+            local cupA = eOut(seg(t, 0.35, 0.62))
+            local mA = (t < 3.66) and cupA or 0
+            for _, e in ipairs(fadeList) do
+                if e.s then applyStroke(e.i, e.b, mA) else applyFade(e.i, e.b, mA) end
+            end
+
+            -- 1.55-3.55 pour
+            local pour = eInOut(seg(t, 1.55, 3.55))
+            local cremaH = IN_H * 0.84 * pour
+            crema.Size = UDim2.new(1, 0, 0, cremaH)
+            crema.BackgroundTransparency = 1 - mA
+            cremaTop.BackgroundTransparency = 1 - 0.8 * mA
+            local surface = CUPY + IN_Y + IN_H - cremaH
+            local pouring = t >= 1.55 and t <= 3.58 and mA > 0.5
+            streamL.Visible, streamR.Visible = pouring, pouring
+            if pouring then
+                local h = math.max(0, surface - 186)
+                streamL.Size = UDim2.new(0, 4, 0, h)
+                streamR.Size = UDim2.new(0, 4, 0, h)
+                local wob = math.sin(t * 24) * 1.2
+                streamL.Position = UDim2.new(0.5, -40 + wob, 0, 186)
+                streamR.Position = UDim2.new(0.5, 40 - wob, 0, 186)
+            end
+
+            for _, d in ipairs(drips) do
+                local k = seg(t, d.at, d.at + 0.5)
+                if k > 0 and k < 1 and mA > 0.5 then
+                    d.f.Visible = true
+                    d.f.Position = UDim2.new(0.5, d.x, 0, 186 + (surface - 186) * eIn(k))
+                else
+                    d.f.Visible = false
+                end
+                local rk = seg(t, d.at + 0.5, d.at + 0.98)
+                if rk > 0 and rk < 1 and mA > 0.5 then
+                    d.r.Visible = true
+                    local rr = 10 + 70 * eOut(rk)
+                    d.r.Size = UDim2.fromOffset(rr, rr)
+                    d.r.Position = UDim2.new(0.5, d.x, 0, surface)
+                    d.r.ImageTransparency = 0.2 + 0.8 * rk
+                else
+                    d.r.Visible = false
+                end
+            end
+
+            local steamOn = t > 2.0 and t < 3.9 and mA > 0.5
+            for i, s in ipairs(steam) do
+                if steamOn then
+                    local k = clamp01((t - 2.0 - (i - 1) * 0.25) / 1.6)
+                    s.Visible = true
+                    s.ImageTransparency = 0.55 + 0.4 * k
+                    s.Position = UDim2.new(0.5, (i == 1 and -52 or 46) + math.sin(t * 3 + i) * 7, 0, 236 - 70 * k)
+                else
+                    s.Visible = false
+                end
+            end
+
+            local fa = 0
+            if t >= 3.58 and t <= 3.98 then
+                fa = seg(t, 3.58, 3.66) * (1 - seg(t, 3.66, 3.98))
+            end
+            flash.BackgroundTransparency = 1 - 0.995 * fa
+
+            local st = seg(t, 3.9, 4.22)
+            kMark.ImageTransparency = 1 - eOut(st)
+            kScale.Scale = 1.18 - 0.18 * eBack(st)
+            -- the bloom arrives with the stamp and breathes once
+            local bl = eOut(seg(t, 3.92, 4.45))
+            local beat = 1 + 0.06 * math.sin(math.max(0, t - 4.2) * 2.2)
+            bloom.ImageTransparency = 1 - 0.72 * bl
+            bloomScale.Scale = (0.7 + 0.3 * bl) * beat
+
+            local sh = seg(t, 3.94, 4.55)
+            if sh > 0 and sh < 1 then
+                shock.Visible = true
+                local sc = 1 + 1.9 * eOut(sh)
+                shock.Size = UDim2.fromOffset(190 * sc, 190 * sc)
+                shock.ImageTransparency = 0.15 + 0.85 * sh
+            else
+                shock.Visible = false
+            end
+
+            local vk = eOut(seg(t, 4.3, 4.95))
+            verLbl.TextTransparency = 1 - vk
+            verLbl.Text = string.format("%.1f", 1.8 + 0.2 * vk)
+
+            for _, e in ipairs(embers) do
+                local k = seg(t, e.at, e.at + 1.1)
+                if k > 0 and k < 1 then
+                    e.f.Visible = true
+                    e.f.Position = UDim2.new(0.5, e.x + math.sin(k * 6) * 10, 0, e.y - 160 * eOut(k))
+                    e.f.ImageTransparency = 0.1 + 0.9 * k
+                else
+                    e.f.Visible = false
+                end
+            end
+
+            local cmp = eInOut(seg(t, 5.8, 6.35))
+            sceneScale.Scale = 1 - 0.985 * cmp
+            scene.GroupTransparency = cmp
+        end
+
+        local function finish()
+            pcall(function()
+                window.GroupTransparency = winAlpha
+                winScale.Scale = winBase
+                if addedScale then winScale:Destroy() end
+            end)
+            stage:Destroy()
+            if getgenv then getgenv().KoffeeCelebrateSeek = nil end
+            live = nil
+        end
+
+        return { stage = stage, seek = seek, finish = finish, scene = scene }
+    end
+
+    local function show()
+        if live then return end
+        if not (popupScreen and popupScreen.Parent) then return end
+        pcall(function()
+            if writefile then
+                seen[FLAG] = true
+                writefile(PATH, HS:JSONEncode(seen))
+            end
+        end)
+        local r = build()
+        if not r then return end
+        live = r
+
+        sfx("basshit.mp3", 0.20, 0.55, 0.02)
+        sfx("chockpro.mp3", 0.42, 1.00, 0.66)
+        sfx("knob.mp3", 0.16, 0.70, 0.80)
+        sfx("bubble.mp3", 0.14, 1.55, 2.20)
+        sfx("bubble.mp3", 0.14, 1.35, 2.54)
+        sfx("bubble.mp3", 0.14, 1.65, 2.88)
+        sfx("blizzard.mp3", 0.10, 1.60, 3.58)
+        sfx("milestone.ogg", 0.45, 1.00, 3.92, "Koffee/sfx/")
+        sfx("bell.mp3", 0.10, 1.25, 4.45)
+
+        local t0 = os.clock()
+        local conn
+        conn = RunService.RenderStepped:Connect(function()
+            if Koffee.dead() or not r.stage.Parent then
+                conn:Disconnect()
+                r.finish()
+                return
+            end
+            local t = r.freeze or (os.clock() - t0)
+            r.seek(t)
+            if not r.freeze and t >= DUR then
+                conn:Disconnect()
+                r.finish()
+            end
+        end)
+        r.conn = conn
+
+        -- skip: a click anywhere or Esc jumps to the last beat, never a hard cut
+        local skipBtn = new("TextButton", { Text = "", AutoButtonColor = false,
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), ZIndex = 129, Parent = r.stage })
+        local function skip()
+            if r.freeze or not r.stage.Parent then return end
+            t0 = os.clock() - (DUR - 0.55)
+        end
+        skipBtn.MouseButton1Click:Connect(skip)
+        local escConn
+        escConn = UserInputService.InputBegan:Connect(function(input)
+            if input.KeyCode == Enum.KeyCode.Escape then skip() end
+        end)
+        local oldFinish = r.finish
+        r.finish = function()
+            if escConn then escConn:Disconnect(); escConn = nil end
+            oldFinish()
+        end
+
+        if getgenv then
+            -- seek(t) freezes the film at t; seek(nil) releases it and lets it finish
+            getgenv().KoffeeCelebrateSeek = function(t)
+                if not live then return end
+                t = tonumber(t)
+                if not t or t >= DUR then live.freeze = nil; return end
+                live.freeze = t
+            end
+        end
+    end
+
+    Shared.showCelebration = function() if not Koffee.dead() then show() end end
+    if auto then
+        task.spawn(function()
+            task.wait(1.2)
+            if not Koffee.dead() then show() end
+        end)
+    end
+end)()
+
+-- v1.0.0 CELEBRATION, kept for the Options replay after 2.0 replaced it (confetti, fanfare, the road
+-- here, what's new). Seen flag in Koffee/milestones.json, never a config.
+-- getgenv().KoffeeCelebrate = true shows it again on the next load.
+;(function()
+    local HS = game:GetService("HttpService")
+    local FLAG, PATH = "1.0", "Koffee/milestones.json"
+    local seen = {}
+    pcall(function()
+        if isfile and readfile and isfile(PATH) then
+            local d = HS:JSONDecode(readfile(PATH))
+            if type(d) == "table" then seen = d end
+        end
+    end)
+    local major = tonumber(tostring(Koffee.Version):match("^(%d+)")) or 0
     -- v1.3.1: the gate only decides the one-time auto show; Options can replay it any time
-    local auto = force or not (major < 1 or seen[FLAG] == true or (getgenv and getgenv()["\6_rt_cel10"]))
-    if auto and getgenv then getgenv()["\6_rt_cel10"] = true; getgenv().KoffeeCelebrate = nil end
+    local auto = false   -- replay only: the 1.0 reel never fires on its own
 
     local P = Theme.Palette
     local STATS = {
@@ -52078,7 +53427,7 @@ end)()
         end)
     end
 
-    Shared.showCelebration = function() if not Koffee.dead() then show() end end
+    Shared.showCelebration1 = function() if not Koffee.dead() then show() end end
     if auto then
         task.spawn(function()
             task.wait(1.2)
