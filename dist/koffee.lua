@@ -1,7 +1,7 @@
--- koffee v1.9.5
+-- koffee v1.9.6
 
 local Koffee = {}
-Koffee.Version = "1.9.5"
+Koffee.Version = "1.9.6"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -1231,10 +1231,12 @@ do
             url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/Orbitron.ttf",
             file = "Koffee/fonts/Orbitron.ttf",
         },
-        -- v1.9.5: Verdana is Microsoft-licensed, so it is never downloaded. The entry
-        -- exists so it shows up in the pickers, and it only renders if the user drops
-        -- his own Verdana.ttf into Koffee/fonts. No url means nothing to fetch.
-        ["Verdana"] = { file = "Koffee/fonts/Verdana.ttf" },
+        -- v1.9.6: Verdana is hosted now. The no-url path in loadFeiFont stays, so an
+        -- entry can still be bring-your-own if one ever has to be.
+        ["Verdana"] = {
+            url  = "https://raw.githubusercontent.com/lowkeymyself/koffee-assets/main/Verdana.ttf",
+            file = "Koffee/fonts/Verdana.ttf",
+        },
         -- v1.9.5: built-ins resolve through Enum.Font and Font.fromEnum. The
         -- rbxasset://fonts/families/*.json paths these used to point at are not shipped
         -- by current clients, so all of them quietly rendered as the default face.
@@ -30780,7 +30782,7 @@ addTab("Options", function(root)
         end)
     end)
 
-    -- v0.0.97 CUSTOM FONT: applies a user-chosen font to everything that isn't the main Koffee window (arraylist, ESP name / distance / health text, HUD stats, etc.). The dropdown lists the fonts hosted on koffee-assets (see FONTS_CATALOG); right-click the row to tune the global text size used while the custom font is on: so the pixel fonts don't render too big / small. Default off + "None": feature interface looks exactly like before. "None" reverts to Theme.Fonts. The rest split into: external assets (downloaded via koffee-assets) + roblox stock faces (zero-cost, resolved from Enum.Font inside loadFeiFont) + Verdana, which is bring-your-own. v0.9.0: shared catalog list (see Theme.FontNames) instead of a second literal, so every font picker in the build reads one list.
+    -- v0.0.97 CUSTOM FONT: applies a user-chosen font to everything that isn't the main Koffee window (arraylist, ESP name / distance / health text, HUD stats, etc.). The dropdown lists the fonts hosted on koffee-assets (see FONTS_CATALOG); right-click the row to tune the global text size used while the custom font is on: so the pixel fonts don't render too big / small. Default off + "None": feature interface looks exactly like before. "None" reverts to Theme.Fonts. The rest split into: external assets (downloaded via koffee-assets) + roblox stock faces (zero-cost, resolved from Enum.Font inside loadFeiFont). v0.9.0: shared catalog list (see Theme.FontNames) instead of a second literal, so every font picker in the build reads one list.
     local fontOptions = Theme.FontNames
     -- user-dropped fonts land in the workspace as koffee_<name>.otf; surface any
     -- extra cached entries the catalog doesn't know so they're selectable too.
