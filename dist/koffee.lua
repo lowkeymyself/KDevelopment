@@ -1,7 +1,7 @@
--- koffee v2.0.0
+-- koffee v2.0.1
 
 local Koffee = {}
-Koffee.Version = "2.0.0"
+Koffee.Version = "2.0.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -2182,7 +2182,8 @@ RunService.RenderStepped:Connect(function()
     frameCount = frameCount + 1
     local now = tick()
     if now - lastSample >= 0.5 then
-        fpsLabel.Text = math.floor(frameCount / (now - lastSample) + 0.5) .. " fps"
+        local fps = math.floor(frameCount / (now - lastSample) + 0.5)
+        fpsLabel.Text = fps .. " fps"
         frameCount, lastSample = 0, now
         -- v1.8.0: the Time slot is a real clock now, and 12 or 24 hour is a
         -- right-click setting on the bar. Half a second is plenty for seconds.
@@ -2191,6 +2192,8 @@ RunService.RenderStepped:Connect(function()
         local txt = os.date(twelve and "%I:%M:%S %p" or "%H:%M:%S")
         if twelve then txt = (txt:gsub("^0", "")) end
         timeLabel.Text = txt
+        -- v2.0.1: crosshair {FPS} / {TIME} read this sample instead of a second clock
+        Koffee._hudFps, Koffee._hudClock = tostring(fps), txt
         -- v2.0.0: K/D and accuracy ride the same half-second sample
         local st = Koffee.Stats
         if st and Koffee._kdLabel then
@@ -2846,7 +2849,7 @@ end
 -- is being typed into, so focus is obvious without a border flash
 function extras.focus(input)
     local line = new("Frame", { Name = "FocusLine", AnchorPoint = Vector2.new(0.5, 1),
-        Position = UDim2.new(0.5, 0, 1, -2), Size = UDim2.fromOffset(0, 2),
+        Position = UDim2.new(0.5, 0, 1, 0), Size = UDim2.fromOffset(0, 2),
         BackgroundColor3 = Theme.Palette.Accent, BackgroundTransparency = 0.1,
         ZIndex = input.ZIndex + 1, Parent = input }, { pillCorner() })
     input.Focused:Connect(function()
@@ -7337,7 +7340,13 @@ registerConfig("shared",         Shared)
 -- wrote old dock defs over live ones by index, so the Skins slot toggled Media.
 Shared._cfgSkip = { Windows = true, RivalsSkins = true, Media = true, Suspects = true,
     RV = true,   -- v0.94.0: the rivals bridge holds game module tables and Instances
-    AmbienceNames = true, HFX_NEW = true, KILL_ANIMS = true }
+    AmbienceNames = true, HFX_NEW = true, KILL_ANIMS = true,
+    _xhTok = true }   -- v2.0.1: crosshair text readout, rewritten every frame
+
+-- v2.0.1: CROSSHAIR TEXT TOKENS. One state table the renderer reads and the Hit Log
+-- writes the last hit into, so "{DMG} away from {TARGET}" is wiring, not machinery.
+Shared._xhTok = { name = "-", dmg = "-", hp = "-", weapon = "-", dist = "-",
+    target = "-", at = 0, tName = "-", tDist = "-", tAt = 0 }
 
 -- v0.5.0: Crosshair: custom on-screen crosshair renderer, sits between world and Koffee UI. GUI-based (not Drawing.new) so it respects the ScreenGui ZIndex hierarchy on kernel-driver runtimes. State stays flat here; the container + arm/dot/outer frames are created lazily by ensureCrosshairLayer. All render math (position, spin, follow-target lerp, pulse) runs in the RenderStepped bound near the end of this file, right before addTab("Visuals").
 local Crosshair = {
@@ -17896,6 +17905,41 @@ end
         if v == nil then return default end
         return v
     end
+    -- v2.0.1: text row tokens. {NAME} {DMG} {HP} {WEAPON} mean what the Hit Log means;
+    -- {TARGET} {DIST} follow the live aim target, and {FPS} {TIME} read the details
+    -- bar's own sample. The aim lookup is capped at 10Hz, so a row that prints it
+    -- costs one targeting pass every 100ms at worst, never one per frame.
+    local XT = Shared._xhTok
+    local function tokAim(now)
+        if now - (XT.tAt or 0) < 0.1 then return end
+        XT.tAt = now
+        local plr = Shared.crosshairTarget and Shared.crosshairTarget("Aim") or nil
+        if not plr then XT.tName, XT.tDist = "-", "-" return end
+        local ch = plr.Character
+        local root = ch and ch:FindFirstChild("HumanoidRootPart")
+        local mine = LocalPlayer.Character
+        local myRoot = mine and mine:FindFirstChild("HumanoidRootPart")
+        XT.tName = plr.DisplayName or plr.Name
+        XT.tDist = (root and myRoot)
+            and tostring(math.floor((root.Position - myRoot.Position).Magnitude + 0.5)) or "-"
+    end
+    local TOKEN = { NAME = "name", DMG = "dmg", HP = "hp", WEAPON = "weapon",
+        DIST = "tDist", TARGET = "tName" }
+    local function tokText(raw, now)
+        local s = tostring(raw or "")
+        if not s:find("{", 1, true) then return s end
+        if s:find("{DIST}", 1, true) or s:find("{TARGET}", 1, true) then tokAim(now) end
+        -- an unknown token prints as itself, so a typo is visible instead of silent
+        return (s:gsub("{(%u+)}", function(k)
+            -- both come off the details bar's half-second sample, so the crosshair
+            -- and the HUD can never disagree
+            if k == "FPS" then return Koffee._hudFps or "-" end
+            if k == "TIME" then return Koffee._hudClock or "-" end
+            local key = TOKEN[k]
+            if key == nil then return "{" .. k .. "}" end
+            return tostring(XT[key])
+        end))
+    end
     local function paintText(cfg, g, cx, cy, canvasRot, reach, dt)
         local T = cfg.Text
         local items = (T and T.Enabled) and (T.Items or {}) or {}
@@ -17906,6 +17950,14 @@ end
             r.lbl.Visible = false
         end
         if #items == 0 then return end
+        -- v2.0.1: {WEAPON} is the only token with no schedule of its own
+        local now = os.clock()
+        if now - (XT.at or 0) >= 0.1 then
+            XT.at = now
+            local ch = LocalPlayer.Character
+            local tool = ch and ch:FindFirstChildOfClass("Tool")
+            XT.weapon = tool and tool.Name or "Unarmed"
+        end
         for i = #g.textRows + 1, #items do
             local root = new("Frame", {
                 Name = "TextRoot", AnchorPoint = Vector2.new(0.5, 0.5),
@@ -17936,7 +17988,7 @@ end
             -- text instead of pinning a raw pixel count nobody can reason about
             local off = (tonumber(it.Offset) or 0) / 100 * tsize
             local gap = base + off
-            l.Text = tostring(it.Text or "")
+            l.Text = tokText(it.Text, now)
             l.TextSize = tsize
             l.FontFace = xhFace(it.Font) or Theme.Fonts.Mono
             l.TextColor3 = it.Color or Color3.new(1, 1, 1)
@@ -18393,7 +18445,10 @@ end)()
     local function render(info, col)
         local hex = col:ToHex()
         local map = { NAME = info.name, DMG = info.dmg, PART = info.part, WEAPON = info.weapon, HP = info.hp }
-        local fmt = cfg.Format or ""
+        local fmt = tostring(cfg.Format or "")
+        -- v2.0.1: the format is typed now, so a blank field falls back to the shipped
+        -- line instead of drawing an empty card.
+        if fmt == "" then fmt = "Hit {NAME} in the {PART} for {DMG}" end
         -- unknown part (the health-drop path) drops the phrase instead of guessing
         if info.part == nil then fmt = fmt:gsub(" in the {PART}", ""):gsub("%s*{PART}", "") end
         local out = fmt:gsub("{(%u+)}", function(k)
@@ -18408,7 +18463,16 @@ end)()
     end
 
     Shared.pushHitLog = function(info)
-        if not cfg.Enabled or Koffee.dead() or type(info) ~= "table" then return end
+        -- v2.0.1: the last hit is recorded even with the log off, because crosshair
+        -- text reads {NAME} {DMG} {HP} from here. Same meaning the log line has.
+        if Koffee.dead() or type(info) ~= "table" then return end
+        local XT = Shared._xhTok
+        if XT then
+            XT.name = tostring(info.name or "?")
+            XT.dmg = tostring(info.dmg or 0)
+            XT.hp = tostring(info.hp or "?")
+        end
+        if not cfg.Enabled then return end
         local col = (info.kill and cfg.KillColor) or (info.crit and cfg.CritColor) or cfg.Color
         local card = new("CanvasGroup", {
             AnchorPoint = Vector2.new(0.5, 1), AutomaticSize = Enum.AutomaticSize.X,
@@ -24566,13 +24630,16 @@ addTab("Visuals", function(root)
     local hlRow = configCheckbox(indPanel, "Hit Log", hlCfg.Enabled, function(v) hlCfg.Enabled = v end)
     attachSingleSwatch(hlRow.row, hlCfg.Color, function(c) hlCfg.Color = c end)
     rightClickSettings(hlRow.row, "Hit Log", function(popup)
-        popup:dropdown("Format", {
-            "Hit {NAME} in the {PART} for {DMG}",
-            "{NAME}  -{DMG}  {PART}",
-            "Hit {NAME} for {DMG} ({HP} hp left)",
-            "{WEAPON}  >  {NAME}  >  {DMG}",
-            "Hit {NAME} in the {PART} for {DMG} with {WEAPON}",
-        }, hlCfg.Format, function(v) hlCfg.Format = v end)
+        -- v2.0.1: the format is typed, not picked. The field is seeded with the old
+        -- first preset, so an untouched install reads the same as it did.
+        popup:text("Format", hlCfg.Format, function(v) hlCfg.Format = v end)
+        new("TextLabel", {
+            Text = "{NAME} {DMG} {PART} {WEAPON} {HP}",
+            FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+            TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+            TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, 0, 0, 16), ZIndex = 212, Parent = popup.frame,
+        })
         popup:slider("Life (s)", 0.5, 10, hlCfg.Life, 1, function(v) hlCfg.Life = v end)
         popup:slider("Max Lines", 1, 12, hlCfg.Max, 0, function(v) hlCfg.Max = v end)
         popup:slider("Height", 40, 600, hlCfg.Height, 0, function(v) hlCfg.Height = v end)
@@ -24869,6 +24936,14 @@ addTab("Visuals", function(root)
             local it = cfg.Text.Items[index]
             if not it then return end
             popup:text("Content", it.Text, function(v) it.Text = v end)
+            -- v2.0.1: the token set, sitting under the field that eats it
+            new("TextLabel", {
+                Text = "{NAME} {DMG} {HP} {WEAPON}\n{DIST} {TARGET} {FPS} {TIME}",
+                FontFace = Theme.Fonts.Mono, TextSize = Theme.Text.Tiny,
+                TextColor3 = Theme.Palette.TextFaint, BackgroundTransparency = 1,
+                TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+                Size = UDim2.new(1, 0, 0, 28), ZIndex = 212, Parent = popup.frame,
+            })
             popup:dropdown("Position", Shared._xhTextPositions, it.Pos or "Bottom",
                 function(v) it.Pos = v end)
             popup:slider("Offset (%)", -300, 300, it.Offset or 0, 0, function(v) it.Offset = v end)
