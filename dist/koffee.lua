@@ -1,7 +1,7 @@
--- koffee v2.3.3
+-- koffee v2.3.4
 
 local Koffee = {}
-Koffee.Version = "2.3.3"
+Koffee.Version = "2.3.4"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -13837,7 +13837,9 @@ local Combat = {
             -- anything else that moved the view (the player's own mouse, recoil, the
             -- game) carries the model and any flick in flight with it, instead of the
             -- model snapping the view back and fighting whoever moved it
-            if L._hOutY then
+            -- v2.3.4: only when the view lands exactly on our output (a camera write).
+            -- Through the mouse, our own overshoot read as outside motion: a runaway.
+            if L._hOutY and ctx.exact ~= false then
                 local ddy = ctx.yaw - near(L._hOutY, ctx.yaw)
                 local ddp = ctx.pitch - L._hOutP
                 if math.abs(ddy) > 0.25 or math.abs(ddp) > 0.25 then
@@ -14019,6 +14021,23 @@ local Combat = {
     -- with the same geometry instead of a second copy.
     local shortestAngle = Shared.LegitSim.shortestAngle
     local lookAngles = Shared.LegitSim.lookAngles
+    -- v2.3.4: true when the aimbot moves the view through the mouse, not a camera write
+    function Shared.aimByMouse()
+        local A = Combat.Aim
+        if A.ThirdPerson then return true end
+        return A.AimType == "Mouse" and not A.PerfectLock
+    end
+    -- angle error to mouse pixels with the learned deg/px. nil: cursor is free, so a
+    -- screen delta is already exact. false: locked but not calibrated yet.
+    function Shared.aimMousePx(dyaw, dpitch)
+        local mb = UserInputService.MouseBehavior
+        if not (mb == Enum.MouseBehavior.LockCenter or mb == Enum.MouseBehavior.LockCurrentPosition) then
+            return nil
+        end
+        local cal = Shared.LegitEditor and Shared.LegitEditor.recoilCal
+        if not (cal and cal.yaw and cal.pitch and not cal.dead) then return false end
+        return math.clamp(dyaw / cal.yaw, -600, 600), math.clamp(dpitch / cal.pitch, -600, 600)
+    end
     local function aimCFrame(cam, from, targetPos, aX, aY)
         local dir = targetPos - from
         if dir.Magnitude < 1e-3 then return cam.CFrame end
@@ -15276,11 +15295,27 @@ local Combat = {
         local LG = Combat.Aim.Legit
         local now = os.clock()
         local aX, aY = Shared.LegitSim.sens(Combat.Aim.Sensitivity, Combat.Aim.Smooth)
+        local legitX, legitY   -- v2.3.4: calibrated mouse move for a locked cursor
         if LG.Enabled and cam then
             local from = cam.CFrame.Position
             local toT = tpos - from
             local tdist = math.max(toT.Magnitude, 1)
-            local cy, cp = Shared.LegitSim.lookAngles(cam.CFrame.LookVector)
+            -- v2.3.4: measure from whatever is actually aiming. Third Person aims the
+            -- cursor and Mouse aims the aim centre, neither of which is the look vector.
+            local byMouse = Shared.aimByMouse()
+            local aimDir = cam.CFrame.LookVector
+            if byMouse then
+                local px, py
+                if Combat.Aim.ThirdPerson then
+                    local ml = UserInputService:GetMouseLocation()
+                    px, py = ml.X, ml.Y
+                else
+                    px, py = aimCenter.X, aimCenter.Y
+                end
+                local okR, ray = pcall(cam.ViewportPointToRay, cam, px, py)
+                if okR and ray then aimDir = ray.Direction end
+            end
+            local cy, cp = Shared.LegitSim.lookAngles(aimDir)
             local ty, tp = Shared.LegitSim.lookAngles(toT)
             -- the target's angular size is what a person is actually aiming at, so it
             -- is what the noise, the flick time and the correction test all scale by
@@ -15289,11 +15324,18 @@ local Combat = {
             local ay, ap, info = Shared.HumanAim.step(LG, {
                 id = plr, now = now, dt = dt, yaw = math.deg(cy), pitch = math.deg(cp),
                 tyaw = math.deg(ty), tpitch = math.deg(tp), width = width,
-                speed = Combat.Aim.Sensitivity, gain = aX * 4,
+                speed = Combat.Aim.Sensitivity, gain = aX * 4, exact = not byMouse,
             })
             LG._hInfo = info
             tpos = from + (CFrame.fromEulerAnglesYXZ(math.rad(ap), math.rad(ay), 0)).LookVector * tdist
             aX, aY = 1, 1
+            if byMouse then
+                legitX, legitY = Shared.aimMousePx(math.deg(Shared.LegitSim.shortestAngle(math.rad(ay) - cy)),
+                    ap - math.deg(cp))
+                -- locked but not yet calibrated: a damped screen step cannot run away
+                -- even at 4x the screen's own deg per pixel
+                if legitX == false then aX, aY = 0.4, 0.4 end
+            end
         end
         -- v0.51.0 deadzone: while the humanised point sits within N pixels of the aim
         -- centre, touch nothing. The mouse only moves once the target truly leaves it.
@@ -15335,7 +15377,10 @@ local Combat = {
             end
             return
         end
-        if Combat.Aim.ThirdPerson then
+        if legitX and mousemoverel then
+            -- v2.3.4: the angle the model asked for, in the game's own mouse units
+            pcall(mousemoverel, legitX, legitY)
+        elseif Combat.Aim.ThirdPerson then
             -- v0.0.36.1: drive the REAL mouse onto the target's screen point. Measured live: WorldToViewportPoint INCLUDES the 58px GUI inset but PlayerMouse.X/Y does NOT: mixing them aimed a constant ~58px low (whole-body error at range). GetMouseLocation() is inset-included, matching WorldToViewportPoint, so the delta is 0 exactly on-target. Each frame nudges the cursor a fraction (aX/aY) and converges. Works free-cursor AND shift-lock.
             local sp = cam:WorldToViewportPoint(tpos)
             if sp.Z > 0 and mousemoverel then
@@ -56898,7 +56943,10 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     -- Only sampled on frames nothing else was driving the camera.
     local function learn(y, p)
         if not (MCal.quiet and MCal.y0) then return end
-        if C.Aim.Enabled and C.Aim._target then return end
+        -- v2.3.4: mouse-driven aim moves the view only through the mouse, so those
+        -- frames are clean samples; only a camera-writing aimbot pollutes them
+        if C.Aim.Enabled and C.Aim._target
+            and not (Shared.aimByMouse and Shared.aimByMouse()) then return end
         local dyaw = math.deg(Shared.LegitSim.shortestAngle(y - MCal.y0))
         local dpit = math.deg(p - MCal.p0)
         if math.abs(MCal.dx) > 6 and math.abs(dyaw) > 0.08 then
