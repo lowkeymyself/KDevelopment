@@ -1,7 +1,7 @@
--- koffee v2.1.5
+-- koffee v2.1.6
 
 local Koffee = {}
-Koffee.Version = "2.1.5"
+Koffee.Version = "2.1.6"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -54171,13 +54171,25 @@ Shared.REPLACE_TABLES.RecoilPattern = true
     -- where the viewmodel sits relative to the sandbox camera, shared by the loop
     -- and the muzzle so the tracer leaves the barrel, not the eye
     local VM_CF = CFrame.new(0.55, -0.55, -2.4) * CFrame.Angles(0, math.pi, 0)
+
+    -- where the line of fire leaves the gun: the front face of the part that reaches
+    -- furthest along the model's own barrel axis. No whole-model bounding box.
     function E.vmMuzzle()
-        if not (W.viewmodel and W.cam) then return nil end
-        local hz = ((W.vmSize and W.vmSize.Z) or 1.4) * 0.5
-        local hy = ((W.vmSize and W.vmSize.Y) or 1) * 0.12
-        return (W.cam.CFrame * VM_CF * CFrame.new(0, hy, hz)).Position
+        local vm = W.viewmodel
+        if not vm or not W.vmParts or #W.vmParts == 0 then return nil end
+        local base = vm:GetPivot()
+        local fwd = base:VectorToWorldSpace(Vector3.new(0, 0, 1))
+        local best, bestD
+        for _, p in ipairs(W.vmParts) do
+            local face = (p.CFrame * CFrame.new(0, 0, p.Size.Z * 0.5)).Position
+            local d = face:Dot(fwd)
+            if not bestD or d > bestD then bestD, best = d, face end
+        end
+        return best
     end
 
+    -- a shot tracer: thin, short lived, drawn from the barrel to the impact
+    local TRACER_LIFE = 0.12
     local function drawTracer(a, b)
         local sa, sb = project(a), project(b)
         if not sa or not sb then return end
@@ -54189,7 +54201,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
             Size = UDim2.fromOffset(len, 1), BackgroundColor3 = Color3.fromRGB(255, 236, 205),
             BackgroundTransparency = 0.25, BorderSizePixel = 0,
             Rotation = math.deg(math.atan2(dy, dx)), ZIndex = 3, Parent = W.overlay })
-        task.delay(0.08, function() pcall(function() f:Destroy() end) end)
+        task.delay(TRACER_LIFE or 0.08, function() pcall(function() f:Destroy() end) end)
     end
 
     local function burst(p)
@@ -54957,6 +54969,10 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         buildKim(decodeKim(gun.kim), model, 1.0)
         W.viewmodel = model
         W.vmSize = select(2, model:GetBoundingBox())
+        W.vmParts = {}
+        for _, c in ipairs(model:GetChildren()) do
+            if c:IsA("BasePart") then W.vmParts[#W.vmParts + 1] = c end
+        end
         if W.gunModel then W.gunModel:PivotTo(CFrame.new(0, -40, 0)) end
     end
     local function enterStageFullscreen()
