@@ -1,7 +1,7 @@
--- koffee v2.3.0
+-- koffee v2.3.1
 
 local Koffee = {}
-Koffee.Version = "2.3.0"
+Koffee.Version = "2.3.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -13299,10 +13299,10 @@ local Combat = {
         -- v2.0.0: curve shapes the pull over the engagement, ReactionRamp stretches
         -- v2.3.0: Jitter and Overshoot are percentages now, read by Shared.HumanAim.
         -- ReactionSpread widens the ex-Gaussian the reaction time is drawn from.
-        Legit         = { Enabled = false, Jitter = 0, Overshoot = 0, Reaction = 0, Deadzone = 0,
+        Legit         = { Enabled = false, Jitter = 0, Overshoot = -10, Reaction = 0, Deadzone = 0,
             PartMode = "Single Part", Parts = {},
             Curve = "Human", CurveTime = 220, ReactionRamp = 0, Fatigue = 0,
-            ReactionSpread = 100 },
+            ReactionSpread = 100 },   -- Overshoot -10 is the human default, 0 is exact
         _target       = nil,
         _rageLock     = nil,   -- locked ragebot victim (held for the key duration)
     },
@@ -13642,12 +13642,16 @@ local Combat = {
         -- hand tremor sits near 8 Hz (not the often-quoted 10), with a slower 2 to 4 Hz
         -- drift band under it. Both are load independent.
         local TREMOR_HZ, DRIFT_HZ = 8, 3
+        -- what is left of the error when nothing is moving: tremor only, a small
+        -- share of what the same setting produces while tracking
+        local STATIC = 0.12
         -- signal-dependent noise: the SD of motor error grows with the command, and
         -- the across-movement share is far smaller than the along-movement one.
         local ACROSS = 0.192
         -- a primary submovement lands short: saccades undershoot by about 10 percent of
         -- eccentricity, and the two-component model puts the primary at 90 percent plus.
-        local UNDERSHOOT = 0.10
+        -- That is the Overshoot control's human default, not a constant underneath it:
+        -- with every control at zero the aim is exact.
         -- corrections are rarer and slower than the primary, and each is tighter than
         -- the last. At most three, matching the submovement counts in the literature.
         local MAXCORR, CORRDELAY = 3, 0.17
@@ -13691,12 +13695,14 @@ local Combat = {
         -- Fitts: a flick onto a smaller or further target takes longer
         -- base is the time a flick of about four target widths takes; Fitts stretches
         -- it for anything further or smaller, and the sensitivity scales the whole lot
-        function H.flickTime(dist, width, speed, baseMs)
+        -- v2.3.1: Flick Time is the control, full stop. Dividing it by the aim
+        -- sensitivity made a low-sensitivity setup crawl onto the target for reasons
+        -- nothing on screen explained.
+        function H.flickTime(dist, width, _, baseMs)
             local w = math.max(width, 0.25)
             local id = math.log(2 * math.abs(dist) / w + 1, 2)
-            local k = math.clamp(speed or 1, 0.15, 3)
-            local base = math.clamp((tonumber(baseMs) or 220) / 1000, 0.03, 1.2)
-            return math.clamp(base * (0.25 + 0.25 * id) / k, 0.015, 1.8)
+            local base = math.clamp((tonumber(baseMs) or 220) / 1000, 0.02, 1.2)
+            return math.clamp(base * (0.25 + 0.25 * id), 0.012, 1.8)
         end
         H.MAXCORR = MAXCORR
 
@@ -13805,12 +13811,17 @@ local Combat = {
             end
             local ey, ep = believeY - L._hAimY, believeP - L._hAimP
             local dist = math.sqrt(ey * ey + ep * ep)
+            -- how close is close enough to stop. A steady hand closes the last
+            -- fraction of a degree; a shaky one stops wherever it landed, which is
+            -- why resting off centre has to be the jitter's doing and not a constant.
+            local jit = math.clamp((tonumber(L.Jitter) or 0) / 100, 0, 2)
+            local rest = radius * math.clamp(jit, 0, 1)
             -- a flick is scheduled only when the aim is actually off the target, and
             -- a correction only when the one before it landed outside
             if not L._hMove and not reacting and dist > radius then
                 local go = (L._hCorr == 0) or (now >= (L._hNextCorr or 0))
                 if go and L._hCorr <= MAXCORR then  -- primary plus up to MAXCORR fixes
-                    local bias = -(UNDERSHOOT + (-(tonumber(L.Overshoot) or 0)) / 100)
+                    local bias = (tonumber(L.Overshoot) or 0) / 100
                     if L._hCorr > 0 then bias = bias * 0.35 end
                     local amp = dist * (1 + bias)
                     amp = amp + gauss() * dist * 0.06 * ((tonumber(L.Jitter) or 0) / 100 + 0.35)
@@ -13856,7 +13867,7 @@ local Combat = {
                 -- grind the last fraction of a degree away. Inside the target the aim
                 -- rests where the last submovement left it, which is what stops the
                 -- whole thing from settling dead centre every time.
-                if dist > radius then
+                if dist > rest then
                     local g = math.clamp(dt * 14 * math.clamp(ctx.gain or 1, 0.05, 4), 0, 1)
                     L._hAimY = L._hAimY + ey * g
                     L._hAimP = L._hAimP + ep * g
@@ -13869,7 +13880,6 @@ local Combat = {
             -- noise: a slow drift, a tremor near 8 Hz, and a share that grows with how
             -- fast the aim is moving. Amplitude is a share of the target's own radius,
             -- so the percentage means the same thing at every range.
-            local jit = math.clamp((tonumber(L.Jitter) or 0) / 100, 0, 2)
             local ny, np = 0, 0
             if jit > 0 then
                 -- fatigue is a slow walk on how steady the hand is, so the same
@@ -13882,12 +13892,20 @@ local Combat = {
                     end
                     fat = math.max(L._hFat or 1, 0.05)
                 end
-                local amp = radius * jit * fat
+                -- a still target is held steady: what is left is tremor, which is
+                -- small. The error that matters grows with how fast the target is
+                -- moving, because pursuit gain is below one and the lag accumulates.
+                local tspd = math.sqrt(L._hVelY * L._hVelY + L._hVelP * L._hVelP)
+                local motion = math.clamp(tspd / 30, 0, 2)
+                local amp = radius * jit * fat * (STATIC + 0.9 * motion)
                 local kd = math.exp(-dt * DRIFT_HZ)
                 local sd = math.sqrt(math.max(1 - kd * kd, 0))
                 L._hDriftY = L._hDriftY * kd + gauss() * sd
                 L._hDriftP = L._hDriftP * kd + gauss() * sd
-                L._hTrem = (L._hTrem + dt * TREMOR_HZ * 6.283) % 6.283
+                -- the tremor band sits near 8 Hz held still and drops toward 6 while
+                -- the limb is moving: mechanics, not a neural clock
+                local hz = TREMOR_HZ - 2 * math.clamp(motion, 0, 1)
+                L._hTrem = (L._hTrem + dt * hz * 6.283) % 6.283
                 local speedY = (L._hAimY - (L._hPrevY or L._hAimY)) / dt
                 local speedP = (L._hAimP - (L._hPrevP or L._hAimP)) / dt
                 local spd = math.sqrt(speedY * speedY + speedP * speedP)
