@@ -1,7 +1,7 @@
--- koffee v2.3.4
+-- koffee v2.4.0
 
 local Koffee = {}
-Koffee.Version = "2.3.4"
+Koffee.Version = "2.4.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -3825,6 +3825,7 @@ rebuildConfigTabs = function()
     -- v0.68.0: Extra is never rebuilt either. Same treatment for the HvH rows.
     if Shared and Shared._hvhResync then pcall(Shared._hvhResync) end
     if Shared and Shared._rvAutoResync then pcall(Shared._rvAutoResync) end
+    if Shared and Shared._aimlogResync then pcall(Shared._aimlogResync) end
     -- v1.6.0: the AI tab is never rebuilt, so its mode row and model value resync here.
     if Shared and Shared._aiResync then pcall(Shared._aiResync) end
     -- v0.62.0: replay the window-switcher bar drop-in on a config switch, and
@@ -40793,14 +40794,346 @@ if Koffee._isRivals then (function()
     end
 end)() end
 
+-- v2.4.0 AIM LOG: records his real aim for the neural aim model (see the Koffee Neural
+-- Aim note). Logs the whole scene at up to 120 Hz plus every feature flag, and keeps only
+-- engagements with 2 s of pre-roll. Who he aimed at, and which set it is, are decided offline.
+;(function()
+local AL = { files = 0, engagedT = 0, engagements = 0, state = "idle", lines = 0 }
+Shared.AimLog = AL
+local mod = registerModule("aimlog", "Aim Log", function() AL.start() end, function() AL.stop() end)
+local UIS = UserInputService
+local RATE = 1 / 120
+local RING_N, TAIL, FLUSH_EVERY, MAX_ANGLE = 240, 1.0, 5, 80
+local ring, ringAt = {}, 0
+local buf = {}
+local session, t0, lastSample, lastFlush, engaged, lastSeen = nil, 0, 0, 0, false, 0
+local mdx, mdy = 0, 0
+local npcIds, npcN = setmetatable({}, { __mode = "k" }), 0
+local rp = RaycastParams.new()
+rp.FilterType = Enum.RaycastFilterType.Exclude
+
+local function clean(s) return (tostring(s or ""):gsub("[,;\r\n]", "_")) end
+local function f3(n) return string.format("%.3f", n) end
+local function f2(n) return string.format("%.2f", n) end
+local function now() return os.clock() - t0 end
+local function idFor(model)
+    local plr = Players:GetPlayerFromCharacter(model)
+    if plr then return "p" .. plr.UserId, plr end
+    local id = npcIds[model]
+    if not id then npcN += 1; id = "n" .. npcN; npcIds[model] = id end
+    return id, nil
+end
+local function push(line)
+    if engaged then
+        buf[#buf + 1] = line
+    else
+        ringAt = ringAt % RING_N + 1
+        ring[ringAt] = line
+    end
+end
+-- the ring, oldest first, into the buffer: the pre-roll of a new engagement
+local function commitRing()
+    for k = 1, RING_N do
+        local i = (ringAt + k - 1) % RING_N + 1
+        local line = ring[i]
+        if line then buf[#buf + 1] = line end
+    end
+    table.clear(ring)
+    ringAt = 0
+end
+local function header()
+    local cam = Workspace.CurrentCamera
+    local vs = cam and cam.ViewportSize or Vector2.zero
+    local cal = Shared.LegitEditor and Shared.LegitEditor.recoilCal
+    return table.concat({
+        "# koffee aimlog v1",
+        string.format("# place=%d job=%s started=%d session=%s rate=120 res=%dx%d version=%s",
+            game.PlaceId, clean(game.JobId), os.time(), session, math.floor(vs.X), math.floor(vs.Y),
+            tostring(Koffee.Version)),
+        string.format("# degpx_yaw=%s degpx_pitch=%s",
+            tostring(cal and cal.yaw or "nil"), tostring(cal and cal.pitch or "nil")),
+        "# F,t,cy,cp,fov,vx,vy,vz,ground,lmb,rmb,locked,mdx,mdy,flags,tool;id,team,hdx,hdy,bdx,bdy,size,dist,evx,evy,evz,occ;...",
+        "# S,t,tool | H,t,victim,part,dmg,kill | E,t,1/0 | D,t",
+        "# flags: 1 esp 2 aimbot 4 silent 8 trigger 16 recoil 32 chams 64 npcesp 128 legit 256 targetlock 512 hitbox 1024 rivals-gunmods",
+        "",
+    }, "\n")
+end
+local function flush()
+    if #buf == 0 or not session then return end
+    AL.files += 1
+    local path = string.format("Koffee/aimlog/%s/c%04d.txt", session, AL.files)
+    local body = header() .. table.concat(buf, "\n") .. "\n"
+    AL.lines += #buf
+    table.clear(buf)
+    task.spawn(function() pcall(writefile, path, body) end)
+end
+local function modOn(id)
+    local m = Modules[id]
+    return m ~= nil and m.Enabled == true
+end
+-- everything that changes what he knows (ESP) or how the aim moves (the rest).
+-- Offline drops any engagement with an aim bit set and sorts sets by the ESP bits.
+local function flags()
+    local C = Shared.Combat
+    local f = 0
+    if modOn("esp") then f += 1 end
+    if modOn("aimbot") then f += 2 end
+    if modOn("silentaim") then f += 4 end
+    if modOn("triggerbot") then f += 8 end
+    if C and C.Recoil and C.Recoil.Enabled then f += 16 end
+    if modOn("chams") then f += 32 end
+    if Shared.NPCESP and Shared.NPCESP.Config and Shared.NPCESP.Config.MasterOn then f += 64 end
+    if C and C.Aim and C.Aim.Legit and C.Aim.Legit.Enabled then f += 128 end
+    if modOn("targetlock") then f += 256 end
+    if Shared.Hitbox and next(Shared.Hitbox) then f += 512 end
+    if modOn("rv_rapid") or modOn("rv_nospread") or modOn("rv_rage") or modOn("rv_backstab") then f += 1024 end
+    return f
+end
+local function aimDir(cam)
+    local mb = UIS.MouseBehavior
+    local locked = mb == Enum.MouseBehavior.LockCenter or mb == Enum.MouseBehavior.LockCurrentPosition
+    if locked then return cam.CFrame.LookVector, true end
+    local ml = UIS:GetMouseLocation()
+    local ok, ray = pcall(cam.ViewportPointToRay, cam, ml.X, ml.Y)
+    if ok and ray then return ray.Direction, false end
+    return cam.CFrame.LookVector, false
+end
+local function candidates()
+    local out = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then out[#out + 1] = plr.Character end
+    end
+    local NPC = Shared.NPC
+    if NPC and NPC.entities then
+        local ok, list = pcall(NPC.entities)
+        if ok and type(list) == "table" then
+            for _, e in ipairs(list) do
+                if e.char and e.char:IsA("Model") and not Players:GetPlayerFromCharacter(e.char) then
+                    out[#out + 1] = e.char
+                end
+            end
+        end
+    end
+    return out
+end
+local function sample(cam)
+    local t = now()
+    local lookAngles = Shared.LegitSim.lookAngles
+    local dir, locked = aimDir(cam)
+    local ay, ap = lookAngles(dir)
+    local camPos = cam.CFrame.Position
+    local me = LocalPlayer.Character
+    local root = me and me:FindFirstChild("HumanoidRootPart")
+    local hum = me and me:FindFirstChildOfClass("Humanoid")
+    local v = root and root.AssemblyLinearVelocity or Vector3.zero
+    local grounded = hum and hum.FloorMaterial ~= Enum.Material.Air
+    local tool = me and me:FindFirstChildOfClass("Tool")
+    local parts = {
+        "F", f3(t), f3(math.deg(ay)), f3(math.deg(ap)), f2(cam.FieldOfView),
+        f2(v.X), f2(v.Y), f2(v.Z), grounded and "1" or "0",
+        UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and "1" or "0",
+        UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) and "1" or "0",
+        locked and "1" or "0", f2(mdx), f2(mdy), tostring(flags()), clean(tool and tool.Name or ""),
+    }
+    mdx, mdy = 0, 0
+    local line = { table.concat(parts, ",") }
+    local any = false
+    if hum and hum.Health > 0 then
+        for _, ch in ipairs(candidates()) do
+            local th = ch:FindFirstChildOfClass("Humanoid")
+            local troot = ch:FindFirstChild("HumanoidRootPart") or ch.PrimaryPart
+            if th and th.Health > 0 and troot then
+                local head = ch:FindFirstChild("Head")
+                local hp = head and head.Position or (troot.Position + Vector3.new(0, 1.5, 0))
+                local bp = troot.Position
+                local hy, hpi = lookAngles(hp - camPos)
+                local hdx = math.deg(Shared.LegitSim.shortestAngle(hy - ay))
+                local hdy = math.deg(hpi - ap)
+                if math.sqrt(hdx * hdx + hdy * hdy) <= MAX_ANGLE then
+                    local by, bpi = lookAngles(bp - camPos)
+                    local dist = (bp - camPos).Magnitude
+                    rp.FilterDescendantsInstances = { me, ch, cam }
+                    local occ = 0
+                    if Workspace:Raycast(camPos, hp - camPos, rp) then occ += 1 end
+                    if Workspace:Raycast(camPos, bp - camPos, rp) then occ += 2 end
+                    local id, plr = idFor(ch)
+                    local team = (plr and isTeammate(plr)) and "1" or "0"
+                    local ev = troot.AssemblyLinearVelocity
+                    line[#line + 1] = table.concat({
+                        id, team, f3(hdx), f3(hdy),
+                        f3(math.deg(Shared.LegitSim.shortestAngle(by - ay))), f3(math.deg(bpi - ap)),
+                        f3(math.deg(2 * math.atan(2.5 / math.max(dist, 0.5)))), f2(dist),
+                        f2(ev.X), f2(ev.Y), f2(ev.Z), tostring(occ),
+                    }, ",")
+                    if team == "0" and occ < 3 then any = true end
+                end
+            end
+        end
+    end
+    -- an engagement opens on any enemy with a line of sight in the cone, and closes a
+    -- second after the last one; ESP knowledge of hidden players is sorted offline
+    if any then
+        lastSeen = t
+        if not engaged then
+            engaged = true
+            AL.engagements += 1
+            commitRing()
+            buf[#buf + 1] = "E," .. f3(t) .. ",1"
+        end
+    end
+    push(table.concat(line, ";"))
+    if engaged then
+        AL.engagedT += math.min(t - (AL._prevT or t), 0.1)
+        if t - lastSeen > TAIL then
+            buf[#buf + 1] = "E," .. f3(t) .. ",0"
+            engaged = false
+        end
+    end
+    AL.state = engaged and "engaged" or "watching"
+    AL._prevT = t
+end
+
+-- events. Wrapped like the Legit Editor's shot hook, counted only when Stats counted
+local function event(line)
+    if mod.Enabled and session then push(line) end
+end
+if Koffee.Stats then
+    local S = Koffee.Stats
+    local oldShot, oldHit = S.shot, S.hit
+    S.shot = function(...)
+        local n = S.shots
+        oldShot(...)
+        if S.shots > n then
+            pcall(function()
+                local me = LocalPlayer.Character
+                local tool = me and me:FindFirstChildOfClass("Tool")
+                event("S," .. f3(now()) .. "," .. clean(tool and tool.Name or ""))
+            end)
+        end
+    end
+    S.hit = function(char, dropped, nowZero, o)
+        oldHit(char, dropped, nowZero, o)
+        pcall(function()
+            local id = (typeof(char) == "Instance") and idFor(char) or "?"
+            local part = o and o.part and clean(tostring(o.part)) or ""
+            event(string.format("H,%s,%s,%s,%s,%s", f3(now()), id, part,
+                f2(tonumber(dropped) or 0), nowZero and "1" or "0"))
+        end)
+    end
+end
+UIS.InputChanged:Connect(function(input)
+    if Koffee.dead() or not mod.Enabled then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        mdx += input.Delta.X
+        mdy += input.Delta.Y
+    end
+end)
+local function hookDeath(ch)
+    local hum = ch:WaitForChild("Humanoid", 5)
+    if hum then
+        hum.Died:Connect(function()
+            if not Koffee.dead() then event("D," .. f3(now())) end
+        end)
+    end
+end
+LocalPlayer.CharacterAdded:Connect(function(ch) task.spawn(hookDeath, ch) end)
+if LocalPlayer.Character then task.spawn(hookDeath, LocalPlayer.Character) end
+
+function AL.start()
+    if not (writefile and makefolder) then
+        if Koffee.notify then Koffee.notify("Aim Log", "This runtime has no file access.", { severity = "error" }) end
+        return
+    end
+    session = os.date("!%Y%m%d-%H%M%S") .. "-" .. tostring(game.PlaceId)
+    pcall(makefolder, "Koffee")
+    pcall(makefolder, "Koffee/aimlog")
+    pcall(makefolder, "Koffee/aimlog/" .. session)
+    t0, lastSample, lastFlush, lastSeen = os.clock(), 0, 0, 0
+    engaged, mdx, mdy, AL._prevT = false, 0, 0, nil
+    AL.files, AL.engagedT, AL.engagements, AL.lines = 0, 0, 0, 0
+    table.clear(ring); ringAt = 0
+    table.clear(buf)
+    AL.state = "watching"
+end
+function AL.stop()
+    if engaged then buf[#buf + 1] = "E," .. f3(now()) .. ",0" end
+    engaged = false
+    flush()
+    session = nil
+    AL.state = "idle"
+end
+RunService:BindToRenderStep(KID.name("alog") .. math.random(1, 1e9), Enum.RenderPriority.Last.Value, function()
+    if Koffee.dead() then
+        if session then pcall(AL.stop) end
+        return
+    end
+    if not (mod.Enabled and session) then return end
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    local t = now()
+    if t - lastSample >= RATE * 0.95 then
+        lastSample = t
+        local ok, err = pcall(sample, cam)
+        if not ok and not AL.warned then
+            AL.warned = true
+            warn("[koffee] aim log sample failed: " .. tostring(err))
+        end
+    end
+    if t - lastFlush >= FLUSH_EVERY then
+        lastFlush = t
+        flush()
+    end
+end)
+
+function AL.buildPanel(host)
+    new("TextLabel", {
+        Text = "Records your own aim for training. Turn it on and play normally: idle time is filtered later, engagements with any aim feature on are thrown out, and ESP on or off decides the set.",
+        FontFace = Theme.Fonts.Regular, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.TextMuted,
+        BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
+    })
+    local cb = moduleCheckbox(host, "Record Aim", "aimlog")
+    local status = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Text,
+        BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Parent = host,
+    })
+    local warnLbl = new("TextLabel", {
+        Text = "", FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small, TextColor3 = Theme.Palette.Danger,
+        BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 14), Visible = false, Parent = host,
+    })
+    task.spawn(function()
+        while not Koffee.dead() and status.Parent do
+            local on = mod.Enabled and session ~= nil
+            local f = flags()
+            local espTag = (bit32.band(f, 1 + 32 + 64) ~= 0) and "ESP on: cheater set" or "ESP off: legit set"
+            status.Text = on and string.format("%s · %d engagements · %.1f min engaged · %d files · %s",
+                AL.state, AL.engagements, AL.engagedT / 60, AL.files, espTag) or "Not recording."
+            local aimBits = bit32.band(f, 2 + 4 + 8 + 16 + 256 + 512 + 1024)
+            warnLbl.Visible = on and aimBits ~= 0
+            warnLbl.Text = "An aim feature is on. Engagements recorded now will be discarded."
+            task.wait(0.5)
+        end
+    end)
+    Shared._aimlogResync = function()
+        local m = Modules.aimlog
+        cb.setState(m and m.Enabled or false)
+        subscribeModule("aimlog", function(s) cb.setState(s) end)
+    end
+end
+end)();
+
 addTab("Extra", function(epanel)
     -- v0.48.3: no card title: Combat/Custom cards are titleless so the
     -- secondary bar sits at the very top of the feature box. Same here.
     local card = panel(epanel)
     -- v1.8.5: "HvH", not "Hvh". The tab table key and the lookup below both carry it,
     -- and subTabs builds keys from the labels verbatim.
-    local tabs = Koffee._isRivals and { "Mods", "Anticheats", "HvH", "Rivals" } or { "Mods", "Anticheats", "HvH" }
+    local tabs = Koffee._isRivals and { "Mods", "Anticheats", "HvH", "Aim Log", "Rivals" }
+        or { "Mods", "Anticheats", "HvH", "Aim Log" }
     local R = Shared.subTabs and Shared.subTabs(card, tabs) or nil
+    if R and R["Aim Log"] and Shared.AimLog then Shared.AimLog.buildPanel(R["Aim Log"]) end
     if R and R["Rivals"] and Shared.RivalsAuto then Shared.RivalsAuto.buildPanel(R["Rivals"]) end
     local host = (R and R["Mods"]) or card
     if R and R["Anticheats"] and Shared.Anticheat then Shared.Anticheat.buildPanel(R["Anticheats"]) end
