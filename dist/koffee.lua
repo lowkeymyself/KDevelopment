@@ -1,7 +1,7 @@
--- koffee v2.1.6
+-- koffee v2.1.7
 
 local Koffee = {}
-Koffee.Version = "2.1.6"
+Koffee.Version = "2.1.7"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -54172,23 +54172,27 @@ Shared.REPLACE_TABLES.RecoilPattern = true
     -- and the muzzle so the tracer leaves the barrel, not the eye
     local VM_CF = CFrame.new(0.55, -0.55, -2.4) * CFrame.Angles(0, math.pi, 0)
 
-    -- where the line of fire leaves the gun: the front face of the part that reaches
-    -- furthest along the model's own barrel axis. No whole-model bounding box.
-    function E.vmMuzzle()
-        local vm = W.viewmodel
-        if not vm or not W.vmParts or #W.vmParts == 0 then return nil end
-        local base = vm:GetPivot()
-        local fwd = base:VectorToWorldSpace(Vector3.new(0, 0, 1))
+    -- where the gun ends along the line of fire: for every part, both Z faces are
+    -- projected on the shot direction and the furthest one wins. The mesh parts carry
+    -- their own rotation, so a fixed local axis picks the grip.
+    function E.vmMuzzle(origin, dir)
+        local cam = W.cam
+        if not cam then return nil end
+        origin = origin or cam.CFrame.Position
+        dir = dir or cam.CFrame.LookVector
+        if not (W.vmParts and #W.vmParts > 0) then return nil end
         local best, bestD
         for _, p in ipairs(W.vmParts) do
-            local face = (p.CFrame * CFrame.new(0, 0, p.Size.Z * 0.5)).Position
-            local d = face:Dot(fwd)
-            if not bestD or d > bestD then bestD, best = d, face end
+            for _, s in ipairs({ -0.5, 0.5 }) do
+                local face = (p.CFrame * CFrame.new(0, 0, p.Size.Z * s)).Position
+                local d = (face - origin):Dot(dir)
+                if not bestD or d > bestD then bestD, best = d, face end
+            end
         end
         return best
     end
 
-    -- a shot tracer: thin, short lived, drawn from the barrel to the impact
+    -- a shot tracer: thin, drawn from the barrel to the impact
     local TRACER_LIFE = 0.12
     local function drawTracer(a, b)
         local sa, sb = project(a), project(b)
@@ -54201,7 +54205,8 @@ Shared.REPLACE_TABLES.RecoilPattern = true
             Size = UDim2.fromOffset(len, 1), BackgroundColor3 = Color3.fromRGB(255, 236, 205),
             BackgroundTransparency = 0.25, BorderSizePixel = 0,
             Rotation = math.deg(math.atan2(dy, dx)), ZIndex = 3, Parent = W.overlay })
-        task.delay(TRACER_LIFE or 0.08, function() pcall(function() f:Destroy() end) end)
+        local life = getgenv().KoffeeDebugTracer and 6 or TRACER_LIFE
+        task.delay(life, function() pcall(function() f:Destroy() end) end)
     end
 
     local function burst(p)
@@ -54268,7 +54273,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         local col = (E.mode == "Aimbot") and Color3.fromRGB(255, 238, 224)
             or Color3.fromRGB(205, 232, 255)
         recordMark(p, col)
-        local muzzle = E.vmMuzzle() or (o + dir * 1.2 - cf.UpVector * 0.35)
+        local muzzle = E.vmMuzzle(o, dir) or (o + dir * 1.2 - cf.UpVector * 0.35)
         E.lastTracer = { a = muzzle, b = p }
         drawTracer(muzzle, p)
         burst(p)
