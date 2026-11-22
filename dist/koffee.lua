@@ -1,7 +1,7 @@
--- koffee v2.1.9
+-- koffee v2.2.0
 
 local Koffee = {}
-Koffee.Version = "2.1.9"
+Koffee.Version = "2.2.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -13549,16 +13549,169 @@ local Combat = {
             if (falloff or 0) <= 0 or hc >= 100 then return hc end
             return hc * (1 - (falloff / 100) * math.clamp(dist / math.max(cap or 1500, 1), 0, 1))
         end
+        -- v2.2.0: Force Miss throws the redirect this far off the point, on the shot
+        -- plane. One constant, so the editor's miss is the live miss.
+        S.missStuds = 5
+        function S.missOffset()
+            local a = math.random() * math.pi * 2
+            return math.cos(a) * S.missStuds, math.sin(a) * S.missStuds
+        end
+        -- v2.2.0: yaw and pitch of a direction, and the signed short way round a
+        -- turn. Shared so the sandbox's camera turns on the same geometry the live
+        -- aimbot's CFrame does.
+        function S.lookAngles(dir)
+            local flat = math.sqrt(dir.X * dir.X + dir.Z * dir.Z)
+            return math.atan2(-dir.X, -dir.Z), math.atan2(dir.Y, flat)
+        end
+        function S.shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
+        -- v2.2.0: the two random components of a jitter offset, on the shot plane.
+        function S.jitterOffset(deg, dist, fatigue, rnd)
+            local m = S.jitter(deg, dist, fatigue)
+            if m <= 0 then return 0, 0 end
+            local r = rnd or math.random
+            return (r() * 2 - 1) * m, (r() * 2 - 1) * m
+        end
+        -- v2.2.0: base pull per axis. sens^1.5 reshapes the low end, smoothing divides
+        -- it per axis. Shared so the sandbox pulls at exactly the live speed.
+        function S.sens(sensitivity, smooth)
+            local raw = math.clamp(tonumber(sensitivity) or 1, 0.01, 1)
+            local s = raw * math.sqrt(raw)
+            if smooth and smooth.Enabled then
+                return math.clamp(s / math.max(smooth.X, 0.01), 0, 1),
+                    math.clamp(s / math.max(smooth.Y, 0.01), 0, 1)
+            end
+            return s, s
+        end
+        -- v2.2.0: one frame of the legit aim pull, engagement state on L's own
+        -- underscore keys. Live aim and the editor sandbox both call it, so a hold,
+        -- wobble or deadzone rest behaves the same. ctx.project(pos) gives x, y, ok.
+        function S.aimStep(L, ctx)
+            local out = { pos = ctx.pos, factor = 1, hold = false }
+            local now = ctx.now or os.clock()
+            if L._acqPlr ~= ctx.id then
+                L._acqPlr, L._acqAt = ctx.id, now
+                local ox, oy
+                if L.OvershootTravel ~= false and ctx.project and ctx.center then
+                    local sx, sy, ok = ctx.project(ctx.pos)
+                    if ok then
+                        local dx, dy = sx - ctx.center.X, sy - ctx.center.Y
+                        local len = math.sqrt(dx * dx + dy * dy)
+                        -- screen Y runs down, UpVector runs up
+                        if len > 1e-3 then ox, oy = dx / len, -dy / len end
+                    end
+                end
+                if not ox then
+                    local a = math.random() * math.pi * 2
+                    ox, oy = math.cos(a), math.sin(a)
+                end
+                L._osPlr, L._osX, L._osY, L._osAt = ctx.id, ox, oy, now
+            end
+            out.age = now - (L._acqAt or now)
+            if not L.Enabled then return out end
+            local fatigue = 1
+            if (L.Fatigue or 0) > 0 then
+                if now >= (L._fatAt or 0) then
+                    L._fatAt = now + 0.5 + math.random() * 1.5
+                    L._fat = S.fatigue(L.Fatigue)
+                end
+                fatigue = L._fat or 1
+            end
+            out.fatigue = fatigue
+            local dist = ctx.dist
+            if not dist and ctx.from then dist = (ctx.pos - ctx.from).Magnitude end
+            dist = dist or 0
+            out.dist = dist
+            local react = L.Reaction or 0
+            if react > 0 then
+                react = S.reaction(react, L.ReactionRamp, dist, ctx.distCap)
+                out.react = react
+                if out.age * 1000 < react then
+                    out.hold, out.why = true, "reaction"
+                    return out
+                end
+            end
+            if ((L.Jitter or 0) > 0 or (L.Overshoot or 0) > 0) and dist > 1e-3 then
+                local ox, oy = S.jitterOffset(L.Jitter, dist, fatigue)
+                if L._osPlr == ctx.id then
+                    local dk = S.overshoot(L.Overshoot, now - (L._osAt or now), dist)
+                    ox, oy = ox + (L._osX or 0) * dk, oy + (L._osY or 0) * dk
+                end
+                out.offX, out.offY = ox, oy
+                if ctx.right and ctx.up then
+                    out.pos = ctx.pos + ctx.right * ox + ctx.up * oy
+                end
+            end
+            local dz = L.Deadzone or 0
+            if dz > 0 and ctx.project and ctx.center then
+                local sx, sy, ok = ctx.project(out.pos)
+                if ok then
+                    local dx, dy = sx - ctx.center.X, sy - ctx.center.Y
+                    out.pixels = math.sqrt(dx * dx + dy * dy)
+                    if out.pixels <= dz then
+                        out.hold, out.why = true, "deadzone"
+                        return out
+                    end
+                end
+            end
+            if (L.Curve or "Linear") ~= "Snap" then
+                local span = math.max((L.CurveTime or 220) / 1000, 0.02)
+                out.factor = S.pull(out.age / span, L.Curve)
+            end
+            return out
+        end
+        -- v2.2.0: one silent shot decision: chance roll with falloff, headshot cap,
+        -- redirect jitter, spread. The live redirect and the sandbox both call it.
+        -- ctx: dist, distCap, lockAge, isHead, pool. altPart is a name to resolve.
+        function S.silentShot(L, ctx)
+            local out = {}
+            local hc = L.HitChance or 100
+            local hcf = L.HitChanceFalloff or 0
+            if hcf > 0 and hc < 100 then
+                hc = S.chance(hc, hcf, ctx.dist or 0, ctx.distCap)
+            end
+            out.chance = hc
+            if hc < 100 and math.random(100) > hc then
+                out.failed = true
+                if L.ForceMiss then
+                    out.miss = true
+                else
+                    out.clean = true
+                    return out
+                end
+            end
+            if not out.miss then
+                local cap = L.HeadshotCap or 100
+                if cap < 100 and ctx.isHead and math.random(100) > cap then
+                    local names = {}
+                    for _, n in ipairs(ctx.pool or {}) do
+                        if n ~= "Head" and (L.Parts or {})[n] ~= false then
+                            names[#names + 1] = n
+                        end
+                    end
+                    if #names > 0 then out.altPart = names[math.random(#names)] end
+                end
+            end
+            local sj = L.Jitter or 0
+            if sj > 0 then
+                out.jitter = Vector3.new((math.random() * 2 - 1) * sj,
+                    (math.random() * 2 - 1) * sj, (math.random() * 2 - 1) * sj)
+            end
+            out.spreadX, out.spreadY = 0, 0
+            if (L.Spread or 0) > 0 then
+                out.spreadX, out.spreadY = S.spread(L.Spread, L.SpreadUnit, ctx.dist or 0,
+                    L.Bloom, ctx.lockAge or 0, L.SpreadPattern)
+            end
+            return out
+        end
         return S
     end)()
 
 
     -- :: math helpers ::
-    local function shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
-    local function lookAngles(dir)
-        local flat = math.sqrt(dir.X * dir.X + dir.Z * dir.Z)
-        return math.atan2(-dir.X, -dir.Z), math.atan2(dir.Y, flat)   -- yaw, pitch
-    end
+    -- v2.2.0: both live on LegitSim now, so the editor's sandbox turns its camera
+    -- with the same geometry instead of a second copy.
+    local shortestAngle = Shared.LegitSim.shortestAngle
+    local lookAngles = Shared.LegitSim.lookAngles
     local function aimCFrame(cam, from, targetPos, aX, aY)
         local dir = targetPos - from
         if dir.Magnitude < 1e-3 then return cam.CFrame end
@@ -13712,8 +13865,8 @@ local Combat = {
         local mc = Workspace.CurrentCamera
         if mc then
             local cf = mc.CFrame
-            local a = math.random() * math.pi * 2
-            mp = mp + (cf.RightVector * math.cos(a) + cf.UpVector * math.sin(a)) * 5
+            local ox, oy = Shared.LegitSim.missOffset()
+            mp = mp + cf.RightVector * ox + cf.UpVector * oy
         end
         return mp
     end
@@ -14808,98 +14961,28 @@ local Combat = {
         -- v0.93.15: NaN never equals itself; a bad point would reach the mouse and camera
         if tpos ~= tpos then return end
 
-        -- v0.50.0 legit kit. Reaction holds fire on fresh locks; jitter offsets
-        -- the aim point by true angle (range independent); overshoot starts off
-        -- in a fixed random direction and glides on. All paths share tpos.
-        -- v2.0.0: overshoot follows the travel vector, reaction stretches with range,
-        -- fatigue wobbles the jitter, and the pull follows a curve.
+        -- v0.50.0 legit kit: reaction, jitter by true angle, overshoot, deadzone.
+        -- v2.2.0: the decision is LegitSim.aimStep, so the Legit Editor's sandbox
+        -- arms this exact kit instead of a second copy of the maths.
         local LG = Combat.Aim.Legit
         local now = os.clock()
-        if LG._acqPlr ~= plr then
-            LG._acqPlr, LG._acqAt = plr, now
-            local ox, oy = nil, nil
-            if LG.OvershootTravel ~= false and cam then
-                local sp = cam:WorldToViewportPoint(tpos)
-                local d = Vector2.new(sp.X, sp.Y) - aimCenter
-                if sp.Z > 0 and d.Magnitude > 1e-3 then
-                    d = d.Unit
-                    ox, oy = d.X, -d.Y   -- screen Y runs down, UpVector runs up
-                end
-            end
-            if not ox then
-                local a = math.random() * math.pi * 2
-                ox, oy = math.cos(a), math.sin(a)
-            end
-            LG._osPlr, LG._osX, LG._osY, LG._osAt = plr, ox, oy, now
-        end
-        -- v2.0.0: fatigue is a slow random walk on the jitter, so the same
-        -- engagement does not feel identical twice.
-        local fatigue = 1
-        if LG.Enabled and (LG.Fatigue or 0) > 0 then
-            if now >= (LG._fatAt or 0) then
-                LG._fatAt = now + 0.5 + math.random() * 1.5
-                LG._fat = Shared.LegitSim.fatigue(LG.Fatigue)
-            end
-            fatigue = LG._fat or 1
-        end
-        -- v0.52.0: the whole legit kit is gated behind the Legit master toggle.
-        local react = LG.Reaction or 0
-        if LG.Enabled and react > 0 then
-            -- v2.1.0: the range stretch is LegitSim's, shared with the editor
-            if cam then
-                react = Shared.LegitSim.reaction(react, LG.ReactionRamp,
-                    (tpos - cam.CFrame.Position).Magnitude, Combat.Aim.Distance)
-            end
-            if (now - (LG._acqAt or now)) * 1000 < react then return end
-        end
-        if LG.Enabled and ((LG.Jitter or 0) > 0 or (LG.Overshoot or 0) > 0) and cam then
-            local toT = tpos - cam.CFrame.Position
-            local dist = toT.Magnitude
-            if dist > 1e-3 then
-                local cf = cam.CFrame
-                local ox, oy = 0, 0
-                local m = Shared.LegitSim.jitter(LG.Jitter, dist, fatigue)
-                if m > 0 then
-                    ox = ox + (math.random() * 2 - 1) * m
-                    oy = oy + (math.random() * 2 - 1) * m
-                end
-                if LG._osPlr == plr then
-                    local dk = Shared.LegitSim.overshoot(LG.Overshoot,
-                        now - (LG._osAt or now), dist)
-                    ox = ox + (LG._osX or 0) * dk
-                    oy = oy + (LG._osY or 0) * dk
-                end
-                tpos = tpos + cf.RightVector * ox + cf.UpVector * oy
-            end
-        end
-        -- v0.51.0 deadzone: while the (fully humanized) point sits within N
-        -- pixels of the aim center, touch nothing. The mouse only moves once
-        -- the target truly leaves it. Sticky stays locked throughout.
-        local dz = LG.Deadzone or 0
-        if LG.Enabled and dz > 0 and cam then
-            local dsp = cam:WorldToViewportPoint(tpos)
-            if dsp.Z > 0 then
-                local dd = (Vector2.new(dsp.X, dsp.Y) - aimCenter).Magnitude
-                if dd <= dz then return end
-            end
-        end
-
+        local st = Shared.LegitSim.aimStep(LG, {
+            id = plr, pos = tpos, from = cam and cam.CFrame.Position or nil,
+            right = cam and cam.CFrame.RightVector or nil,
+            up = cam and cam.CFrame.UpVector or nil,
+            center = aimCenter, distCap = Combat.Aim.Distance, now = now,
+            project = cam and function(p)
+                local sp = cam:WorldToViewportPoint(p)
+                return sp.X, sp.Y, sp.Z > 0
+            end or nil,
+        })
+        if st.hold then return end
+        tpos = st.pos
         -- sensitivity (base pull) + optional per-axis smoothness (higher = slower) v0.0.86 sensitivity curve reshape. Was linear 0.01..1: 0.08 was already fast because 8% per frame converges to target in a few frames. Now sens^1.5 pushes the low end down without touching the max: 1.0 -> 1.0 (perfect lock), 0.5 -> 0.354 (moderate), 0.08 -> 0.023 (smooth pull), 0.01 -> 0.001 (glacial). Endpoints preserved so users' existing feel at max/near-max is unchanged.
-        local rawSens = math.clamp(Combat.Aim.Sensitivity, 0.01, 1)
-        local sens = rawSens * math.sqrt(rawSens)   -- sens^1.5
-        local aX, aY = sens, sens
-        if Combat.Aim.Smooth.Enabled then
-            aX = math.clamp(sens / math.max(Combat.Aim.Smooth.X, 0.01), 0, 1)
-            aY = math.clamp(sens / math.max(Combat.Aim.Smooth.Y, 0.01), 0, 1)
-        end
+        local aX, aY = Shared.LegitSim.sens(Combat.Aim.Sensitivity, Combat.Aim.Smooth)
         -- v2.0.0: pull curve. Sensitivity says how hard the aim pulls; the curve says
-        -- whether that pull arrives at once or eases in over the engagement. Snap is
-        -- the old constant behaviour, and the whole block is gated behind Legit.
-        if LG.Enabled and (LG.Curve or "Linear") ~= "Snap" then
-            local span = math.max((LG.CurveTime or 220) / 1000, 0.02)
-            local f = Shared.LegitSim.pull((now - (LG._acqAt or now)) / span, LG.Curve)
-            aX, aY = aX * f, aY * f
-        end
+        -- whether that pull arrives at once or eases in over the engagement.
+        aX, aY = aX * st.factor, aY * st.factor
 
         if Combat.Aim.PerfectLock then
             -- v0.27.0: TRUE snap. Publish the redirect, then aim exactly this frame: no sensitivity/smoothing/euler. v0.58.4: when AimType is Mouse (or Third Person), drive the REAL mouse onto the target's exact screen point instead of writing cam.CFrame. Games like Phantom Forces aim off the mouse and run their own camera, so a written CFrame is stomped/detected while a mouse move feeds the game's own aim pipeline. Camera snap otherwise. v0.58.5: the mouse move is a feedback loop through the game's own sensitivity, so a raw full-delta snap OVERSHOOTS at high in-game sens and oscillates (shake/flicker). Smoothing now damps it: OFF = full snap (factor 1), ON = delta * 1/Smooth per axis, so it converges in a couple of frames without overshoot. Sensitivity stays ignored (perfect).
@@ -15817,75 +15900,52 @@ local Combat = {
                 Combat.Silent._bloomPlr, Combat.Silent._lockAt = plr, os.clock()
             end
             -- v0.50.0 Hit Chance. A failed roll fires clean this frame: clear the redirect with no grace window, so the shot truly misses. v0.51.1 Force Miss: same failed roll, but the lock holds and the redirect goes wide instead, so every method genuinely misses.
+            -- v2.2.0: roll, falloff, cap, jitter and spread are one silentShot call,
+            -- shared with the editor. Predicted first, so one distance serves both.
             local L = Combat.Silent.Legit
-            local missed = false
-            local hc = L.HitChance or 100
-            -- v2.0.0: chance falls off toward the distance cap, so long shots miss more
-            -- often than point blank ones instead of every roll being range blind.
-            local hcf = L.HitChanceFalloff or 0
-            if hcf > 0 and hc < 100 and part then
-                local camS = Workspace.CurrentCamera
-                if camS then
-                    hc = Shared.LegitSim.chance(hc, hcf,
-                        (part.Position - camS.CFrame.Position).Magnitude, Combat.Silent.Distance)
-                end
+            local camS = Workspace.CurrentCamera
+            local aimAt = predicted(plr, part, Combat.Silent.Predict)
+            if Combat.Misc.Resolver then aimAt = dwellPos(plr, part, aimAt) end
+            local sdist = camS and (aimAt - camS.CFrame.Position).Magnitude or 0
+            local isHead = part.Name == "Head" or part.Name == "HitboxHead"
+                or part.Name == "HitboxHeadSmall"
+            local shot = Shared.LegitSim.silentShot(L, {
+                dist = sdist, distCap = Combat.Silent.Distance, isHead = isHead,
+                lockAge = os.clock() - (Combat.Silent._lockAt or os.clock()),
+                pool = HITPARTS,
+            })
+            if shot.clean then
+                silentTarget = nil; silentPos = nil
+                SR.camPos = nil; SR.screen = nil; SR.camLook = nil; SR.rootPos = nil
+                Combat.Silent._lastGoodAt = nil
+                return
             end
-            if hc < 100 and math.random(100) > hc then
-                if L.ForceMiss then
-                    missed = true
-                    silentTarget = part
-                    silentPos = missPoint(part)
-                else
-                    silentTarget = nil; silentPos = nil
-                    SR.camPos = nil; SR.screen = nil; SR.camLook = nil; SR.rootPos = nil
-                    Combat.Silent._lastGoodAt = nil
-                    return
-                end
-            end
-            if not missed then
+            if shot.miss then
+                silentTarget = part
+                silentPos = missPoint(part)
+            else
                 -- v2.0.0: headshot cap. Rolling a body part on a share of shots keeps the
                 -- headshot ratio in a range a real player produces instead of every kill
                 -- landing on the head.
-                local capPct = L.HeadshotCap or 100
-                if capPct < 100 and part and (part.Name == "Head" or part.Name == "HitboxHead"
-                    or part.Name == "HitboxHeadSmall") and math.random(100) > capPct then
-                    local names = {}
-                    for _, n in ipairs(HITPARTS) do
-                        if n ~= "Head" and L.Parts[n] ~= false then names[#names + 1] = n end
-                    end
-                    if #names > 0 and plr.Character then
-                        local alt = aimPart(plr.Character, names[math.random(#names)])
-                        if alt then part = alt end
+                if shot.altPart and plr.Character then
+                    local alt = aimPart(plr.Character, shot.altPart)
+                    if alt then
+                        part = alt
+                        aimAt = predicted(plr, part, Combat.Silent.Predict)
+                        if Combat.Misc.Resolver then aimAt = dwellPos(plr, part, aimAt) end
                     end
                 end
                 silentTarget = part
                 -- prediction shifts the redirect point for lead; the hooks read silentPos
-                silentPos = predicted(plr, part, Combat.Silent.Predict)
-                if Combat.Misc.Resolver then silentPos = dwellPos(plr, part, silentPos) end
-            -- v0.50.0 silent jitter: scatter the redirect point by up to N studs.
-            local sj = Combat.Silent.Legit.Jitter or 0
-            if sj > 0 then
-                silentPos = silentPos + Vector3.new(
-                    (math.random() * 2 - 1) * sj,
-                    (math.random() * 2 - 1) * sj,
-                    (math.random() * 2 - 1) * sj)
-            end
-            -- v0.51.0 fake spread: lateral disc around the point, uniform area, so bursts walk like real spray instead of stacking one hole. v0.79.2: Degrees mode reinterprets the radius as angular error (studs = tan(rad) * distance), so far targets spread wide and close ones stay tight like real aim. Bloom multiplies the radius with lock age (recoil fatigue), ramping to full over 5s.
-            -- v2.1.0: the pattern, bloom and unit maths is LegitSim's, so the editor
-            -- sprays exactly what this line sprays.
-            if (Combat.Silent.Legit.Spread or 0) > 0 then
-                local sc = Workspace.CurrentCamera
-                if sc then
-                    local cf = sc.CFrame
-                    local ox, oy = Shared.LegitSim.spread(
-                        Combat.Silent.Legit.Spread, Combat.Silent.Legit.SpreadUnit,
-                        (silentPos - cf.Position).Magnitude,
-                        Combat.Silent.Legit.Bloom,
-                        os.clock() - (Combat.Silent._lockAt or os.clock()),
-                        Combat.Silent.Legit.SpreadPattern)
-                    silentPos = silentPos + cf.RightVector * ox + cf.UpVector * oy
+                silentPos = aimAt
+                -- v0.50.0 silent jitter: scatter the redirect point by up to N studs.
+                if shot.jitter then silentPos = silentPos + shot.jitter end
+                -- v0.51.0 fake spread: lateral disc around the point, uniform area, so bursts walk like real spray instead of stacking one hole. v0.79.2: Degrees mode reinterprets the radius as angular error (studs = tan(rad) * distance), so far targets spread wide and close ones stay tight like real aim. Bloom multiplies the radius with lock age (recoil fatigue), ramping to full over 5s.
+                if camS and (shot.spreadX ~= 0 or shot.spreadY ~= 0) then
+                    local cf = camS.CFrame
+                    silentPos = silentPos + cf.RightVector * shot.spreadX
+                        + cf.UpVector * shot.spreadY
                 end
-            end
             end
             -- v0.0.39: cache the real camera + target's screen point so the fire-read
             -- resolvers never re-read Camera.* inside the __index hook (recursion).
@@ -16585,24 +16645,27 @@ local Combat = {
             end)
         end
         legitEditorDoor(L.Legit, "Aimbot")
-        configCheckbox(L.Legit, "Enabled", AL.Enabled, function(v) AL.Enabled = v end)
-        slider(L.Legit, "Reaction (ms)", 0, 500, AL.Reaction, 0, function(v) AL.Reaction = v end)
-        slider(L.Legit, "Reaction Ramp (%)", 0, 300, AL.ReactionRamp, 0, function(v) AL.ReactionRamp = v end)
-        dropdown(L.Legit, "Curve", { "Snap", "Linear", "Ease In", "Ease Out", "Ease In-Out" }, AL.Curve,
+        -- v2.2.0: every row the editor can edit is kept here so its edits repaint
+        -- these. Ranges match the editor's: a narrower one would clamp and write back.
+        local LROWS = { aim = {}, silent = {} }
+        LROWS.aim.Enabled = configCheckbox(L.Legit, "Enabled", AL.Enabled, function(v) AL.Enabled = v end)
+        LROWS.aim.Reaction = slider(L.Legit, "Reaction (ms)", 0, 500, AL.Reaction, 0, function(v) AL.Reaction = v end)
+        LROWS.aim.ReactionRamp = slider(L.Legit, "Reaction Ramp (%)", 0, 300, AL.ReactionRamp, 0, function(v) AL.ReactionRamp = v end)
+        LROWS.aim.Curve = dropdown(L.Legit, "Curve", { "Snap", "Linear", "Ease In", "Ease Out", "Ease In-Out" }, AL.Curve,
             function(v) AL.Curve = v end)
-        slider(L.Legit, "Curve Time (ms)", 40, 600, AL.CurveTime, 0, function(v) AL.CurveTime = v end)
-        slider(L.Legit, "Jitter (deg)", 0, 5, AL.Jitter, 1, function(v) AL.Jitter = v end)
-        slider(L.Legit, "Fatigue (%)", 0, 100, AL.Fatigue, 0, function(v) AL.Fatigue = v end)
-        slider(L.Legit, "Overshoot (deg)", 0, 10, AL.Overshoot, 1, function(v) AL.Overshoot = v end)
-        configCheckbox(L.Legit, "Overshoot Along Flick", AL.OvershootTravel ~= false,
+        LROWS.aim.CurveTime = slider(L.Legit, "Curve Time (ms)", 20, 1000, AL.CurveTime, 0, function(v) AL.CurveTime = v end)
+        LROWS.aim.Jitter = slider(L.Legit, "Jitter (deg)", 0, 10, AL.Jitter, 1, function(v) AL.Jitter = v end)
+        LROWS.aim.Fatigue = slider(L.Legit, "Fatigue (%)", 0, 100, AL.Fatigue, 0, function(v) AL.Fatigue = v end)
+        LROWS.aim.Overshoot = slider(L.Legit, "Overshoot (deg)", 0, 10, AL.Overshoot, 1, function(v) AL.Overshoot = v end)
+        LROWS.aim.OvershootTravel = configCheckbox(L.Legit, "Overshoot Along Flick", AL.OvershootTravel ~= false,
             function(v) AL.OvershootTravel = v end)
-        slider(L.Legit, "Deadzone (px)", 0, 50, AL.Deadzone, 0, function(v) AL.Deadzone = v end)
+        LROWS.aim.Deadzone = slider(L.Legit, "Deadzone (px)", 0, 50, AL.Deadzone, 0, function(v) AL.Deadzone = v end)
         configCheckbox(L.Legit, "Smoothing", Combat.Aim.Smooth.Enabled, function(v) Combat.Aim.Smooth.Enabled = v end)
         slider(L.Legit, "Smoothness X", 0.1, 20, Combat.Aim.Smooth.X, 1, function(v) Combat.Aim.Smooth.X = v end)
         slider(L.Legit, "Smoothness Y", 0.1, 20, Combat.Aim.Smooth.Y, 1, function(v) Combat.Aim.Smooth.Y = v end)
-        dropdown(L.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, AL.PartMode,
+        LROWS.aim.PartMode = dropdown(L.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, AL.PartMode,
             function(v) AL.PartMode = v end)
-        Koffee.UI.multiSelect(L.Legit, "Part Pool", HITPARTS, function(n)
+        LROWS.aim.Parts = Koffee.UI.multiSelect(L.Legit, "Part Pool", HITPARTS, function(n)
             return AL.Parts[n] ~= false
         end, function(n, on) AL.Parts[n] = on end)
 
@@ -16861,29 +16924,54 @@ local Combat = {
         -- be capped, and the eleven part toggles became one row.
         local SL = Combat.Silent.Legit
         legitEditorDoor(R.Legit, "Silent")
-        slider(R.Legit, "Hit Chance (%)", 1, 100, SL.HitChance, 0, function(v) SL.HitChance = v end)
-        slider(R.Legit, "Chance Falloff (%)", 0, 100, SL.HitChanceFalloff, 0, function(v) SL.HitChanceFalloff = v end)
+        LROWS.silent.HitChance = slider(R.Legit, "Hit Chance (%)", 0, 100, SL.HitChance, 0, function(v) SL.HitChance = v end)
+        LROWS.silent.HitChanceFalloff = slider(R.Legit, "Chance Falloff (%)", 0, 100, SL.HitChanceFalloff, 0, function(v) SL.HitChanceFalloff = v end)
         -- v0.51.1 Force Miss: failed Hit Chance rolls hold the lock and throw
         -- the redirect wide instead of firing clean.
-        configCheckbox(R.Legit, "Force Miss", SL.ForceMiss, function(v) SL.ForceMiss = v end)
-        slider(R.Legit, "Headshot Cap (%)", 1, 100, SL.HeadshotCap, 0, function(v) SL.HeadshotCap = v end)
-        slider(R.Legit, "Jitter (studs)", 0, 5, SL.Jitter, 1, function(v) SL.Jitter = v end)
-        slider(R.Legit, "Spread (studs)", 0, 5, SL.Spread, 1, function(v) SL.Spread = v end)
+        LROWS.silent.ForceMiss = configCheckbox(R.Legit, "Force Miss", SL.ForceMiss, function(v) SL.ForceMiss = v end)
+        LROWS.silent.HeadshotCap = slider(R.Legit, "Headshot Cap (%)", 1, 100, SL.HeadshotCap, 0, function(v) SL.HeadshotCap = v end)
+        LROWS.silent.Jitter = slider(R.Legit, "Jitter (studs)", 0, 5, SL.Jitter, 2, function(v) SL.Jitter = v end)
+        LROWS.silent.Spread = slider(R.Legit, "Spread", 0, 20, SL.Spread, 2, function(v) SL.Spread = v end)
         -- v0.79.2: hit-position killcams read group shape. Degrees mode makes
         -- error angular (human), Bloom grows it with beam time (fatigue).
-        dropdown(R.Legit, "Spread Unit", { "Studs", "Degrees" }, SL.SpreadUnit or "Studs",
+        LROWS.silent.SpreadUnit = dropdown(R.Legit, "Spread Unit", { "Studs", "Degrees" }, SL.SpreadUnit or "Studs",
             function(v) SL.SpreadUnit = v end)
-        dropdown(R.Legit, "Spread Pattern", { "Cone", "Horizontal", "Vertical", "Cross" }, SL.SpreadPattern,
+        LROWS.silent.SpreadPattern = dropdown(R.Legit, "Spread Pattern", { "Cone", "Horizontal", "Vertical", "Cross" }, SL.SpreadPattern,
             function(v) SL.SpreadPattern = v end)
-        slider(R.Legit, "Bloom (%)", 0, 200, SL.Bloom or 0, 0, function(v) SL.Bloom = v end)
+        LROWS.silent.Bloom = slider(R.Legit, "Bloom (%)", 0, 200, SL.Bloom or 0, 0, function(v) SL.Bloom = v end)
         -- v0.51.0 hit part pool. Single Part keeps the Hit Part dropdown;
         -- Closest and Random draw from the ticked pool below (unticked parts
         -- never picked).
-        dropdown(R.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, SL.PartMode,
+        LROWS.silent.PartMode = dropdown(R.Legit, "Hit Part Mode", { "Single Part", "Closest Part", "Random Part" }, SL.PartMode,
             function(v) SL.PartMode = v end)
-        Koffee.UI.multiSelect(R.Legit, "Part Pool", HITPARTS, function(n)
+        LROWS.silent.Parts = Koffee.UI.multiSelect(R.Legit, "Part Pool", HITPARTS, function(n)
             return SL.Parts[n] ~= false
         end, function(n, on) SL.Parts[n] = on end)
+        -- v2.2.0: the editor writes straight into these kit tables, so rows built once
+        -- have to be told. This builder runs once per mode container, so every pass
+        -- registers its own sync; a pass whose rows are gone is dropped on the way.
+        Shared._legitSyncs = Shared._legitSyncs or {}
+        Shared._legitSyncs[#Shared._legitSyncs + 1] = function(side)
+            for _, s in ipairs({ "aim", "silent" }) do
+                if not side or side == s then
+                    local live = (s == "aim") and AL or SL
+                    for key, ctrl in pairs(LROWS[s]) do
+                        local v = live[key]
+                        if ctrl.set and type(v) == "number" then ctrl.set(v)
+                        elseif ctrl.setState then ctrl.setState(v == true)
+                        elseif ctrl.setValue and type(v) == "string" then ctrl.setValue(v)
+                        elseif ctrl.refresh then ctrl.refresh() end
+                    end
+                end
+            end
+        end
+        Shared._legitResync = function(side)
+            local keep = {}
+            for _, fn in ipairs(Shared._legitSyncs) do
+                if pcall(fn, side) then keep[#keep + 1] = fn end
+            end
+            Shared._legitSyncs = keep
+        end
 
         -- FOV (same shared control set as the aimbot side)
         buildFovTab(R.FOV, Combat.Silent.FOV, Combat.Silent)
@@ -53628,12 +53716,31 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     local function liveTable(side)
         return (side == "aim") and C.Aim.Legit or C.Silent.Legit
     end
+    -- v2.2.0: a cheap signature of both kits. The editor's rows follow the kit when
+    -- something outside changes it (a Legit row, a preset, a config load).
+    local function kitSig()
+        local parts = {}
+        for _, t in ipairs({ C.Aim.Legit, C.Silent.Legit }) do
+            local keys = {}
+            for k, v in pairs(t) do
+                if type(k) == "string" and k:sub(1, 1) ~= "_" and type(v) ~= "table" then
+                    keys[#keys + 1] = k .. "=" .. tostring(v)
+                end
+            end
+            table.sort(keys)
+            parts[#parts + 1] = table.concat(keys, ",")
+        end
+        return table.concat(parts, ";")
+    end
     -- one key pushed to the kit while Live is on; Apply copies the rest
     local function push(side, key)
         if not E.Live then return end
         local t = liveTable(side)
         local v = E.draft[side][key]
         t[key] = type(v) == "table" and copy(v) or v
+        -- v2.2.0: the Legit sub-tab rows were built once, so they have to be told.
+        if Shared._legitResync then pcall(Shared._legitResync, side) end
+        E._sigStale = true
     end
     function E.applyAll()
         for _, side in ipairs({ "aim", "silent" }) do
@@ -53642,8 +53749,25 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                 t[k] = type(v) == "table" and copy(v) or v
             end
         end
+        if Shared._legitResync then pcall(Shared._legitResync) end
+        E._sigStale = true
     end
     function E.dirty() return E._dirty == true end
+    -- v2.2.0: "Aimbot"/"Silent" names the tab, "aim"/"silent" keys the kit. Two call
+    -- sites passed the tab name into a kit lookup, so every offset rolled out zero.
+    local function sideOf(mode)
+        if (mode or E.mode) == "Silent" then return "silent" end
+        return "aim"
+    end
+    E.sideOf = sideOf
+    -- the sandbox and the graphs read the LIVE kit: an edit made outside the editor,
+    -- or a config load, leaves the draft behind. The stage ring keeps reading the
+    -- draft while Live is off, so a pending edit is still visible before Apply.
+    local function simKit(side) return liveTable(side) end
+    local function prevKit(side)
+        if E.Live then return liveTable(side) end
+        return E.draft[side] or {}
+    end
 
     -- :: preset matching :: ------------------------------------------------
     -- Normalised names, then saved aliases, then the tool's own mesh ids, then a
@@ -53791,6 +53915,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         if W.view then pcall(function() W.view:Destroy() end) end
         if W.overlay then pcall(function() W.overlay:Destroy() end) end
         W.world, W.view, W.cam, W.gun, W.muzzle, W.aimPoint = nil, nil, nil, nil, nil, nil
+        W.host = nil
         W.overlay = nil
         W.bullets, W.marks, W.segs, W.rays = {}, {}, {}, {}
     end
@@ -53814,8 +53939,8 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     E.MOTIONS = { "Static", "Strafe", "Jump", "Jitter", "Blink" }
 
     function E.paintPool()
-        local side = (E.mode == "Aimbot") and "aim" or "silent"
-        local parts = (E.draft[side] and E.draft[side].Parts) or {}
+        local side = sideOf()
+        local parts = prevKit(side).Parts or {}
         local function on(key)
             if parts[key] == false then return false end
             if (key == "Upper Torso" or key == "Lower Torso") and parts.Torso == false then
@@ -53903,11 +54028,36 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         local world = new("WorldModel", { Parent = vp })
         local cam = new("Camera", { FieldOfView = 62, Parent = vp })
         vp.CurrentCamera = cam
-        W.view, W.world, W.cam = vp, world, cam
+        W.view, W.world, W.cam, W.host = vp, world, cam, host
         -- impact dots ride a 2D layer above the viewport (see addMark)
         W.overlay = new("Frame", { Name = "Marks", Size = UDim2.new(1, 0, 1, 0),
             BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true,
             ZIndex = 2, Parent = host }, { corner(6) })
+        -- v2.2.0: the docked stage sways on its own and a drag inside it takes the
+        -- look over; the sway resumes a second after the drag ends.
+        local dragHit = new("TextButton", { Name = "StageDrag", Text = "",
+            AutoButtonColor = false, BackgroundTransparency = 1, Active = true,
+            Size = UDim2.new(1, 0, 1, 0), ZIndex = 3, Parent = host })
+        local dragging, lx, ly = false, 0, 0
+        dragHit.InputBegan:Connect(function(input)
+            if E.play or input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            dragging, lx, ly = true, input.Position.X, input.Position.Y
+        end)
+        dragHit.InputChanged:Connect(function(input)
+            if not dragging or E.play then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            local dx, dy = input.Position.X - lx, input.Position.Y - ly
+            lx, ly = input.Position.X, input.Position.Y
+            E.dragYaw = math.clamp((E.dragYaw or 0) - dx * 0.006, -1.2, 1.2)
+            E.dragPitch = math.clamp((E.dragPitch or 0) + dy * 0.004, -0.3, 0.75)
+            E.dragAt = os.clock()
+        end)
+        dragHit.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = false
+                E.dragAt = os.clock()
+            end
+        end)
 
         -- stage box: floor, back wall, distance strips every 10 studs
         local floorC = Color3.fromRGB(38, 33, 29)
@@ -53946,8 +54096,11 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     end
 
     -- the angle the active tab sprays at, in degrees, before any distance scaling
-    function E.spreadDegrees(side)
-        local d = E.draft[side] or {}
+    -- v2.2.0: takes the tab name and resolves the kit key itself. It used to be
+    -- handed E.mode, so the lookup missed and the ring sat at its minimum radius.
+    function E.spreadDegrees(mode)
+        local side = sideOf(mode)
+        local d = prevKit(side)
         if side == "aim" then return tonumber(d.Jitter) or 0 end
         local sp = tonumber(d.Spread) or 0
         if (d.SpreadUnit or "Studs") == "Studs" then return 0, sp end
@@ -53999,10 +54152,10 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     -- where the silent kit's chance curve crosses 50 percent, on the lane floor
     function E.refreshChance()
         if not W.world or not W.chanceBar then return end
-        local d = E.draft.silent or {}
+        local d = prevKit("silent")
         local hc = tonumber(d.HitChance) or 100
         local fall = tonumber(d.HitChanceFalloff) or 0
-        local cap = 60
+        local cap = E.rangeCap()
         if fall <= 0 or hc <= 0 then
             W.chanceBar.Transparency = 1
             E.chance50 = nil
@@ -54014,51 +54167,26 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         E.chance50 = d50
     end
 
-    -- the chance curve itself, drawn over the stage so it reads at a glance
+    -- v2.2.0: the stage's own thumbnail chance curve is a full card on the Graphs
+    -- page now, with axes and units, so the unreadable 96x46 overlay is gone.
     function E.refreshGraph()
-        local ov = W.overlay
-        if not ov then return end
-        if W.graph then pcall(function() W.graph:Destroy() end) end
-        local g = new("Frame", { Position = UDim2.new(1, -104, 0, 8), Size = UDim2.fromOffset(96, 46),
-            BackgroundColor3 = P.Background, BackgroundTransparency = 0.35, BorderSizePixel = 0,
-            ZIndex = 4, Parent = ov }, { corner(4), stroke(P.BorderSubtle) })
-        W.graph = g
-        local d = E.draft.silent or {}
-        local hc = tonumber(d.HitChance) or 100
-        local fall = tonumber(d.HitChanceFalloff) or 0
-        local cap = 60
-        local prev
-        for i = 0, 12 do
-            local dist = cap * i / 12
-            local ch = Shared.LegitSim.chance(hc, fall, dist, cap)
-            local x = 6 + 84 * (i / 12)
-            local y = 40 - (ch / 100) * 30
-            if prev then
-                local dx, dy = x - prev[1], y - prev[2]
-                local len = math.sqrt(dx * dx + dy * dy)
-                if len > 0.4 then
-                    new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
-                        Position = UDim2.fromOffset((x + prev[1]) * 0.5, (y + prev[2]) * 0.5),
-                        Size = UDim2.fromOffset(len, 1), BackgroundColor3 = P.Accent,
-                        BorderSizePixel = 0, Rotation = math.deg(math.atan2(dy, dx)),
-                        ZIndex = 5, Parent = g })
-                end
-            end
-            prev = { x, y }
+        if W.graph then
+            pcall(function() W.graph:Destroy() end)
+            W.graph = nil
         end
-        new("TextLabel", { Text = "hit chance", FontFace = Theme.Fonts.Mono, TextSize = 8,
-            TextColor3 = P.TextMuted, BackgroundTransparency = 1, Position = UDim2.fromOffset(6, 32),
-            Size = UDim2.fromOffset(60, 10), ZIndex = 5, Parent = g })
     end
 
-    -- one offset on the target plane, from the same maths the shot uses
-    function E.rollOffset(side, dist)
-        local d = E.draft[side] or {}
+    -- one offset on the target plane, from the same maths the shot uses.
+    -- v2.2.0: takes the tab name and reads the kit, not a stale draft.
+    function E.rollOffset(mode, dist, age)
+        local side = sideOf(mode)
+        local d = prevKit(side)
         if side == "aim" then
-            local m = Shared.LegitSim.jitter(d.Jitter, dist, Shared.LegitSim.fatigue(d.Fatigue))
-            return (math.random() * 2 - 1) * m, (math.random() * 2 - 1) * m
+            return Shared.LegitSim.jitterOffset(d.Jitter, dist,
+                Shared.LegitSim.fatigue(d.Fatigue))
         end
-        return Shared.LegitSim.spread(d.Spread, d.SpreadUnit, dist, d.Bloom, 0, d.SpreadPattern)
+        return Shared.LegitSim.spread(d.Spread, d.SpreadUnit, dist, d.Bloom,
+            age or 0, d.SpreadPattern)
     end
 
     -- impacts are world geometry, not screen dots: they hold their place when the
@@ -54083,22 +54211,207 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         while #E.record > 300 do table.remove(E.record, 1) end
     end
 
+    -- v2.2.0: a stage point in stage pixels, from the camera's own frustum. A
+    -- ViewportFrame camera reports the SCREEN's ViewportSize, so
+    -- WorldToViewportPoint cannot carry the deadzone or overshoot maths.
+    local function stageProject(p)
+        local host, cam = W.host, W.cam
+        if not (host and cam) then return 0, 0, false end
+        local size = host.AbsoluteSize
+        if size.X < 2 or size.Y < 2 then return 0, 0, false end
+        local rel = cam.CFrame:PointToObjectSpace(p)
+        if rel.Z >= -0.05 then return 0, 0, false end
+        local tanH = math.tan(math.rad(cam.FieldOfView) * 0.5)
+        local ndcY = (rel.Y / -rel.Z) / tanH
+        local ndcX = (rel.X / -rel.Z) / (tanH * (size.X / size.Y))
+        return size.X * 0.5 * (1 + ndcX), size.Y * 0.5 * (1 - ndcY), true
+    end
+    E.project = stageProject
+    local function stageCenter()
+        local host = W.host
+        if not host then return Vector2.new(0, 0) end
+        return Vector2.new(host.AbsoluteSize.X * 0.5, host.AbsoluteSize.Y * 0.5)
+    end
+    E.center = stageCenter
+
+    -- a stage zone maps to the pool entry that governs it, so unticking Torso takes
+    -- both torso zones out of the pick, exactly as paintPool paints it.
+    local ZONE_POOL = { ["Upper Torso"] = "Torso", ["Lower Torso"] = "Torso" }
+    local SINGLE_ZONE = { Torso = "Upper Torso", HRP = "Lower Torso",
+        ["Left Hand"] = "Left Arm", ["Right Hand"] = "Right Arm",
+        ["Left Foot"] = "Left Leg", ["Right Foot"] = "Right Leg", Auto = "Head" }
+    local function zoneEnabled(L, key)
+        local parts = L.Parts or {}
+        if parts[key] == false then return false end
+        local alias = ZONE_POOL[key]
+        if alias and parts[alias] == false then return false end
+        return true
+    end
+    local function zoneFor(name, t)
+        if not (name and t) then return nil end
+        return t.zones[name] or t.zones[SINGLE_ZONE[name] or ""] or t.zones.Head
+    end
+
+    -- the target the reticle is nearest, measured in stage pixels off its torso
+    local function pickTarget()
+        local c = stageCenter()
+        local best, bestD
+        for _, t in ipairs(W.targets or {}) do
+            local z = t.zones["Upper Torso"] or t.zones.Head
+            if z then
+                local x, y, ok = stageProject(z.Position)
+                if ok then
+                    local d = math.sqrt((x - c.X) ^ 2 + (y - c.Y) ^ 2)
+                    if not bestD or d < bestD then best, bestD = t, d end
+                end
+            end
+        end
+        return best, bestD
+    end
+    E.pickTarget = pickTarget
+
+    -- the zone the kit would aim at: Single Part takes that tab's Hit Part, Closest
+    -- takes the enabled zone nearest the reticle, Random holds one for 0.4s. Same
+    -- three rules poolPick runs on a real character.
+    local function pickZone(L, t, side)
+        if not t then return nil end
+        local mode = L.PartMode or "Single Part"
+        if mode == "Single Part" or L.Enabled == false then
+            local want = (side == "aim") and C.Aim.HitPart or C.Silent.HitPart
+            local z = zoneFor(want or "Head", t)
+            return z, want or "Head"
+        end
+        local names = {}
+        for key in pairs(t.zones) do
+            if zoneEnabled(L, key) then names[#names + 1] = key end
+        end
+        table.sort(names)
+        if #names == 0 then return nil end
+        if mode == "Random Part" then
+            local now = os.clock()
+            if L._sbT ~= t or (now - (L._sbAt or 0)) > 0.4 then
+                L._sbT, L._sbAt = t, now
+                L._sbName = names[math.random(#names)]
+            end
+            local k = L._sbName or names[1]
+            return t.zones[k], k
+        end
+        local c = stageCenter()
+        local best, bestK, bestD
+        for _, k in ipairs(names) do
+            local x, y, ok = stageProject(t.zones[k].Position)
+            if ok then
+                local d = math.sqrt((x - c.X) ^ 2 + (y - c.Y) ^ 2)
+                if not bestD or d < bestD then best, bestK, bestD = t.zones[k], k, d end
+            end
+        end
+        return best, bestK
+    end
+    E.pickZone = pickZone
+
+    -- v2.2.0: the sandbox redirect. Always active (a redirect needs no arming) and
+    -- every number comes from LegitSim.silentShot. Returns the point the bullet
+    -- travels to and what the roll decided, or nil for a clean shot.
+    function E.silentRedirect(from, right, up)
+        local t = pickTarget()
+        if not t then return nil, { none = true } end
+        local L = simKit("silent")
+        local zone, zkey = pickZone(L, t, "silent")
+        if not zone then return nil, { none = true } end
+        local now = os.clock()
+        if E._lockT ~= t then E._lockT, E._lockAt = t, now end
+        local aimAt = zone.Position
+        local shot = Shared.LegitSim.silentShot(L, {
+            dist = (aimAt - from).Magnitude, distCap = E.rangeCap(),
+            isHead = zkey == "Head", lockAge = now - (E._lockAt or now),
+            pool = HITPARTS,
+        })
+        shot.zone, shot.target = zkey, t
+        if shot.clean then return nil, shot end
+        if shot.miss then
+            local ox, oy = Shared.LegitSim.missOffset()
+            return aimAt + right * ox + up * oy, shot
+        end
+        if shot.altPart then
+            local alt = zoneFor(shot.altPart, t)
+            if alt then
+                zone, shot.zone = alt, shot.altPart
+                aimAt = alt.Position
+            end
+        end
+        local p = aimAt
+        if shot.jitter then p = p + shot.jitter end
+        p = p + right * shot.spreadX + up * shot.spreadY
+        return p, shot
+    end
+
+    -- the stage lane is 60 studs deep, so that is the cap every falloff reads here
+    function E.rangeCap() return 60 end
+
+    -- v2.2.0: the batch preview runs the kit, not a static spray. The aim side walks
+    -- one engagement from off target to on; the silent side walks lock age 0 to 5s,
+    -- so bloom opens the group as it goes.
     function E.fire(n)
         if not W.world then return end
         n = math.clamp(tonumber(n) or 1, 1, 500)
+        local side = sideOf()
+        local L = prevKit(side)
         local base = E.aimBase()
-        local dist = math.max((base - W.muzzle).Magnitude, 4)
-        local total, hits = 0, 0
-        local col = (E.mode == "Aimbot") and Color3.fromRGB(255, 238, 224)
+        local from = W.muzzle or Vector3.new(0, 4, 10)
+        local dist = math.max((base - from).Magnitude, 4)
+        local right, up = Vector3.new(1, 0, 0), Vector3.new(0, 1, 0)
+        local col = (side == "aim") and Color3.fromRGB(255, 238, 224)
             or Color3.fromRGB(205, 232, 255)
-        for _ = 1, n do
-            local ox, oy = E.rollOffset(E.mode, dist)
-            local p = Vector3.new(base.X + ox, base.Y + oy, base.Z)
-            recordMark(p, col)
-            total = total + 1
-            if math.abs(ox) < 1.15 and math.abs(oy) < 1.5 then hits = hits + 1 end
+        local total, hits, held, cleanN = 0, 0, 0, 0
+        local id = {}
+        local t0 = os.clock()
+        -- the reticle starts off the target, as a real engagement does
+        local rx, ry = 7, -2.5
+        for i = 1, n do
+            local p
+            if side == "aim" then
+                local now = t0 + (i / n) * 1.4
+                local cx, cy, cok = stageProject(base + right * rx + up * ry)
+                local st = Shared.LegitSim.aimStep(L, {
+                    id = id, pos = base, from = from, right = right, up = up,
+                    dist = dist, distCap = E.rangeCap(), now = now,
+                    center = cok and Vector2.new(cx, cy) or nil,
+                    project = cok and stageProject or nil,
+                })
+                if st.hold then
+                    held = held + 1
+                else
+                    local aX, aY = Shared.LegitSim.sens(C.Aim.Sensitivity, C.Aim.Smooth)
+                    aX, aY = aX * st.factor, aY * st.factor
+                    local d = st.pos - base
+                    rx = rx + (d:Dot(right) - rx) * aX
+                    ry = ry + (d:Dot(up) - ry) * aY
+                end
+                p = base + right * rx + up * ry
+            else
+                local shot = Shared.LegitSim.silentShot(L, {
+                    dist = dist, distCap = E.rangeCap(), isHead = false,
+                    lockAge = (i / n) * 5, pool = HITPARTS,
+                })
+                if shot.clean then
+                    cleanN = cleanN + 1
+                else
+                    p = base
+                    if shot.jitter then p = p + shot.jitter end
+                    p = p + right * shot.spreadX + up * shot.spreadY
+                end
+            end
+            if p then
+                recordMark(p, col)
+                total = total + 1
+                -- on target means inside the dummy's torso box, measured off the plot
+                local d = p - base
+                if math.abs(d:Dot(right)) < 1.15 and math.abs(d:Dot(up)) < 1.5 then
+                    hits = hits + 1
+                end
+            end
         end
-        E.stats = { n = total, hits = hits, side = E.mode }
+        E.stats = { n = total, hits = hits, side = E.mode, held = held, clean = cleanN }
         if E.onStats then pcall(E.onStats, E.stats) end
     end
 
@@ -54238,41 +54551,50 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         end)
     end
 
-    -- classic X at the crosshair, only when the ray actually hit a target
-    local function hitMarker()
-        if not W.overlay then return end
-        local cx = W.overlay.AbsoluteSize.X * 0.5
-        local cy = W.overlay.AbsoluteSize.Y * 0.5
-        local marks = {}
-        for i = 1, 4 do
-            local ang = math.rad(45 + (i - 1) * 90)
-            local m = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.fromOffset(cx + math.cos(ang) * 10, cy + math.sin(ang) * 10),
-                Size = UDim2.fromOffset(9, 2), BackgroundColor3 = Color3.fromRGB(255, 120, 100),
-                BorderSizePixel = 0, Rotation = math.deg(ang) + 45, ZIndex = 6,
-                Parent = W.overlay }, { pillCorner() })
-            marks[#marks + 1] = m
+    -- v2.2.0: the hit X sits in the world at the impact, facing the camera, instead
+    -- of a 2D frame pinned to screen centre. The camera does not fight it: the bars
+    -- are built once on the impact's camera-facing frame and never re-oriented.
+    local function hitMarker(at)
+        if not (W.world and at) then return end
+        local cam = W.cam
+        local facing = CFrame.lookAt(at, cam and cam.CFrame.Position
+            or (at + Vector3.new(0, 0, 1)))
+        local bars = {}
+        for i = 1, 2 do
+            local ang = (i == 1) and math.rad(45) or math.rad(-45)
+            local b = part(W.world, Vector3.new(0.09, 0.62, 0.09),
+                facing * CFrame.new(0, 0, 0.08) * CFrame.Angles(0, 0, ang),
+                Color3.fromRGB(255, 120, 100))
+            b.Material = Enum.Material.Neon
+            b.CanCollide = false
+            bars[i] = b
         end
-        task.delay(0.16, function()
-            for _, m in ipairs(marks) do pcall(function() m:Destroy() end) end
+        task.delay(0.22, function()
+            for _, b in ipairs(bars) do pcall(function() b:Destroy() end) end
         end)
     end
 
+    -- v2.2.0: a sandbox shot runs the kit. Silent always redirects the bullet off
+    -- the reticle without moving the camera; the aim pull is armed with RMB in the
+    -- render loop. A failed chance roll fires clean or throws wide, as live does.
     function E.fireAtAim()
         if not W.world or not W.cam then return end
         local cf = W.cam.CFrame
-        local o, dir = cf.Position, cf.LookVector
+        local o = cf.Position
+        local redirect, shot = E.silentRedirect(o, cf.RightVector, cf.UpVector)
+        local dir = cf.LookVector
+        if redirect then
+            local d = redirect - o
+            if d.Magnitude > 1e-3 then dir = d.Unit end
+        end
         local hit = rayTargets(o, dir, 250)
         local p
         if hit then
-            local ox, oy = E.rollOffset(E.mode, (hit - o).Magnitude)
-            p = hit + cf.RightVector * ox + cf.UpVector * oy
+            p = hit
         elseif dir.Z < -0.05 then
             local t = (-63.5 - o.Z) / dir.Z
             if t <= 0 or t > 400 then return end
             p = o + dir * t
-            local ox, oy = E.rollOffset(E.mode, t)
-            p = p + cf.RightVector * ox + cf.UpVector * oy
         else
             return
         end
@@ -54295,15 +54617,28 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             task.delay(0.15, function() pcall(function() flash:Destroy() end) end)
         end)
         burst(p)
-        if hit then hitMarker() end
-        E.lastShot = { hit = hit ~= nil, at = p }
+        if hit then hitMarker(p) end
+        E.lastShot = { hit = hit ~= nil, at = p, redirect = redirect, roll = shot }
         E.playShots = (E.playShots or 0) + 1
         if hit then E.playHits = (E.playHits or 0) + 1 end
-        if E.playStatsLbl then
-            E.playStatsLbl.Text = string.format("  shots %d  ·  hits %d  ·  LMB fire  ·  F stop",
-                E.playShots, E.playHits or 0)
+        if shot then
+            if shot.clean then E.playClean = (E.playClean or 0) + 1 end
+            if shot.miss then E.playWide = (E.playWide or 0) + 1 end
+            E.playChance = shot.chance
         end
+        if E.playStatsLbl then E.paintPlayStats() end
         if Koffee.Sfx and Koffee.Sfx.play then pcall(Koffee.Sfx.play, "click") end
+    end
+    -- the sandbox read-out: what the kit decided, not just a shot counter
+    function E.paintPlayStats()
+        if not E.playStatsLbl then return end
+        local bits = string.format("  shots %d  ·  hits %d", E.playShots or 0, E.playHits or 0)
+        if E.playChance then
+            bits = bits .. string.format("  ·  chance %d%%", math.floor(E.playChance + 0.5))
+        end
+        if (E.playClean or 0) > 0 then bits = bits .. "  ·  clean " .. E.playClean end
+        if (E.playWide or 0) > 0 then bits = bits .. "  ·  wide " .. E.playWide end
+        E.playStatsLbl.Text = bits .. "  ·  LMB fire  ·  RMB aim  ·  F stop"
     end
 
     function E.clearMarks()
@@ -54357,6 +54692,125 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             if UI.save then UI.save.Visible = true end
         end
     end
+    -- :: graphs :: ---------------------------------------------------------
+    -- v2.2.0: behaviour curves, every sample taken from LegitSim with the live kit's
+    -- own numbers. Nothing here is drawn for decoration.
+    local GR = { cards = {}, built = false }
+    -- a plot that reuses its frames: these redraw several times a second, and
+    -- rebuilding a few hundred instances per pass churns for nothing.
+    local function plotter(box, z)
+        local pool, n = {}, 0
+        local function take(col, alpha)
+            n = n + 1
+            local f = pool[n]
+            if not f then
+                f = new("Frame", { BorderSizePixel = 0, ZIndex = z, Parent = box })
+                pool[n] = f
+            end
+            f.Visible = true
+            f.BackgroundColor3 = col
+            f.BackgroundTransparency = alpha or 0
+            f.Rotation = 0
+            return f
+        end
+        local api = {}
+        function api.begin() n = 0 end
+        function api.finish()
+            for i = n + 1, #pool do pool[i].Visible = false end
+        end
+        function api.dot(x, y, s, col, alpha)
+            local f = take(col, alpha)
+            f.AnchorPoint = Vector2.new(0.5, 0.5)
+            f.Position = UDim2.fromOffset(x, y)
+            f.Size = UDim2.fromOffset(s, s)
+        end
+        function api.seg(x1, y1, x2, y2, t, col, alpha)
+            local dx, dy = x2 - x1, y2 - y1
+            local len = math.sqrt(dx * dx + dy * dy)
+            if len < 0.4 then return end
+            local f = take(col, alpha)
+            f.AnchorPoint = Vector2.new(0.5, 0.5)
+            f.Position = UDim2.fromOffset((x1 + x2) * 0.5, (y1 + y2) * 0.5)
+            f.Size = UDim2.fromOffset(len, t)
+            f.Rotation = math.deg(math.atan2(dy, dx))
+        end
+        function api.bar(x, w, yTop, yBase, col, alpha)
+            local h = math.max(yBase - yTop, 1)
+            local f = take(col, alpha)
+            f.AnchorPoint = Vector2.new(0.5, 1)
+            f.Position = UDim2.fromOffset(x, yBase)
+            f.Size = UDim2.fromOffset(math.max(w, 1), h)
+        end
+        function api.vline(x, y0, y1, col, alpha)
+            local f = take(col, alpha)
+            f.AnchorPoint = Vector2.new(0.5, 0)
+            f.Position = UDim2.fromOffset(x, y0)
+            f.Size = UDim2.fromOffset(1, math.max(y1 - y0, 1))
+        end
+        return api
+    end
+
+    -- one card: title, live caption, a clipped plot box and its axis labels
+    local function graphCard(parent, order, title, xLabel, yLabel, twin)
+        local card = new("Frame", { Size = UDim2.new(1, 0, 0, 176), BackgroundColor3 = P.Panel,
+            BackgroundTransparency = 0.35, BorderSizePixel = 0, LayoutOrder = order,
+            ZIndex = 92, Parent = parent }, { corner(6), stroke(P.BorderSubtle) })
+        local t = lbl(card, title, Theme.Text.Small, P.Text, Theme.Fonts.Medium, 93)
+        t.Position = UDim2.fromOffset(10, 7)
+        t.Size = UDim2.new(0.5, -12, 0, 16)
+        local cap = lbl(card, "", Theme.Text.Tiny, P.Accent, Theme.Fonts.Mono, 93)
+        cap.Position = UDim2.new(0.5, 0, 0, 8)
+        cap.Size = UDim2.new(0.5, -12, 0, 14)
+        cap.TextXAlignment = Enum.TextXAlignment.Right
+        local yl = lbl(card, yLabel, Theme.Text.Tiny, P.TextMuted, Theme.Fonts.Regular, 93)
+        yl.Position = UDim2.fromOffset(10, 26)
+        yl.Size = UDim2.new(1, -20, 0, 12)
+        local boxes, hi, lo = {}, {}, {}
+        local count = twin and 2 or 1
+        for i = 1, count do
+            local wScale = 1 / count
+            local box = new("Frame", {
+                Position = UDim2.new((i - 1) * wScale, 40 + (i - 1) * 8, 0, 42),
+                Size = UDim2.new(wScale, -(50 + (i - 1) * 8), 0, 98),
+                BackgroundColor3 = P.Background, BackgroundTransparency = 0.25,
+                BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 93, Parent = card },
+                { corner(4), stroke(P.BorderSubtle) })
+            boxes[i] = box
+            local h = lbl(card, "", Theme.Text.Tiny, P.TextFaint, Theme.Fonts.Mono, 93)
+            h.Position = UDim2.new((i - 1) * wScale, 2 + (i - 1) * 8, 0, 42)
+            h.Size = UDim2.fromOffset(38, 12)
+            h.TextXAlignment = Enum.TextXAlignment.Right
+            local l = lbl(card, "", Theme.Text.Tiny, P.TextFaint, Theme.Fonts.Mono, 93)
+            l.Position = UDim2.new((i - 1) * wScale, 2 + (i - 1) * 8, 0, 128)
+            l.Size = UDim2.fromOffset(38, 12)
+            l.TextXAlignment = Enum.TextXAlignment.Right
+            hi[i], lo[i] = h, l
+        end
+        -- the label is centred between the two ticks, never over them
+        local xl = lbl(card, xLabel, Theme.Text.Tiny, P.TextFaint, Theme.Fonts.Regular, 93)
+        xl.Position = UDim2.fromOffset(104, 146)
+        xl.Size = UDim2.new(1, -186, 0, 14)
+        xl.TextXAlignment = Enum.TextXAlignment.Center
+        xl.TextTruncate = Enum.TextTruncate.AtEnd
+        local xlo = lbl(card, "", Theme.Text.Tiny, P.TextFaint, Theme.Fonts.Mono, 93)
+        xlo.Position = UDim2.fromOffset(40, 146)
+        xlo.Size = UDim2.fromOffset(58, 14)
+        local xhi = lbl(card, "", Theme.Text.Tiny, P.TextFaint, Theme.Fonts.Mono, 93)
+        xhi.AnchorPoint = Vector2.new(1, 0)
+        xhi.Position = UDim2.new(1, -10, 0, 146)
+        xhi.Size = UDim2.fromOffset(70, 14)
+        xhi.TextXAlignment = Enum.TextXAlignment.Right
+        local c = { card = card, cap = cap, boxes = boxes, hi = hi, lo = lo,
+            xlo = xlo, xhi = xhi, xl = xl, yl = yl, pens = {} }
+        for i = 1, count do c.pens[i] = plotter(boxes[i], 94) end
+        -- the plot box sizes with the column, so the grid is read fresh every pass
+        function c.size(i)
+            local b = boxes[i or 1]
+            return math.max(b.AbsoluteSize.X, 8), math.max(b.AbsoluteSize.Y, 8)
+        end
+        return c
+    end
+
 
     -- one labelled slider bound to the draft, pushed live when Live is on
     local function draftSlider(parent, side, key, text, mn, mx, prec, order)
@@ -54367,6 +54821,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                 setDirty()
                 E.refreshStage()
                 if E.refreshGraph then E.refreshGraph() end
+                if E.view == "Graphs" then pcall(E.redrawGraphs) end
             end)
         if r and r.row then r.row.LayoutOrder = order end
         return r
@@ -54442,6 +54897,278 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         return { row = row, refresh = refresh }
     end
     E.pool = poolRow
+
+    -- the seven curves. Each reads the live kit through simKit, so a card and the row
+    -- that drives it are showing the same number.
+    function E.buildGraphs(host)
+        if GR.built or not host then return end
+        GR.built = true
+        local g = GR.cards
+        g.react = graphCard(host, 1, "Reaction delay", "delay (ms)", "share of locks")
+        g.fat = graphCard(host, 2, "Fatigue walk", "time (s)", "jitter multiplier")
+        g.jit = graphCard(host, 3, "Jitter", "offset (studs)  ·  radius (studs)",
+            "scatter on the shot plane  ·  share", true)
+        g.pull = graphCard(host, 4, "Pull curve", "time into engagement (ms)", "pull factor")
+        g.chance = graphCard(host, 5, "Hit chance vs distance", "distance (studs)", "chance (%)")
+        g.bloom = graphCard(host, 6, "Bloom", "lock age (s)", "spread radius (studs)")
+        g.spray = graphCard(host, 7, "Recoil: pattern vs actual", "yaw (deg)", "pitch (deg)")
+    end
+
+    local BLUE = Color3.fromRGB(205, 232, 255)
+    -- the random walks are cached on their inputs: resampling every pass would make
+    -- the line crawl on its own and hide what a slider actually changed.
+    local function cachedWalk(amt)
+        local key = string.format("%.3f", amt)
+        if GR.fatKey == key then return GR.fatPts end
+        local pts, t = {}, 0
+        while t < 30 do
+            local m = Shared.LegitSim.fatigue(amt)
+            local step = 0.5 + math.random() * 1.5
+            pts[#pts + 1] = { t, m }
+            t = math.min(t + step, 30)
+            pts[#pts + 1] = { t, m }
+        end
+        GR.fatKey, GR.fatPts = key, pts
+        return pts
+    end
+    local function cachedScatter(deg, dist, fat)
+        local key = string.format("%.3f|%.2f|%.3f", deg, dist, fat)
+        if GR.scKey == key then return GR.scPts end
+        local pts = {}
+        for i = 1, 160 do
+            local ox, oy = Shared.LegitSim.jitterOffset(deg, dist, fat)
+            pts[i] = { ox, oy, math.sqrt(ox * ox + oy * oy) }
+        end
+        GR.scKey, GR.scPts = key, pts
+        return pts
+    end
+
+    function E.redrawGraphs()
+        if not GR.built then return end
+        local g = GR.cards
+        local AL, SL = simKit("aim"), simKit("silent")
+        local cap = E.rangeCap()
+        local dist = math.clamp(tonumber(E.sim.dist) or 34, 1, cap)
+        local S = Shared.LegitSim
+        do
+            local c, pen = g.react, g.react.pens[1]
+            local w, h = c.size(1)
+            pen.begin()
+            local base = AL.Reaction or 0
+            local lo, hi = base, S.reaction(base, AL.ReactionRamp, cap, cap)
+            if hi < lo then lo, hi = hi, lo end
+            local span = math.max(hi - lo, 1)
+            local N, bins, sum = 24, {}, 0
+            for i = 1, N do bins[i] = 0 end
+            for i = 1, 400 do
+                local v = S.reaction(base, AL.ReactionRamp, (i / 400) * cap, cap)
+                sum = sum + v
+                local k = math.clamp(math.floor((v - lo) / span * N) + 1, 1, N)
+                bins[k] = bins[k] + 1
+            end
+            local peak = 1
+            for i = 1, N do peak = math.max(peak, bins[i]) end
+            local bw = w / N
+            for i = 1, N do
+                if bins[i] > 0 then
+                    pen.bar((i - 0.5) * bw, bw - 2, h - (bins[i] / peak) * (h - 6), h,
+                        P.Accent, 0.25)
+                end
+            end
+            local mean = sum / 400
+            pen.vline(math.clamp((mean - lo) / span * w, 0, w), 0, h, BLUE, 0.1)
+            pen.finish()
+            if base <= 0 then
+                c.cap.Text = "reaction off"
+            else
+                c.cap.Text = string.format("mean %d ms  ·  %d to %d  ·  ramp %d%%",
+                    math.floor(mean + 0.5), math.floor(lo), math.ceil(hi),
+                    AL.ReactionRamp or 0)
+            end
+            c.hi[1].Text = tostring(peak)
+            c.lo[1].Text = "0"
+            c.xlo.Text = string.format("%d", math.floor(lo))
+            c.xhi.Text = string.format("%d ms", math.ceil(hi))
+        end
+        do
+            local c, pen = g.fat, g.fat.pens[1]
+            local w, h = c.size(1)
+            pen.begin()
+            local amt = AL.Fatigue or 0
+            local pts = cachedWalk(amt)
+            local lo, hi = 1, 1
+            for _, p in ipairs(pts) do lo, hi = math.min(lo, p[2]), math.max(hi, p[2]) end
+            local pad = math.max((hi - lo) * 0.2, 0.02)
+            local ylo, yhi = lo - pad, hi + pad
+            local function Y(m) return h - (m - ylo) / (yhi - ylo) * h end
+            pen.bar(w * 0.5, w, Y(hi), Y(lo), P.Accent, 0.9)
+            for i = 2, #pts do
+                pen.seg(pts[i - 1][1] / 30 * w, Y(pts[i - 1][2]),
+                    pts[i][1] / 30 * w, Y(pts[i][2]), 1, P.Accent, 0.05)
+            end
+            pen.finish()
+            c.cap.Text = string.format("x%.2f .. x%.2f  ·  %d%%", lo, hi, amt)
+            c.hi[1].Text = string.format("x%.2f", yhi)
+            c.lo[1].Text = string.format("x%.2f", ylo)
+            c.xlo.Text = "0"
+            c.xhi.Text = "30 s"
+        end
+        do
+            local c = g.jit
+            local w, h = c.size(1)
+            local pen = c.pens[1]
+            pen.begin()
+            local deg = AL.Jitter or 0
+            local fat = AL._fat or 1
+            local pts = cachedScatter(deg, dist, fat)
+            local m = math.max(S.jitter(deg, dist, fat), 0.001)
+            local sc = m * 1.25
+            pen.vline(w * 0.5, 0, h, P.Border, 0.4)
+            pen.bar(w * 0.5, w, h * 0.5, h * 0.5 + 1, P.Border, 0.4)
+            for _, p in ipairs(pts) do
+                pen.dot(w * 0.5 + p[1] / sc * w * 0.5, h * 0.5 - p[2] / sc * h * 0.5,
+                    2, BLUE, 0.2)
+            end
+            pen.finish()
+            local w2, h2 = c.size(2)
+            local pen2 = c.pens[2]
+            pen2.begin()
+            local N, bins, peak = 18, {}, 1
+            for i = 1, N do bins[i] = 0 end
+            for _, p in ipairs(pts) do
+                local k = math.clamp(math.floor(p[3] / (m * 1.5) * N) + 1, 1, N)
+                bins[k] = bins[k] + 1
+            end
+            for i = 1, N do peak = math.max(peak, bins[i]) end
+            local bw = w2 / N
+            for i = 1, N do
+                if bins[i] > 0 then
+                    pen2.bar((i - 0.5) * bw, bw - 2, h2 - (bins[i] / peak) * (h2 - 6), h2,
+                        P.Accent, 0.25)
+                end
+            end
+            pen2.finish()
+            c.cap.Text = string.format("%.2f studs at %d  ·  x%.2f", m, math.floor(dist), fat)
+            c.hi[1].Text = string.format("%.2f", sc)
+            c.lo[1].Text = string.format("-%.2f", sc)
+            c.hi[2].Text = tostring(peak)
+            c.lo[2].Text = "0"
+            c.xlo.Text = string.format("-%.2f", sc)
+            c.xhi.Text = string.format("%.2f studs", m * 1.5)
+        end
+        do
+            local c, pen = g.pull, g.pull.pens[1]
+            local w, h = c.size(1)
+            pen.begin()
+            local span = math.max((AL.CurveTime or 220) / 1000, 0.02)
+            local curve = AL.Curve or "Linear"
+            local total = span * 1.4
+            local px, py
+            for i = 0, 60 do
+                local tt = (i / 60) * total
+                local f = 1
+                if curve ~= "Snap" then f = S.pull(tt / span, curve) end
+                local x, y = (tt / total) * w, h - f * (h - 2)
+                if px then pen.seg(px, py, x, y, 2, P.Accent, 0.05) end
+                px, py = x, y
+            end
+            pen.vline((span / total) * w, 0, h, BLUE, 0.2)
+            pen.finish()
+            c.cap.Text = string.format("%s  ·  %d ms", curve, AL.CurveTime or 220)
+            c.hi[1].Text = "1.00"
+            c.lo[1].Text = "0.00"
+            c.xlo.Text = "0"
+            c.xhi.Text = string.format("%d ms", math.floor(total * 1000))
+        end
+        do
+            local c, pen = g.chance, g.chance.pens[1]
+            local w, h = c.size(1)
+            pen.begin()
+            local hc = SL.HitChance or 100
+            local fall = SL.HitChanceFalloff or 0
+            local px, py
+            for i = 0, 60 do
+                local d = (i / 60) * cap
+                local ch = S.chance(hc, fall, d, cap)
+                local x, y = (d / cap) * w, h - (ch / 100) * (h - 2)
+                if px then pen.seg(px, py, x, y, 2, P.Accent, 0.05) end
+                px, py = x, y
+            end
+            pen.vline((dist / cap) * w, 0, h, BLUE, 0.2)
+            pen.finish()
+            c.cap.Text = string.format("%d%% at %d studs  ·  falloff %d%%",
+                math.floor(S.chance(hc, fall, dist, cap) + 0.5), math.floor(dist), fall)
+            c.hi[1].Text = "100"
+            c.lo[1].Text = "0"
+            c.xlo.Text = "0"
+            c.xhi.Text = string.format("%d studs", cap)
+        end
+        do
+            local c, pen = g.bloom, g.bloom.pens[1]
+            local w, h = c.size(1)
+            pen.begin()
+            local one = function() return 1 end
+            local function radiusAt(age)
+                local _, oy = S.spread(SL.Spread, SL.SpreadUnit, dist, SL.Bloom, age,
+                    "Vertical", one)
+                return oy
+            end
+            local top = math.max(radiusAt(5), 0.001) * 1.1
+            local px, py
+            for i = 0, 50 do
+                local age = (i / 50) * 5
+                local x, y = (age / 5) * w, h - (radiusAt(age) / top) * (h - 2)
+                if px then pen.seg(px, py, x, y, 2, P.Accent, 0.05) end
+                px, py = x, y
+            end
+            pen.finish()
+            c.cap.Text = string.format("%.2f to %.2f studs  ·  bloom %d%%",
+                radiusAt(0), radiusAt(5), SL.Bloom or 0)
+            c.hi[1].Text = string.format("%.2f", top)
+            c.lo[1].Text = "0.00"
+            c.xlo.Text = "0"
+            c.xhi.Text = "5 s"
+        end
+        do
+            local c, pen = g.spray, g.spray.pens[1]
+            local w, h = c.size(1)
+            pen.begin()
+            pen.vline(w * 0.5, 0, h, P.Border, 0.5)
+            pen.bar(w * 0.5, w, h * 0.5, h * 0.5 + 1, P.Border, 0.5)
+            local function path(pat, col, thick, alpha)
+                local px, py
+                for _, pt in ipairs(pat or {}) do
+                    local x = w * (0.5 + (tonumber(pt.x) or 0) / 12)
+                    local y = h * (0.5 - (tonumber(pt.y) or 0) / 12)
+                    pen.dot(x, y, thick + 1, col, alpha)
+                    if px then pen.seg(px, py, x, y, thick, col, alpha + 0.3) end
+                    px, py = x, y
+                end
+            end
+            local pat = E.patternTable and select(1, E.patternTable(false)) or {}
+            path(pat, P.Accent, 1, 0.1)
+            path(E.spray or {}, BLUE, 2, 0.1)
+            pen.finish()
+            c.cap.Text = string.format("pattern %d  ·  actual %d", #pat, #(E.spray or {}))
+            c.hi[1].Text = "+6"
+            c.lo[1].Text = "-6"
+            c.xlo.Text = "-6"
+            c.xhi.Text = "+6 deg"
+        end
+    end
+
+    -- Stage or Graphs in the middle column. The sandbox always owns the stage.
+    function E.setView(v)
+        E.view = (v == "Graphs" and not E.play) and "Graphs" or "Stage"
+        if UI.stageHost then UI.stageHost.Visible = E.view == "Stage" end
+        if UI.graphHost then UI.graphHost.Visible = E.view == "Graphs" end
+        if UI.viewBtn then UI.viewBtn.Text = "View: " .. E.view end
+        if E.view == "Graphs" then
+            E.buildGraphs(UI.graphHost)
+            task.defer(function() pcall(E.redrawGraphs) end)
+        end
+        if Koffee.Sfx then pcall(Koffee.Sfx.play, "tab") end
+    end
 
     -- :: recoil pattern :: --------------------------------------------------
     -- Drawn here, consumed by Combat.Recoil. One pattern for both kits: recoil is
@@ -54632,8 +55359,16 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         end)
         perGun.row.Position = UDim2.fromOffset(0, 268)
         perGun.row.Size = UDim2.new(1, 0, 0, 24)
-        lbl(card, "drag the box to draw", Theme.Text.Tiny, P.TextFaint,
-            Theme.Fonts.Regular, 93).Position = UDim2.fromOffset(182, 248)
+        -- v2.2.0: sized to the room it has; at the default 200 wide it ran 90px past
+        -- the kit column's box.
+        local dragHint = lbl(card, "drag to draw", Theme.Text.Tiny, P.TextFaint,
+            Theme.Fonts.Regular, 93)
+        dragHint.Position = UDim2.fromOffset(180, 248)
+        dragHint.Size = UDim2.new(1, -182, 0, 16)
+        dragHint.TextTruncate = Enum.TextTruncate.AtEnd
+        -- v2.2.0: the canvas samples absolute coordinates, so the marks drift any resize until they are drawn again from the new box.
+        canvas:GetPropertyChangedSignal("AbsoluteSize"):Connect(redraw)
+        graph:GetPropertyChangedSignal("AbsoluteSize"):Connect(redraw)
         task.defer(redraw)
         return { redraw = redraw }
     end
@@ -54647,9 +55382,9 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         local side = (E.mode == "Aimbot") and "aim" or "silent"
         local keys = (E.mode == "Aimbot") and { "Jitter", "Reaction", "Fatigue" }
             or { "Jitter", "Spread", "Bloom" }
-        local hint = lbl(sb.list, "F: stop  ·  LMB: fire", Theme.Text.Tiny, P.TextFaint,
-            Theme.Fonts.Regular, 8)
-        hint.Size = UDim2.fromOffset(120, 20)
+        local hint = lbl(sb.list, "F: stop  ·  LMB: fire  ·  RMB: aim", Theme.Text.Tiny,
+            P.TextFaint, Theme.Fonts.Regular, 8)
+        hint.Size = UDim2.fromOffset(176, 20)
         hint.TextXAlignment = Enum.TextXAlignment.Left
         sb.btns[#sb.btns + 1] = hint
         for _, key in ipairs(keys) do
@@ -54672,6 +55407,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                     sb.off[key] = nil
                 end
                 liveTable(side)[key] = E.draft[side][key]
+                if Shared._legitResync then pcall(Shared._legitResync, side) end
                 paint()
                 E.refreshStage()
                 Koffee.Sfx.play("click")
@@ -54696,7 +55432,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         UI.playStats = new("TextLabel", { Name = "PlayStats", Position = UDim2.fromOffset(10, 44),
             Size = UDim2.fromOffset(330, 18), BackgroundTransparency = 0.3,
             BackgroundColor3 = P.Background, TextColor3 = P.Text, TextSize = Theme.Text.Tiny,
-            FontFace = Theme.Fonts.Mono, Text = "  shots 0  ·  hits 0  ·  LMB fire  ·  F stop",
+            FontFace = Theme.Fonts.Mono, Text = "  shots 0  ·  hits 0  ·  LMB fire  ·  RMB aim  ·  F stop",
             TextXAlignment = Enum.TextXAlignment.Left, Visible = false, ZIndex = 8,
             Parent = UI.stageHost }, { corner(4) })
         E.playStatsLbl = UI.playStats
@@ -54735,7 +55471,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             draftToggle(sc, side, "OvershootTravel", "Overshoot Along Flick", nextOrder())
             draftSlider(sc, side, "Deadzone", "Deadzone (px)", 0, 50, 0, nextOrder())
             draftSlider(sc, side, "Reaction", "Reaction (ms)", 0, 500, 0, nextOrder())
-            draftSlider(sc, side, "ReactionRamp", "Reaction Ramp (%)", 0, 100, 0, nextOrder())
+            draftSlider(sc, side, "ReactionRamp", "Reaction Ramp (%)", 0, 300, 0, nextOrder())
             draftSlider(sc, side, "Fatigue", "Fatigue (%)", 0, 100, 0, nextOrder())
             draftDropdown(sc, side, "Curve", "Pull Curve",
                 { "Snap", "Linear", "Ease In", "Ease Out", "Ease In-Out" }, nextOrder())
@@ -54747,7 +55483,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             draftSlider(sc, side, "HeadshotCap", "Headshot Cap (%)", 1, 100, 0, nextOrder())
             draftSlider(sc, side, "Spread", "Spread", 0, 20, 2, nextOrder())
             draftDropdown(sc, side, "SpreadUnit", "Spread Unit", { "Studs", "Degrees" }, nextOrder())
-            draftSlider(sc, side, "Bloom", "Bloom (%)", 0, 100, 0, nextOrder())
+            draftSlider(sc, side, "Bloom", "Bloom (%)", 0, 200, 0, nextOrder())
             draftDropdown(sc, side, "SpreadPattern", "Pattern",
                 { "Cone", "Horizontal", "Vertical", "Cross" }, nextOrder())
             draftToggle(sc, side, "ForceMiss", "Force Miss", nextOrder())
@@ -54761,7 +55497,9 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     local function buildPage()
         -- v2.1.1: full screen and opaque over everything, Koffee's HUD included. The
         -- Roblox topbar is CoreGui and cannot be covered, so the header starts below it.
-        local TOP = 40
+        -- v2.2.0: the real inset, not a guessed 40, so no dead band is left under it.
+        local TOP = math.max(math.floor(game:GetService("GuiService"):GetGuiInset().Y), 0)
+        local BODY = TOP + 58
         local page = new("Frame", {
             Name = "LegitEditor", Position = UDim2.fromOffset(0, 0),
             Size = UDim2.new(1, 0, 1, 0),
@@ -54866,28 +55604,50 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         closeBtn.MouseButton1Click:Connect(function() E.requestClose() end)
 
         -- body: kit left, stage centre, presets right
-        UI.left = new("Frame", { Position = UDim2.fromOffset(12, 98), Size = UDim2.new(0, 300, 1, -110),
+        UI.left = new("Frame", { Position = UDim2.fromOffset(12, BODY), Size = UDim2.new(0, 300, 1, -(BODY + 12)),
             BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.55, BorderSizePixel = 0,
             ZIndex = 91, Parent = page }, { corner(Theme.Radius.Large), stroke(P.BorderSubtle) })
         lbl(UI.left, "Kit", Theme.Text.Small, P.TextMuted, Theme.Fonts.Bold, 93)
             .Position = UDim2.fromOffset(12, 8)
         UI.right = new("Frame", { AnchorPoint = Vector2.new(1, 0),
-            Position = UDim2.new(1, -12, 0, 98), Size = UDim2.new(0, 280, 1, -110),
+            Position = UDim2.new(1, -12, 0, BODY), Size = UDim2.new(0, 280, 1, -(BODY + 12)),
             BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.55, BorderSizePixel = 0,
             ZIndex = 91, Parent = page }, { corner(Theme.Radius.Large), stroke(P.BorderSubtle) })
-        local center = new("Frame", { Position = UDim2.fromOffset(324, 98),
-            Size = UDim2.new(1, -628, 1, -110), BackgroundTransparency = 1, ZIndex = 91, Parent = page })
+        local center = new("Frame", { Position = UDim2.fromOffset(324, BODY),
+            Size = UDim2.new(1, -628, 1, -(BODY + 12)), BackgroundTransparency = 1,
+            ZIndex = 91, Parent = page })
 
         UI.stageHost = new("Frame", { Size = UDim2.new(1, 0, 1, -104), BackgroundTransparency = 1,
             ZIndex = 91, Parent = center })
+        -- v2.2.0: a rebuilt page owns a new stage host, so the old dock reference has
+        -- to go: exiting the sandbox used to reparent it into the destroyed page.
+        UI.stageHome, UI.stagePos0, UI.stageSize0 = nil, nil, nil
+        -- the cards went with the old page, so they are built again on demand
+        GR.built, GR.cards = false, {}
+        -- v2.2.0: the graphs page shares the middle column with the stage
+        UI.graphHost = new("ScrollingFrame", { Name = "Graphs", Visible = false,
+            Size = UDim2.new(1, 0, 1, -104), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 4, ScrollBarImageColor3 = P.TextFaint,
+            CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 91, Parent = center })
+        new("UIGridLayout", { CellSize = UDim2.new(0.5, -9, 0, 176),
+            CellPadding = UDim2.fromOffset(12, 12), SortOrder = Enum.SortOrder.LayoutOrder,
+            Parent = UI.graphHost })
+        new("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 8),
+            PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 12),
+            Parent = UI.graphHost })
         UI.stats = new("TextLabel", { Text = "", FontFace = Theme.Fonts.Mono,
             TextSize = Theme.Text.Tiny, TextColor3 = P.Text, BackgroundColor3 = P.Background,
             BackgroundTransparency = 0.25, TextXAlignment = Enum.TextXAlignment.Left,
-            AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 8, 1, -8),
-            Size = UDim2.fromOffset(320, 18), ZIndex = 4, Parent = UI.stageHost }, { corner(4) })
+            AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 8, 1, -8), Visible = false,
+            Size = UDim2.fromOffset(380, 18), ZIndex = 4, Parent = UI.stageHost }, { corner(4) })
+        -- v2.2.0: what the batch actually did, reaction holds and clean misses included
         E.onStats = function(s)
-            UI.stats.Text = string.format("  %s  ·  %d shots  ·  %d on target",
-                s.side, s.n, s.hits)
+            local t = string.format("  %s  ·  %d plotted  ·  %d on target", s.side, s.n, s.hits)
+            if (s.held or 0) > 0 then t = t .. "  ·  " .. s.held .. " held by reaction" end
+            if (s.clean or 0) > 0 then t = t .. "  ·  " .. s.clean .. " clean misses" end
+            UI.stats.Text = t
+            UI.stats.Visible = true
         end
 
         -- bottom strip: actions left, distance right
@@ -54934,6 +55694,14 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             Koffee.Sfx.play("delete")
         end)
         replayBtn.TextColor3 = P.TextMuted
+        UI.orbitBtn = w2("Orbit: on", 296, 86, function()
+            E.orbit = (E.orbit == false)
+            UI.orbitBtn.Text = "Orbit: " .. ((E.orbit ~= false) and "on" or "off")
+            Koffee.Sfx.play("tab")
+        end)
+        UI.viewBtn = w2("View: Stage", 386, 104, function()
+            E.setView(E.view == "Graphs" and "Stage" or "Graphs")
+        end)
 
         local distRow = slider(center, "Distance", 10, 60, E.sim.dist, 0, function(v)
             E.sim.dist = v
@@ -55050,6 +55818,9 @@ Shared.REPLACE_TABLES.RecoilByGun = true
 
     -- :: lifecycle :: ------------------------------------------------------
     local bindName
+    -- the rig is a kinematic flyer: the floor is a clamp at standing eye height and
+    -- the targets have no collision, so any distance can be walked to without snagging
+    local EYE = 5
     local play = { on = false, yaw = 0, pitch = 0, pos = Vector3.new(0, 6, 10), vel = Vector3.new() }
 
     -- the sandbox takes the whole screen: side panels and header step out of the way
@@ -55084,6 +55855,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     end
     local function exitStageFullscreen()
         if not UI.stageHost or not UI.stageHome then return end
+        if not UI.stageHost.Parent or not UI.stageHome.Parent then return end
         UI.stageHost.Parent = UI.stageHome
         UI.stageHost.Position = UI.stagePos0 or UDim2.fromOffset(0, 0)
         UI.stageHost.Size = UI.stageSize0 or UDim2.new(1, 0, 1, -104)
@@ -55102,6 +55874,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     local function stopPlay()
         if not play.on then return end
         play.on = false
+        play.rmb = false
         E.play = false
         UIS.MouseBehavior = Enum.MouseBehavior.Default
         UIS.MouseIconEnabled = true
@@ -55118,9 +55891,19 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         task.defer(exitStageFullscreen)
     end
 
+    -- arm the pull without a held button, and read the sandbox's own state: both
+    -- exist so a measurement can be taken instead of eyeballed.
+    function E.arm(v) play.rmb = v and true or false end
+    function E.playState()
+        return { on = play.on, rmb = play.rmb, yaw = play.yaw, pitch = play.pitch,
+            pos = play.pos }
+    end
+
     -- point the sandbox camera at a direction (used by tests and by future targets)
     function E.setPlayLook(dir)
-        if type(dir) ~= "Vector3" or dir.Magnitude < 1e-3 then return end
+        -- v2.2.0: typeof, not type: Luau answers "vector" for a Vector3, so this
+        -- guard rejected every direction and the function did nothing.
+        if typeof(dir) ~= "Vector3" or dir.Magnitude < 1e-3 then return end
         local u = dir.Unit
         play.yaw = math.atan2(-u.X, -u.Z)
         play.pitch = math.asin(math.clamp(u.Y, -1, 1))
@@ -55131,6 +55914,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         if not W.world then return end
         play.on = true
         E.play = true
+        E.setView("Stage")
         play.pos = Vector3.new(0, 6, 12)
         play.vel = Vector3.new()
         play.yaw, play.pitch = 0, -0.1
@@ -55141,8 +55925,9 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         if Koffee._clickGuard then Koffee._clickGuard.Visible = false end
         if UI.sandbox then UI.sandbox.bar.Visible = true; E.rebuildSandbox() end
         if UI.playStats then
-            E.playShots, E.playHits = 0, 0
-            UI.playStats.Text = "  shots 0  ·  hits 0  ·  LMB fire  ·  F stop"
+            E.playShots, E.playHits, E.playClean, E.playWide = 0, 0, 0, 0
+            E.playChance = nil
+            E.paintPlayStats()
             UI.playStats.Visible = true
         end
         if UI.aimDot then UI.aimDot.Visible = true end
@@ -55158,8 +55943,17 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             -- the sandbox owns the mouse here, so GUI-processed clicks still fire
             if input.UserInputType == Enum.UserInputType.MouseButton1 then
                 E.fireAtAim()
+            elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+                -- v2.2.0: RMB arms the aim pull. Held while firing it runs beside
+                -- silent: the pull moves the reticle, the redirect moves the bullet.
+                play.rmb = true
             elseif input.KeyCode == Enum.KeyCode.F then
                 stopPlay()
+            end
+        end)
+        play.upConn = play.upConn or UIS.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton2 then
+                play.rmb = false
             end
         end)
     end
@@ -55174,6 +55968,13 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         E.refreshStage()
         E.refreshGraph()
         E.paintPool()
+        E.view = "Stage"
+        if UI.stageHost then UI.stageHost.Visible = true end
+        if UI.graphHost then UI.graphHost.Visible = false end
+        if UI.viewBtn then UI.viewBtn.Text = "View: Stage" end
+        if UI.orbitBtn then
+            UI.orbitBtn.Text = "Orbit: " .. ((E.orbit ~= false) and "on" or "off")
+        end
         if UI.moveBtn then UI.moveBtn.Text = "Move: " .. tostring(E.sim.move) end
         if UI.countBtn then UI.countBtn.Text = "Targets: " .. tostring(E.sim.count) end
         if E.onMatch then pcall(E.onMatch, E.lastMatch) end
@@ -55202,12 +56003,45 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                 pcall(E.recoilRedraw)
             end
             if W.graph then W.graph.Visible = not play.on end
+            -- the docked stage's own slow sway, plus whatever the drag added
+            if not play.on and W.cam then
+                if E.orbit ~= false and os.clock() - (E.dragAt or 0) > 1 then
+                    E.orbitT = (E.orbitT or 0) + dt
+                end
+                -- the base angle is the framing the docked stage shipped with; the
+                -- sway is a few degrees either side of it, not a tour of the room
+                local focus = Vector3.new(0, 3.9, -22)
+                local a = 0.108 + math.sin((E.orbitT or 0) * 0.22) * 0.08 + (E.dragYaw or 0)
+                local el = math.clamp(0.06 + (E.dragPitch or 0), -0.3, 0.9)
+                local R = 31.7
+                W.cam.CFrame = CFrame.lookAt(focus + Vector3.new(
+                    math.sin(a) * R * math.cos(el), math.sin(el) * R,
+                    math.cos(a) * R * math.cos(el)), focus)
+            end
             if play.on and W.viewmodel then
                 W.viewmodel:PivotTo(W.cam.CFrame * VM_CF)
             end
             if not E._ringAt or os.clock() - E._ringAt > 0.066 then
                 E._ringAt = os.clock()
                 E.refreshStage()
+            end
+            -- the graphs follow the sliders: a redraw lands within a frame or two
+            if E.view == "Graphs" and (not E._grAt or os.clock() - E._grAt > 0.12) then
+                E._grAt = os.clock()
+                pcall(E.redrawGraphs)
+            end
+            -- the rows follow the kit when something outside the editor moves it
+            if not play.on and (not E._sigAt or os.clock() - E._sigAt > 0.4) then
+                E._sigAt = os.clock()
+                local sig = kitSig()
+                if E._sigStale then
+                    E._sigStale = false
+                elseif E.Live and E._sig and sig ~= E._sig then
+                    freshDraft()
+                    buildLeft()
+                    E.refreshStage()
+                end
+                E._sig = sig
             end
             if play.on and W.cam then
                 local dir = Vector3.new(0, 0, 0)
@@ -55220,12 +56054,44 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                 local move = yaw:VectorToWorldSpace(dir) * ((UIS:IsKeyDown(Enum.KeyCode.LeftShift)
                     and 18) or 9)
                 local vy = play.vel.Y - 24 * dt
-                if UIS:IsKeyDown(Enum.KeyCode.Space) and play.pos.Y <= 5.02 then vy = 12 end
+                if UIS:IsKeyDown(Enum.KeyCode.Space) and play.pos.Y <= EYE + 0.02 then vy = 12 end
                 play.pos = play.pos + move * dt + Vector3.new(0, vy * dt, 0)
-                if play.pos.Y < 5 then play.pos = Vector3.new(play.pos.X, 5, play.pos.Z); vy = 0 end
+                if play.pos.Y < EYE then
+                    play.pos = Vector3.new(play.pos.X, EYE, play.pos.Z)
+                    vy = 0
+                end
                 play.vel = Vector3.new(move.X, vy, move.Z)
                 play.pos = Vector3.new(math.clamp(play.pos.X, -20, 20), play.pos.Y,
                     math.clamp(play.pos.Z, -50, 16))
+                -- v2.2.0: the armed pull, through the live aimbot's own aimStep,
+                -- turning this camera instead of the game's.
+                if play.rmb then
+                    local AL = simKit("aim")
+                    local t = pickTarget()
+                    local zone = pickZone(AL, t, "aim")
+                    if zone then
+                        local cfp = W.cam.CFrame
+                        local st = Shared.LegitSim.aimStep(AL, {
+                            id = t, pos = zone.Position, from = play.pos,
+                            right = cfp.RightVector, up = cfp.UpVector,
+                            center = stageCenter(), distCap = E.rangeCap(),
+                            now = os.clock(), project = stageProject,
+                        })
+                        E.lastAim = st
+                        if not st.hold then
+                            local aX, aY = Shared.LegitSim.sens(C.Aim.Sensitivity,
+                                C.Aim.Smooth)
+                            aX, aY = aX * st.factor, aY * st.factor
+                            local gy, gp = Shared.LegitSim.lookAngles(st.pos - play.pos)
+                            play.yaw = play.yaw
+                                + Shared.LegitSim.shortestAngle(gy - play.yaw) * aX
+                            play.pitch = math.clamp(play.pitch + (gp - play.pitch) * aY,
+                                -1.1, 1.1)
+                        end
+                    end
+                else
+                    E.lastAim = nil
+                end
                 W.cam.CFrame = CFrame.fromEulerAnglesYXZ(play.pitch, play.yaw, 0) + play.pos
             end
         end)
