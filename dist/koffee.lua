@@ -1,7 +1,7 @@
--- koffee v2.1.4
+-- koffee v2.1.5
 
 local Koffee = {}
-Koffee.Version = "2.1.4"
+Koffee.Version = "2.1.5"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -54168,6 +54168,16 @@ Shared.REPLACE_TABLES.RecoilPattern = true
     end
     E._ray = rayTargets
 
+    -- where the viewmodel sits relative to the sandbox camera, shared by the loop
+    -- and the muzzle so the tracer leaves the barrel, not the eye
+    local VM_CF = CFrame.new(0.55, -0.55, -2.4) * CFrame.Angles(0, math.pi, 0)
+    function E.vmMuzzle()
+        if not (W.viewmodel and W.cam) then return nil end
+        local hz = ((W.vmSize and W.vmSize.Z) or 1.4) * 0.5
+        local hy = ((W.vmSize and W.vmSize.Y) or 1) * 0.12
+        return (W.cam.CFrame * VM_CF * CFrame.new(0, hy, hz)).Position
+    end
+
     local function drawTracer(a, b)
         local sa, sb = project(a), project(b)
         if not sa or not sb then return end
@@ -54246,7 +54256,9 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         local col = (E.mode == "Aimbot") and Color3.fromRGB(255, 238, 224)
             or Color3.fromRGB(205, 232, 255)
         recordMark(p, col)
-        drawTracer(o + dir * 1.2 - cf.UpVector * 0.35, p)
+        local muzzle = E.vmMuzzle() or (o + dir * 1.2 - cf.UpVector * 0.35)
+        E.lastTracer = { a = muzzle, b = p }
+        drawTracer(muzzle, p)
         burst(p)
         if hit then hitMarker() end
         E.lastShot = { hit = hit ~= nil, at = p }
@@ -54944,6 +54956,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         local model = new("Model", { Name = "Viewmodel", Parent = W.world })
         buildKim(decodeKim(gun.kim), model, 1.0)
         W.viewmodel = model
+        W.vmSize = select(2, model:GetBoundingBox())
         if W.gunModel then W.gunModel:PivotTo(CFrame.new(0, -40, 0)) end
     end
     local function enterStageFullscreen()
@@ -55078,8 +55091,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
             tickTargets(os.clock())
             if W.graph then W.graph.Visible = not play.on end
             if play.on and W.viewmodel then
-                W.viewmodel:PivotTo(W.cam.CFrame * CFrame.new(0.55, -0.55, -2.4)
-                    * CFrame.Angles(0, math.pi, 0))
+                W.viewmodel:PivotTo(W.cam.CFrame * VM_CF)
             end
             if not E._ringAt or os.clock() - E._ringAt > 0.066 then
                 E._ringAt = os.clock()
