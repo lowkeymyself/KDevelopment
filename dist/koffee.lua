@@ -1,7 +1,7 @@
--- koffee v2.1.1
+-- koffee v2.1.2
 
 local Koffee = {}
-Koffee.Version = "2.1.1"
+Koffee.Version = "2.1.2"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -53922,12 +53922,12 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         -- the gun: first preset, on a holder aimed down the lane
         local model = new("Model", { Name = "Gun", Parent = world })
         local gun = E.GUNS[1]
-        W.gunParts = buildKim(decodeKim(gun.kim), model, 4.2)
+        W.gunParts = buildKim(decodeKim(gun.kim), model, 3.2)
         local _, bsize = model:GetBoundingBox()
-        model:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)))
+        model:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)) * CFrame.Angles(0, math.pi, 0))
         W.gunModel = model
         W.gunSize = bsize
-        W.muzzle = (model:GetPivot() * CFrame.new(0, 0, -bsize.Z * 0.5)).Position
+        W.muzzle = (model:GetPivot() * CFrame.new(0, 0, bsize.Z * 0.5)).Position
         W.aimPoint = Vector3.new(0, 4.3, -34)
         W.muzzleMarker = part(world, Vector3.new(0.28, 0.28, 0.28), CFrame.new(W.muzzle), P.Accent, Enum.PartType.Ball)
 
@@ -54159,11 +54159,11 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         if not gun or not W.world then return end
         if W.gunModel then pcall(function() W.gunModel:Destroy() end) end
         local model = new("Model", { Name = "Gun", Parent = W.world })
-        W.gunParts = buildKim(decodeKim(gun.kim), model, 4.2)
+        W.gunParts = buildKim(decodeKim(gun.kim), model, 3.2)
         local _, bsize = model:GetBoundingBox()
-        model:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)))
+        model:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)) * CFrame.Angles(0, math.pi, 0))
         W.gunModel, W.gunSize = model, bsize
-        W.muzzle = (model:GetPivot() * CFrame.new(0, 0, -bsize.Z * 0.5)).Position
+        W.muzzle = (model:GetPivot() * CFrame.new(0, 0, bsize.Z * 0.5)).Position
         if W.muzzleMarker then W.muzzleMarker.CFrame = CFrame.new(W.muzzle) end
         E.gunIndex = index
         E.refreshStage()
@@ -54420,6 +54420,11 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         local side = (E.mode == "Aimbot") and "aim" or "silent"
         local keys = (E.mode == "Aimbot") and { "Jitter", "Reaction", "Fatigue" }
             or { "Jitter", "Spread", "Bloom" }
+        local hint = lbl(sb.list, "F: stop  ·  LMB: fire", Theme.Text.Tiny, P.TextFaint,
+            Theme.Fonts.Regular, 8)
+        hint.Size = UDim2.fromOffset(120, 20)
+        hint.TextXAlignment = Enum.TextXAlignment.Left
+        sb.btns[#sb.btns + 1] = hint
         for _, key in ipairs(keys) do
             local b = new("TextButton", { Text = key, FontFace = Theme.Fonts.Medium,
                 TextSize = Theme.Text.Small, TextColor3 = P.Accent, AutoButtonColor = false,
@@ -54513,23 +54518,28 @@ Shared.REPLACE_TABLES.RecoilPattern = true
     end
 
     local function buildPage()
-        -- v2.1.0: full screen, above everything. A shell-parented page vanished when
-        -- Glass swapped its content container, and a window-sized page cannot show a
-        -- spray pattern worth looking at.
-        -- screen ignores the inset, so the page starts below the Roblox topbar
-        local insetY = game:GetService("GuiService"):GetGuiInset().Y
+        -- v2.1.1: full screen and opaque over everything, Koffee's HUD included. The
+        -- Roblox topbar is CoreGui and cannot be covered, so the header starts below it.
+        local TOP = 40
         local page = new("Frame", {
-            Name = "LegitEditor", Position = UDim2.fromOffset(0, insetY),
-            Size = UDim2.new(1, 0, 1, -insetY),
+            Name = "LegitEditor", Position = UDim2.fromOffset(0, 0),
+            Size = UDim2.new(1, 0, 1, 0),
             BackgroundColor3 = P.Panel, BackgroundTransparency = 0, BorderSizePixel = 0,
             Visible = false, ZIndex = 60, Parent = screen,
         })
         UI.page = page
+        -- swallows every click that is not on a control, so nothing behind is reachable
+        local block = new("TextButton", { Name = "LedBlock", Text = "", AutoButtonColor = false,
+            BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, 0, 1, 0),
+            ZIndex = 61, Parent = page })
+        block.MouseButton1Click:Connect(function() end)
+        UI.block = block
         local sc = new("UIScale", { Scale = 1, Parent = page })
         UI.scale = sc
 
         -- header
-        local head = new("Frame", { Size = UDim2.new(1, 0, 0, 46), BackgroundTransparency = 1,
+        local head = new("Frame", { Position = UDim2.fromOffset(0, TOP),
+            Size = UDim2.new(1, 0, 0, 46), BackgroundTransparency = 1,
             ZIndex = 91, Parent = page })
         UI.header = head
         new("Frame", { Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1),
@@ -54610,17 +54620,17 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         closeBtn.MouseButton1Click:Connect(function() E.requestClose() end)
 
         -- body: kit left, stage centre, presets right
-        UI.left = new("Frame", { Position = UDim2.fromOffset(12, 58), Size = UDim2.new(0, 300, 1, -70),
+        UI.left = new("Frame", { Position = UDim2.fromOffset(12, 98), Size = UDim2.new(0, 300, 1, -110),
             BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.55, BorderSizePixel = 0,
             ZIndex = 91, Parent = page }, { corner(Theme.Radius.Large), stroke(P.BorderSubtle) })
         lbl(UI.left, "Kit", Theme.Text.Small, P.TextMuted, Theme.Fonts.Bold, 93)
             .Position = UDim2.fromOffset(12, 8)
         UI.right = new("Frame", { AnchorPoint = Vector2.new(1, 0),
-            Position = UDim2.new(1, -12, 0, 58), Size = UDim2.new(0, 280, 1, -70),
+            Position = UDim2.new(1, -12, 0, 98), Size = UDim2.new(0, 280, 1, -110),
             BackgroundColor3 = P.PanelElevated, BackgroundTransparency = 0.55, BorderSizePixel = 0,
             ZIndex = 91, Parent = page }, { corner(Theme.Radius.Large), stroke(P.BorderSubtle) })
-        local center = new("Frame", { Position = UDim2.fromOffset(324, 58),
-            Size = UDim2.new(1, -628, 1, -70), BackgroundTransparency = 1, ZIndex = 91, Parent = page })
+        local center = new("Frame", { Position = UDim2.fromOffset(324, 98),
+            Size = UDim2.new(1, -628, 1, -110), BackgroundTransparency = 1, ZIndex = 91, Parent = page })
 
         UI.stageHost = new("Frame", { Size = UDim2.new(1, 0, 1, -104), BackgroundTransparency = 1,
             ZIndex = 91, Parent = center })
@@ -54802,7 +54812,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         if W.viewmodel then pcall(function() W.viewmodel:Destroy() end) end
         local gun = E.GUNS[E.gunIndex or 1]
         local model = new("Model", { Name = "Viewmodel", Parent = W.world })
-        buildKim(decodeKim(gun.kim), model, 1.5)
+        buildKim(decodeKim(gun.kim), model, 1.0)
         W.viewmodel = model
         if W.gunModel then W.gunModel:PivotTo(CFrame.new(0, -40, 0)) end
     end
@@ -54834,7 +54844,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         if W.viewmodel then pcall(function() W.viewmodel:Destroy() end) end
         W.viewmodel = nil
         if W.gunModel then
-            W.gunModel:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)))
+            W.gunModel:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)) * CFrame.Angles(0, math.pi, 0))
         end
     end
 
@@ -54849,9 +54859,10 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         if UI.playBtn then UI.playBtn.Text = "Play" end
         if UI.sandbox then UI.sandbox.bar.Visible = false end
         if W.gunModel then
-            W.gunModel:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)))
+            W.gunModel:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)) * CFrame.Angles(0, math.pi, 0))
         end
-        exitStageFullscreen()
+        -- reparenting is locked while an input callback is running, so defer it
+        task.defer(exitStageFullscreen)
     end
 
     function E.togglePlay()
@@ -54862,7 +54873,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         play.pos = Vector3.new(0, 6, 12)
         play.vel = Vector3.new()
         play.yaw, play.pitch = 0, -0.1
-        enterStageFullscreen()
+        task.defer(enterStageFullscreen)
         UIS.MouseBehavior = Enum.MouseBehavior.LockCenter
         UIS.MouseIconEnabled = false
         holdMouseFree(false)
@@ -54875,11 +54886,12 @@ Shared.REPLACE_TABLES.RecoilPattern = true
                 play.pitch = math.clamp(play.pitch - input.Delta.Y * 0.0032, -1.1, 1.1)
             end
         end)
-        play.fireConn = play.fireConn or UIS.InputBegan:Connect(function(input, gp)
+        play.fireConn = play.fireConn or UIS.InputBegan:Connect(function(input)
             if not play.on then return end
-            if input.UserInputType == Enum.UserInputType.MouseButton1 and not gp then
+            -- the sandbox owns the mouse here, so GUI-processed clicks still fire
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
                 E.fireAtAim()
-            elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+            elseif input.KeyCode == Enum.KeyCode.F then
                 stopPlay()
             end
         end)
@@ -54900,8 +54912,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         if E.onMatch then pcall(E.onMatch, E.lastMatch) end
         UI.page.Visible = true
         local vp = workspace.CurrentCamera.ViewportSize
-        local ins = game:GetService("GuiService"):GetGuiInset().Y
-        UI.page.Size = UDim2.fromOffset(vp.X, vp.Y - ins)
+        UI.page.Size = UDim2.fromOffset(vp.X, vp.Y)
         if Koffee.Anim.spot("AnimWindow") then
             UI.scale.Scale = 0.985
             tween(UI.scale, Theme.Animation.WindowFade, { Scale = 1 })
@@ -54921,7 +54932,8 @@ Shared.REPLACE_TABLES.RecoilPattern = true
             tickTargets(os.clock())
             if W.graph then W.graph.Visible = not play.on end
             if play.on and W.viewmodel then
-                W.viewmodel:PivotTo(W.cam.CFrame * CFrame.new(0.75, -0.75, -1.1))
+                W.viewmodel:PivotTo(W.cam.CFrame * CFrame.new(0.55, -0.55, -2.4)
+                    * CFrame.Angles(0, math.pi, 0))
             end
             if not E._ringAt or os.clock() - E._ringAt > 0.066 then
                 E._ringAt = os.clock()
