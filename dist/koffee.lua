@@ -1,7 +1,7 @@
--- koffee v2.1.8
+-- koffee v2.1.9
 
 local Koffee = {}
-Koffee.Version = "2.1.8"
+Koffee.Version = "2.1.9"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -53585,10 +53585,12 @@ end)()
 Shared.LegitEditor = { Live = true, GunAware = false, GunPreset = "", LegitPresets = {} }
 registerConfig("legit_editor", Shared.LegitEditor)
 -- v2.1.0: pattern-based recoil control, drawn in the editor. Off by default.
-Shared.Combat.Recoil = { Enabled = false, Strength = 100, RecoilPattern = {} }
+Shared.Combat.Recoil = { Enabled = false, PerGun = false, Strength = 100, RecoilPattern = {},
+    RecoilByGun = {} }
 registerConfig("combat_recoil", Shared.Combat.Recoil)
 Shared.REPLACE_TABLES.LegitPresets = true
 Shared.REPLACE_TABLES.RecoilPattern = true
+Shared.REPLACE_TABLES.RecoilByGun = true
 ;(function()
     local E = Shared.LegitEditor
     local C = Shared.Combat
@@ -54446,7 +54448,7 @@ Shared.REPLACE_TABLES.RecoilPattern = true
     -- the gun's behaviour, not the aim method's.
     local function buildRecoil(parent, order)
         local R = C.Recoil
-        local card = new("Frame", { Size = UDim2.new(1, 0, 0, 286), BackgroundTransparency = 1,
+        local card = new("Frame", { Size = UDim2.new(1, 0, 0, 432), BackgroundTransparency = 1,
             LayoutOrder = order, ZIndex = 92, Parent = parent })
         lbl(card, "Recoil Pattern", Theme.Text.Small, P.Text, Theme.Fonts.Medium, 93)
             .Size = UDim2.new(0.6, 0, 0, 16)
@@ -54471,46 +54473,101 @@ Shared.REPLACE_TABLES.RecoilPattern = true
                 BackgroundColor3 = (f == 0.5) and P.Border or P.BorderSubtle,
                 BorderSizePixel = 0, BackgroundTransparency = (f == 0.5) and 0.15 or 0.6,
                 ZIndex = 94, Parent = canvas })
+            new("Frame", { Position = UDim2.new(f, 0, 0, 0), Size = UDim2.new(0, 1, 1, 0),
+                BackgroundColor3 = (f == 0.5) and P.Border or P.BorderSubtle,
+                BorderSizePixel = 0, BackgroundTransparency = (f == 0.5) and 0.15 or 0.7,
+                ZIndex = 94, Parent = canvas })
         end
-        local dots, lines = {}, {}
-        local function redraw()
-            for _, d in ipairs(dots) do pcall(function() d:Destroy() end) end
-            for _, l in ipairs(lines) do pcall(function() l:Destroy() end) end
-            dots, lines = {}, {}
-            local pat = R.RecoilPattern or {}
-            local w, h = canvas.AbsoluteSize.X, canvas.AbsoluteSize.Y
-            if w < 8 or h < 8 then return end
-            local span = math.max(#pat - 1, 1)
-            local prev
-            for i, pt in ipairs(pat) do
-                local x = 6 + (w - 12) * ((i - 1) / span)
-                local y = h * 0.5 - (tonumber(pt.y) or 0) / 12 * (h * 0.42)
-                dots[#dots + 1] = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
-                    Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(5, 5),
-                    BackgroundColor3 = P.Accent, BorderSizePixel = 0, ZIndex = 95,
-                    Parent = canvas }, { pillCorner() })
-                if prev then
-                    local dx, dy = x - prev[1], y - prev[2]
-                    local len = math.sqrt(dx * dx + dy * dy)
-                    if len > 0.5 then
-                        lines[#lines + 1] = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
-                            Position = UDim2.fromOffset((x + prev[1]) * 0.5, (y + prev[2]) * 0.5),
-                            Size = UDim2.fromOffset(len, 1), BackgroundColor3 = P.Accent,
-                            BackgroundTransparency = 0.45, BorderSizePixel = 0,
-                            Rotation = math.deg(math.atan2(dy, dx)), ZIndex = 94, Parent = canvas })
+        -- pattern key: the held gun when Per Gun is on, else the global pattern
+        local function patKey()
+            local tool = PLAYER.Character and PLAYER.Character:FindFirstChildOfClass("Tool")
+            return (tool and tool.Name) or "default"
+        end
+        local function patternTable(create)
+            if not R.PerGun then
+                R.RecoilPattern = R.RecoilPattern or {}
+                return R.RecoilPattern, "default"
+            end
+            local key = patKey()
+            R.RecoilByGun = R.RecoilByGun or {}
+            if type(R.RecoilByGun[key]) ~= "table" and create then R.RecoilByGun[key] = {} end
+            return R.RecoilByGun[key] or {}, key
+        end
+        E.patternTable = patternTable
+        -- a reusable path renderer: {x,y} in degrees, +-6 across the box
+        local function makePath(parent, col, z, thick, alpha)
+            local items = {}
+            return function(pat)
+                for _, it in ipairs(items) do pcall(function() it:Destroy() end) end
+                table.clear(items)
+                local w, h = parent.AbsoluteSize.X, parent.AbsoluteSize.Y
+                if w < 8 or h < 8 then return end
+                local prev
+                for _, pt in ipairs(pat or {}) do
+                    local x = 6 + (w - 12) * (0.5 + (tonumber(pt.x) or 0) / 12)
+                    local y = 6 + (h - 12) * (0.5 - (tonumber(pt.y) or 0) / 12)
+                    items[#items + 1] = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+                        Position = UDim2.fromOffset(x, y),
+                        Size = UDim2.fromOffset(thick + 1, thick + 1), BackgroundColor3 = col,
+                        BorderSizePixel = 0, ZIndex = z, Parent = parent }, { pillCorner() })
+                    if prev then
+                        local dx, dy = x - prev[1], y - prev[2]
+                        local len = math.sqrt(dx * dx + dy * dy)
+                        if len > 0.5 then
+                            items[#items + 1] = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+                                Position = UDim2.fromOffset((x + prev[1]) * 0.5, (y + prev[2]) * 0.5),
+                                Size = UDim2.fromOffset(len, thick), BackgroundColor3 = col,
+                                BackgroundTransparency = alpha, BorderSizePixel = 0,
+                                Rotation = math.deg(math.atan2(dy, dx)), ZIndex = z - 1,
+                                Parent = parent })
+                        end
                     end
+                    prev = { x, y }
                 end
-                prev = { x, y }
             end
         end
-        local drawing, lastX = false, 0
+        -- spray graph: the pattern and what the camera actually did, same axes
+        local graph = new("Frame", { Position = UDim2.fromOffset(0, 314),
+            Size = UDim2.new(1, -2, 0, 96), BackgroundColor3 = P.Background,
+            BackgroundTransparency = 0.15, BorderSizePixel = 0, ClipsDescendants = true,
+            ZIndex = 93, Parent = card }, { corner(5), stroke(P.BorderSubtle) })
+        for _, f in ipairs({ 0.5 }) do
+            new("Frame", { Position = UDim2.new(0, 0, f, 0), Size = UDim2.new(1, 0, 0, 1),
+                BackgroundColor3 = P.Border, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, ZIndex = 94, Parent = graph })
+            new("Frame", { Position = UDim2.new(f, 0, 0, 0), Size = UDim2.new(0, 1, 1, 0),
+                BackgroundColor3 = P.Border, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, ZIndex = 94, Parent = graph })
+        end
+        local drawPattern = makePath(canvas, P.Accent, 95, 1, 0.35)
+        local drawGhost = makePath(graph, P.Accent, 94, 1, 0.6)
+        local drawActual = makePath(graph, Color3.fromRGB(205, 232, 255), 95, 2, 0.2)
+        local keyLbl = lbl(card, "", Theme.Text.Tiny, P.TextMuted, Theme.Fonts.Mono, 93)
+        keyLbl.Position = UDim2.fromOffset(2, 296)
+        keyLbl.Size = UDim2.new(1, 0, 0, 14)
+        local caption = lbl(card, "spray  ·  pattern", Theme.Text.Tiny, P.TextFaint,
+            Theme.Fonts.Regular, 93)
+        caption.Position = UDim2.fromOffset(2, 414)
+        caption.Size = UDim2.new(1, 0, 0, 14)
+        local function redraw()
+            local pat, key = patternTable(false)
+            drawPattern(pat)
+            drawGhost(pat)
+            drawActual(E.spray or {})
+            keyLbl.Text = string.format("pattern: %s  ·  %d points", key, #pat)
+            caption.Text = "spray  ·  pattern (orange)  ·  actual (blue)"
+        end
+        E.recoilRedraw = redraw
+        local drawing, lastX, lastY = false, 0, 0
         local insetY = game:GetService("GuiService"):GetGuiInset().Y
-        local function sample(absY)
+        local function sample(absX, absY)
+            local w = math.max(canvas.AbsoluteSize.X, 1)
             local h = math.max(canvas.AbsoluteSize.Y, 1)
-            local rel = math.clamp((absY - canvas.AbsolutePosition.Y) / h, 0, 1)
-            R.RecoilPattern = R.RecoilPattern or {}
-            R.RecoilPattern[#R.RecoilPattern + 1] = { y = (0.5 - rel) * 12 }
-            if #R.RecoilPattern > 64 then table.remove(R.RecoilPattern, 1) end
+            local rx = math.clamp((absX - canvas.AbsolutePosition.X) / w, 0, 1)
+            local ry = math.clamp((absY - canvas.AbsolutePosition.Y) / h, 0, 1)
+            local pat = patternTable(true)
+            pat[#pat + 1] = { x = (rx - 0.5) * 12, y = (0.5 - ry) * 12 }
+            while #pat > 64 do table.remove(pat, 1) end
             redraw()
         end
         local hit = new("TextButton", { Text = "", AutoButtonColor = false,
@@ -54519,33 +54576,40 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         hit.InputBegan:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
             drawing = true
-            lastX = input.Position.X
-            R.RecoilPattern = {}
-            sample(input.Position.Y - insetY)
+            lastX, lastY = input.Position.X, input.Position.Y
+            local pat = patternTable(true)
+            for i = #pat, 1, -1 do pat[i] = nil end
+            sample(input.Position.X, input.Position.Y - insetY)
         end)
         hit.InputChanged:Connect(function(input)
             if not drawing then return end
             if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
-            if math.abs(input.Position.X - lastX) < 5 then return end
-            lastX = input.Position.X
-            sample(input.Position.Y - insetY)
+            if math.abs(input.Position.X - lastX) < 4
+                and math.abs(input.Position.Y - lastY) < 4 then return end
+            lastX, lastY = input.Position.X, input.Position.Y
+            sample(input.Position.X, input.Position.Y - insetY)
         end)
         hit.InputEnded:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 then drawing = false end
         end)
+        local function clearPattern()
+            local pat = patternTable(true)
+            for i = #pat, 1, -1 do pat[i] = nil end
+            return pat
+        end
         local clearB = button(card, "Clear", 56, 20, 93)
         clearB.Position = UDim2.fromOffset(0, 244)
         clearB.MouseButton1Click:Connect(function()
-            R.RecoilPattern = {}
+            clearPattern()
             redraw()
             Koffee.Sfx.play("delete")
         end)
         local climbB = button(card, "Climb", 56, 20, 93)
         climbB.Position = UDim2.fromOffset(60, 244)
         climbB.MouseButton1Click:Connect(function()
-            R.RecoilPattern = {}
+            local pat = clearPattern()
             for i = 1, 24 do
-                R.RecoilPattern[i] = { y = 0.12 * i + math.random() * 0.18 }
+                pat[i] = { x = (math.random() - 0.5) * 0.25, y = 0.12 * i + math.random() * 0.12 }
             end
             redraw()
             Koffee.Sfx.play("click")
@@ -54553,14 +54617,21 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         local pullB = button(card, "Pull", 54, 20, 93)
         pullB.Position = UDim2.fromOffset(120, 244)
         pullB.MouseButton1Click:Connect(function()
-            R.RecoilPattern = {}
+            local pat = clearPattern()
             for i = 1, 24 do
                 local t = i / 24
-                R.RecoilPattern[i] = { y = math.sin(t * math.pi) * 3 + math.random() * 0.15 }
+                pat[i] = { x = (math.random() - 0.5) * 0.2,
+                    y = math.sin(t * math.pi) * 2.6 + math.random() * 0.12 }
             end
             redraw()
             Koffee.Sfx.play("click")
         end)
+        local perGun = configCheckbox(card, "Per Gun", R.PerGun == true, function(v)
+            R.PerGun = v
+            redraw()
+        end)
+        perGun.row.Position = UDim2.fromOffset(0, 268)
+        perGun.row.Size = UDim2.new(1, 0, 0, 24)
         lbl(card, "drag the box to draw", Theme.Text.Tiny, P.TextFaint,
             Theme.Fonts.Regular, 93).Position = UDim2.fromOffset(182, 248)
         task.defer(redraw)
@@ -55126,6 +55197,10 @@ Shared.REPLACE_TABLES.RecoilPattern = true
             end
             -- targets move whether or not you are playing, and the ring follows
             tickTargets(os.clock())
+            if E.recoilRedraw and (not E._recAt or os.clock() - E._recAt > 0.3) then
+                E._recAt = os.clock()
+                pcall(E.recoilRedraw)
+            end
             if W.graph then W.graph.Visible = not play.on end
             if play.on and W.viewmodel then
                 W.viewmodel:PivotTo(W.cam.CFrame * VM_CF)
@@ -55216,18 +55291,50 @@ Shared.REPLACE_TABLES.RecoilPattern = true
     -- recoil consumer: the pattern pulls against the game's kick, one step per shot
     local recIdx, recAt = 0, 0
     local recComp = { yaw = 0, pitch = 0 }
+    local sprayBase, sprayAt
+    E.spray = {}
+    local function sprayAdd(now)
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        local look = cam.CFrame.LookVector
+        local yaw = math.deg(math.atan2(-look.X, -look.Z))
+        local pitch = math.deg(math.asin(math.clamp(look.Y, -1, 1)))
+        if not sprayBase or now - (sprayAt or 0) > 0.6 then
+            sprayBase = { yaw = yaw, pitch = pitch }
+            E.spray = {}
+        end
+        sprayAt = now
+        -- pattern space: x is right positive, y is up positive
+        E.spray[#E.spray + 1] = { x = -(yaw - sprayBase.yaw), y = pitch - sprayBase.pitch }
+        while #E.spray > 96 do table.remove(E.spray, 1) end
+    end
+    function E.patternFor(name)
+        local R = C.Recoil
+        if R.PerGun and name and type(R.RecoilByGun) == "table" then
+            local p = R.RecoilByGun[name]
+            if type(p) == "table" and #p > 0 then return p end
+        end
+        return R.RecoilPattern
+    end
     E.onShot = function()
         local R = C.Recoil
-        if not R or not R.Enabled then return end
-        local pat = R.RecoilPattern
-        if type(pat) ~= "table" or #pat == 0 then return end
+        if not R then return end
+        local tool = PLAYER.Character and PLAYER.Character:FindFirstChildOfClass("Tool")
         local now = os.clock()
+        -- the spray graph records even with the module off, so it can be compared
+        sprayAdd(now)
+        if not R.Enabled then return end
+        local pat = E.patternFor(tool and tool.Name)
+        if type(pat) ~= "table" or #pat == 0 then return end
         if now - recAt > 0.6 then recIdx = 0 end
         recAt = now
         recIdx = math.min(recIdx + 1, #pat)
-        local cur = tonumber(pat[recIdx] and pat[recIdx].y) or 0
-        local prev = tonumber(pat[recIdx - 1] and pat[recIdx - 1].y) or 0
-        recComp.pitch = recComp.pitch + (cur - prev) * ((tonumber(R.Strength) or 100) / 100)
+        local k = (tonumber(R.Strength) or 100) / 100
+        local cur = pat[recIdx] or {}
+        local prev = pat[recIdx - 1] or {}
+        recComp.pitch = recComp.pitch + ((tonumber(cur.y) or 0) - (tonumber(prev.y) or 0)) * k
+        recComp.yaw = recComp.yaw + ((tonumber(cur.x) or 0) - (tonumber(prev.x) or 0)) * k
+        if E.recoilRedraw then pcall(E.recoilRedraw) end
     end
     if Koffee.Stats and Koffee.Stats.shot then
         local oldShot = Koffee.Stats.shot
@@ -55246,7 +55353,8 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         local dp, dy = recComp.pitch * a, recComp.yaw * a
         recComp.pitch -= dp
         recComp.yaw -= dy
-        cam.CFrame = cam.CFrame * CFrame.Angles(-math.rad(dp), -math.rad(dy), 0)
+        -- pitch down for climb, yaw left for a rightward kick
+        cam.CFrame = cam.CFrame * CFrame.Angles(-math.rad(dp), math.rad(dy), 0)
     end)
 
     -- the window closing must never leave the sandbox holding the mouse
