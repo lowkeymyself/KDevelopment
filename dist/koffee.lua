@@ -1,7 +1,7 @@
--- koffee v2.1.7
+-- koffee v2.1.8
 
 local Koffee = {}
-Koffee.Version = "2.1.7"
+Koffee.Version = "2.1.8"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -54059,34 +54059,19 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         return Shared.LegitSim.spread(d.Spread, d.SpreadUnit, dist, d.Bloom, 0, d.SpreadPattern)
     end
 
-    -- Project a world point into the viewport's own pixel space. WorldToViewportPoint
-    -- measures the real camera, so a ViewportFrame camera needs this instead.
-    local function project(p)
-        local cam, ov = W.cam, W.overlay
-        if not cam or not ov then return nil end
-        local rel = cam.CFrame:PointToObjectSpace(p)
-        local z = -rel.Z
-        if z <= 0.05 then return nil end
-        local w, h = ov.AbsoluteSize.X, ov.AbsoluteSize.Y
-        if w < 2 or h < 2 then return nil end
-        local ty = math.tan(math.rad(cam.FieldOfView) * 0.5)
-        local tx = ty * (w / h)
-        return Vector2.new((rel.X / (z * tx) * 0.5 + 0.5) * w, (0.5 - rel.Y / (z * ty) * 0.5) * h)
-    end
-
-    -- impact dots are 2D on purpose: a 0.3-stud part is a single pixel out there
+    -- impacts are world geometry, not screen dots: they hold their place when the
+    -- camera moves and they sit on the target instead of floating over it
     local function addMark(p, col)
-        local s = project(p)
-        if not s then return end
-        local dot = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromOffset(s.X, s.Y), Size = UDim2.fromOffset(3, 3),
-            BackgroundColor3 = col, BorderSizePixel = 0, ZIndex = 3, Parent = W.overlay },
-            { pillCorner() })
+        local dot = part(W.world, Vector3.new(0.34, 0.34, 0.1), CFrame.new(p), col,
+            Enum.PartType.Ball)
+        dot.Material = Enum.Material.Neon
+        dot.Transparency = 0.05
         W.marks[#W.marks + 1] = dot
         while #W.marks > 400 do
             local old = table.remove(W.marks, 1)
             if old then pcall(function() old:Destroy() end) end
         end
+        return dot
     end
 
     -- a shot that also goes into the replay tape
@@ -54192,43 +54177,62 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         return best
     end
 
-    -- a shot tracer: thin, drawn from the barrel to the impact
+    -- a shot tracer: a real beam from the barrel to the impact
     local TRACER_LIFE = 0.12
     local function drawTracer(a, b)
-        local sa, sb = project(a), project(b)
-        if not sa or not sb then return end
-        local dx, dy = sb.X - sa.X, sb.Y - sa.Y
-        local len = math.sqrt(dx * dx + dy * dy)
-        if len < 1 then return end
-        local f = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromOffset((sa.X + sb.X) * 0.5, (sa.Y + sb.Y) * 0.5),
-            Size = UDim2.fromOffset(len, 1), BackgroundColor3 = Color3.fromRGB(255, 236, 205),
-            BackgroundTransparency = 0.25, BorderSizePixel = 0,
-            Rotation = math.deg(math.atan2(dy, dx)), ZIndex = 3, Parent = W.overlay })
+        local d = b - a
+        local len = d.Magnitude
+        if len < 0.1 then return end
+        local beam = part(W.world, Vector3.new(0.14, 0.14, len),
+            CFrame.lookAt(a + d * 0.5, b), Color3.fromRGB(255, 236, 205))
+        beam.Material = Enum.Material.Neon
+        beam.Transparency = 0.1
+        beam.CanCollide = false
         local life = getgenv().KoffeeDebugTracer and 6 or TRACER_LIFE
-        task.delay(life, function() pcall(function() f:Destroy() end) end)
+        task.delay(life, function() pcall(function() beam:Destroy() end) end)
     end
 
+    -- impact burst in the world: a growing ball and a ring of segments facing the shot
     local function burst(p)
-        local s = project(p)
-        if not s then return end
-        local ring = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromOffset(s.X, s.Y), Size = UDim2.fromOffset(5, 5),
-            BackgroundTransparency = 1, ZIndex = 4, Parent = W.overlay },
-            { pillCorner(), new("UIStroke", { Thickness = 2,
-                Color = Color3.fromRGB(255, 176, 116), Transparency = 0.05 }) })
-        tween(ring, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            { Size = UDim2.fromOffset(34, 34) })
-        task.delay(0.38, function() pcall(function() ring:Destroy() end) end)
-        local core = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromOffset(s.X, s.Y), Size = UDim2.fromOffset(6, 6),
-            BackgroundColor3 = Color3.fromRGB(255, 240, 220), BorderSizePixel = 0,
-            ZIndex = 5, Parent = W.overlay }, { pillCorner() })
-        task.delay(2.2, function()
-            pcall(function()
-                tween(core, TweenInfo.new(0.3), { BackgroundTransparency = 1 })
-            end)
-            task.delay(0.35, function() pcall(function() core:Destroy() end) end)
+        local ball = part(W.world, Vector3.new(0.2, 0.2, 0.2), CFrame.new(p),
+            Color3.fromRGB(255, 190, 130), Enum.PartType.Ball)
+        ball.Material = Enum.Material.Neon
+        ball.CanCollide = false
+        local cam = W.cam
+        local facing = CFrame.lookAt(p, cam and cam.CFrame.Position or (p + Vector3.new(0, 0, 1)))
+        local segs = {}
+        for i = 1, 10 do
+            local a = (i - 1) / 10 * math.pi * 2
+            local s = part(W.world, Vector3.new(0.12, 0.12, 0.12),
+                facing * CFrame.new(math.cos(a) * 0.35, math.sin(a) * 0.35, 0),
+                Color3.fromRGB(255, 176, 116))
+            s.Material = Enum.Material.Neon
+            s.CanCollide = false
+            segs[i] = s
+        end
+        task.spawn(function()
+            local t0 = os.clock()
+            while os.clock() - t0 < 0.3 do
+                if Koffee.dead() then break end
+                local k = math.clamp((os.clock() - t0) / 0.3, 0, 1)
+                local bs = 0.2 + 1.1 * k
+                if ball.Parent then
+                    ball.Size = Vector3.new(bs, bs, bs)
+                    ball.Transparency = k
+                end
+                local r = 0.35 + 1.6 * k
+                for i = 1, #segs do
+                    local s = segs[i]
+                    if s.Parent then
+                        local a = (i - 1) / #segs * math.pi * 2
+                        s.CFrame = facing * CFrame.new(math.cos(a) * r, math.sin(a) * r, 0)
+                        s.Transparency = k
+                    end
+                end
+                task.wait()
+            end
+            pcall(function() ball:Destroy() end)
+            for _, s in ipairs(segs) do pcall(function() s:Destroy() end) end
         end)
     end
 
@@ -54276,6 +54280,18 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         local muzzle = E.vmMuzzle(o, dir) or (o + dir * 1.2 - cf.UpVector * 0.35)
         E.lastTracer = { a = muzzle, b = p }
         drawTracer(muzzle, p)
+        -- muzzle flash, in the world at the barrel
+        local flash = part(W.world, Vector3.new(0.35, 0.35, 0.35), CFrame.new(muzzle),
+            Color3.fromRGB(255, 226, 178), Enum.PartType.Ball)
+        flash.Material = Enum.Material.Neon
+        flash.CanCollide = false
+        task.delay(0.06, function()
+            pcall(function()
+                tween(flash, TweenInfo.new(0.12), { Size = Vector3.new(0.6, 0.6, 0.6),
+                    Transparency = 1 })
+            end)
+            task.delay(0.15, function() pcall(function() flash:Destroy() end) end)
+        end)
         burst(p)
         if hit then hitMarker() end
         E.lastShot = { hit = hit ~= nil, at = p }
