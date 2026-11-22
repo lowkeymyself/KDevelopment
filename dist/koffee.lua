@@ -1,7 +1,7 @@
--- koffee v2.3.2
+-- koffee v2.3.3
 
 local Koffee = {}
-Koffee.Version = "2.3.2"
+Koffee.Version = "2.3.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -7997,6 +7997,11 @@ local function cleanRig(rig)
     if rig.lookLine then
         for _, l in ipairs(rig.lookLine) do pcall(function() l:Destroy() end) end
     end
+    if rig.lookAd then
+        pcall(function() rig.lookAd.core:Destroy() end)
+        pcall(function() rig.lookAd.out:Destroy() end)
+        rig.lookAd = nil
+    end
     pcall(function() rig.headDot:Destroy() end)
     pcall(function() rig.tracer:Destroy() end)
     pcall(function() rig.healthBg:Destroy() end)   -- fill is a child, goes with it
@@ -8437,26 +8442,60 @@ function ESP._hideCorners(rig)
     rig._cornHid = true
     for _, f in ipairs(rig.boxCorners) do f.Visible = false end
 end
+-- v2.3.3: skeleton off used to hide all 24 bone frames on every rig every frame
+function ESP._hideSkel(rig)
+    rig.skelSt = nil
+    if rig._skelHid then return end
+    rig._skelHid = true
+    for _, l in ipairs(rig.skeleton) do l.Visible = false end
+end
+function ESP._hideLookSegs(rig)
+    if rig._lookSegHid or not rig.lookLine then return end
+    rig._lookSegHid = true
+    for _, l in ipairs(rig.lookLine) do l.Visible = false end
+end
+function ESP._hideLookAd(rig)
+    local ad = rig.lookAd
+    if not (ad and (ad.vis or ad.ovis)) then return end
+    ad.vis, ad.ovis = false, false
+    ad.core.Visible = false
+    ad.out.Visible = false
+end
+function ESP._hideLook(rig)
+    ESP._hideLookSegs(rig)
+    ESP._hideLookAd(rig)
+end
+-- every box-projection widget off. v2.3.3: also the 3D fill, which used to stay up
+function ESP._hide2D(rig)
+    ESP._set(rig.boxRoot, "Visible", false)
+    if rig.boxOutlineFrame then ESP._set(rig.boxOutlineFrame, "Visible", false) end
+    ESP._hideCube(rig)
+    ESP._hideCorners(rig)
+    ESP._set(rig.fillGroup, "Visible", false)
+    if rig.fill3D then ESP._set(rig.fill3D, "Visible", false) end
+    ESP._set(rig.headDot, "Visible", false)
+    ESP._set(rig.tracer, "Visible", false)
+    ESP._set(rig.healthBg, "Visible", false)
+end
 local function hideRigVisuals(rig)
     -- v0.93.15: a rig that stays hidden (culled, dead, filtered) costs one check a frame
     if rig._hid then return end
     rig._hid = true
-    rig.skelSt = nil
-    rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
+    ESP._hideSkel(rig)
+    ESP._set(rig.boxRoot, "Visible", false); if rig.boxOutlineFrame then ESP._set(rig.boxOutlineFrame, "Visible", false) end
     ESP._hideCube(rig)
     ESP._hideCorners(rig)
-    rig.fillGroup.Visible = false
-    if rig.fill3D then rig.fill3D.Visible = false end
+    ESP._set(rig.fillGroup, "Visible", false)
+    if rig.fill3D then ESP._set(rig.fill3D, "Visible", false) end
     -- v0.0.21 overlays
-    for _, l in ipairs(rig.skeleton) do l.Visible = false end
     if rig.skelAd then rig.skelAd.core.Visible = false; rig.skelAd.out.Visible = false end
-    if rig.lookLine then for _, l in ipairs(rig.lookLine) do l.Visible = false end end
-    rig.headDot.Visible = false
-    rig.tracer.Visible = false
-    rig.healthBg.Visible = false
-    if rig.nameLbl then rig.nameLbl.Visible = false end
-    if rig.pfp then rig.pfp.Visible = false end
-    if rig.distLbl then rig.distLbl.Visible = false end
+    ESP._hideLook(rig)
+    ESP._set(rig.headDot, "Visible", false)
+    ESP._set(rig.tracer, "Visible", false)
+    ESP._set(rig.healthBg, "Visible", false)
+    if rig.nameLbl then ESP._set(rig.nameLbl, "Visible", false) end
+    if rig.pfp then ESP._set(rig.pfp, "Visible", false) end
+    if rig.distLbl then ESP._set(rig.distLbl, "Visible", false) end
     if rig.flagLbl then rig.flagLbl.Visible = false end
     rig._hpShown = nil
     -- reset smoothing state so re-enable snaps rather than lerping from stale
@@ -8535,6 +8574,14 @@ function ESP._set(o, k, v)
     local c = ESP._wc[o]
     if not c then c = {}; ESP._wc[o] = c end
     if c[k] ~= v then o[k] = v; c[k] = v end
+end
+-- v2.3.3: change-only Position/Size from raw numbers, so an unchanged frame skips the
+-- UDim2 build and the write. Every Position/Size write on a placed object goes here.
+function ESP._place(o, x, y, w, h)
+    local c = ESP._wc[o]
+    if not c then c = {}; ESP._wc[o] = c end
+    if c.px ~= x or c.py ~= y then o.Position = UDim2.fromOffset(x, y); c.px, c.py = x, y end
+    if w and (c.sw ~= w or c.sh ~= h) then o.Size = UDim2.fromOffset(w, h); c.sw, c.sh = w, h end
 end
 
 -- v1.7.0: hue ramp for Health Rainbow. Ends match (both red) so the scroll wraps
@@ -8745,7 +8792,7 @@ end
 -- OVERRIDES the feature colour (forces white so the gradient shows its own colours
 --: gradient wins over per-feature colours, per he).
 ESP._gradOff = setmetatable({}, { __mode = "k" })
-local function applyLineGradient(frame, on)
+local function applyLineGradient(frame, on, colorCached)
     -- v0.92.0: an already-disabled gradient needs no write
     if not on and ESP._gradOff[frame] then return end
     local g = ESP._getChild(frame, "KGrad")
@@ -8753,7 +8800,8 @@ local function applyLineGradient(frame, on)
     ESP._set(g, "Enabled", on)
     if on then ESP._gradOff[frame] = nil else ESP._gradOff[frame] = true end
     if on then
-        frame.BackgroundColor3 = Color3.new(1, 1, 1)
+        -- v2.3.3: callers that write colour through ESP._set already sent white
+        if not colorCached then frame.BackgroundColor3 = Color3.new(1, 1, 1) end
         ESP._set(g, "Color", lineGradSeq(ESP.Config.GradientColorA2, ESP.Config.GradientColorB2, ESP.Config.GradientSpacing))
         ESP._set(g, "Rotation", ESP.Config.GradientRotation)
         if ESP._animGrad ~= false then ESP._set(g, "Offset", gradOffset()) end
@@ -8833,34 +8881,38 @@ local function updateBillboards(rig, plr, dist, overrideColor)
             or  (names.TextSize or 14))
         ESP._set(rig.nameLbl, "TextColor3", grad and Color3.new(1, 1, 1) or (overrideColor or names.Color))
         styleTextBg(rig.nameLbl)
-        rig.nameLbl.Position = UDim2.new(0, hp.X, 0, hp.Y - 3)
-        rig.nameLbl.Visible = true
+        ESP._place(rig.nameLbl, math.floor(hp.X + 0.5), math.floor(hp.Y - 2.5))
+        ESP._set(rig.nameLbl, "Visible", true)
         applyTextOutline(rig.nameLbl, outlineOn, outlineCol, names.OutlineThickness)
         applyGradient(rig.nameLbl, grad)
     else
-        rig.nameLbl.Visible = false
+        ESP._set(rig.nameLbl, "Visible", false)
     end
+    local nameShown = headOn and showName
 
     -- PROFILE PICTURE (stacked above the name, else above the head)
     -- v0.0.28: size / outline thickness / Y offset are right-click tunable.
     if headOn and pfpOn then
         -- v0.53.0: NPC rigs use a ViewportFrame pfp (no .Image, no UserId); the
         -- short-circuit keeps us from ever touching .Image on the viewport.
-        if not rig.isNPC and rig.pfp.Image == "" then
-            rig.pfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
+        if not rig.isNPC and not rig._pfpSet then
+            rig._pfpSet = true
+            if rig.pfp.Image == "" then
+                rig.pfp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=48&h=48"
+            end
         end
         local pfpSize = pfpCfg.Size or 40
-        rig.pfp.Size = UDim2.new(0, pfpSize, 0, pfpSize)
-        local pfpStroke = rig.pfp:FindFirstChildOfClass("UIStroke")
-        if pfpStroke then pfpStroke.Thickness = pfpCfg.OutlineThickness or 1 end
+        local pfpStroke = ESP._getChildOfClass(rig.pfp, "UIStroke")
+        if pfpStroke then ESP._set(pfpStroke, "Thickness", pfpCfg.OutlineThickness or 1) end
         -- v0.92.0: the tag's height is a fixed offset (AutomaticSize is X only). Reading
         -- AbsoluteSize right after the Text write forced a GUI layout per rig (~370us each)
         local nameH = 0
-        if showName and rig.nameLbl.Visible then nameH = rig.nameLbl.Size.Y.Offset + 3 end
-        rig.pfp.Position = UDim2.new(0, hp.X, 0, hp.Y - 3 - nameH - (pfpCfg.YOffset or 0))
-        rig.pfp.Visible = true
+        if nameShown then nameH = rig.nameLbl.Size.Y.Offset + 3 end
+        ESP._place(rig.pfp, math.floor(hp.X + 0.5),
+            math.floor(hp.Y - 3 - nameH - (pfpCfg.YOffset or 0) + 0.5), pfpSize, pfpSize)
+        ESP._set(rig.pfp, "Visible", true)
     else
-        rig.pfp.Visible = false
+        ESP._set(rig.pfp, "Visible", false)
     end
 
     -- DISTANCE (top-anchored just below the feet)
@@ -8880,15 +8932,15 @@ local function updateBillboards(rig, plr, dist, overrideColor)
                 or  (distCfg.TextSize or 13))
             ESP._set(rig.distLbl, "TextColor3", grad and Color3.new(1, 1, 1) or (overrideColor or distCfg.Color))
             styleTextBg(rig.distLbl)
-            rig.distLbl.Position = UDim2.new(0, fp.X, 0, fp.Y + 3)
-            rig.distLbl.Visible = true
+            ESP._place(rig.distLbl, math.floor(fp.X + 0.5), math.floor(fp.Y + 3.5))
+            ESP._set(rig.distLbl, "Visible", true)
             applyTextOutline(rig.distLbl, outlineOn, outlineCol, distCfg.OutlineThickness)
             applyGradient(rig.distLbl, grad)
         else
-            rig.distLbl.Visible = false
+            ESP._set(rig.distLbl, "Visible", false)
         end
     else
-        rig.distLbl.Visible = false
+        ESP._set(rig.distLbl, "Visible", false)
     end
     ESP._flags(rig, plr, cam, grad, overrideColor, outlineOn, outlineCol, styleTextBg)
 end
@@ -8975,6 +9027,23 @@ function ESP._skelAdorn(rig)
     rig.skelAd = ad
     return ad
 end
+-- v2.3.3: the look ray as one world-space line, same pair of adornments as the
+-- skeleton. Six projected GUI segments cost ~50us per rig; this is two points.
+function ESP._lookAdorn(rig)
+    local ad = rig.lookAd
+    if ad and ad.core.Parent and ad.out.Parent then return ad end
+    if ad then
+        pcall(function() ad.core:Destroy() end)
+        pcall(function() ad.out:Destroy() end)
+    end
+    local function mk(z)
+        return KID.track(new("WireframeHandleAdornment", { Name = KID.name("elk"), Adornee = Workspace.Terrain,
+            AlwaysOnTop = true, ZIndex = z, Visible = false, Parent = ensureAdornLayer() }))
+    end
+    ad = { out = mk(1), core = mk(2), pts = {} }
+    rig.lookAd = ad
+    return ad
+end
 -- v0.0.21: skeleton: project each bone pair whose both parts exist (covers R6
 -- + R15 since missing parts skip) and draw a rotated line frame between them.
 local function updateSkeleton(rig, overrideColor, dist)
@@ -8987,19 +9056,18 @@ local function updateSkeleton(rig, overrideColor, dist)
     local outlineThick = math.max(1, thick)
     local ad = rig.skelAd
     if not cfg.Enabled then
-        rig.skelSt = nil
-        for _, l in ipairs(rig.skeleton) do l.Visible = false end
-        if ad then ad.core.Visible = false; ad.out.Visible = false end
+        ESP._hideSkel(rig)
+        if ad and not ad.off then ad.off = true; ad.core.Visible = false; ad.out.Visible = false end
         return
     end
     local cam = ESP._cam or Workspace.CurrentCamera
     local char = rig.character
     if not cam or not char then
-        rig.skelSt = nil
-        for _, l in ipairs(rig.skeleton) do l.Visible = false end
-        if ad then ad.core.Visible = false; ad.out.Visible = false end
+        ESP._hideSkel(rig)
+        if ad and not ad.off then ad.off = true; ad.core.Visible = false; ad.out.Visible = false end
         return
     end
+    if ad then ad.off = nil end
     local col = overrideColor or cfg.Color
     -- v0.75.2: cache bone-part refs on the rig. Was 2 FindFirstChild per bone x 19
     -- bones = 38 per rig per frame; at 30 players in DH, ~1140/frame just here.
@@ -9033,10 +9101,7 @@ local function updateSkeleton(rig, overrideColor, dist)
     local farGrad = ESP.Config.Gradient and rig._scrH ~= nil and rig._scrH < 110
     if farGrad then col = ESP._gradSample() end
     if not ESP._cam and (not ESP.Config.Gradient or farGrad) then
-        if rig.skelSt then
-            rig.skelSt = nil
-            for _, l in ipairs(rig.skeleton) do l.Visible = false end
-        end
+        ESP._hideSkel(rig)
         ad = ESP._skelAdorn(rig)
         -- parents are checked on the 2s resync, not per bone per frame (each read ~0.6us)
         local pos, pts = ad.pos or {}, ad.pts
@@ -9078,6 +9143,7 @@ local function updateSkeleton(rig, overrideColor, dist)
     -- written only on change. Parents are checked on the 2s resync, like the adornment path.
     local sp, st = rig.skelSP or {}, rig.skelSt or {}
     rig.skelSP, rig.skelSt = sp, st
+    rig._skelHid = false
     for i, p in ipairs(rig.skelU) do sp[i] = cam:WorldToViewportPoint(p.Position) end
     local gradOn = ESP.Config.Gradient
     local gs = rig.skelG or {}
@@ -9132,7 +9198,7 @@ local function updateLookLine(rig, overrideColor, dist)
     local char = rig.character
     local head = char and char:FindFirstChild("Head")
     if not (cfg.Enabled and cam and head and head:IsA("BasePart")) then
-        for _, l in ipairs(segs) do l.Visible = false end
+        ESP._hideLook(rig)
         return
     end
     if not cfg.ThroughWalls and not rig.preview then
@@ -9140,15 +9206,48 @@ local function updateLookLine(rig, overrideColor, dist)
         ESP._lookRayParams.FilterDescendantsInstances = { char, LocalPlayer.Character, cam }
         local from = cam.CFrame.Position
         if Workspace:Raycast(from, head.Position - from, ESP._lookRayParams) then
-            for _, l in ipairs(segs) do l.Visible = false end
+            ESP._hideLook(rig)
             return
         end
     end
     local st = cfg.Thickness or 0
     local thick = (st > 0) and st or featureThickness(dist)
     local col = (cfg.UseEspColor and overrideColor) or cfg.Color
-    local origin = head.Position
-    local step = head.CFrame.LookVector * ((cfg.Length or 5) / LOOK_SEGS)
+    local hcf = head.CFrame
+    local origin = hcf.Position
+    local farGrad = ESP.Config.Gradient and rig._scrH ~= nil and rig._scrH < 110
+    if not ESP._cam and not cfg.Taper and (not ESP.Config.Gradient or farGrad) then
+        ESP._hideLookSegs(rig)
+        if farGrad then col = ESP._gradSample() end
+        local ad = ESP._lookAdorn(rig)
+        local pts = ad.pts
+        pts[1], pts[2] = origin, origin + hcf.LookVector * (cfg.Length or 5)
+        ad.core:Clear()
+        ad.core:AddLines(pts)
+        if ad.col ~= col or ad.th ~= thick then
+            ad.col, ad.th = col, thick
+            ad.core.Color3, ad.core.Thickness = col, thick
+        end
+        if not ad.vis then ad.vis = true; ad.core.Visible = true end
+        ad.out:Clear()
+        if ESP.Config.Outline then
+            ad.out:AddLines(pts)
+            local oc = ESP.Boxes.OutlineColor
+            local oth = thick + math.max(1, thick) * 2
+            if ad.ocol ~= oc or ad.oth ~= oth then
+                ad.ocol, ad.oth = oc, oth
+                ad.out.Color3, ad.out.Thickness = oc, oth
+            end
+            if not ad.ovis then ad.ovis = true; ad.out.Visible = true end
+        elseif ad.ovis then
+            ad.ovis = false
+            ad.out.Visible = false
+        end
+        return
+    end
+    ESP._hideLookAd(rig)
+    rig._lookSegHid = false
+    local step = hcf.LookVector * ((cfg.Length or 5) / LOOK_SEGS)
     local used = 0
     -- v0.92.0: neighbouring segments share an endpoint, so project each point once
     local b = cam:WorldToViewportPoint(origin)
@@ -9284,13 +9383,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         local need2D = ESP.Boxes.Enabled or ESP.Health.Bar.Enabled
                     or ESP.Indicators.HeadDot.Enabled or ESP.Tracer.Enabled
         if not need2D then
-            rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
-            ESP._hideCube(rig)
-            ESP._hideCorners(rig)
-            rig.fillGroup.Visible = false
-            rig.headDot.Visible = false
-            rig.tracer.Visible = false
-            rig.healthBg.Visible = false
+            ESP._hide2D(rig)
             return
         end
 
@@ -9327,13 +9420,7 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         end
 
         if not corners or not anyInFront or not allInFront then
-            rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
-            ESP._hideCube(rig)
-            ESP._hideCorners(rig)
-            rig.fillGroup.Visible = false
-            rig.headDot.Visible = false
-            rig.tracer.Visible = false
-            rig.healthBg.Visible = false
+            ESP._hide2D(rig)
             return
         end
 
@@ -9386,30 +9473,33 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         -- features (head dot / health bar / tracer) render below off the same
         -- projection whether or not the box widget is on.
         if ESP.Boxes.Enabled and not boxHidden then
-        rig.boxRoot.Position = UDim2.new(0, tX, 0, tY)
-        rig.boxRoot.Size = UDim2.new(0, tW, 0, tH)
+        -- v2.3.3: axis-aligned frames land on whole pixels anyway, so round and skip
+        -- the write whenever the box did not move a pixel
+        local bx, by = math.floor(tX + 0.5), math.floor(tY + 0.5)
+        local bxW, bxH = math.floor(tW + 0.5), math.floor(tH + 0.5)
+        ESP._place(rig.boxRoot, bx, by, bxW, bxH)
 
         if isCube then
             rig._cubeHid = false
             -- v0.0.20: boxRoot (a flat AABB rectangle) is NO LONGER the cube fill: that's exactly what made "Fill + Cube" read as a 2D box. The fill is now a scanline of horizontal strips spanning the projected convex silhouette of the 8 corners, so it looks like a translucent solid occupying the 3D box, matching the 2D fill's 0.72 transparency. Cube edges draw on top and hide the strip stair- stepping on the slanted sides.
-            rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
+            ESP._set(rig.boxRoot, "Visible", false); if rig.boxOutlineFrame then ESP._set(rig.boxOutlineFrame, "Visible", false) end
             if rig.boxOutline then ESP._set(rig.boxOutline, "Enabled", false) end
             ESP._hideCorners(rig)
 
             if fillOn and ESP.Boxes.Fill3D and worldCF and rig.fill3D and rig.torso and rig.torso.Parent then
                 -- v0.30.0: real 3D box fill: adornment sits on the exact world box
                 -- the wireframe was built from. Screen-strip fill stays off here.
-                rig.fillGroup.Visible = false
+                ESP._set(rig.fillGroup, "Visible", false)
                 local a = rig.fill3D
-                a.Adornee     = rig.torso
+                ESP._set(a, "Adornee", rig.torso)
                 a.CFrame      = rig.torso.CFrame:ToObjectSpace(worldCF)
-                a.Size        = worldSize
-                a.Color3      = fillColor
-                a.Transparency= ESP.Boxes.FillTransparency
-                a.AlwaysOnTop = ESP.Boxes.ThroughWalls
-                a.Visible     = true
+                ESP._set(a, "Size", worldSize)
+                ESP._set(a, "Color3", fillColor)
+                ESP._set(a, "Transparency", ESP.Boxes.FillTransparency)
+                ESP._set(a, "AlwaysOnTop", ESP.Boxes.ThroughWalls)
+                ESP._set(a, "Visible", true)
             elseif fillOn then
-                if rig.fill3D then rig.fill3D.Visible = false end
+                if rig.fill3D then ESP._set(rig.fill3D, "Visible", false) end
                 local hull = convexHull(corners)
                 local hx0, hx1 = math.huge, -math.huge
                 local hy0, hy1 = math.huge, -math.huge
@@ -9426,10 +9516,9 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                 -- v0.0.29: group hugs the fill AABB (not the full screen) so a
                 -- gradient on the CanvasGroup spans the silhouette instead of a
                 -- screen-wide slice. Strips are positioned RELATIVE to the group.
-                rig.fillGroup.Position = UDim2.new(0, hx0, 0, hy0)
-                rig.fillGroup.Size = UDim2.new(0, spanX, 0, totalH)
-                rig.fillGroup.Visible = true
-                rig.fillGroup.GroupTransparency = ESP.Boxes.FillTransparency
+                ESP._place(rig.fillGroup, hx0, hy0, spanX, totalH)
+                ESP._set(rig.fillGroup, "Visible", true)
+                ESP._set(rig.fillGroup, "GroupTransparency", ESP.Boxes.FillTransparency)
                 -- v0.0.29: fill obeys the Gradient toggle. White strips + group
                 -- gradient when on; flat fillColor when off.
                 applyLineGradient(rig.fillGroup, lineGradOn)
@@ -9459,8 +9548,8 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                     end
                 end
             else
-                rig.fillGroup.Visible = false
-                if rig.fill3D then rig.fill3D.Visible = false end
+                ESP._set(rig.fillGroup, "Visible", false)
+                if rig.fill3D then ESP._set(rig.fill3D, "Visible", false) end
             end
 
             -- v0.0.17: cube edges always render when box visible: they ARE the box in cube mode. Corners mode changes the line STYLE (vertex brackets instead of full edges), not existence. Outline adds thickness via lineThick (computed above).
@@ -9528,9 +9617,9 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
         else
             -- 2D bounding box. boxRoot IS the box. cube frames + fill strips off.
             ESP._hideCube(rig)
-            rig.fillGroup.Visible = false
-            if rig.fill3D then rig.fill3D.Visible = false end   -- v0.30.0 3D fill is Cube-only
-            rig.boxRoot.Visible = true
+            ESP._set(rig.fillGroup, "Visible", false)
+            if rig.fill3D then ESP._set(rig.fill3D, "Visible", false) end   -- v0.30.0 3D fill is Cube-only
+            ESP._set(rig.boxRoot, "Visible", true)
             ESP._set(rig.boxRoot, "BackgroundTransparency", fillOn and ESP.Boxes.FillTransparency or 1)
             -- v0.93.15: a gradient fill writes the colour white itself, so the cache stands aside
             if lineGradOn and fillOn then
@@ -9557,10 +9646,9 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             -- shows as a border around the main line (reliable single-stroke render).
             if rig.boxOutlineFrame then
                 local showOutline = outlineOn and not cornersMode
-                rig.boxOutlineFrame.Visible = showOutline
+                ESP._set(rig.boxOutlineFrame, "Visible", showOutline)
                 if showOutline then
-                    rig.boxOutlineFrame.Position = UDim2.new(0, tX, 0, tY)
-                    rig.boxOutlineFrame.Size = UDim2.new(0, tW, 0, tH)
+                    ESP._place(rig.boxOutlineFrame, bx, by, bxW, bxH)
                     ESP._set(rig.boxOutlineStroke, "Color", outlineCol)
                     ESP._set(rig.boxOutlineStroke, "Thickness", boxThick + boxOutExtra)
                 end
@@ -9623,11 +9711,11 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             -- Boxes widget off (or hidden behind a wall with Through Walls off):
             -- hide every box element. Head dot / health bar / tracer below still
             -- render off the shared projection.
-            rig.boxRoot.Visible = false; if rig.boxOutlineFrame then rig.boxOutlineFrame.Visible = false end
+            ESP._set(rig.boxRoot, "Visible", false); if rig.boxOutlineFrame then ESP._set(rig.boxOutlineFrame, "Visible", false) end
             ESP._hideCube(rig)
             ESP._hideCorners(rig)
-            rig.fillGroup.Visible = false
-            if rig.fill3D then rig.fill3D.Visible = false end
+            ESP._set(rig.fillGroup, "Visible", false)
+            if rig.fill3D then ESP._set(rig.fill3D, "Visible", false) end
         end
 
         -- v0.0.22 HEAD DOT: centered on the REAL Head part (was pinned to the top of the projected AABB, which sat above the head / on hats). Project the head's world position directly and center the dot on it. Size rides the render model so it scales with distance when Equal Size is off.
@@ -9641,18 +9729,18 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
                 if not ESP.Render.EqualSize then
                     sz = math.clamp(sz * (EQ_REF_DIST / math.max(dist, 1)), sz * 0.35, sz * 3)
                 end
-                d.AnchorPoint = Vector2.new(0.5, 0.5)
-                d.Size = UDim2.new(0, sz, 0, sz)
-                d.Position = UDim2.new(0, sp.X, 0, sp.Y)
-                d.BackgroundColor3 = overrideColor or ESP.Indicators.HeadDot.Color
-                d.Visible = true
+                -- v2.3.3: AnchorPoint is set at creation; it was rewritten every frame
+                ESP._place(d, math.floor(sp.X + 0.5), math.floor(sp.Y + 0.5), sz, sz)
+                ESP._set(d, "BackgroundColor3", lineGradOn and ESP._WHITE
+                    or (overrideColor or ESP.Indicators.HeadDot.Color))
+                ESP._set(d, "Visible", true)
                 applyLineOutline(d, outlineOn, outlineCol, outlineThick)
-                applyLineGradient(d, lineGradOn)
+                applyLineGradient(d, lineGradOn, true)
             else
-                rig.headDot.Visible = false
+                ESP._set(rig.headDot, "Visible", false)
             end
         else
-            rig.headDot.Visible = false
+            ESP._set(rig.headDot, "Visible", false)
         end
 
         -- v0.0.21 HEALTH BAR: vertical bar just left of the box, full body
@@ -9671,9 +9759,10 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             -- v0.0.81: bar width proportional to the ON-SCREEN body height so both dimensions shrink together as the target moves away: reads correctly at any range. Was distance-scaled in v0.0.76 which made the bar THICKER as the body got SMALLER (opposite of natural). Clamp 1..6 keeps it visible at extreme range without dominating at point-blank.
             local barW = math.clamp((hbBot - hbTop) * 0.04, 1, 6)
             local barLeft = ESP.Boxes.Enabled and tX or hbLeft
-            rig.healthBg.Position = UDim2.new(0, barLeft - 2 - barW, 0, hbTop)
-            rig.healthBg.Size = UDim2.new(0, barW, 0, math.max(hbBot - hbTop, 1))
-            rig.healthBg.Visible = true
+            -- v2.3.3: whole pixels, change-only (same reasoning as the box)
+            ESP._place(rig.healthBg, math.floor(barLeft - 2 - barW + 0.5), math.floor(hbTop + 0.5),
+                barW, math.max(math.floor(hbBot - hbTop + 0.5), 1))
+            ESP._set(rig.healthBg, "Visible", true)
             -- v1.8.3: the ESP card's global Outline toggle borders the bar too, in the
             -- same colour as the boxes. Created once per rig, then just toggled.
             local hs = rig.healthStroke
@@ -9704,12 +9793,12 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             if ESP.Health.Text and ESP.Health.TextPos == "On Health Bar" then
                 ESP._set(rig.healthTxt, "Text", tostring(math.floor((hum and hum.Health or 0) + 0.5)))
                 ESP._set(rig.healthTxt, "TextColor3", barColor)
-                rig.healthTxt.Visible = true
+                ESP._set(rig.healthTxt, "Visible", true)
             else
-                rig.healthTxt.Visible = false
+                ESP._set(rig.healthTxt, "Visible", false)
             end
         else
-            rig.healthBg.Visible = false
+            ESP._set(rig.healthBg, "Visible", false)
         end
 
         -- v0.0.21 TRACER: line from the chosen screen origin to the target feet.
@@ -9739,15 +9828,15 @@ function Shared.espDrawRig(plr, entry, cam, camPos, isNPC)
             local dx, dy = tx2 - ox, ty2 - oy
             local len = math.sqrt(dx * dx + dy * dy)
             local t = rig.tracer
-            t.Size = UDim2.new(0, len, 0, featureThickness(dist))
-            t.Position = UDim2.new(0, (ox + tx2) * 0.5, 0, (oy + ty2) * 0.5)
-            t.Rotation = math.deg(math.atan2(dy, dx))
-            t.BackgroundColor3 = overrideColor or ESP.Tracer.Color
-            t.Visible = true
+            -- v2.3.3: change-only; a still target under a still camera writes nothing
+            ESP._place(t, (ox + tx2) * 0.5, (oy + ty2) * 0.5, len, featureThickness(dist))
+            ESP._set(t, "Rotation", math.deg(math.atan2(dy, dx)))
+            ESP._set(t, "BackgroundColor3", lineGradOn and ESP._WHITE or (overrideColor or ESP.Tracer.Color))
+            ESP._set(t, "Visible", true)
             applyLineOutline(t, outlineOn, outlineCol, outlineThick)
-            applyLineGradient(t, lineGradOn)
+            applyLineGradient(t, lineGradOn, true)
         else
-            rig.tracer.Visible = false
+            ESP._set(rig.tracer, "Visible", false)
         end
 end
 
