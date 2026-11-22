@@ -1,7 +1,7 @@
--- koffee v2.2.0
+-- koffee v2.2.1
 
 local Koffee = {}
-Koffee.Version = "2.2.0"
+Koffee.Version = "2.2.1"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -51243,9 +51243,12 @@ end)
 Shared._skinsUIErr = (not _skinsOk) and tostring(_skinsErr) or nil
 end
 
--- v0.85.0: Koffee Lab dev handle. Only exists when getgenv().KoffeeDev = true is
--- set before loading, so a normal load publishes nothing new.
-if getgenv and getgenv().KoffeeDev == true then
+-- v0.85.0: Koffee Lab dev handle. Only exists when getgenv().KoffeeDev is set before
+-- loading, so a normal load publishes nothing new.
+-- v2.2.1: any truthy value republishes, not just `true`. The first dev load replaced
+-- the flag with the handle table, so every re-exec after it left the DEAD run's handle
+-- in place and dev reads went to a corpse (its Koffee.dead() was already true).
+if getgenv and getgenv().KoffeeDev then
     getgenv().KoffeeDev = { Koffee = Koffee, Shared = Shared, KID = KID, Combat = Shared.Combat,
         ESP = ESP, World = World, Modules = Modules, Options = KoffeeOptions, Theme = Theme,
         toggle = toggleModule, Crosshair = Crosshair }
@@ -56209,18 +56212,82 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             pcall(E.onShot)
         end
     end
+    -- v2.2.1: the game's camera module rebuilds CFrame from its own angles every
+    -- frame, so a written CFrame is mostly thrown away: a 0.6 deg/shot pattern moved
+    -- the view about a tenth of that on KTE's Pistol. The pull goes through the
+    -- game's own mouse pipeline instead, at a scale learned from real movement.
+    local MCal = { dx = 0, dy = 0, quiet = true }
+    E.recoilCal = MCal
+    UIS.InputChanged:Connect(function(input)
+        if Koffee.dead() then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            MCal.dx = MCal.dx + input.Delta.X
+            MCal.dy = MCal.dy + input.Delta.Y
+        end
+    end)
+    -- degrees of view per pixel of mouse, signed, so the direction is measured too.
+    -- Only sampled on frames nothing else was driving the camera.
+    local function learn(y, p)
+        if not (MCal.quiet and MCal.y0) then return end
+        if C.Aim.Enabled and C.Aim._target then return end
+        local dyaw = math.deg(Shared.LegitSim.shortestAngle(y - MCal.y0))
+        local dpit = math.deg(p - MCal.p0)
+        if math.abs(MCal.dx) > 6 and math.abs(dyaw) > 0.08 then
+            local r = dyaw / MCal.dx
+            if math.abs(r) > 0.002 and math.abs(r) < 2 then
+                MCal.yaw = MCal.yaw and (MCal.yaw * 0.88 + r * 0.12) or r
+            end
+        end
+        if math.abs(MCal.dy) > 6 and math.abs(dpit) > 0.08 then
+            local r = dpit / MCal.dy
+            if math.abs(r) > 0.002 and math.abs(r) < 2 then
+                MCal.pitch = MCal.pitch and (MCal.pitch * 0.88 + r * 0.12) or r
+            end
+        end
+    end
     RunService:BindToRenderStep(KID.name("lrec") .. math.random(1, 1e9),
         Enum.RenderPriority.Last.Value, function(dt)
         if Koffee.dead() then return end
-        if math.abs(recComp.pitch) < 0.0005 and math.abs(recComp.yaw) < 0.0005 then return end
         local cam = Workspace.CurrentCamera
         if not cam then return end
+        local y, p = Shared.LegitSim.lookAngles(cam.CFrame.LookVector)
+        learn(y, p)
+        MCal.y0, MCal.p0, MCal.dx, MCal.dy, MCal.quiet = y, p, 0, 0, true
+        -- a mouse pull that moves nothing (no real input, an unfocused window) would
+        -- lose the recoil entirely, so it is checked against the view and dropped
+        if MCal.want then
+            -- whichever axis was asked for: a climb pattern only moves pitch, so a
+            -- yaw-only check never fired and a dead mouse path went unnoticed
+            local moved = math.max(
+                math.abs(math.deg(Shared.LegitSim.shortestAngle(y - MCal.wantY))),
+                math.abs(math.deg(p - MCal.wantP)))
+            if moved < MCal.want * 0.15 then
+                MCal.miss = (MCal.miss or 0) + 1
+                if MCal.miss >= 8 then MCal.dead = true end
+            else
+                MCal.miss = 0
+            end
+            MCal.want = nil
+        end
+        if math.abs(recComp.pitch) < 0.0005 and math.abs(recComp.yaw) < 0.0005 then return end
         local a = math.clamp(dt * 24, 0, 1)
         local dp, dy = recComp.pitch * a, recComp.yaw * a
         recComp.pitch -= dp
         recComp.yaw -= dy
-        -- pitch down for climb, yaw left for a rightward kick
-        cam.CFrame = cam.CFrame * CFrame.Angles(-math.rad(dp), math.rad(dy), 0)
+        MCal.quiet = false
+        -- a free cursor means the mouse is not driving the view, so the write stays
+        local mb = UIS.MouseBehavior
+        local locked = mb == Enum.MouseBehavior.LockCenter
+            or mb == Enum.MouseBehavior.LockCurrentPosition
+        if mousemoverel and locked and MCal.yaw and MCal.pitch and not MCal.dead then
+            -- pitch down for climb, yaw left for a rightward kick: both signs come
+            -- out of the measured ratios, so neither is assumed
+            pcall(mousemoverel, dy / MCal.yaw, -dp / MCal.pitch)
+            local ask = math.max(math.abs(dy), math.abs(dp))
+            if ask > 0.05 then MCal.want, MCal.wantY, MCal.wantP = ask, y, p end
+        else
+            cam.CFrame = cam.CFrame * CFrame.Angles(-math.rad(dp), math.rad(dy), 0)
+        end
     end)
 
     -- the window closing must never leave the sandbox holding the mouse
