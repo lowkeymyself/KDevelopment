@@ -1,7 +1,7 @@
--- koffee v2.0.1
+-- koffee v2.1.0
 
 local Koffee = {}
-Koffee.Version = "2.0.1"
+Koffee.Version = "2.1.0"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -6481,6 +6481,8 @@ local REPLACE_TABLES = { MyTeams = true, Nodes = true, Blacklist = true,
     ExcludeNames = true, ExcludeSigs = true,   -- v0.57.0: NPC learn exclusion lists
     Pins = true,                               -- v0.75.0: gun-mod pins (saved set wins)
     excludes = true }                          -- v0.62.0: player-list Exclude set (by UserId)
+-- v2.1.0: late modules (the Legit Editor) register their list-shaped tables here.
+Shared.REPLACE_TABLES = REPLACE_TABLES
 local function applyInto(target, src)
     for k, v in pairs(src) do
         if type(v) == "table" and type(target[k]) == "table" then
@@ -13471,6 +13473,86 @@ local Combat = {
     -- v0.7.0 hit/kill visual effects. Rides HitSounds attribution.
     registerConfig("combat_hiteffects", Combat.HitEffects)
 
+    -- v2.1.0 LEGIT SIM. The legit kit as pure functions: no camera, no players, no
+    -- globals. The live paths call these and the Legit Editor calls the same ones,
+    -- so what the editor previews is what a shot actually does. Anything visual or
+    -- stateful (the aim loop, the silent redirect) stays where it is; only the maths
+    -- that decides an offset, a delay or a roll lives here.
+    Shared.LegitSim = (function()
+        local S = {}
+        -- pull curve: fraction of the sensitivity that applies p into an engagement.
+        -- Snap is handled by the caller (it means "no curve at all").
+        function S.pull(p, curve)
+            p = math.clamp(p or 0, 0, 1)
+            local f
+            if curve == "Ease In" then f = p * p
+            elseif curve == "Ease Out" then f = 1 - (1 - p) * (1 - p)
+            elseif curve == "Ease In-Out" then
+                f = p < 0.5 and (2 * p * p) or (1 - ((-2 * p + 2) ^ 2) / 2)
+            else f = p end
+            -- floored so the first frame of a fresh lock still moves something
+            return 0.15 + 0.85 * f
+        end
+        -- reaction in ms, stretched toward the distance cap when a ramp is set
+        function S.reaction(react, ramp, dist, cap)
+            react = react or 0
+            if (ramp or 0) > 0 then
+                react = react * (1 + (ramp / 100) * math.clamp(dist / math.max(cap or 1500, 1), 0, 1))
+            end
+            return react
+        end
+        -- fatigue: one slow random walk step, in the 0.5 to 2.0 multiplier band
+        function S.fatigue(amount, roll)
+            if (amount or 0) <= 0 then return 1 end
+            local r = roll or math.random()
+            return 1 + (r * 2 - 1) * (amount / 100)
+        end
+        -- jitter magnitude in studs: a true angle at range, so it is range independent
+        function S.jitter(deg, dist, fatigue)
+            if (deg or 0) <= 0 then return 0 end
+            return dist * math.tan(math.rad(deg)) * (fatigue or 1)
+        end
+        -- overshoot decay: how far off target the flick still sits `age` seconds in
+        function S.overshoot(deg, age, dist)
+            if (deg or 0) <= 0 then return 0 end
+            return math.exp(-(age or 0) * 4) * dist * math.tan(math.rad(deg))
+        end
+        -- silent spread: one offset on the shot plane, in the chosen pattern. Returns
+        -- ox, oy already scaled to studs at that distance.
+        function S.spread(spread, unit, dist, bloom, age, pattern, roll)
+            if (spread or 0) <= 0 then return 0, 0 end
+            local rnd = roll or math.random
+            local amount = spread
+            if (bloom or 0) > 0 then
+                local a = math.min(age or 0, 5)
+                amount = amount * (1 + (bloom / 100) * (a / 5) * 3)
+            end
+            if (unit or "Studs") == "Degrees" then
+                amount = math.tan(math.rad(amount)) * dist
+            end
+            if pattern == "Horizontal" then
+                return (rnd() * 2 - 1) * amount, 0
+            elseif pattern == "Vertical" then
+                return 0, (rnd() * 2 - 1) * amount
+            elseif pattern == "Cross" then
+                if rnd() < 0.5 then return (rnd() * 2 - 1) * amount, 0 end
+                return 0, (rnd() * 2 - 1) * amount
+            end
+            -- Cone: uniform area disc, so bursts walk instead of stacking one hole
+            local a = rnd() * math.pi * 2
+            local r = math.sqrt(rnd()) * amount
+            return math.cos(a) * r, math.sin(a) * r
+        end
+        -- hit chance after the distance falloff, as a percentage
+        function S.chance(hc, falloff, dist, cap)
+            hc = math.clamp(hc or 100, 0, 100)
+            if (falloff or 0) <= 0 or hc >= 100 then return hc end
+            return hc * (1 - (falloff / 100) * math.clamp(dist / math.max(cap or 1500, 1), 0, 1))
+        end
+        return S
+    end)()
+
+
     -- :: math helpers ::
     local function shortestAngle(a) return (a + math.pi) % (2 * math.pi) - math.pi end
     local function lookAngles(dir)
@@ -14756,18 +14838,17 @@ local Combat = {
         if LG.Enabled and (LG.Fatigue or 0) > 0 then
             if now >= (LG._fatAt or 0) then
                 LG._fatAt = now + 0.5 + math.random() * 1.5
-                LG._fat = 1 + (math.random() * 2 - 1) * (LG.Fatigue / 100)
+                LG._fat = Shared.LegitSim.fatigue(LG.Fatigue)
             end
             fatigue = LG._fat or 1
         end
         -- v0.52.0: the whole legit kit is gated behind the Legit master toggle.
         local react = LG.Reaction or 0
         if LG.Enabled and react > 0 then
-            local ramp = LG.ReactionRamp or 0
-            if ramp > 0 and cam then
-                local d = (tpos - cam.CFrame.Position).Magnitude
-                react = react * (1 + (ramp / 100)
-                    * math.clamp(d / math.max(Combat.Aim.Distance or 1500, 1), 0, 1))
+            -- v2.1.0: the range stretch is LegitSim's, shared with the editor
+            if cam then
+                react = Shared.LegitSim.reaction(react, LG.ReactionRamp,
+                    (tpos - cam.CFrame.Position).Magnitude, Combat.Aim.Distance)
             end
             if (now - (LG._acqAt or now)) * 1000 < react then return end
         end
@@ -14777,14 +14858,14 @@ local Combat = {
             if dist > 1e-3 then
                 local cf = cam.CFrame
                 local ox, oy = 0, 0
-                if (LG.Jitter or 0) > 0 then
-                    local m = dist * math.tan(math.rad(LG.Jitter)) * fatigue
+                local m = Shared.LegitSim.jitter(LG.Jitter, dist, fatigue)
+                if m > 0 then
                     ox = ox + (math.random() * 2 - 1) * m
                     oy = oy + (math.random() * 2 - 1) * m
                 end
-                if (LG.Overshoot or 0) > 0 and LG._osPlr == plr then
-                    local dk = math.exp(-(now - (LG._osAt or now)) * 4)
-                        * dist * math.tan(math.rad(LG.Overshoot))
+                if LG._osPlr == plr then
+                    local dk = Shared.LegitSim.overshoot(LG.Overshoot,
+                        now - (LG._osAt or now), dist)
                     ox = ox + (LG._osX or 0) * dk
                     oy = oy + (LG._osY or 0) * dk
                 end
@@ -14816,16 +14897,7 @@ local Combat = {
         -- the old constant behaviour, and the whole block is gated behind Legit.
         if LG.Enabled and (LG.Curve or "Linear") ~= "Snap" then
             local span = math.max((LG.CurveTime or 220) / 1000, 0.02)
-            local p = math.clamp((now - (LG._acqAt or now)) / span, 0, 1)
-            local curve = LG.Curve or "Linear"
-            local f
-            if curve == "Ease In" then f = p * p
-            elseif curve == "Ease Out" then f = 1 - (1 - p) * (1 - p)
-            elseif curve == "Ease In-Out" then
-                f = p < 0.5 and (2 * p * p) or (1 - ((-2 * p + 2) ^ 2) / 2)
-            else f = p end   -- Linear
-            -- floor it so the first frame of a fresh lock still moves something
-            f = 0.15 + 0.85 * f
+            local f = Shared.LegitSim.pull((now - (LG._acqAt or now)) / span, LG.Curve)
             aX, aY = aX * f, aY * f
         end
 
@@ -15754,9 +15826,8 @@ local Combat = {
             if hcf > 0 and hc < 100 and part then
                 local camS = Workspace.CurrentCamera
                 if camS then
-                    local d = (part.Position - camS.CFrame.Position).Magnitude
-                    local cap = math.max(Combat.Silent.Distance or 1500, 1)
-                    hc = hc * (1 - (hcf / 100) * math.clamp(d / cap, 0, 1))
+                    hc = Shared.LegitSim.chance(hc, hcf,
+                        (part.Position - camS.CFrame.Position).Magnitude, Combat.Silent.Distance)
                 end
             end
             if hc < 100 and math.random(100) > hc then
@@ -15800,40 +15871,19 @@ local Combat = {
                     (math.random() * 2 - 1) * sj)
             end
             -- v0.51.0 fake spread: lateral disc around the point, uniform area, so bursts walk like real spray instead of stacking one hole. v0.79.2: Degrees mode reinterprets the radius as angular error (studs = tan(rad) * distance), so far targets spread wide and close ones stay tight like real aim. Bloom multiplies the radius with lock age (recoil fatigue), ramping to full over 5s.
-            local spread = Combat.Silent.Legit.Spread or 0
-            local bloom = Combat.Silent.Legit.Bloom or 0
-            if bloom > 0 and spread > 0 then
-                local age = math.min(os.clock() - (Combat.Silent._lockAt or os.clock()), 5)
-                spread = spread * (1 + (bloom / 100) * (age / 5) * 3)
-            end
-            if spread > 0 then
+            -- v2.1.0: the pattern, bloom and unit maths is LegitSim's, so the editor
+            -- sprays exactly what this line sprays.
+            if (Combat.Silent.Legit.Spread or 0) > 0 then
                 local sc = Workspace.CurrentCamera
                 if sc then
                     local cf = sc.CFrame
-                    if (Combat.Silent.Legit.SpreadUnit or "Studs") == "Degrees" then
-                        local dist = (silentPos - cf.Position).Magnitude
-                        spread = math.tan(math.rad(spread)) * dist
-                    end
-                    -- v2.0.0: pattern. Cone stays a uniform disc; the axis modes walk a
-                    -- line, so bursts read as horizontal or vertical climb.
-                    local pat = Combat.Silent.Legit.SpreadPattern or "Cone"
-                    local ox, oy, rr
-                    if pat == "Horizontal" then
-                        ox, oy, rr = math.random() * 2 - 1, 0, spread
-                    elseif pat == "Vertical" then
-                        ox, oy, rr = 0, math.random() * 2 - 1, spread
-                    elseif pat == "Cross" then
-                        if math.random() < 0.5 then
-                            ox, oy = math.random() * 2 - 1, 0
-                        else
-                            ox, oy = 0, math.random() * 2 - 1
-                        end
-                        rr = spread
-                    else
-                        local a = math.random() * math.pi * 2
-                        ox, oy, rr = math.cos(a), math.sin(a), math.sqrt(math.random()) * spread
-                    end
-                    silentPos = silentPos + (cf.RightVector * ox + cf.UpVector * oy) * rr
+                    local ox, oy = Shared.LegitSim.spread(
+                        Combat.Silent.Legit.Spread, Combat.Silent.Legit.SpreadUnit,
+                        (silentPos - cf.Position).Magnitude,
+                        Combat.Silent.Legit.Bloom,
+                        os.clock() - (Combat.Silent._lockAt or os.clock()),
+                        Combat.Silent.Legit.SpreadPattern)
+                    silentPos = silentPos + cf.RightVector * ox + cf.UpVector * oy
                 end
             end
             end
@@ -16518,6 +16568,23 @@ local Combat = {
         -- v2.0.0: the kit grew a pull curve, a range-scaled reaction, fatigue and a
         -- flick-direction overshoot, and the eleven part toggles became one row.
         local AL = Combat.Aim.Legit
+        -- v2.1.0: the Legit Editor door. Builds the full surface on this kit.
+        local function legitEditorDoor(parent, mode)
+            local b = new("TextButton", { Text = "Open Legit Editor",
+                FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+                TextColor3 = Theme.Palette.Accent, AutoButtonColor = false,
+                BackgroundColor3 = Theme.Palette.PanelElevated, BackgroundTransparency = 0.2,
+                BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = -1,
+                Parent = parent }, { corner(5), stroke(Theme.Palette.BorderSubtle) })
+            Koffee.attachBtnHover(b, 0.02, 0.2)
+            popFx(b)
+            b.MouseButton1Click:Connect(function()
+                if not (Shared.LegitEditor and Shared.LegitEditor.openEditor) then return end
+                if Shared.setWindowOpen then Shared.setWindowOpen(true) end
+                Shared.LegitEditor.openEditor(mode)
+            end)
+        end
+        legitEditorDoor(L.Legit, "Aimbot")
         configCheckbox(L.Legit, "Enabled", AL.Enabled, function(v) AL.Enabled = v end)
         slider(L.Legit, "Reaction (ms)", 0, 500, AL.Reaction, 0, function(v) AL.Reaction = v end)
         slider(L.Legit, "Reaction Ramp (%)", 0, 300, AL.ReactionRamp, 0, function(v) AL.ReactionRamp = v end)
@@ -16793,6 +16860,7 @@ local Combat = {
         -- v2.0.0: chance falls off with range, spread gained a pattern, headshots can
         -- be capped, and the eleven part toggles became one row.
         local SL = Combat.Silent.Legit
+        legitEditorDoor(R.Legit, "Silent")
         slider(R.Legit, "Hit Chance (%)", 1, 100, SL.HitChance, 0, function(v) SL.HitChance = v end)
         slider(R.Legit, "Chance Falloff (%)", 0, 100, SL.HitChanceFalloff, 0, function(v) SL.HitChanceFalloff = v end)
         -- v0.51.1 Force Miss: failed Hit Chance rolls hold the lock and throw
@@ -53509,6 +53577,1119 @@ end)()
             if not Koffee.dead() then show() end
         end)
     end
+end)()
+
+-- v2.1.0 LEGIT EDITOR. A surface for the legit kit: the maths the shots use, a 3D
+-- stage to look at it on, presets that can follow the gun in your hand, and a
+-- playable sandbox. Opened from either Legit sub-tab; the tabs inside swap the kit.
+Shared.LegitEditor = { Live = true, GunAware = false, GunPreset = "", LegitPresets = {} }
+registerConfig("legit_editor", Shared.LegitEditor)
+-- v2.1.0: pattern-based recoil control, drawn in the editor. Off by default.
+Shared.Combat.Recoil = { Enabled = false, Strength = 100, RecoilPattern = {} }
+registerConfig("combat_recoil", Shared.Combat.Recoil)
+Shared.REPLACE_TABLES.LegitPresets = true
+Shared.REPLACE_TABLES.RecoilPattern = true
+;(function()
+    local E = Shared.LegitEditor
+    local C = Shared.Combat
+    local P = Theme.Palette
+    local Http = game:GetService("HttpService")
+    local PLAYER = LocalPlayer
+    local UIS = UserInputService
+    local HITPARTS = { "Head", "Torso", "HRP", "Left Arm", "Right Arm", "Left Leg",
+        "Right Leg", "Upper Torso", "Lower Torso", "Left Foot", "Right Foot" }
+    E.open, E.play, E.mode = false, false, "Aimbot"
+    E.draft = { aim = {}, silent = {} }
+
+    local function copy(t)
+        local o = {}
+        for k, v in pairs(t) do
+            o[k] = type(v) == "table" and copy(v) or v
+        end
+        return o
+    end
+
+    -- draft = the live kit, minus the runtime underscore keys
+    local function freshDraft()
+        for _, side in ipairs({ "aim", "silent" }) do
+            local live = (side == "aim") and C.Aim.Legit or C.Silent.Legit
+            E.draft[side] = {}
+            for k, v in pairs(live) do
+                if type(k) == "string" and k:sub(1, 1) ~= "_" then
+                    E.draft[side][k] = type(v) == "table" and copy(v) or v
+                end
+            end
+        end
+    end
+    freshDraft()
+
+    local function liveTable(side)
+        return (side == "aim") and C.Aim.Legit or C.Silent.Legit
+    end
+    -- one key pushed to the kit while Live is on; Apply copies the rest
+    local function push(side, key)
+        if not E.Live then return end
+        local t = liveTable(side)
+        local v = E.draft[side][key]
+        t[key] = type(v) == "table" and copy(v) or v
+    end
+    function E.applyAll()
+        for _, side in ipairs({ "aim", "silent" }) do
+            local t = liveTable(side)
+            for k, v in pairs(E.draft[side]) do
+                t[k] = type(v) == "table" and copy(v) or v
+            end
+        end
+    end
+    function E.dirty() return E._dirty == true end
+
+    -- :: preset matching :: ------------------------------------------------
+    -- Normalised names, then saved aliases, then the tool's own mesh ids, then a
+    -- shape signature. Everything below the alias rung is a guess and says so.
+    local function normName(s)
+        return (tostring(s or ""):lower():gsub("[^%w]", ""))
+    end
+    local function modelSig(tool)
+        local sig = { meshes = {}, parts = 0 }
+        if not tool then return sig end
+        pcall(function()
+            for _, d in ipairs(tool:GetDescendants()) do
+                sig.parts = sig.parts + 1
+                if d:IsA("MeshPart") or d:IsA("SpecialMesh") then
+                    local id = d.MeshId
+                    if id and id ~= "" then sig.meshes[id] = true end
+                    if d.TextureID and d.TextureID ~= "" then sig.meshes[d.TextureID] = true end
+                end
+            end
+        end)
+        return sig
+    end
+
+    function E.match(toolName, sig)
+        local list = E.LegitPresets
+        if type(list) ~= "table" or #list == 0 then return nil end
+        local n = normName(toolName)
+        -- 1: exact name
+        for _, pre in ipairs(list) do
+            for _, g in ipairs(pre.names or {}) do
+                if normName(g) == n and n ~= "" then return pre, 100, "name" end
+            end
+        end
+        -- 2: learned aliases (same confidence, different evidence)
+        for _, pre in ipairs(list) do
+            for _, g in ipairs(pre.aliases or {}) do
+                if normName(g) == n and n ~= "" then return pre, 100, "alias" end
+            end
+        end
+        if sig then
+            -- 3: the tool's mesh ids were seen in this preset before
+            for _, pre in ipairs(list) do
+                for id in pairs(pre.meshes or {}) do
+                    if sig.meshes[id] then return pre, 85, "model" end
+                end
+            end
+            -- 4: part count within two of a saved signature
+            for _, pre in ipairs(list) do
+                if pre.partCount and math.abs(pre.partCount - sig.parts) <= 2 then
+                    return pre, 60, "shape"
+                end
+            end
+        end
+        return nil
+    end
+    function E.remember(preset, toolName, sig)
+        if not preset or not sig then return end
+        preset.names = preset.names or {}
+        preset.aliases = preset.aliases or {}
+        preset.meshes = preset.meshes or {}
+        preset.aliases[#preset.aliases + 1] = tostring(toolName)
+        for id in pairs(sig.meshes) do preset.meshes[id] = true end
+        preset.partCount = sig.parts
+    end
+    function E.snapshot(name)
+        local pre = { name = name, names = {}, aliases = {}, meshes = {},
+            aimbot = copy(E.draft.aim), silent = copy(E.draft.silent),
+            partCount = 0 }
+        local tool = PLAYER.Character and PLAYER.Character:FindFirstChildOfClass("Tool")
+        if tool then
+            pre.names[1] = tool.Name
+            local sig = modelSig(tool)
+            for id in pairs(sig.meshes) do pre.meshes[id] = true end
+            pre.partCount = sig.parts
+        end
+        return pre
+    end
+
+    -- :: KIM1 models :: -----------------------------------------------------
+    -- Same format the item editor writes. A Part with a SpecialMesh is enough for
+    -- the stage, and it keeps this path out of the editor's mesh bookkeeping.
+    local function decodeKim(str)
+        local body = type(str) == "string" and str:match("^KIM1:(.+)$")
+        if not body then return nil end
+        local ok, data = pcall(function() return Http:JSONDecode(body) end)
+        if not ok or type(data) ~= "table" or type(data.parts) ~= "table" then return nil end
+        return data
+    end
+    local function buildKim(data, parent, scale)
+        local made = {}
+        if not data then return made end
+        for _, d in ipairs(data.parts) do
+            local cf = d.cf
+            if type(cf) == "table" and #cf >= 12 then
+                local c = CFrame.new(cf[1] * scale, cf[2] * scale, cf[3] * scale,
+                    cf[4], cf[5], cf[6], cf[7], cf[8], cf[9], cf[10], cf[11], cf[12])
+                local size = Vector3.new(d.s[1], d.s[2], d.s[3]) * scale
+                local col = d.c or { 0.6, 0.6, 0.6 }
+                local part = new("Part", {
+                    Size = size, CFrame = c, Color = Color3.new(col[1], col[2], col[3]),
+                    Material = d.m == "Metal" and Enum.Material.Metal or Enum.Material.SmoothPlastic,
+                    Anchored = true, CanCollide = false, TopSurface = Enum.SurfaceType.Smooth,
+                    BottomSurface = Enum.SurfaceType.Smooth, Parent = parent,
+                })
+                if d.mesh and d.mesh.id then
+                    new("SpecialMesh", {
+                        MeshType = Enum.MeshType.FileMesh,
+                        MeshId = d.mesh.id,
+                        TextureId = d.mesh.tex or "",
+                        Scale = Vector3.new(d.mesh.sc[1], d.mesh.sc[2], d.mesh.sc[3]) * scale,
+                        Parent = part,
+                    })
+                end
+                made[#made + 1] = part
+            end
+        end
+        return made
+    end
+    -- the built-in presets: name, and whether this one is the shipped default
+    E.GUNS = {}
+    local GUNS = {
+        { "M9", "KIM1:{\"grip\":[0,0,0,1,0,0,0,1,0,0,0,1],\"parts\":[{\"cf\":[0,0,0,1,0,-2.9802322387695315e-8,0,1.000000238418579,5.3290705182007517e-15,-2.9802322387695315e-8,5.3290705182007517e-15,1.000000238418579],\"c\":[0.06666667014360428,0.06666667014360428,0.06666667014360428],\"s\":[0.1,0.1,0.1],\"r\":0,\"m\":\"Metal\",\"t\":1,\"root\":true,\"sh\":\"Block\"},{\"cf\":[0.0001220703125,0.6899948120117188,-1.0050048828125,1,0,-2.9802322387695315e-8,0,1.000000238418579,5.3290705182007517e-15,-2.9802322387695315e-8,5.3290705182007517e-15,1.000000238418579],\"c\":[0.10588235408067703,0.16470588743686677,0.2078431397676468],\"s\":[0.1,0.1,0.1],\"r\":0.4000000059604645,\"m\":\"Plastic\",\"t\":1,\"sh\":\"Block\"},{\"cf\":[-0.0009765625,0.35637664794921877,-0.3349609375,-1,0,2.9802322387695315e-8,0,1.000000238418579,-5.3290705182007517e-15,2.9802322387695315e-8,5.3290705182007517e-15,-1.000000238418579],\"s\":[0.184,0.822,1.334],\"r\":0,\"m\":\"Plastic\",\"t\":0,\"mesh\":{\"off\":[0,0,0],\"sc\":[0.026,0.026,0.026],\"id\":\"rbxassetid://110631186758351\",\"t\":\"FileMesh\",\"tex\":\"rbxassetid://100649571955287\"},\"c\":[0.6392157077789307,0.6352941393852234,0.6470588445663452]}],\"name\":\"M9\",\"v\":1}" },
+        { "Remington 870", "KIM1:{\"grip\":[0,0,0,1,0,0,0,1,0,0,0,1],\"parts\":[{\"cf\":[-0.001220703125,0.5528564453125,-3.3153076171875,-2.9802322387695315e-8,0,-1,5.3290705182007517e-15,1.000000238418579,0,1.000000238418579,5.3290705182007517e-15,2.9802322387695315e-8],\"c\":[0.10588235408067703,0.16470588743686677,0.2078431397676468],\"s\":[0.1,0.1,0.1],\"r\":0,\"m\":\"SmoothPlastic\",\"t\":1,\"sh\":\"Block\"},{\"cf\":[0,0,0,1,0,-2.9802322387695315e-8,0,1.000000238418579,5.3290705182007517e-15,-2.9802322387695315e-8,5.3290705182007517e-15,1.000000238418579],\"c\":[0.10588235408067703,0.16470588743686677,0.2078431397676468],\"s\":[0.1,0.1,0.1],\"r\":0,\"m\":\"SmoothPlastic\",\"t\":1,\"root\":true,\"sh\":\"Block\"},{\"cf\":[-0.0467529296875,0.215576171875,-0.611572265625,-0.9999998807907105,0.00017786026000976563,-0.0004368722438812256,0.00017786028911359608,1.000000238418579,-0.0000052154073273413818,0.0004368424415588379,-0.000005245212378213182,-1.0000001192092896],\"s\":[0.343,1.015,5.408],\"r\":0,\"m\":\"Plastic\",\"t\":0,\"mesh\":{\"off\":[0,0,0],\"sc\":[0.108,0.108,0.108],\"id\":\"rbxassetid://85472077740638\",\"t\":\"FileMesh\",\"tex\":\"rbxassetid://134695297080980\"},\"c\":[0.6392157077789307,0.6352941393852234,0.6470588445663452]}],\"name\":\"Remington 870\",\"v\":1}" },
+        { "MP5", "KIM1:{\"grip\":[0,0,0,1,0,0,0,1,0,0,0,1],\"parts\":[{\"cf\":[-0.049072265625,0.5499954223632813,-2.249755859375,-1,0,0,0,1.000000238418579,-7.105427357601002e-15,0,7.105427357601002e-15,-1.0000003576278687],\"c\":[0.8549019694328308,0.5215686559677124,0.2549019753932953],\"s\":[0.1,0.1,0.1],\"r\":0,\"m\":\"Plastic\",\"t\":1,\"sh\":\"Block\"},{\"cf\":[0,0,0,1,0,0,0,1.000000238418579,7.105427357601002e-15,0,7.105427357601002e-15,1.0000003576278687],\"c\":[0.8549019694328308,0.5215686559677124,0.2549019753932953],\"s\":[0.1,0.1,0.1],\"r\":0,\"m\":\"Plastic\",\"t\":1,\"root\":true,\"sh\":\"Block\"},{\"cf\":[-0.060791015625,0.16143798828125,-0.482177734375,0,0,-1,7.105427357601002e-15,1.000000238418579,0,1.0000003576278687,7.105427357601002e-15,0],\"s\":[3.514,1.506,0.265],\"r\":0,\"m\":\"Plastic\",\"t\":0,\"mesh\":{\"off\":[0,0,0],\"sc\":[1,1,1],\"id\":\"rbxassetid://118007003118471\",\"t\":\"FileMesh\",\"tex\":\"rbxassetid://74453061964221\"},\"c\":[0.6392157077789307,0.6352941393852234,0.6470588445663452]}],\"name\":\"MP5\",\"v\":1}" },
+        { "AK-47", "KIM1:{\"grip\":[0,0,0,1,0,0,0,1,0,0,0,1],\"parts\":[{\"cf\":[0,0,0,1,0,0,0,1.000000238418579,0,0,0,1.000000238418579],\"c\":[0.10588235408067703,0.16470588743686677,0.2078431397676468],\"s\":[0.1,0.1,0.1],\"r\":0,\"m\":\"SmoothPlastic\",\"t\":1,\"root\":true,\"sh\":\"Block\"},{\"cf\":[-0.00079345703125,0.5548095703125,-3.05908203125,0,0,-1,0,1.000000238418579,0,1.000000238418579,0,0],\"c\":[0.10588235408067703,0.16470588743686677,0.2078431397676468],\"s\":[0.1,0.1,0.1],\"r\":0,\"m\":\"SmoothPlastic\",\"t\":1,\"sh\":\"Block\"},{\"cf\":[-0.00079345703125,0.15203857421875,-0.49169921875,-1,0,0,0,1.000000238418579,0,0,0,-1.000000238418579],\"s\":[0.24,1.485,5.249],\"r\":0,\"m\":\"Plastic\",\"t\":0,\"mesh\":{\"off\":[0,0,0],\"sc\":[0.101,0.101,0.104],\"id\":\"rbxassetid://71100855161498\",\"t\":\"FileMesh\",\"tex\":\"rbxassetid://82603222461633\"},\"c\":[0.6392157077789307,0.6352941393852234,0.6470588445663452]}],\"name\":\"AK-47\",\"v\":1}" },
+    }
+    for _, g in ipairs(GUNS) do E.GUNS[#E.GUNS + 1] = { name = g[1], kim = g[2] } end
+
+
+    -- :: stage :: ----------------------------------------------------------
+    -- Everything the editor shows lives in a WorldModel inside a ViewportFrame, so
+    -- moving parts cost nothing and nothing here can touch the game's world.
+    local W = { bullets = {}, marks = {}, segs = {}, rays = {} }
+    local function part(parent, size, cf, color, shape)
+        return new("Part", {
+            Size = size, CFrame = cf, Color = color or P.PanelElevated,
+            Material = Enum.Material.SmoothPlastic, Anchored = true, CanCollide = false,
+            TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+            Shape = shape or Enum.PartType.Block, Parent = parent,
+        })
+    end
+
+    local function destroyStage()
+        if W.world then pcall(function() W.world:Destroy() end) end
+        if W.view then pcall(function() W.view:Destroy() end) end
+        if W.overlay then pcall(function() W.overlay:Destroy() end) end
+        W.world, W.view, W.cam, W.gun, W.muzzle, W.aimPoint = nil, nil, nil, nil, nil, nil
+        W.overlay = nil
+        W.bullets, W.marks, W.segs, W.rays = {}, {}, {}, {}
+    end
+
+    -- a thin box between two points, used for rays and tracers
+    local function buildStage(host)
+        if W.view then return end
+        local vp = new("ViewportFrame", {
+            Name = "Stage", Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = P.Background,
+            BackgroundTransparency = 0, BorderSizePixel = 0, ClipsDescendants = true,
+            Parent = host,
+        }, { corner(6), stroke(P.Border) })
+        new("UIPadding", { Parent = vp })   -- keeps the frame's own stroke inside the host
+        local world = new("WorldModel", { Parent = vp })
+        local cam = new("Camera", { FieldOfView = 62, Parent = vp })
+        vp.CurrentCamera = cam
+        W.view, W.world, W.cam = vp, world, cam
+        -- impact dots ride a 2D layer above the viewport (see addMark)
+        W.overlay = new("Frame", { Name = "Marks", Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true,
+            ZIndex = 2, Parent = host }, { corner(6) })
+
+        -- stage box: floor, back wall, distance strips every 10 studs
+        local floorC = Color3.fromRGB(38, 33, 29)
+        local wallC = Color3.fromRGB(58, 50, 44)
+        local bodyC = Color3.fromRGB(96, 82, 70)
+        part(world, Vector3.new(140, 1, 140), CFrame.new(0, -0.5, -30), floorC)
+        part(world, Vector3.new(140, 44, 1), CFrame.new(0, 21, -64), wallC)
+        for d = 10, 60, 10 do
+            part(world, Vector3.new(6, 0.12, 0.4), CFrame.new(0, 0.06, -d), P.Border)
+        end
+        -- target dummy: head, body, legs. Part pool colours land on these later.
+        local dummy = new("Model", { Name = "Dummy", Parent = world })
+        part(dummy, Vector3.new(2.4, 2.8, 1.1), CFrame.new(0, 4.3, -34), bodyC)
+        part(dummy, Vector3.new(1.1, 1.1, 1.1), CFrame.new(0, 6.2, -34), P.Accent, Enum.PartType.Ball)
+        part(dummy, Vector3.new(1.9, 3.0, 1.0), CFrame.new(0, 1.5, -34), bodyC)
+        W.dummy = dummy
+
+        -- the gun: first preset, on a holder aimed down the lane
+        local model = new("Model", { Name = "Gun", Parent = world })
+        local gun = E.GUNS[1]
+        W.gunParts = buildKim(decodeKim(gun.kim), model, 4.2)
+        local _, bsize = model:GetBoundingBox()
+        model:PivotTo(CFrame.lookAt(Vector3.new(2.2, 3.6, 0.5), Vector3.new(0, 4.3, -34)))
+        W.gunModel = model
+        W.gunSize = bsize
+        W.muzzle = (model:GetPivot() * CFrame.new(0, 0, -bsize.Z * 0.5)).Position
+        W.aimPoint = Vector3.new(0, 4.3, -34)
+        W.muzzleMarker = part(world, Vector3.new(0.28, 0.28, 0.28), CFrame.new(W.muzzle), P.Accent, Enum.PartType.Ball)
+
+        -- spread ring + rays, refreshed from the draft
+        for i = 1, 20 do
+            W.segs[i] = part(world, Vector3.new(0.12, 0.12, 0.12), CFrame.new(), P.Accent)
+        end
+        for i = 1, 6 do
+            W.rays[i] = part(world, Vector3.new(0.06, 0.06, 0.06), CFrame.new(), P.Accent)
+            W.rays[i].Transparency = 0.55
+        end
+        W.cam.CFrame = CFrame.lookAt(Vector3.new(3.4, 5.4, 9.5), Vector3.new(0, 3.9, -22))
+    end
+
+    -- the angle the active tab sprays at, in degrees, before any distance scaling
+    function E.spreadDegrees(side)
+        local d = E.draft[side] or {}
+        if side == "aim" then return tonumber(d.Jitter) or 0 end
+        local sp = tonumber(d.Spread) or 0
+        if (d.SpreadUnit or "Studs") == "Studs" then return 0, sp end
+        return sp, 0
+    end
+
+    function E.refreshStage()
+        local world = W.world
+        if not world then return end
+        local dist = 42
+        local deg, studs = E.spreadDegrees(E.mode)
+        local radius = math.tan(math.rad(deg)) * dist + (studs or 0)
+        radius = math.max(radius, 0.18)
+        local centre = W.aimPoint
+        local ring = (E.mode == "Aimbot") and P.Accent or Color3.fromRGB(130, 200, 255)
+        local n = 20
+        for i = 1, n do
+            local a = (i - 1) / n * math.pi * 2
+            local p = centre + Vector3.new(math.cos(a) * radius, math.sin(a) * radius, 0)
+            W.segs[i].CFrame = CFrame.new(p)
+            W.segs[i].Size = Vector3.new(0.16, 0.16, 0.16)
+            W.segs[i].Color = ring
+        end
+        for i = 1, 6 do
+            local a = (i - 1) / 6 * math.pi * 2
+            local p = centre + Vector3.new(math.cos(a) * radius, math.sin(a) * radius, 0)
+            local m = W.rays[i]
+            local d = p - W.muzzle
+            m.Size = Vector3.new(0.06, 0.06, d.Magnitude)
+            m.CFrame = CFrame.lookAt(W.muzzle + d * 0.5, p)
+            m.Color = ring
+        end
+        if W.ringRadius ~= radius then W.ringRadius = radius end
+    end
+
+    -- one offset on the target plane, from the same maths the shot uses
+    function E.rollOffset(side, dist)
+        local d = E.draft[side] or {}
+        if side == "aim" then
+            local m = Shared.LegitSim.jitter(d.Jitter, dist, Shared.LegitSim.fatigue(d.Fatigue))
+            return (math.random() * 2 - 1) * m, (math.random() * 2 - 1) * m
+        end
+        return Shared.LegitSim.spread(d.Spread, d.SpreadUnit, dist, d.Bloom, 0, d.SpreadPattern)
+    end
+
+    -- Project a world point into the viewport's own pixel space. WorldToViewportPoint
+    -- measures the real camera, so a ViewportFrame camera needs this instead.
+    local function project(p)
+        local cam, ov = W.cam, W.overlay
+        if not cam or not ov then return nil end
+        local rel = cam.CFrame:PointToObjectSpace(p)
+        local z = -rel.Z
+        if z <= 0.05 then return nil end
+        local w, h = ov.AbsoluteSize.X, ov.AbsoluteSize.Y
+        if w < 2 or h < 2 then return nil end
+        local ty = math.tan(math.rad(cam.FieldOfView) * 0.5)
+        local tx = ty * (w / h)
+        return Vector2.new((rel.X / (z * tx) * 0.5 + 0.5) * w, (0.5 - rel.Y / (z * ty) * 0.5) * h)
+    end
+
+    -- impact dots are 2D on purpose: a 0.3-stud part is a single pixel out there
+    local function addMark(p, col)
+        local s = project(p)
+        if not s then return end
+        local dot = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(s.X, s.Y), Size = UDim2.fromOffset(3, 3),
+            BackgroundColor3 = col, BorderSizePixel = 0, ZIndex = 3, Parent = W.overlay },
+            { pillCorner() })
+        W.marks[#W.marks + 1] = dot
+        while #W.marks > 400 do
+            local old = table.remove(W.marks, 1)
+            if old then pcall(function() old:Destroy() end) end
+        end
+    end
+
+    function E.fire(n)
+        if not W.world then return end
+        n = math.clamp(tonumber(n) or 1, 1, 500)
+        local dist = 34
+        local cx, cy = 0, 4.3
+        local total, hits = 0, 0
+        local col = (E.mode == "Aimbot") and Color3.fromRGB(255, 238, 224)
+            or Color3.fromRGB(205, 232, 255)
+        for _ = 1, n do
+            local ox, oy = E.rollOffset(E.mode, dist)
+            local p = Vector3.new(cx + ox, cy + oy, -33.6)
+            addMark(p, col)
+            total = total + 1
+            if math.abs(ox) < 1.4 and math.abs(oy) < 1.6 then hits = hits + 1 end
+        end
+        E.stats = { n = total, hits = hits, side = E.mode }
+        if E.onStats then pcall(E.onStats, E.stats) end
+    end
+
+    -- play mode fires where you look, on the wall, with the same spread maths
+    function E.fireAtAim()
+        if not W.world or not W.cam then return end
+        local cf = W.cam.CFrame
+        local o, dir = cf.Position, cf.LookVector
+        if dir.Z > -0.05 then return end
+        local t = (-63.5 - o.Z) / dir.Z
+        if t <= 0 or t > 400 then return end
+        local p = o + dir * t
+        local ox, oy = E.rollOffset(E.mode, t)
+        p = p + cf.RightVector * ox + cf.UpVector * oy
+        addMark(p, (E.mode == "Aimbot") and Color3.fromRGB(255, 238, 224)
+            or Color3.fromRGB(205, 232, 255))
+    end
+
+    function E.clearMarks()
+        for _, m in ipairs(W.marks) do pcall(function() m:Destroy() end) end
+        W.marks = {}
+    end
+
+    function E.setGun(index)
+        local gun = E.GUNS[index]
+        if not gun or not W.world then return end
+        if W.gunModel then pcall(function() W.gunModel:Destroy() end) end
+        local model = new("Model", { Name = "Gun", Parent = W.world })
+        W.gunParts = buildKim(decodeKim(gun.kim), model, 14)
+        local _, bsize = model:GetBoundingBox()
+        model:PivotTo(CFrame.lookAt(Vector3.new(3.4, 5.2, 9), W.aimPoint or Vector3.new(0, 4.3, -34)))
+        W.gunModel, W.gunSize = model, bsize
+        W.muzzle = (model:GetPivot() * CFrame.new(0, 0, -bsize.Z * 0.5)).Position
+        if W.muzzleMarker then W.muzzleMarker.CFrame = CFrame.new(W.muzzle) end
+        E.gunIndex = index
+        E.refreshStage()
+    end
+
+
+    -- :: surface :: --------------------------------------------------------
+    local UI = {}
+    local function lbl(parent, text, size, color, font, z)
+        return new("TextLabel", {
+            Text = text, BackgroundTransparency = 1, FontFace = font or Theme.Fonts.Medium,
+            TextSize = size or Theme.Text.Small, TextColor3 = color or P.Text,
+            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = z or 92, Parent = parent,
+        })
+    end
+
+    local function button(parent, text, w, h, z)
+        local b = new("TextButton", {
+            Text = text, FontFace = Theme.Fonts.Medium, TextSize = Theme.Text.Small,
+            TextColor3 = P.Text, AutoButtonColor = false, BackgroundColor3 = P.PanelElevated,
+            BackgroundTransparency = 0.2, BorderSizePixel = 0, Size = UDim2.fromOffset(w, h),
+            ZIndex = z or 93, Parent = parent,
+        }, { corner(5), stroke(P.BorderSubtle) })
+        Koffee.attachBtnHover(b, 0.02, 0.2)
+        popFx(b)
+        return b
+    end
+
+    local function setDirty()
+        if not E.Live then
+            E._dirty = true
+            if UI.save then UI.save.Visible = true end
+        end
+    end
+
+    -- one labelled slider bound to the draft, pushed live when Live is on
+    local function draftSlider(parent, side, key, text, mn, mx, prec, order)
+        local r = slider(parent, text, mn, mx, tonumber(E.draft[side][key]) or mn, prec,
+            function(v)
+                E.draft[side][key] = v
+                push(side, key)
+                setDirty()
+                E.refreshStage()
+            end)
+        if r and r.row then r.row.LayoutOrder = order end
+        return r
+    end
+    local function draftToggle(parent, side, key, text, order, onChange)
+        local r = configCheckbox(parent, text, E.draft[side][key] == true, function(v)
+            E.draft[side][key] = v
+            push(side, key)
+            setDirty()
+            if onChange then onChange(v) end
+            E.refreshStage()
+        end)
+        r.row.LayoutOrder = order
+        return r
+    end
+    local function draftDropdown(parent, side, key, text, options, order)
+        local d = dropdown(parent, text, options, E.draft[side][key], function(v)
+            E.draft[side][key] = v
+            push(side, key)
+            setDirty()
+            E.refreshStage()
+        end)
+        d.frame.LayoutOrder = order
+        return d
+    end
+
+    -- part pool: one row, checkbox list in its right-click popup
+    local function poolRow(parent, side, order)
+        local key = "Parts"
+        local function names()
+            local t = {}
+            for _, n in ipairs(HITPARTS) do
+                if E.draft[side][key][n] ~= false then t[#t + 1] = n end
+            end
+            return t
+        end
+        local row = new("Frame", { Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
+            LayoutOrder = order, ZIndex = 93, Parent = parent })
+        lbl(row, "Part Pool", Theme.Text.Small, P.Text, Theme.Fonts.Medium, 94)
+            .Size = UDim2.new(0.45, 0, 0, 18)
+        local val = lbl(row, table.concat(names(), ", "), Theme.Text.Tiny, P.TextMuted,
+            Theme.Fonts.Regular, 94)
+        val.Position = UDim2.new(0.45, 0, 0, 3)
+        val.Size = UDim2.new(0.55, -8, 0, 16)
+        val.TextXAlignment = Enum.TextXAlignment.Right
+        val.TextTruncate = Enum.TextTruncate.AtEnd
+        local hit = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 1, 0), ZIndex = 95, Parent = row })
+        local function refresh()
+            local t = names()
+            val.Text = #t > 0 and table.concat(t, ", ") or "none"
+        end
+        rightClickSettings(hit, "Part Pool", function(popup)
+            for _, n in ipairs(HITPARTS) do
+                popup:toggle(n, E.draft[side][key][n] ~= false, function(v)
+                    E.draft[side][key][n] = v and true or false
+                    push(side, key)
+                    setDirty()
+                    refresh()
+                end)
+            end
+            popup:action("All Parts", function()
+                for _, n in ipairs(HITPARTS) do E.draft[side][key][n] = true end
+                push(side, key)
+                refresh()
+            end)
+            popup:action("Head Only", function()
+                for _, n in ipairs(HITPARTS) do E.draft[side][key][n] = (n == "Head") end
+                push(side, key)
+                refresh()
+            end)
+        end)
+        return { row = row, refresh = refresh }
+    end
+    E.pool = poolRow
+
+    -- :: recoil pattern :: --------------------------------------------------
+    -- Drawn here, consumed by Combat.Recoil. One pattern for both kits: recoil is
+    -- the gun's behaviour, not the aim method's.
+    local function buildRecoil(parent, order)
+        local R = C.Recoil
+        local card = new("Frame", { Size = UDim2.new(1, 0, 0, 226), BackgroundTransparency = 1,
+            LayoutOrder = order, ZIndex = 92, Parent = parent })
+        lbl(card, "Recoil Pattern", Theme.Text.Small, P.Text, Theme.Fonts.Medium, 93)
+            .Size = UDim2.new(0.6, 0, 0, 16)
+        local on = configCheckbox(card, "Recoil Control", R.Enabled == true, function(v)
+            R.Enabled = v
+            Koffee.Sfx.play("click")
+        end)
+        on.row.Position = UDim2.fromOffset(0, 18)
+        on.row.Size = UDim2.new(1, 0, 0, 22)
+        local sRow = slider(card, "Strength (%)", 0, 200, tonumber(R.Strength) or 100, 0,
+            function(v) R.Strength = v end)
+        if sRow and sRow.row then
+            sRow.row.Position = UDim2.fromOffset(0, 42)
+            sRow.row.Size = UDim2.new(1, 0, 0, 40)
+        end
+        local canvas = new("Frame", { Position = UDim2.fromOffset(0, 84),
+            Size = UDim2.new(1, -2, 0, 92), BackgroundColor3 = P.Background,
+            BackgroundTransparency = 0.15, BorderSizePixel = 0, ClipsDescendants = true,
+            ZIndex = 93, Parent = card }, { corner(5), stroke(P.BorderSubtle) })
+        new("Frame", { Position = UDim2.new(0, 0, 0.5, 0), Size = UDim2.new(1, 0, 0, 1),
+            BackgroundColor3 = P.Border, BorderSizePixel = 0, BackgroundTransparency = 0.5,
+            ZIndex = 94, Parent = canvas })
+        local dots, lines = {}, {}
+        local function redraw()
+            for _, d in ipairs(dots) do pcall(function() d:Destroy() end) end
+            for _, l in ipairs(lines) do pcall(function() l:Destroy() end) end
+            dots, lines = {}, {}
+            local pat = R.RecoilPattern or {}
+            local w, h = canvas.AbsoluteSize.X, canvas.AbsoluteSize.Y
+            if w < 8 or h < 8 then return end
+            local span = math.max(#pat - 1, 1)
+            local prev
+            for i, pt in ipairs(pat) do
+                local x = 6 + (w - 12) * ((i - 1) / span)
+                local y = h * 0.5 - (tonumber(pt.y) or 0) / 12 * (h * 0.42)
+                dots[#dots + 1] = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(5, 5),
+                    BackgroundColor3 = P.Accent, BorderSizePixel = 0, ZIndex = 95,
+                    Parent = canvas }, { pillCorner() })
+                if prev then
+                    local dx, dy = x - prev[1], y - prev[2]
+                    local len = math.sqrt(dx * dx + dy * dy)
+                    if len > 0.5 then
+                        lines[#lines + 1] = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+                            Position = UDim2.fromOffset((x + prev[1]) * 0.5, (y + prev[2]) * 0.5),
+                            Size = UDim2.fromOffset(len, 1), BackgroundColor3 = P.Accent,
+                            BackgroundTransparency = 0.45, BorderSizePixel = 0,
+                            Rotation = math.deg(math.atan2(dy, dx)), ZIndex = 94, Parent = canvas })
+                    end
+                end
+                prev = { x, y }
+            end
+        end
+        local drawing, lastX = false, 0
+        local insetY = game:GetService("GuiService"):GetGuiInset().Y
+        local function sample(absY)
+            local h = math.max(canvas.AbsoluteSize.Y, 1)
+            local rel = math.clamp((absY - canvas.AbsolutePosition.Y) / h, 0, 1)
+            R.RecoilPattern = R.RecoilPattern or {}
+            R.RecoilPattern[#R.RecoilPattern + 1] = { y = (0.5 - rel) * 12 }
+            if #R.RecoilPattern > 64 then table.remove(R.RecoilPattern, 1) end
+            redraw()
+        end
+        local hit = new("TextButton", { Text = "", AutoButtonColor = false,
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), Active = true,
+            ZIndex = 96, Parent = canvas })
+        hit.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            drawing = true
+            lastX = input.Position.X
+            R.RecoilPattern = {}
+            sample(input.Position.Y - insetY)
+        end)
+        hit.InputChanged:Connect(function(input)
+            if not drawing then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            if math.abs(input.Position.X - lastX) < 5 then return end
+            lastX = input.Position.X
+            sample(input.Position.Y - insetY)
+        end)
+        hit.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then drawing = false end
+        end)
+        local clearB = button(card, "Clear", 46, 18, 93)
+        clearB.Position = UDim2.fromOffset(0, 184)
+        clearB.MouseButton1Click:Connect(function()
+            R.RecoilPattern = {}
+            redraw()
+            Koffee.Sfx.play("delete")
+        end)
+        local climbB = button(card, "Climb", 46, 18, 93)
+        climbB.Position = UDim2.fromOffset(50, 184)
+        climbB.MouseButton1Click:Connect(function()
+            R.RecoilPattern = {}
+            for i = 1, 24 do
+                R.RecoilPattern[i] = { y = 0.12 * i + math.random() * 0.18 }
+            end
+            redraw()
+            Koffee.Sfx.play("click")
+        end)
+        local pullB = button(card, "Pull", 44, 18, 93)
+        pullB.Position = UDim2.fromOffset(100, 184)
+        pullB.MouseButton1Click:Connect(function()
+            R.RecoilPattern = {}
+            for i = 1, 24 do
+                local t = i / 24
+                R.RecoilPattern[i] = { y = math.sin(t * math.pi) * 3 + math.random() * 0.15 }
+            end
+            redraw()
+            Koffee.Sfx.play("click")
+        end)
+        lbl(card, "drag the box to draw", Theme.Text.Tiny, P.TextFaint,
+            Theme.Fonts.Regular, 93).Position = UDim2.fromOffset(150, 187)
+        task.defer(redraw)
+        return { redraw = redraw }
+    end
+
+    local function buildLeft()
+        local host = UI.left
+        for _, c in ipairs(host:GetChildren()) do
+            if c:IsA("GuiObject") then c:Destroy() end
+        end
+        local side = (E.mode == "Aimbot") and "aim" or "silent"
+        local sc = new("ScrollingFrame", {
+            Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 4, ScrollBarImageColor3 = P.TextFaint,
+            CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 91, Parent = host })
+        new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder,
+            Parent = sc })
+        new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 6),
+            PaddingBottom = UDim.new(0, 10), Parent = sc })
+        local o = 0
+        local function nextOrder() o = o + 1; return o end
+        if side == "aim" then
+            draftToggle(sc, side, "Enabled", "Legit Kit", nextOrder())
+            draftSlider(sc, side, "Jitter", "Jitter (deg)", 0, 10, 1, nextOrder())
+            draftSlider(sc, side, "Overshoot", "Overshoot (deg)", 0, 10, 1, nextOrder())
+            draftToggle(sc, side, "OvershootTravel", "Overshoot Along Flick", nextOrder())
+            draftSlider(sc, side, "Deadzone", "Deadzone (px)", 0, 50, 0, nextOrder())
+            draftSlider(sc, side, "Reaction", "Reaction (ms)", 0, 500, 0, nextOrder())
+            draftSlider(sc, side, "ReactionRamp", "Reaction Ramp (%)", 0, 100, 0, nextOrder())
+            draftSlider(sc, side, "Fatigue", "Fatigue (%)", 0, 100, 0, nextOrder())
+            draftDropdown(sc, side, "Curve", "Pull Curve",
+                { "Snap", "Linear", "Ease In", "Ease Out", "Ease In-Out" }, nextOrder())
+            draftSlider(sc, side, "CurveTime", "Curve Time (ms)", 20, 1000, 0, nextOrder())
+        else
+            draftSlider(sc, side, "Jitter", "Jitter (studs)", 0, 5, 2, nextOrder())
+            draftSlider(sc, side, "HitChance", "Hit Chance (%)", 0, 100, 0, nextOrder())
+            draftSlider(sc, side, "HitChanceFalloff", "Chance Falloff (%)", 0, 100, 0, nextOrder())
+            draftSlider(sc, side, "HeadshotCap", "Headshot Cap (%)", 1, 100, 0, nextOrder())
+            draftSlider(sc, side, "Spread", "Spread", 0, 20, 2, nextOrder())
+            draftDropdown(sc, side, "SpreadUnit", "Spread Unit", { "Studs", "Degrees" }, nextOrder())
+            draftSlider(sc, side, "Bloom", "Bloom (%)", 0, 100, 0, nextOrder())
+            draftDropdown(sc, side, "SpreadPattern", "Pattern",
+                { "Cone", "Horizontal", "Vertical", "Cross" }, nextOrder())
+            draftToggle(sc, side, "ForceMiss", "Force Miss", nextOrder())
+        end
+        local pool = poolRow(sc, side, nextOrder())
+        E.poolRefresh = pool.refresh
+        buildRecoil(sc, nextOrder())
+    end
+
+    local function buildPage()
+        -- v2.1.0: the surface lives above the window, not inside it. UI modes swap
+        -- their own content containers, and a page parented to one of them vanishes
+        -- when the mode changes (Glass is not the classic window).
+        local dim = new("Frame", { Name = "LedDim", Size = UDim2.new(1, 0, 1, 0),
+            BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.6,
+            BorderSizePixel = 0, Visible = false, ZIndex = 58, Parent = screen })
+        local block = new("TextButton", { Name = "LedBlock", Text = "", AutoButtonColor = false,
+            BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, 0, 1, 0),
+            Visible = false, ZIndex = 59, Parent = screen })
+        block.MouseButton1Click:Connect(function() end)
+        UI.dim, UI.block = dim, block
+        local page = new("Frame", {
+            Name = "LegitEditor", AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(700, 760),
+            BackgroundColor3 = P.Panel, BackgroundTransparency = 0, BorderSizePixel = 0,
+            Visible = false, ZIndex = 60, Parent = screen,
+        })
+        UI.page = page
+        new("UICorner", { CornerRadius = UDim.new(0, Theme.Radius.Large), Parent = page })
+        local sc = new("UIScale", { Scale = 1, Parent = page })
+        UI.scale = sc
+
+        -- header
+        local head = new("Frame", { Size = UDim2.new(1, -20, 0, 30), Position = UDim2.fromOffset(10, 8),
+            BackgroundTransparency = 1, ZIndex = 91, Parent = page })
+        lbl(head, "Legit Editor", Theme.Text.Header, P.Text, Theme.Fonts.Bold, 92)
+            .Size = UDim2.new(0, 120, 1, 0)
+        -- mode pills
+        local pill = new("Frame", { Position = UDim2.fromOffset(122, 4), Size = UDim2.fromOffset(136, 22),
+            BackgroundColor3 = P.Pill, BackgroundTransparency = 0.3, BorderSizePixel = 0,
+            ZIndex = 91, Parent = head }, { pillCorner() })
+        UI.pillKnob = new("Frame", { Position = UDim2.fromOffset(2, 2), Size = UDim2.new(0.5, -2, 1, -4),
+            BackgroundColor3 = P.Accent, BorderSizePixel = 0, ZIndex = 92, Parent = pill }, { pillCorner() })
+        local modeBtns = {}
+        for i, name in ipairs({ "Aimbot", "Silent" }) do
+            local b = new("TextButton", { Text = name, FontFace = Theme.Fonts.Bold,
+                TextSize = Theme.Text.Small, AutoButtonColor = false,
+                TextColor3 = i == 1 and P.Background or P.TextMuted, BackgroundTransparency = 1,
+                Position = UDim2.new((i - 1) * 0.5, 0, 0, 0), Size = UDim2.new(0.5, 0, 1, 0),
+                ZIndex = 93, Parent = pill })
+            modeBtns[i] = b
+            b.MouseButton1Click:Connect(function()
+                if E.mode == name then return end
+                E.mode = name
+                Koffee.Sfx.play("tab")
+                for j, bb in ipairs(modeBtns) do
+                    tween(bb, Theme.Animation.Fast,
+                        { TextColor3 = j == i and P.Background or P.TextMuted })
+                end
+                tween(UI.pillKnob, Theme.Animation.Pill, { Position = UDim2.new((i - 1) * 0.5, 2, 0, 2) })
+                buildLeft()
+                E.refreshStage()
+            end)
+        end
+
+        -- live switch
+        local liveLbl = lbl(head, "Live", Theme.Text.Tiny, P.TextMuted, Theme.Fonts.Medium, 92)
+        liveLbl.Position = UDim2.new(1, -206, 0, 4)
+        liveLbl.Size = UDim2.fromOffset(26, 14)
+        local track = new("Frame", { Position = UDim2.new(1, -176, 0, 5), Size = UDim2.fromOffset(34, 16),
+            BackgroundColor3 = P.Pill, BorderSizePixel = 0, ZIndex = 91, Parent = head }, { pillCorner() })
+        local knob = new("Frame", { Position = UDim2.fromOffset(2, 2), Size = UDim2.new(0, 12, 1, -4),
+            BackgroundColor3 = P.TextMuted, BorderSizePixel = 0, ZIndex = 92, Parent = track },
+            { new("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+        local trackHit = new("TextButton", { Text = "", AutoButtonColor = false,
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), ZIndex = 93, Parent = track })
+        local function paintLive()
+            local on = E.Live
+            tween(knob, Theme.Animation.Fast, {
+                Position = on and UDim2.new(1, -14, 0, 2) or UDim2.fromOffset(2, 2),
+                BackgroundColor3 = on and P.Accent or P.TextMuted })
+            tween(knob, Theme.Animation.Fast, {
+                Size = on and UDim2.new(0, 12, 1, -4) or UDim2.new(0, 12, 1, -4) })
+            if UI.save then UI.save.Visible = not on end
+        end
+        trackHit.MouseButton1Click:Connect(function()
+            E.Live = not E.Live
+            Koffee.Sfx.play("click")
+            paintLive()
+        end)
+
+        UI.save = button(head, "Apply", 54, 22, 93)
+        UI.save.AnchorPoint = Vector2.new(1, 0)
+        UI.save.Position = UDim2.new(1, -86, 0, 4)
+        UI.save.TextColor3 = P.Accent
+        UI.save.Visible = false
+        UI.save.MouseButton1Click:Connect(function()
+            E.applyAll()
+            E._dirty = false
+            UI.save.Visible = false
+            Koffee.Sfx.play("success")
+        end)
+        local closeBtn = button(head, "Close", 52, 22, 93)
+        closeBtn.AnchorPoint = Vector2.new(1, 0)
+        closeBtn.Position = UDim2.new(1, 0, 0, 4)
+        closeBtn.MouseButton1Click:Connect(function() E.requestClose() end)
+
+        -- body: settings left, stage right
+        local body = new("Frame", { Position = UDim2.fromOffset(10, 44),
+            Size = UDim2.new(1, -20, 1, -52), BackgroundTransparency = 1, ZIndex = 91, Parent = page })
+        UI.left = new("Frame", { Size = UDim2.new(0.45, -4, 1, 0), BackgroundTransparency = 1,
+            ZIndex = 91, Parent = body })
+        UI.right = new("Frame", { Position = UDim2.new(0.45, 6, 0, 0),
+            Size = UDim2.new(0.55, -6, 1, 0), BackgroundTransparency = 1, ZIndex = 91, Parent = body })
+
+        local stageHost = new("Frame", { Size = UDim2.new(1, 0, 0, 150), BackgroundTransparency = 1,
+            ZIndex = 91, Parent = UI.right })
+        UI.stageHost = stageHost
+
+        -- actions under the stage
+        local acts = new("Frame", { Position = UDim2.fromOffset(0, 158), Size = UDim2.new(1, 0, 0, 24),
+            BackgroundTransparency = 1, ZIndex = 92, Parent = UI.right })
+        local function actBtn(text, x, w, cb)
+            local b = button(acts, text, w, 22, 93)
+            b.Position = UDim2.fromOffset(x, 0)
+            b.MouseButton1Click:Connect(function() cb() end)
+            return b
+        end
+        actBtn("Fire 25", 0, 62, function() E.fire(25) end)
+        actBtn("Fire 200", 66, 68, function() E.fire(200) end)
+        actBtn("Clear", 138, 48, function() E.clearMarks() end)
+        UI.playBtn = actBtn("Play", 190, 46, function() E.togglePlay() end)
+        UI.actW = 236
+
+        UI.stats = lbl(UI.right, "", Theme.Text.Tiny, P.TextMuted, Theme.Fonts.Regular, 92)
+        UI.stats.Position = UDim2.fromOffset(0, 188)
+        UI.stats.Size = UDim2.new(1, 0, 0, 14)
+        UI.stats.TextWrapped = true
+        E.onStats = function(s)
+            UI.stats.Text = string.format("%s  ·  %d shots  ·  %d on target", s.side, s.n, s.hits)
+        end
+        local gunNames = {}
+        for _, g in ipairs(E.GUNS) do gunNames[#gunNames + 1] = g.name end
+        UI.gunPick = dropdown(UI.right, "Model", gunNames, E.GUNS[1].name, function(v)
+            for i, g in ipairs(E.GUNS) do if g.name == v then E.setGun(i) break end end
+        end)
+        UI.gunPick.frame.Position = UDim2.fromOffset(0, 208)
+        UI.gunPick.frame.ZIndex = 93
+
+        -- presets under that
+        local pre = new("Frame", { Position = UDim2.fromOffset(0, 268), Size = UDim2.new(1, 0, 1, -268),
+            BackgroundTransparency = 1, ZIndex = 92, Parent = UI.right })
+        lbl(pre, "Presets", Theme.Text.Tiny, P.TextMuted, Theme.Fonts.Medium, 93)
+            .Size = UDim2.fromOffset(80, 12)
+        local preList = new("ScrollingFrame", { Position = UDim2.fromOffset(0, 14),
+            Size = UDim2.new(1, 0, 1, -56), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 4, ScrollBarImageColor3 = P.TextFaint,
+            CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 92, Parent = pre })
+        new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder,
+            Parent = preList })
+        UI.preList = preList
+        local addPre = button(pre, "Save current as preset", 150, 20, 93)
+        addPre.AnchorPoint = Vector2.new(0, 1)
+        addPre.Position = UDim2.new(0, 0, 1, 0)
+        addPre.MouseButton1Click:Connect(function() E.savePreset() end)
+        local gunTgl = configCheckbox(pre, "Follow Gun", E.GunAware == true, function(v)
+            E.GunAware = v
+            Koffee.Sfx.play("click")
+        end)
+        gunTgl.row.AnchorPoint = Vector2.new(1, 1)
+        gunTgl.row.Position = UDim2.new(1, 0, 1, 0)
+        gunTgl.row.Size = UDim2.fromOffset(96, 20)
+
+        E.refreshPresets()
+        paintLive()
+    end
+
+    function E.refreshPresets()
+        if not UI.preList then return end
+        for _, c in ipairs(UI.preList:GetChildren()) do
+            if c:IsA("GuiObject") then c:Destroy() end
+        end
+        local list = E.LegitPresets or {}
+        if #list == 0 then
+            local empty = lbl(UI.preList, "No presets yet", Theme.Text.Tiny, P.TextFaint,
+                Theme.Fonts.Regular, 93)
+            empty.Size = UDim2.new(1, 0, 0, 16)
+            return
+        end
+        for i, p in ipairs(list) do
+            local row = new("Frame", { Size = UDim2.new(1, -6, 0, 24), BackgroundColor3 = P.PanelElevated,
+                BackgroundTransparency = 0.35, BorderSizePixel = 0, LayoutOrder = i, ZIndex = 92,
+                Parent = UI.preList }, { corner(4) })
+            local name = lbl(row, p.name or ("Preset " .. i), Theme.Text.Small, P.Text,
+                Theme.Fonts.Medium, 93)
+            name.Position = UDim2.fromOffset(8, 3)
+            name.Size = UDim2.new(1, -66, 0, 18)
+            name.TextTruncate = Enum.TextTruncate.AtEnd
+            local load = new("TextButton", { Text = "Load", FontFace = Theme.Fonts.Medium,
+                TextSize = Theme.Text.Tiny, TextColor3 = P.Accent, AutoButtonColor = false,
+                BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5),
+                Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.fromOffset(40, 18),
+                ZIndex = 94, Parent = row })
+            load.MouseButton1Click:Connect(function()
+                if p.aimbot then E.draft.aim = copy(p.aimbot) end
+                if p.silent then E.draft.silent = copy(p.silent) end
+                if E.Live then E.applyAll() end
+                E._dirty = true
+                if UI.save then UI.save.Visible = true end
+                buildLeft()
+                E.refreshStage()
+                Koffee.Sfx.play("click")
+            end)
+        end
+    end
+
+    function E.savePreset()
+        local n = "Preset " .. ((#(E.LegitPresets or {})) + 1)
+        local pre = E.snapshot(n)
+        E.LegitPresets = E.LegitPresets or {}
+        E.LegitPresets[#E.LegitPresets + 1] = pre
+        E.refreshPresets()
+        Koffee.Sfx.play("success")
+    end
+
+    -- :: lifecycle :: ------------------------------------------------------
+    local bindName
+    local play = { on = false, yaw = 0, pitch = 0, pos = Vector3.new(0, 6, 10), vel = Vector3.new() }
+
+    local function stopPlay()
+        if not play.on then return end
+        play.on = false
+        E.play = false
+        UIS.MouseBehavior = Enum.MouseBehavior.Default
+        UIS.MouseIconEnabled = true
+        if Koffee._clickGuard then Koffee._clickGuard.Visible = windowOpen end
+        if windowOpen then holdMouseFree(true) end
+        if UI.playBtn then UI.playBtn.Text = "Play" end
+    end
+
+    function E.togglePlay()
+        if play.on then stopPlay(); return end
+        if not W.world then return end
+        play.on = true
+        E.play = true
+        play.pos = Vector3.new(0, 6, 12)
+        play.vel = Vector3.new()
+        play.yaw, play.pitch = 0, -0.1
+        UIS.MouseBehavior = Enum.MouseBehavior.LockCenter
+        UIS.MouseIconEnabled = false
+        holdMouseFree(false)
+        if Koffee._clickGuard then Koffee._clickGuard.Visible = false end
+        play.mouseConn = play.mouseConn or UIS.InputChanged:Connect(function(input)
+            if not play.on then return end
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                play.yaw -= input.Delta.X * 0.0032
+                play.pitch = math.clamp(play.pitch - input.Delta.Y * 0.0032, -1.1, 1.1)
+            end
+        end)
+        play.fireConn = play.fireConn or UIS.InputBegan:Connect(function(input, gp)
+            if not play.on then return end
+            if input.UserInputType == Enum.UserInputType.MouseButton1 and not gp then
+                E.fireAtAim()
+            elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+                stopPlay()
+            end
+        end)
+    end
+
+    function E.openEditor(mode)
+        if not UI.page or not UI.page.Parent then buildPage() end
+        E.mode = (mode == "Silent") and "Silent" or "Aimbot"
+        freshDraft()
+        E._dirty = false
+        buildLeft()
+        buildStage(UI.stageHost)
+        E.refreshStage()
+        UI.page.Visible = true
+        UI.dim.Visible = true
+        UI.block.Visible = true
+        local vp = workspace.CurrentCamera.ViewportSize
+        UI.page.Size = UDim2.fromOffset(math.min(700, vp.X - 40), math.min(760, vp.Y - 40))
+        if Koffee.Anim.spot("AnimWindow") then
+            UI.scale.Scale = 0.985
+            tween(UI.scale, Theme.Animation.WindowFade, { Scale = 1 })
+        else
+            UI.scale.Scale = 1
+        end
+        local m = (E.mode == "Silent") and 1 or 0
+        UI.pillKnob.Position = UDim2.new(m * 0.5, 2, 0, 2)
+        E.open = true
+        bindName = bindName or (KID.name("ledr") .. math.random(1, 1e9))
+        RunService:BindToRenderStep(bindName, Enum.RenderPriority.Last.Value + 12, function(dt)
+            if Koffee.dead() or not E.open then
+                pcall(function() RunService:UnbindFromRenderStep(bindName) end)
+                return
+            end
+            if play.on and W.cam then
+                local dir = Vector3.new(0, 0, 0)
+                if UIS:IsKeyDown(Enum.KeyCode.W) then dir += Vector3.new(0, 0, -1) end
+                if UIS:IsKeyDown(Enum.KeyCode.S) then dir += Vector3.new(0, 0, 1) end
+                if UIS:IsKeyDown(Enum.KeyCode.A) then dir += Vector3.new(-1, 0, 0) end
+                if UIS:IsKeyDown(Enum.KeyCode.D) then dir += Vector3.new(1, 0, 0) end
+                if dir.Magnitude > 0 then dir = dir.Unit end
+                local yaw = CFrame.fromEulerAnglesYXZ(0, play.yaw, 0)
+                local move = yaw:VectorToWorldSpace(dir) * ((UIS:IsKeyDown(Enum.KeyCode.LeftShift)
+                    and 18) or 9)
+                local vy = play.vel.Y - 24 * dt
+                if UIS:IsKeyDown(Enum.KeyCode.Space) and play.pos.Y <= 5.02 then vy = 12 end
+                play.pos = play.pos + move * dt + Vector3.new(0, vy * dt, 0)
+                if play.pos.Y < 5 then play.pos = Vector3.new(play.pos.X, 5, play.pos.Z); vy = 0 end
+                play.vel = Vector3.new(move.X, vy, move.Z)
+                play.pos = Vector3.new(math.clamp(play.pos.X, -20, 20), play.pos.Y,
+                    math.clamp(play.pos.Z, -50, 16))
+                W.cam.CFrame = CFrame.fromEulerAnglesYXZ(play.pitch, play.yaw, 0) + play.pos
+            end
+        end)
+    end
+
+    function E.requestClose()
+        local function finish()
+            E.open = false
+            stopPlay()
+            if bindName then pcall(function() RunService:UnbindFromRenderStep(bindName) end) end
+            if Koffee.Anim.spot("AnimWindow") then
+                tween(UI.scale, Theme.Animation.WindowFade, { Scale = 0.985 })
+                task.delay(Koffee.Anim.wait(0.2), function()
+                    if not E.open and UI.page then
+                        UI.page.Visible = false
+                        if UI.dim then UI.dim.Visible = false end
+                        if UI.block then UI.block.Visible = false end
+                    end
+                    destroyStage()
+                end)
+            else
+                UI.page.Visible = false
+                if UI.dim then UI.dim.Visible = false end
+                if UI.block then UI.block.Visible = false end
+                destroyStage()
+            end
+        end
+        if E._dirty and not E.Live then
+            Shared.confirm("Close without applying?",
+                "Edits made here are not in the kit yet. Apply them first if you want to keep them.",
+                "Discard", finish)
+        else
+            finish()
+        end
+    end
+    E.closeEditor = function() E.open = false; stopPlay()
+        if bindName then pcall(function() RunService:UnbindFromRenderStep(bindName) end) end
+        if UI.page then UI.page.Visible = false end
+        if UI.dim then UI.dim.Visible = false end
+        if UI.block then UI.block.Visible = false end
+        destroyStage()
+    end
+
+    -- per-gun presets: only when the toggle is on, and never over an empty list
+    function E.applyForGun(tool)
+        if not E.GunAware then return end
+        local sig = modelSig(tool)
+        local pre, conf, how = E.match(tool and tool.Name, sig)
+        if not pre then return end
+        if pre.aimbot then
+            for k, v in pairs(copy(pre.aimbot)) do C.Aim.Legit[k] = v end
+        end
+        if pre.silent then
+            for k, v in pairs(copy(pre.silent)) do C.Silent.Legit[k] = v end
+        end
+        E.lastMatch = { name = pre.name, conf = conf, how = how }
+    end
+
+    -- recoil consumer: the pattern pulls against the game's kick, one step per shot
+    local recIdx, recAt = 0, 0
+    local recComp = { yaw = 0, pitch = 0 }
+    E.onShot = function()
+        local R = C.Recoil
+        if not R or not R.Enabled then return end
+        local pat = R.RecoilPattern
+        if type(pat) ~= "table" or #pat == 0 then return end
+        local now = os.clock()
+        if now - recAt > 0.6 then recIdx = 0 end
+        recAt = now
+        recIdx = math.min(recIdx + 1, #pat)
+        local cur = tonumber(pat[recIdx] and pat[recIdx].y) or 0
+        local prev = tonumber(pat[recIdx - 1] and pat[recIdx - 1].y) or 0
+        recComp.pitch = recComp.pitch + (cur - prev) * ((tonumber(R.Strength) or 100) / 100)
+    end
+    if Koffee.Stats and Koffee.Stats.shot then
+        local oldShot = Koffee.Stats.shot
+        Koffee.Stats.shot = function(...)
+            oldShot(...)
+            pcall(E.onShot)
+        end
+    end
+    RunService:BindToRenderStep(KID.name("lrec") .. math.random(1, 1e9),
+        Enum.RenderPriority.Last.Value, function(dt)
+        if Koffee.dead() then return end
+        if math.abs(recComp.pitch) < 0.0005 and math.abs(recComp.yaw) < 0.0005 then return end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        local a = math.clamp(dt * 24, 0, 1)
+        local dp, dy = recComp.pitch * a, recComp.yaw * a
+        recComp.pitch -= dp
+        recComp.yaw -= dy
+        cam.CFrame = cam.CFrame * CFrame.Angles(-math.rad(dp), -math.rad(dy), 0)
+    end)
+
+    -- the window closing must never leave the sandbox holding the mouse
+    Koffee.UI.openHooks[#Koffee.UI.openHooks + 1] = function(open)
+        if not open then stopPlay() end
+    end
+    -- a config load rewrites the kit under the open editor, so re-read it
+    Koffee.UI.afterRebuild[#Koffee.UI.afterRebuild + 1] = function()
+        if not E.open then return end
+        freshDraft()
+        buildLeft()
+        E.refreshStage()
+    end
+    -- per-gun presets follow the equipped tool, polled at a cheap rate
+    task.spawn(function()
+        local lastTool
+        while not Koffee.dead() do
+            local ch = PLAYER.Character
+            local tool = ch and ch:FindFirstChildOfClass("Tool")
+            if tool ~= lastTool then
+                lastTool = tool
+                if tool then pcall(E.applyForGun, tool) end
+            end
+            task.wait(0.5)
+        end
+    end)
+
 end)()
 
 -- v0.0.34: auto-load this game's saved config (if one is pinned). Deferred +
