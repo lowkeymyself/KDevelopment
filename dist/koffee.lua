@@ -1,7 +1,7 @@
--- koffee v2.1.3
+-- koffee v2.1.4
 
 local Koffee = {}
-Koffee.Version = "2.1.3"
+Koffee.Version = "2.1.4"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -54133,19 +54133,130 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         end)
     end
 
-    -- play mode fires where you look, on the wall, with the same spread maths
+    -- play mode fires where you look: targets first, then the back wall. Verified with
+    -- a manual OBB test because viewport parts are not in Workspace.
+    local function rayTargets(origin, dir, maxDist)
+        local best, bestP
+        local axes = { "X", "Y", "Z" }
+        for _, t in ipairs(W.targets or {}) do
+            for _, p in pairs(t.zones) do
+                local rel = p.CFrame:PointToObjectSpace(origin)
+                local d = p.CFrame:VectorToObjectSpace(dir)
+                local hs = p.Size * 0.5
+                local tmin, tmax, ok = -math.huge, math.huge, true
+                for _, ax in ipairs(axes) do
+                    local o, dd, h = rel[ax], d[ax], hs[ax]
+                    if math.abs(dd) < 1e-6 then
+                        if math.abs(o) > h then ok = false break end
+                    else
+                        local t1, t2 = (-h - o) / dd, (h - o) / dd
+                        if t1 > t2 then t1, t2 = t2, t1 end
+                        tmin = math.max(tmin, t1)
+                        tmax = math.min(tmax, t2)
+                        if tmin > tmax then ok = false break end
+                    end
+                end
+                if ok and tmax > 0 and tmin < maxDist then
+                    local dist = (tmin > 0) and tmin or tmax
+                    if not best or dist < best then
+                        best, bestP = dist, origin + dir * dist
+                    end
+                end
+            end
+        end
+        return bestP
+    end
+    E._ray = rayTargets
+
+    local function drawTracer(a, b)
+        local sa, sb = project(a), project(b)
+        if not sa or not sb then return end
+        local dx, dy = sb.X - sa.X, sb.Y - sa.Y
+        local len = math.sqrt(dx * dx + dy * dy)
+        if len < 1 then return end
+        local f = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset((sa.X + sb.X) * 0.5, (sa.Y + sb.Y) * 0.5),
+            Size = UDim2.fromOffset(len, 1), BackgroundColor3 = Color3.fromRGB(255, 236, 205),
+            BackgroundTransparency = 0.25, BorderSizePixel = 0,
+            Rotation = math.deg(math.atan2(dy, dx)), ZIndex = 3, Parent = W.overlay })
+        task.delay(0.08, function() pcall(function() f:Destroy() end) end)
+    end
+
+    local function burst(p)
+        local s = project(p)
+        if not s then return end
+        local ring = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(s.X, s.Y), Size = UDim2.fromOffset(5, 5),
+            BackgroundTransparency = 1, ZIndex = 4, Parent = W.overlay },
+            { pillCorner(), new("UIStroke", { Thickness = 2,
+                Color = Color3.fromRGB(255, 176, 116), Transparency = 0.05 }) })
+        tween(ring, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            { Size = UDim2.fromOffset(34, 34) })
+        task.delay(0.38, function() pcall(function() ring:Destroy() end) end)
+        local core = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(s.X, s.Y), Size = UDim2.fromOffset(6, 6),
+            BackgroundColor3 = Color3.fromRGB(255, 240, 220), BorderSizePixel = 0,
+            ZIndex = 5, Parent = W.overlay }, { pillCorner() })
+        task.delay(2.2, function()
+            pcall(function()
+                tween(core, TweenInfo.new(0.3), { BackgroundTransparency = 1 })
+            end)
+            task.delay(0.35, function() pcall(function() core:Destroy() end) end)
+        end)
+    end
+
+    -- classic X at the crosshair, only when the ray actually hit a target
+    local function hitMarker()
+        if not W.overlay then return end
+        local cx = W.overlay.AbsoluteSize.X * 0.5
+        local cy = W.overlay.AbsoluteSize.Y * 0.5
+        local marks = {}
+        for i = 1, 4 do
+            local ang = math.rad(45 + (i - 1) * 90)
+            local m = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromOffset(cx + math.cos(ang) * 10, cy + math.sin(ang) * 10),
+                Size = UDim2.fromOffset(9, 2), BackgroundColor3 = Color3.fromRGB(255, 120, 100),
+                BorderSizePixel = 0, Rotation = math.deg(ang) + 45, ZIndex = 6,
+                Parent = W.overlay }, { pillCorner() })
+            marks[#marks + 1] = m
+        end
+        task.delay(0.16, function()
+            for _, m in ipairs(marks) do pcall(function() m:Destroy() end) end
+        end)
+    end
+
     function E.fireAtAim()
         if not W.world or not W.cam then return end
         local cf = W.cam.CFrame
         local o, dir = cf.Position, cf.LookVector
-        if dir.Z > -0.05 then return end
-        local t = (-63.5 - o.Z) / dir.Z
-        if t <= 0 or t > 400 then return end
-        local p = o + dir * t
-        local ox, oy = E.rollOffset(E.mode, t)
-        p = p + cf.RightVector * ox + cf.UpVector * oy
-        recordMark(p, (E.mode == "Aimbot") and Color3.fromRGB(255, 238, 224)
-            or Color3.fromRGB(205, 232, 255))
+        local hit = rayTargets(o, dir, 250)
+        local p
+        if hit then
+            local ox, oy = E.rollOffset(E.mode, (hit - o).Magnitude)
+            p = hit + cf.RightVector * ox + cf.UpVector * oy
+        elseif dir.Z < -0.05 then
+            local t = (-63.5 - o.Z) / dir.Z
+            if t <= 0 or t > 400 then return end
+            p = o + dir * t
+            local ox, oy = E.rollOffset(E.mode, t)
+            p = p + cf.RightVector * ox + cf.UpVector * oy
+        else
+            return
+        end
+        local col = (E.mode == "Aimbot") and Color3.fromRGB(255, 238, 224)
+            or Color3.fromRGB(205, 232, 255)
+        recordMark(p, col)
+        drawTracer(o + dir * 1.2 - cf.UpVector * 0.35, p)
+        burst(p)
+        if hit then hitMarker() end
+        E.lastShot = { hit = hit ~= nil, at = p }
+        E.playShots = (E.playShots or 0) + 1
+        if hit then E.playHits = (E.playHits or 0) + 1 end
+        if E.playStatsLbl then
+            E.playStatsLbl.Text = string.format("  shots %d  ·  hits %d  ·  LMB fire  ·  F stop",
+                E.playShots, E.playHits or 0)
+        end
+        if Koffee.Sfx and Koffee.Sfx.play then pcall(Koffee.Sfx.play, "click") end
     end
 
     function E.clearMarks()
@@ -54456,14 +54567,28 @@ Shared.REPLACE_TABLES.RecoilPattern = true
     function E.buildSandboxBar()
         if not UI.stageHost or UI.sandbox then return end
         local bar = new("Frame", { Name = "SandboxBar", Position = UDim2.fromOffset(10, 10),
-            Size = UDim2.fromOffset(300, 28), BackgroundColor3 = P.Background,
-            BackgroundTransparency = 0.3, BorderSizePixel = 0, Visible = false,
-            ZIndex = 6, Parent = UI.stageHost }, { corner(4), stroke(P.BorderSubtle) })
-        local list = new("Frame", { Size = UDim2.new(1, -10, 1, 0), Position = UDim2.fromOffset(5, 0),
+            Size = UDim2.new(0, 0, 0, 28), AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundColor3 = P.Background, BackgroundTransparency = 0.3, BorderSizePixel = 0,
+            Visible = false, ZIndex = 6, Parent = UI.stageHost }, { corner(4), stroke(P.BorderSubtle) })
+        new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6),
+            Parent = bar })
+        local list = new("Frame", { Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X,
             BackgroundTransparency = 1, ZIndex = 7, Parent = bar })
         new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
             VerticalAlignment = Enum.VerticalAlignment.Center, Parent = list })
         UI.sandbox = { bar = bar, list = list, btns = {}, off = {} }
+        UI.playStats = new("TextLabel", { Name = "PlayStats", Position = UDim2.fromOffset(10, 44),
+            Size = UDim2.fromOffset(330, 18), BackgroundTransparency = 0.3,
+            BackgroundColor3 = P.Background, TextColor3 = P.Text, TextSize = Theme.Text.Tiny,
+            FontFace = Theme.Fonts.Mono, Text = "  shots 0  ·  hits 0  ·  LMB fire  ·  F stop",
+            TextXAlignment = Enum.TextXAlignment.Left, Visible = false, ZIndex = 8,
+            Parent = UI.stageHost }, { corner(4) })
+        E.playStatsLbl = UI.playStats
+        UI.aimDot = new("Frame", { Name = "AimDot", AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(3, 3),
+            BackgroundColor3 = Color3.fromRGB(255, 240, 225), BackgroundTransparency = 0.1,
+            BorderSizePixel = 0, Visible = false, ZIndex = 8, Parent = UI.stageHost },
+            { pillCorner() })
         E.rebuildSandbox()
     end
 
@@ -54863,11 +54988,21 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         if windowOpen then holdMouseFree(true) end
         if UI.playBtn then UI.playBtn.Text = "Play" end
         if UI.sandbox then UI.sandbox.bar.Visible = false end
+        if UI.playStats then UI.playStats.Visible = false end
+        if UI.aimDot then UI.aimDot.Visible = false end
         if W.gunModel then
             W.gunModel:PivotTo(CFrame.lookAt(Vector3.new(6.2, 1.7, -3.2), Vector3.new(0, 4.3, -34)) * CFrame.Angles(0, math.pi, 0))
         end
         -- reparenting is locked while an input callback is running, so defer it
         task.defer(exitStageFullscreen)
+    end
+
+    -- point the sandbox camera at a direction (used by tests and by future targets)
+    function E.setPlayLook(dir)
+        if type(dir) ~= "Vector3" or dir.Magnitude < 1e-3 then return end
+        local u = dir.Unit
+        play.yaw = math.atan2(-u.X, -u.Z)
+        play.pitch = math.asin(math.clamp(u.Y, -1, 1))
     end
 
     function E.togglePlay()
@@ -54884,6 +55019,12 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         holdMouseFree(false)
         if Koffee._clickGuard then Koffee._clickGuard.Visible = false end
         if UI.sandbox then UI.sandbox.bar.Visible = true; E.rebuildSandbox() end
+        if UI.playStats then
+            E.playShots, E.playHits = 0, 0
+            UI.playStats.Text = "  shots 0  ·  hits 0  ·  LMB fire  ·  F stop"
+            UI.playStats.Visible = true
+        end
+        if UI.aimDot then UI.aimDot.Visible = true end
         play.mouseConn = play.mouseConn or UIS.InputChanged:Connect(function(input)
             if not play.on then return end
             if input.UserInputType == Enum.UserInputType.MouseMovement then
