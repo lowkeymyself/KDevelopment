@@ -1,7 +1,7 @@
--- koffee v2.3.1
+-- koffee v2.3.2
 
 local Koffee = {}
-Koffee.Version = "2.3.1"
+Koffee.Version = "2.3.2"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -54934,6 +54934,24 @@ Shared.REPLACE_TABLES.RecoilByGun = true
     -- v2.2.0: behaviour curves, every sample taken from LegitSim with the live kit's
     -- own numbers. Nothing here is drawn for decoration.
     local GR = { cards = {}, built = false }
+    -- the shell's ScreenGui ignores the topbar inset, so a press may or may not need
+    -- it taken off. The press landed inside the plot by definition, so the offset is
+    -- whatever makes that true: measured on the first press, never assumed.
+    GR.rawInset = game:GetService("GuiService"):GetGuiInset().Y
+    GR.inset = 0
+    -- one drag at a time, followed on the global input stream so it keeps tracking
+    -- wherever the cursor goes instead of dying the moment it leaves the dot
+    UIS.InputChanged:Connect(function(input)
+        if Koffee.dead() or not GR.drag then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        GR.drag(input.Position.X, input.Position.Y - GR.inset)
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 and GR.drag then
+            GR.drag = nil
+            if Koffee.Sfx then pcall(Koffee.Sfx.play, "click") end
+        end
+    end)
     -- a plot that reuses its frames: these redraw several times a second, and
     -- rebuilding a few hundred instances per pass churns for nothing.
     local function plotter(box, z)
@@ -55003,7 +55021,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         local yl = lbl(card, yLabel, Theme.Text.Tiny, P.TextMuted, Theme.Fonts.Regular, 93)
         yl.Position = UDim2.fromOffset(10, 26)
         yl.Size = UDim2.new(1, -20, 0, 12)
-        local boxes, hi, lo = {}, {}, {}
+        local boxes, hi, lo, hits = {}, {}, {}, {}
         local count = twin and 2 or 1
         for i = 1, count do
             local wScale = 1 / count
@@ -55014,6 +55032,11 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                 BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 93, Parent = card },
                 { corner(4), stroke(P.BorderSubtle) })
             boxes[i] = box
+            -- a press anywhere in the plot grabs the nearest grip: hunting for a
+            -- 13 pixel dot is not an editing surface
+            hits[i] = new("TextButton", { Text = "", AutoButtonColor = false,
+                BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), Active = true,
+                ZIndex = 96, Parent = box })
             local h = lbl(card, "", Theme.Text.Tiny, P.TextFaint, Theme.Fonts.Mono, 93)
             h.Position = UDim2.new((i - 1) * wScale, 2 + (i - 1) * 8, 0, 42)
             h.Size = UDim2.fromOffset(38, 12)
@@ -55041,50 +55064,73 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         local c = { card = card, cap = cap, boxes = boxes, hi = hi, lo = lo,
             xlo = xlo, xhi = xhi, xl = xl, yl = yl, pens = {}, grips = {} }
         for i = 1, count do c.pens[i] = plotter(boxes[i], 94) end
-        -- v2.3.0: a grip is a dot on the plot that reads a number out of the kit and
-        -- writes it back as you drag it, so the curve is the control. spec.at(w, h)
-        -- places it, spec.drag(fx, fy) takes the drag as fractions of the plot box.
+        -- v2.3.2: a grip is a dot that reads a number out of the kit and writes it
+        -- back as the plot is dragged. The dot is only the indicator: pressing
+        -- anywhere in the plot grabs the nearest one, and the drag is tracked on the
+        -- global input stream. Listening on the dot meant the drag died the instant
+        -- the cursor left those 13 pixels, which is why it worked only sometimes.
         function c.grip(spec)
-            local box = boxes[spec.box or 1]
-            -- the dot lives on the card, not in the plot: a plot clips its children
-            -- and a grip sitting on the edge would come out sliced
-            local dot = new("TextButton", { Text = "", AutoButtonColor = false,
-                AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(13, 13),
-                BackgroundColor3 = P.Accent, BackgroundTransparency = 0.15,
-                BorderSizePixel = 0, Active = true, ZIndex = 97, Parent = card },
-                { pillCorner(), stroke(P.Background) })
-            local ring = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+            -- on the card, not in the plot: a plot clips its children and a grip on
+            -- the edge would come out sliced. A Frame, so the press falls through to
+            -- the capture button underneath it.
+            local dot = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.fromOffset(13, 13), BackgroundColor3 = P.Accent,
+                BackgroundTransparency = 0.15, BorderSizePixel = 0, ZIndex = 97,
+                Parent = card }, { pillCorner(), stroke(P.Background) })
+            new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
                 Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(5, 5),
                 BackgroundColor3 = P.Background, BorderSizePixel = 0, ZIndex = 98,
                 Parent = dot }, { pillCorner() })
-            local dragging = false
-            local function apply(px, py)
-                local w = math.max(box.AbsoluteSize.X, 1)
-                local h = math.max(box.AbsoluteSize.Y, 1)
-                spec.drag(math.clamp((px - box.AbsolutePosition.X) / w, 0, 1),
-                    math.clamp((py - box.AbsolutePosition.Y) / h, 0, 1), w, h)
-                if E.redrawGraphs then pcall(E.redrawGraphs) end
-            end
-            local inset = game:GetService("GuiService"):GetGuiInset().Y
-            dot.InputBegan:Connect(function(input)
-                if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-                dragging = true
-                apply(input.Position.X, input.Position.Y - inset)
-            end)
-            dot.InputChanged:Connect(function(input)
-                if not dragging then return end
-                if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
-                apply(input.Position.X, input.Position.Y - inset)
-            end)
-            dot.InputEnded:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                    dragging = false
-                    Koffee.Sfx.play("click")
-                end
-            end)
-            ring.Visible = true
             c.grips[#c.grips + 1] = { dot = dot, spec = spec }
             return dot
+        end
+        -- press in a plot: take the grip nearest the press and hand it the drag
+        function c.startDrag(bi, px, py)
+            local box = boxes[bi]
+            if not box then return end
+            local w = math.max(box.AbsoluteSize.X, 1)
+            local h = math.max(box.AbsoluteSize.Y, 1)
+            local lx, ly = px - box.AbsolutePosition.X, py - box.AbsolutePosition.Y
+            local best, bestD
+            for _, g in ipairs(c.grips) do
+                if (g.spec.box or 1) == bi then
+                    local ok, gx, gy = pcall(g.spec.at, w, h)
+                    if ok and gx then
+                        local d = (gx - lx) ^ 2 + (gy - ly) ^ 2
+                        if not bestD or d < bestD then best, bestD = g, d end
+                    end
+                end
+            end
+            if not best then return end
+            GR.drag = function(ax, ay)
+                local bw = math.max(box.AbsoluteSize.X, 1)
+                local bh = math.max(box.AbsoluteSize.Y, 1)
+                best.spec.drag(math.clamp((ax - box.AbsolutePosition.X) / bw, 0, 1),
+                    math.clamp((ay - box.AbsolutePosition.Y) / bh, 0, 1), bw, bh)
+                if E.redrawGraphs then pcall(E.redrawGraphs) end
+            end
+            GR.drag(px, py)
+        end
+        -- so a held drag can be driven and checked without a real mouse
+        E.graphDrag = function(x, y)
+            if not GR.drag then return false end
+            GR.drag(x, y)
+            return true
+        end
+        for i, hit in ipairs(hits) do
+            hit.InputBegan:Connect(function(input)
+                if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+                local box = boxes[i]
+                local top = box.AbsolutePosition.Y
+                local bot = top + box.AbsoluteSize.Y
+                local y = input.Position.Y
+                if y >= top and y <= bot then
+                    GR.inset = 0
+                elseif y - GR.rawInset >= top and y - GR.rawInset <= bot then
+                    GR.inset = GR.rawInset
+                end
+                c.startDrag(i, input.Position.X, input.Position.Y - GR.inset)
+            end)
         end
         -- place every grip from the values the kit holds right now
         function c.place()
@@ -55101,9 +55147,11 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             end
         end
         -- the plot box sizes with the column, so the grid is read fresh every pass
+        -- a pixel of margin: a curve's last segment is centre anchored, so drawing
+        -- to the exact edge left two pixels of it on the wrong side of the clip
         function c.size(i)
             local b = boxes[i or 1]
-            return math.max(b.AbsoluteSize.X, 8), math.max(b.AbsoluteSize.Y, 8)
+            return math.max(b.AbsoluteSize.X - 2, 8), math.max(b.AbsoluteSize.Y - 2, 8)
         end
         return c
     end
@@ -55211,6 +55259,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
 
     -- v2.3.0: the cards are the controls. Every curve reads the live kit, and the
     -- grips on them write it back, so shaping the behaviour is done on the graph.
+    local function rnd(v) return math.floor(v + 0.5) end
     local function setKit(side, key, v)
         E.draft[side][key] = v
         push(side, key)
@@ -55277,13 +55326,13 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             return w * math.clamp((mu - lo) / math.max(hi - lo, 1), 0, 1), h * 0.5
         end, drag = function(fx)
             local lo, hi = GR.rLo or 0, GR.rHi or 1
-            setKit("aim", "Reaction", math.floor(math.clamp(lo + fx * (hi - lo), 0, 500)))
+            setKit("aim", "Reaction", rnd(math.clamp(lo + fx * (hi - lo), 0, 500)))
         end })
         g.react.grip({ at = function(w, h)
             return w * math.clamp((tonumber(simKit("aim").ReactionSpread) or 100) / 200, 0, 1),
                 h * 0.14
         end, drag = function(fx)
-            setKit("aim", "ReactionSpread", math.floor(fx * 200))
+            setKit("aim", "ReactionSpread", rnd(fx * 200))
         end })
         g.flick.grip({ at = function(w, h)
             local L = simKit("aim")
@@ -55291,15 +55340,15 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             return w * math.clamp(((tonumber(L.CurveTime) or 220) / 1000) / span, 0, 1), h * 0.5
         end, drag = function(fx)
             local span = GR.fSpan or 1
-            setKit("aim", "CurveTime", math.floor(math.clamp(fx * span * 1000, 20, 1000)))
+            setKit("aim", "CurveTime", rnd(math.clamp(fx * span * 1000, 20, 1000)))
         end })
         g.flick.grip({ at = function(w, h)
             local L = simKit("aim")
-            local land = 1 + ((tonumber(L.Overshoot) or 0) / 100 - 0.10)
+            local land = 1 + (tonumber(L.Overshoot) or 0) / 100
             return w * 0.78, h * (1 - math.clamp(land / 1.5, 0, 1))
         end, drag = function(_, fy)
             local land = (1 - fy) * 1.5
-            setKit("aim", "Overshoot", math.floor(math.clamp((land - 1 + 0.10) * 100, -40, 40)))
+            setKit("aim", "Overshoot", rnd(math.clamp((land - 1) * 100, -40, 40)))
         end })
         g.jit.grip({ at = function(w, h)
             local j = math.clamp((tonumber(simKit("aim").Jitter) or 0) / 100, 0, 1)
@@ -55307,18 +55356,18 @@ Shared.REPLACE_TABLES.RecoilByGun = true
         end, drag = function(fx, _, w, h)
             local sp = math.min(w or 1, h or 1) * 0.46
             setKit("aim", "Jitter",
-                math.floor(math.clamp(((fx - 0.5) * (w or 1)) / math.max(sp, 1), 0, 1) * 100))
+                rnd(math.clamp(((fx - 0.5) * (w or 1)) / math.max(sp, 1), 0, 1) * 100))
         end })
         g.fat.grip({ at = function(w, h)
             local f = math.clamp((tonumber(simKit("aim").Fatigue) or 0) / 100, 0, 1)
             return w * 0.5, h * (1 - f)
         end, drag = function(_, fy)
-            setKit("aim", "Fatigue", math.floor((1 - fy) * 100))
+            setKit("aim", "Fatigue", rnd((1 - fy) * 100))
         end })
         g.chance.grip({ at = function(w, h)
             return w * 0.04, h * (1 - math.clamp((tonumber(simKit("silent").HitChance) or 100) / 100, 0, 1))
         end, drag = function(_, fy)
-            setKit("silent", "HitChance", math.floor((1 - fy) * 100))
+            setKit("silent", "HitChance", rnd((1 - fy) * 100))
         end })
         g.chance.grip({ at = function(w, h)
             local L = simKit("silent")
@@ -55330,7 +55379,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             local hc = math.max(tonumber(L.HitChance) or 100, 1)
             local far = (1 - fy) * 100
             setKit("silent", "HitChanceFalloff",
-                math.floor(math.clamp((1 - far / hc) * 100, 0, 100)))
+                rnd(math.clamp((1 - far / hc) * 100, 0, 100)))
         end })
         g.bloom.grip({ at = function(w, h)
             local L = simKit("silent")
@@ -55342,7 +55391,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             local top = GR.bTop or 1
             local sp = math.max(tonumber(L.Spread) or 0, 0.01)
             local r = (1 - fy) * top
-            setKit("silent", "Bloom", math.floor(math.clamp((r / sp - 1) / 3 * 100, 0, 200)))
+            setKit("silent", "Bloom", rnd(math.clamp((r / sp - 1) / 3 * 100, 0, 200)))
         end })
     end
 
@@ -55425,7 +55474,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             if (tonumber(AL.Reaction) or 0) <= 0 then
                 c.cap.Text = "instant"
             else
-                c.cap.Text = string.format("mean %d ms  ·  %d to %d  ·  drag to set",
+                c.cap.Text = string.format("mean %d ms  ·  %d to %d  ·  drag the plot",
                     math.floor(mean + 0.5), lo, hi)
             end
             c.hi[1].Text = tostring(peak)
@@ -55450,7 +55499,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                 px, py = x, y
             end
             pen.finish()
-            c.cap.Text = string.format("%d ms  ·  primary lands %.0f%%  ·  drag to set",
+            c.cap.Text = string.format("%d ms  ·  primary lands %.0f%%  ·  drag the plot",
                 tonumber(AL.CurveTime) or 220, (pts.land or 0) / full * 100)
             c.hi[1].Text = "1.5x"
             c.lo[1].Text = "0"
@@ -55502,7 +55551,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             pen2.finish()
             local off = 0
             for _, p in ipairs(pts) do if p[3] > width * 0.5 then off = off + 1 end end
-            c.cap.Text = string.format("%d%%  ·  off target %d%%  ·  drag to set",
+            c.cap.Text = string.format("%d%%  ·  off target %d%%  ·  drag the plot",
                 tonumber(AL.Jitter) or 0, math.floor(off / math.max(#pts, 1) * 100 + 0.5))
             c.hi[1].Text = string.format("%.2f", sc)
             c.lo[1].Text = string.format("-%.2f", sc)
@@ -55528,7 +55577,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                     pts[i][1] / 30 * w, Y(pts[i][2]), 1, P.Accent, 0.05)
             end
             pen.finish()
-            c.cap.Text = string.format("x%.2f .. x%.2f  ·  %d%%  ·  drag", lo, hi, amt)
+            c.cap.Text = string.format("x%.2f .. x%.2f  ·  %d%%  ·  drag the plot", lo, hi, amt)
             c.hi[1].Text = string.format("x%.2f", yhi)
             c.lo[1].Text = string.format("x%.2f", ylo)
             c.xlo.Text = "0"
@@ -55550,7 +55599,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
             end
             pen.vline((dist / cap) * w, 0, h, BLUE, 0.2)
             pen.finish()
-            c.cap.Text = string.format("%d%% at %d studs  ·  drag either end",
+            c.cap.Text = string.format("%d%% at %d studs  ·  drag either end of the curve",
                 math.floor(S.chance(hc, fall, dist, cap) + 0.5), math.floor(dist))
             c.hi[1].Text = "100"
             c.lo[1].Text = "0"
@@ -55577,7 +55626,7 @@ Shared.REPLACE_TABLES.RecoilByGun = true
                 px, py = x, y
             end
             pen.finish()
-            c.cap.Text = string.format("%.2f to %.2f studs  ·  %d%%  ·  drag",
+            c.cap.Text = string.format("%.2f to %.2f studs  ·  %d%%  ·  drag the plot",
                 radiusAt(0), radiusAt(5), SL.Bloom or 0)
             c.hi[1].Text = string.format("%.2f", top)
             c.lo[1].Text = "0.00"
