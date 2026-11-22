@@ -1,7 +1,7 @@
--- koffee v2.1.2
+-- koffee v2.1.3
 
 local Koffee = {}
-Koffee.Version = "2.1.2"
+Koffee.Version = "2.1.3"
 
 -- v0.93.15: CFrame.new(p, p), a zero .Unit or an inf input all give a NaN CFrame and
 -- nothing throws. Written to the camera that dropped the client, so camera and own
@@ -54545,10 +54545,15 @@ Shared.REPLACE_TABLES.RecoilPattern = true
         new("Frame", { Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1),
             BackgroundColor3 = P.Border, BackgroundTransparency = 0.4, BorderSizePixel = 0,
             ZIndex = 91, Parent = head })
-        lbl(head, "Legit Editor", Theme.Text.Header, P.Text, Theme.Fonts.Bold, 92)
-            .Size = UDim2.fromOffset(160, 46)
+        -- title centred over the kit column, pills centred on the screen
+        local title = lbl(head, "Legit Editor", Theme.Text.Header, P.Text, Theme.Fonts.Bold, 92)
+        title.AnchorPoint = Vector2.new(0.5, 0.5)
+        title.Position = UDim2.new(0, 12 + 150, 0, 23)
+        title.Size = UDim2.fromOffset(160, 24)
+        title.TextXAlignment = Enum.TextXAlignment.Center
         -- mode pills
-        local pill = new("Frame", { Position = UDim2.fromOffset(170, 11), Size = UDim2.fromOffset(150, 24),
+        local pill = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0, 23), Size = UDim2.fromOffset(150, 24),
             BackgroundColor3 = P.Pill, BackgroundTransparency = 0.3, BorderSizePixel = 0,
             ZIndex = 91, Parent = head }, { pillCorner() })
         UI.pillKnob = new("Frame", { Position = UDim2.fromOffset(2, 2), Size = UDim2.new(0.5, -2, 1, -4),
